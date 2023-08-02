@@ -387,7 +387,6 @@ if __name__ == '__main__':
         args = parser.parse_args()
 
         phApp, pss = get_credentials()
-        env_vars = getEnvSecrets(phApp, pss)
 
         if args.command == 'auth':
             phaseAuth()
@@ -395,6 +394,7 @@ if __name__ == '__main__':
             phaseInit()
         elif args.command == 'run':
             command = ' '.join(args.run_command)
+            env_vars = getEnvSecrets(phApp, pss)
             phaseRunInject(command, env_vars)
         elif args.command == 'logout':
             phaseCliLogout()
