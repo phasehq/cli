@@ -387,7 +387,7 @@ if __name__ == '__main__':
         args = parser.parse_args()
 
         phApp, pss = get_credentials()
-        env_vars = getEnvSecrets(phApp, pss)
+        #env_vars = getEnvSecrets(phApp, pss)
 
         if args.command == 'auth':
             phaseAuth()
