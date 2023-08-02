@@ -15,7 +15,7 @@ jobs:
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest, macOS-latest]
-        python-version: [3.9]
+        python-version: [3.11]
 
     steps:
       - name: Checkout code
