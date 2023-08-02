@@ -7,6 +7,8 @@ import getpass
 import keyring
 import datetime
 import webbrowser
+import argparse
+from argparse import RawTextHelpFormatter
 from phase import Phase
 
 __version__ = "0.1.0b"
@@ -26,7 +28,7 @@ def getEnvSecrets(phApp, pss):
     env_vars = {}
     
     # Read appEnvID context from .phase.json
-    if os.path.exists(PHASE_JSON):
+    if os.path.exists(PHASE_ENV_CONFIG):
         with open(PHASE_ENV_CONFIG) as f:
             data = json.load(f)
             secrets_file = os.path.join(PHASE_CONFIG_DIR, f"{data['appEnvID']}.json")
@@ -287,47 +289,6 @@ def phaseRunInject(command, env_vars):
     # Use shell=True to allow command chaining
     subprocess.run(command, shell=True, env=new_env)
 
-def phaseCliHelpMsg():
-    help_message = f"""
-              ...;:                     
-          :S@tX88%%t.                   
-         ;X;%;@%8X@%;.                  Encrypt the signal, store the noise.
-        ;Xt%;S8:;;t%S                      
-       ;SXStS@.;t8@: ;.                 https://github.com/phasehq/console
-      ;@:t;S8  ;@.%.;8:                 © {datetime.datetime.now().year} Phase Security Inc.
-     :X:S%88    S.88t:.                  
-    :X:%%88     :S:t.t8t                
-   .X:@88.      .X.8X@%:                
-  .@X%.X8@8888888X@S X88888888888888@.  
-  .@8X888@88888888X8.%8X8888888X8.S88:. 
-                  ;t;X ;X;    ;tXS:%X;. 
-                  :@:8@X..   tXXS%S8    
-                 ...X:@8S ..X%88X:;     
-                   ..@:X88:8Xt8:.       
-                     .;%88@S8:XS        
-
-Usage: phase-cli [command] [arguments]
-
-Commands:
-    auth                Authenticate with Phase
-    init                Link your local repo to a Phase app environment
-    run [command]       Automatically run and inject environment variables to your application
-    secrets list        List all the secrets. Secrets are censored by default
-    secrets create      Create a new secret or import secrets from a .env file
-    secrets delete [keys] Delete a secret. If keys are not provided, you will prompted for an input
-    secrets import [.env]  Import secrets your .env file
-    secrets export      Write all secrets associated with your application to an .env file in plain text
-    logout              Logout from phase-cli and delete local credentials
-    keyring             Display information about the phase-cli keyring
-    web                 Open the Phase Console in the default web browser ($PHASE_SERVICE_ENDPOINT)
-
-    Flags:
-        --version or -v     To see phase-cli version
-        --help or -h        To see this message
-    """
-    print(help_message)
-    printPhaseCliVersion()
-
 def get_credentials():
     try:
         phApp = keyring.get_password("phase", "phApp")
@@ -340,7 +301,7 @@ def get_credentials():
         pss = keyring.get_password("phase", "pss")
         return phApp, pss
 
-def open_web():
+def phaseOpenWeb():
     url = os.getenv('PHASE_SERVICE_ENDPOINT', 'https://console.phase.dev')
     webbrowser.open(url)
 
@@ -351,73 +312,111 @@ def showKeyringInfo():
     for backend in keyring.backend.get_all_keyring():
         print(f"- {backend.__class__.__name__}")
 
-if __name__ == '__main__':
-    try:
-        if len(sys.argv) < 2:
-            phaseCliHelpMsg()
-            sys.exit(1)
+phaseASCii = f"""                
+        :S@tX88%%t.                   
+        ;X;%;@%8X@%;.  Phase-cli               
+      ;Xt%;S8:;;t%S    Encrypt the signal, store the noise.               
+      ;SXStS@.;t8@: ;. © {datetime.datetime.now().year} Phase Security Inc.               
+    ;@:t;S8  ;@.%.;8:  https://phase.dev               
+    :X:S%88    S.88t:. https://github.com/phasehq/console                
+  :X:%%88     :S:t.t8t                              
+.@8X888@88888888X8.%8X8888888X8.S88: 
+                ;t;X ;X;    ;tXS:%X;
+                :@:8@X..   tXXS%S8    
+                ...X:@8S ..X%88X:;     
+                  ..@:X88:8Xt8:.       
+                    .;%88@S8:XS                       
+    """
 
-        command = sys.argv[1]
-        if command == "auth":
+class HelpfulParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_help()
+        sys.exit(2)
+
+if __name__ == '__main__':
+
+    try:
+        parser = HelpfulParser(prog='phase-cli', description=phaseASCii, formatter_class=RawTextHelpFormatter)
+
+        #parser = argparse.ArgumentParser(prog='phase-cli', description=phaseASCii, formatter_class=RawTextHelpFormatter)
+        parser.add_argument('--version', '-v', action='version', version=__version__)
+        subparsers = parser.add_subparsers(dest='command', required=True)
+
+        # Auth command
+        auth_parser = subparsers.add_parser('auth', help='Authenticate with Phase')
+
+        # Init command
+        init_parser = subparsers.add_parser('init', help='Link your local repo to a Phase app environment')
+
+        # Run command
+        run_parser = subparsers.add_parser('run', help='Automatically run and inject environment variables to your application')
+        run_parser.add_argument('run_command', nargs=argparse.REMAINDER, help='Command to be run')
+
+        # Secrets command
+        secrets_parser = subparsers.add_parser('secrets', help='Manage your secrets')
+        secrets_subparsers = secrets_parser.add_subparsers(dest='secrets_command', required=True)
+
+        # Secrets list command
+        secrets_list_parser = secrets_subparsers.add_parser('list', help='List all the secrets')
+        secrets_list_parser.add_argument('--show', action='store_true', help='Show uncensored secrets')
+
+        # Secrets create command
+        secrets_create_parser = secrets_subparsers.add_parser('create', help='Create a new secret')
+        secrets_create_parser.add_argument('--env', type=str, help='Import secrets from a .env file')
+
+        # Secrets delete command
+        secrets_delete_parser = secrets_subparsers.add_parser('delete', help='Delete a secret')
+        secrets_delete_parser.add_argument('keys', nargs='*', help='Keys to be deleted')
+
+        # Secrets import command
+        secrets_import_parser = secrets_subparsers.add_parser('import', help='Import secrets from a .env file')
+        secrets_import_parser.add_argument('env_file', type=str, help='The .env file to import')
+
+        # Secrets export command
+        secrets_export_parser = secrets_subparsers.add_parser('export', help='Export secrets to a .env file')
+
+        # Logout command
+        logout_parser = subparsers.add_parser('logout', help='Logout from phase-cli and delete local credentials')
+
+        # Web command
+        web_parser = subparsers.add_parser('web', help='Open the Phase Console in the default web browser')
+
+        # Keyring command
+        keyring_parser = subparsers.add_parser('keyring', help='Display information about the phase-cli keyring')
+
+        args = parser.parse_args()
+
+        phApp, pss = get_credentials()
+        env_vars = getEnvSecrets(phApp, pss)
+
+        if args.command == 'auth':
             phaseAuth()
-        elif command == "init":
+        elif args.command == 'init':
             phaseInit()
-        elif command == "run":
-            phApp, pss = get_credentials()
-            env_vars = getEnvSecrets(phApp, pss)
-            command = ' '.join(sys.argv[2:])
+        elif args.command == 'run':
+            command = ' '.join(args.run_command)
             phaseRunInject(command, env_vars)
-        elif command == "logout":
+        elif args.command == 'logout':
             phaseCliLogout()
-        elif command == "help":
-            phaseCliHelpMsg()
-        elif command == "--version" or command == "-v":
-            printPhaseCliVersionOnly()
-        elif command == "web":
-            open_web()
-        elif command == "secrets":
-            if len(sys.argv) < 3:
-                print("You must provide an argument for the 'secrets' command, such as 'list'.")
-                sys.exit(1)
-            elif sys.argv[2] == "list":
-                phApp, pss = get_credentials()
-                show = '--show' in sys.argv
-                phaseListSecrets(phApp, pss, show)
-            elif sys.argv[2] == "create":
-                if '--env' in sys.argv:
-                    env_file_index = sys.argv.index('--env')
-                    if len(sys.argv) > env_file_index + 1:
-                        env_file = sys.argv[env_file_index + 1]
-                        phaseSecretsEnvImport(env_file)
-                    else:
-                        print("You must provide an .env file for the '--env' option.")
-                        sys.exit(1)
-                else:
-                    phaseSecretsCreate()
-            elif sys.argv[2] == "delete":
-                if len(sys.argv) > 3:
-                    keys_to_delete = sys.argv[3:]
-                    phaseSecretsDelete(keys_to_delete)
-                else:
-                    phaseSecretsDelete()
-            elif sys.argv[2] == "import":  # New clause for import command
-                if len(sys.argv) > 3:
-                    env_file = sys.argv[3]
-                    phaseSecretsEnvImport(env_file)
-                else:
-                    print("You must provide an .env file for the 'import' command.")
-                    sys.exit(1)
-            elif sys.argv[2] == "export":
-                phaseSecretsEnvExport()
-            else:
-                print(f"Unknown argument for 'secrets' command: {sys.argv[2]}")
-                sys.exit(1)
-        elif command == "keyring":
+        elif args.command == 'web':
+            phaseOpenWeb()
+        elif args.command == 'keyring':
             showKeyringInfo()
+        elif args.command == 'secrets':
+            if args.secrets_command == 'list':
+                phaseListSecrets(phApp, pss, args.show)  # Pass phApp and pss
+            elif args.secrets_command == 'create':
+                phaseSecretsCreate()  # Do not pass args.env
+            elif args.secrets_command == 'delete':
+                phaseSecretsDelete(args.keys)  # Ensure your function can handle a list of keys
+            elif args.secrets_command == 'import':
+                phaseSecretsEnvImport(args.env_file)  # Pass only args.env_file
+            elif args.secrets_command == 'export':
+                phaseSecretsEnvExport()
         else:
-            print("Unknown command: " + command)
-            phaseCliHelpMsg()
+            print("Unknown command: " + ' '.join(args.command))
+            parser.print_help()
             sys.exit(1)
     except KeyboardInterrupt:
-        print("\nProgram terminated by user.")
+        print("\nStopping Phase.")
         sys.exit(0)
