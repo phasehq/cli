@@ -8,22 +8,24 @@ import keyring
 import datetime
 import webbrowser
 import argparse
+import shutil
 from argparse import RawTextHelpFormatter
 from phase import Phase
 
-__version__ = "0.1.0b"
+__version__ = "0.1.1b"
 
-# Define constants
-PHASE_ENV_CONFIG = '.phase.json'
-PHASE_CONFIG_DIR = os.path.expanduser('~/.phase/secrets')
+# Define paths to Phase configs
+PHASE_ENV_CONFIG = '.phase.json' # Holds project and environment contexts in users repo, unique to each application.
+PHASE_SECRETS_DIR = os.path.expanduser('~/.phase/secrets') # Holds local encrypted caches of secrets and environment variables, common to all projects.
 
-def printPhaseCliVersion():
+def print_phase_cli_version():
     print(f"Version: {__version__}")
 
-def printPhaseCliVersionOnly():
+def print_phase_cli_version_only():
     print(f"{__version__}")
 
-def getEnvSecrets(phApp, pss):
+# Decrypts environment variables based on project context as defined in PHASE_ENV_CONFIG and returns them
+def get_env_secrets(phApp, pss):
     phase = Phase(phApp, pss)
     env_vars = {}
     
@@ -31,7 +33,7 @@ def getEnvSecrets(phApp, pss):
     if os.path.exists(PHASE_ENV_CONFIG):
         with open(PHASE_ENV_CONFIG) as f:
             data = json.load(f)
-            secrets_file = os.path.join(PHASE_CONFIG_DIR, f"{data['appEnvID']}.json")
+            secrets_file = os.path.join(PHASE_SECRETS_DIR, f"{data['appEnvID']}.json")
             
             # Read and decrypt local env vars
             if os.path.exists(secrets_file):
@@ -42,10 +44,11 @@ def getEnvSecrets(phApp, pss):
     
     return env_vars
 
-def phaseAuth():
-    # If configuration already exists, ask for confirmation to overwrite
+# Takes Phase credentials from user and stored them securely in the system keyring
+def phase_auth():
+    # If credentials already exists, ask for confirmation to overwrite
     if keyring.get_password("phase", "phApp") or keyring.get_password("phase", "pss"):
-        confirmation = input("Configuration already exists. Do you want to overwrite it? [y/N]: ")
+        confirmation = input("You are already logged in. Do you want to switch accounts? [y/N]: ")
         if confirmation.lower() != 'y':
             print("Operation cancelled.")
             return
@@ -56,38 +59,47 @@ def phaseAuth():
     keyring.set_password("phase", "phApp", phApp)
     keyring.set_password("phase", "pss", pss)
 
-    print("Configuration saved successfully.")
+    print("Account credentials successfully saved in system keyring.")
 
-def phaseInit():
+# Initializes a .phase.json in the root of the dir of where the command is run
+def phase_init():
+    # Check if .phase.json already exists
+    if os.path.exists(PHASE_ENV_CONFIG):
+        confirmation = input("'You have already initialized your project with '.phase.json'. Do you want to delete it and start over? [y/N]: ")
+        if confirmation.lower() != 'y':
+            print("Operation cancelled.")
+            return
+
     appEnvID = str(uuid.uuid4())
     data = {'appEnvID': appEnvID, 'defaultEnvironment': ''}
     
-    # Create phase.json
+    # Create .phase.json
     with open(PHASE_ENV_CONFIG, 'w') as f:
         json.dump(data, f)
     os.chmod(PHASE_ENV_CONFIG, 0o600)
     
     # Create secrets file
-    os.makedirs(PHASE_CONFIG_DIR, exist_ok=True)
-    with open(os.path.join(PHASE_CONFIG_DIR, f"{appEnvID}.json"), 'w') as f:
+    os.makedirs(PHASE_SECRETS_DIR, exist_ok=True)
+    with open(os.path.join(PHASE_SECRETS_DIR, f"{appEnvID}.json"), 'w') as f:
         json.dump({}, f)
     
     print("Initialization completed successfully.")
 
-def phaseSecretsCreate():
+# Creates new secrets, encrypts them and saves them in PHASE_SECRETS_DIR
+def phase_secrets_create():
     # Get credentials from the keyring
     phApp, pss = get_credentials()
 
     # Check if Phase credentials exist
     if not phApp or not pss:
-        print("No configuration found. Please run 'phase-cli auth' to set up your configuration.")
+        print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
 
     # Read appEnvID context from .phase.json
     if os.path.exists(PHASE_ENV_CONFIG):
         with open(PHASE_ENV_CONFIG) as f:
             data = json.load(f)
-            secrets_file = os.path.join(PHASE_CONFIG_DIR, f"{data['appEnvID']}.json")
+            secrets_file = os.path.join(PHASE_SECRETS_DIR, f"{data['appEnvID']}.json")
             
             # Read secrets file
             if os.path.exists(secrets_file):
@@ -110,25 +122,26 @@ def phaseSecretsCreate():
                 json.dump(secrets, f)
             
             # Print updated secrets
-            phaseListSecrets(phApp, pss)
+            phase_list_secrets(phApp, pss)
     else:
-        print("Missing phase.json file. Please run 'phase-cli init' first.")
+        print("Missing .phase.json file. Please run 'phase init' first.")
         sys.exit(1)
 
-def phaseSecretsDelete(keys_to_delete=[]):
+# Deletes encrypted secrets based on key value pairs
+def phase_secrets_delete(keys_to_delete=[]):
     # Get credentials from the keyring
     phApp, pss = get_credentials()
 
     # Check if credentials exist
     if not phApp or not pss:
-        print("No configuration found. Please run 'phase-cli auth' to set up your configuration.")
+        print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
 
     # Read phase.json
     if os.path.exists(PHASE_ENV_CONFIG):
         with open(PHASE_ENV_CONFIG) as f:
             data = json.load(f)
-            secrets_file = os.path.join(PHASE_CONFIG_DIR, f"{data['appEnvID']}.json")
+            secrets_file = os.path.join(PHASE_SECRETS_DIR, f"{data['appEnvID']}.json")
             
             # Read secrets file
             if os.path.exists(secrets_file):
@@ -152,25 +165,26 @@ def phaseSecretsDelete(keys_to_delete=[]):
                     json.dump(secrets, f)
             
                 # Print updated secrets
-                phaseListSecrets(phApp, pss)
+                phase_list_secrets(phApp, pss)
     else:
-        print("Missing phase.json file. Please run 'phase-cli init' first.")
+        print("Missing phase.json file. Please run 'phase init' first.")
         sys.exit(1)
 
-def phaseSecretsEnvImport(env_file):
+# Imports existing environment variables and secrets from users .env file based on PHASE_ENV_CONFIG context
+def phase_secrets_env_import(env_file):
     # Get credentials from the keyring
     phApp, pss = get_credentials()
 
     # Check if credentials exist
     if not phApp or not pss:
-        print("No configuration found. Please run 'phase-cli auth' to set up your configuration.")
+        print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
 
     # Read phase.json
     if os.path.exists(PHASE_ENV_CONFIG):
         with open(PHASE_ENV_CONFIG) as f:
             data = json.load(f)
-            secrets_file = os.path.join(PHASE_CONFIG_DIR, f"{data['appEnvID']}.json")
+            secrets_file = os.path.join(PHASE_SECRETS_DIR, f"{data['appEnvID']}.json")
             
             # Read secrets file
             if os.path.exists(secrets_file):
@@ -201,25 +215,26 @@ def phaseSecretsEnvImport(env_file):
                 json.dump(secrets, f)
             
             # Print updated secrets
-            phaseListSecrets(phApp, pss)
+            phase_list_secrets(phApp, pss)
     else:
-        print("Missing phase.json file. Please run 'phase-cli init' first.")
+        print("Missing phase.json file. Please run 'phase init' first.")
         sys.exit(1)
 
-def phaseSecretsEnvExport():
+# Decrypts and exports environment variables and secrets based to a plain text .env file based on PHASE_ENV_CONFIG context
+def phase_secrets_env_export():
     # Get credentials from the keyring
     phApp, pss = get_credentials()
 
     # Check if credentials exist
     if not phApp or not pss:
-        print("No configuration found. Please run 'phase-cli auth' to set up your configuration.")
+        print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
 
     # Read phase.json
     if os.path.exists(PHASE_ENV_CONFIG):
         with open(PHASE_ENV_CONFIG) as f:
             data = json.load(f)
-            secrets_file = os.path.join(PHASE_CONFIG_DIR, f"{data['appEnvID']}.json")
+            secrets_file = os.path.join(PHASE_SECRETS_DIR, f"{data['appEnvID']}.json")
             
             # Read secrets file
             if os.path.exists(secrets_file):
@@ -235,25 +250,42 @@ def phaseSecretsEnvExport():
                 
                 print("Exported secrets to .env file.")
     else:
-        print("Missing phase.json file. Please run 'phase-cli init' first.")
+        print("Missing phase.json file. Please run 'phase init' first.")
         sys.exit(1)
 
-def phaseCliLogout():
+def phase_cli_logout(purge=False):
+    phApp = keyring.get_password("phase", "phApp")
+    pss = keyring.get_password("phase", "pss")
+
+    if not phApp and not pss:
+        print("No account found. Please log in using 'phase auth'.")
+        return
+
     keyring.delete_password("phase", "phApp")
     keyring.delete_password("phase", "pss")
+
+    if purge:
+        # Delete PHASE_SECRETS_DIR if it exists
+        if os.path.exists(PHASE_SECRETS_DIR):
+            shutil.rmtree(PHASE_SECRETS_DIR)
+            print("Purged all local data.")
+        else:
+            print("No local data found to purge.")
+
     print("Logged out successfully.")
 
-def censorSecret(secret):
+
+def censor_secret(secret):
     if len(secret) <= 6:
         return '*' * len(secret)
     return secret[:3] + '*' * (len(secret) - 6) + secret[-3:]
 
-def phaseListSecrets(phApp, pss, show=False):
+def phase_list_secrets(phApp, pss, show=False):
     # Read phase.json
     if os.path.exists(PHASE_ENV_CONFIG):
         with open(PHASE_ENV_CONFIG) as f:
             data = json.load(f)
-            secrets_file = os.path.join(PHASE_CONFIG_DIR, f"{data['appEnvID']}.json")
+            secrets_file = os.path.join(PHASE_SECRETS_DIR, f"{data['appEnvID']}.json")
             
             # Read secrets file
             if os.path.exists(secrets_file):
@@ -272,16 +304,16 @@ def phaseListSecrets(phApp, pss, show=False):
                 # Print key value pairs
                 for key, value in secrets.items():
                     decrypted_value = phase.decrypt(value)
-                    print(f'{key:<30} | {decrypted_value if show else censorSecret(decrypted_value):<60}')
+                    print(f'{key:<30} | {decrypted_value if show else censor_secret(decrypted_value):<60}')
 
                 # Print instructions to uncover the secrets
                 if not show:
-                    print("\nTo uncover the secrets, use: phase-cli secrets list --show")
+                    print("\nTo uncover the secrets, use: phase secrets list --show")
     else:
-        print("Missing phase.json file. Please run 'phase-cli init' first.")
+        print("Missing phase.json file. Please run 'phase init' first.")
         sys.exit(1)
 
-def phaseRunInject(command, env_vars):
+def phase_run_inject(command, env_vars):
     # Add environment variables to current environment
     new_env = os.environ.copy()
     new_env.update(env_vars)
@@ -301,11 +333,11 @@ def get_credentials():
         pss = keyring.get_password("phase", "pss")
         return phApp, pss
 
-def phaseOpenWeb():
+def phase_open_web():
     url = os.getenv('PHASE_SERVICE_ENDPOINT', 'https://console.phase.dev')
     webbrowser.open(url)
 
-def showKeyringInfo():
+def show_keyring_info():
     kr = keyring.get_keyring()
     print(f"Current keyring backend: {kr.__class__.__name__}")
     print("Supported keyring backends:")
@@ -338,7 +370,6 @@ if __name__ == '__main__':
     try:
         parser = HelpfulParser(prog='phase-cli', description=phaseASCii, formatter_class=RawTextHelpFormatter)
 
-        #parser = argparse.ArgumentParser(prog='phase-cli', description=phaseASCii, formatter_class=RawTextHelpFormatter)
         parser.add_argument('--version', '-v', action='version', version=__version__)
         subparsers = parser.add_subparsers(dest='command', required=True)
 
@@ -377,42 +408,43 @@ if __name__ == '__main__':
 
         # Logout command
         logout_parser = subparsers.add_parser('logout', help='Logout from phase-cli and delete local credentials')
+        logout_parser.add_argument('--purge', action='store_true', help='Purge all local data')
 
         # Web command
         web_parser = subparsers.add_parser('web', help='Open the Phase Console in the default web browser')
 
         # Keyring command
-        keyring_parser = subparsers.add_parser('keyring', help='Display information about the phase-cli keyring')
+        keyring_parser = subparsers.add_parser('keyring', help='Display information about the phase keyring')
 
         args = parser.parse_args()
 
         phApp, pss = get_credentials()
 
         if args.command == 'auth':
-            phaseAuth()
+            phase_auth()
         elif args.command == 'init':
-            phaseInit()
+            phase_init()
         elif args.command == 'run':
             command = ' '.join(args.run_command)
-            env_vars = getEnvSecrets(phApp, pss)
-            phaseRunInject(command, env_vars)
+            env_vars = get_env_secrets(phApp, pss)
+            phase_run_inject(command, env_vars)
         elif args.command == 'logout':
-            phaseCliLogout()
+            phase_cli_logout(args.purge)
         elif args.command == 'web':
-            phaseOpenWeb()
+            phase_open_web()
         elif args.command == 'keyring':
-            showKeyringInfo()
+            show_keyring_info()
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
-                phaseListSecrets(phApp, pss, args.show)  # Pass phApp and pss
+                phase_list_secrets(phApp, pss, args.show)  
             elif args.secrets_command == 'create':
-                phaseSecretsCreate()  # Do not pass args.env
+                phase_secrets_create() 
             elif args.secrets_command == 'delete':
-                phaseSecretsDelete(args.keys)  # Ensure your function can handle a list of keys
+                phase_secrets_delete(args.keys)  
             elif args.secrets_command == 'import':
-                phaseSecretsEnvImport(args.env_file)  # Pass only args.env_file
+                phase_secrets_env_import(args.env_file)
             elif args.secrets_command == 'export':
-                phaseSecretsEnvExport()
+                phase_secrets_env_export()
         else:
             print("Unknown command: " + ' '.join(args.command))
             parser.print_help()
