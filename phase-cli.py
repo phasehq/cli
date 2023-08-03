@@ -8,6 +8,7 @@ import keyring
 import datetime
 import webbrowser
 import argparse
+import shutil
 from argparse import RawTextHelpFormatter
 from phase import Phase
 
@@ -62,10 +63,17 @@ def phase_auth():
 
 # Initializes a .phase.json in the root of the dir of where the command is run
 def phase_init():
+    # Check if .phase.json already exists
+    if os.path.exists(PHASE_ENV_CONFIG):
+        confirmation = input("'You have already initialized your project with '.phase.json'. Do you want to delete it and start over? [y/N]: ")
+        if confirmation.lower() != 'y':
+            print("Operation cancelled.")
+            return
+
     appEnvID = str(uuid.uuid4())
     data = {'appEnvID': appEnvID, 'defaultEnvironment': ''}
     
-    # Create phase.json
+    # Create .phase.json
     with open(PHASE_ENV_CONFIG, 'w') as f:
         json.dump(data, f)
     os.chmod(PHASE_ENV_CONFIG, 0o600)
@@ -245,10 +253,27 @@ def phase_secrets_env_export():
         print("Missing phase.json file. Please run 'phase init' first.")
         sys.exit(1)
 
-def phase_cli_logout():
+def phase_cli_logout(purge=False):
+    phApp = keyring.get_password("phase", "phApp")
+    pss = keyring.get_password("phase", "pss")
+
+    if not phApp and not pss:
+        print("No account found. Please log in using 'phase auth'.")
+        return
+
     keyring.delete_password("phase", "phApp")
     keyring.delete_password("phase", "pss")
+
+    if purge:
+        # Delete PHASE_SECRETS_DIR if it exists
+        if os.path.exists(PHASE_SECRETS_DIR):
+            shutil.rmtree(PHASE_SECRETS_DIR)
+            print("Purged all local data.")
+        else:
+            print("No local data found to purge.")
+
     print("Logged out successfully.")
+
 
 def censor_secret(secret):
     if len(secret) <= 6:
@@ -383,12 +408,13 @@ if __name__ == '__main__':
 
         # Logout command
         logout_parser = subparsers.add_parser('logout', help='Logout from phase-cli and delete local credentials')
+        logout_parser.add_argument('--purge', action='store_true', help='Purge all local data')
 
         # Web command
         web_parser = subparsers.add_parser('web', help='Open the Phase Console in the default web browser')
 
         # Keyring command
-        keyring_parser = subparsers.add_parser('keyring', help='Display information about the phase-cli keyring')
+        keyring_parser = subparsers.add_parser('keyring', help='Display information about the phase keyring')
 
         args = parser.parse_args()
 
@@ -403,7 +429,7 @@ if __name__ == '__main__':
             env_vars = get_env_secrets(phApp, pss)
             phase_run_inject(command, env_vars)
         elif args.command == 'logout':
-            phase_cli_logout()
+            phase_cli_logout(args.purge)
         elif args.command == 'web':
             phase_open_web()
         elif args.command == 'keyring':
@@ -416,7 +442,7 @@ if __name__ == '__main__':
             elif args.secrets_command == 'delete':
                 phase_secrets_delete(args.keys)  
             elif args.secrets_command == 'import':
-                phase_secrets_env_import(args.env_file
+                phase_secrets_env_import(args.env_file)
             elif args.secrets_command == 'export':
                 phase_secrets_env_export()
         else:
