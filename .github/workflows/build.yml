@@ -96,12 +96,15 @@ jobs:
           mkdir /home/builder/package
           chown builder /home/builder/package
 
+      - name: Install sudo
+        run: apk add --no-cache sudo
+
       - name: Build APK package
         run: |
+          echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
           cp ./dist/phase /home/builder/package
           cp ./APKBUILD /home/builder/package
           cd /home/builder/package
-          echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
           sudo -u builder abuild-keygen -a -i -n
           sudo -u builder abuild checksum
           sudo -u builder abuild -r
