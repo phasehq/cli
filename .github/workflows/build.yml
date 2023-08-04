@@ -111,7 +111,9 @@ jobs:
         shell: sh
 
       - name: List APK files
-        run: ls -l
+        run: |
+          echo "Listing contents of /home/builder/packages/home/x86_64/"
+          ls -l /home/builder/packages/home/x86_64/
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v2
