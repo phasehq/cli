@@ -100,7 +100,7 @@ jobs:
         run: |
           su builder
           cd /home/builder/package
-          cp /github/workspace/dist/phase .
+          cp /__w/cli/cli/dist/phase .
           cp /github/workspace/APKBUILD .
           abuild-keygen -a -i
           abuild checksum
