@@ -57,7 +57,7 @@ jobs:
             sudo apt-get install -y docker-ce docker-ce-cli containerd.io
             echo -e "FROM alpine:latest\nRUN apk add -U alpine-sdk && adduser -D builder && addgroup builder abuild\nUSER builder\nCOPY . /home/builder\nWORKDIR /home/builder\nRUN cat APKBUILD" > Dockerfile
             echo -e "# Maintainer: Phase <info@phase.dev>\npkgname=phase\npkgver=$PHASE_CLI_VERSION\npkgrel=0\npkgdesc='A cli to manage .env secrets with Phase'\nurl='https://phase.dev'\narch='all'\nlicense='GPL 3.0'\ndepends=''\nmakedepends=''\ninstall=''\nsubpackages=''\n\nbuilddir='/home/builder/builddir'\n\nprepare() {\n    return 0\n}\n\nbuild() {\n    return 0\n}\n\npackage() {\n    install -Dm755 /home/builder/dist/phase '\$pkgdir'/usr/bin/phase\n}\n\ncheck() {\n    return 0\n}\n\nsha512sums=''" > APKBUILD
-            mkdir -p .abuild src
+            mkdir -p .abuild src pkg/phase
             docker build -t alpine-build .
             docker run -u root -v $PWD:/home/builder alpine-build /bin/sh -c "chown -R builder:abuild /home/builder && su builder -c 'abuild-keygen -a -n && abuild -r'"
             mv /home/builder/packages/home/builder/packages/src/*.apk .
