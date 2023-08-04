@@ -110,20 +110,8 @@ jobs:
           sudo -u builder abuild -r
         shell: sh
 
-      - name: Check abuild directory
-        run: |
-          echo "Listing all contents under /home/builder/packages/"
-          ls -lR /home/builder/packages/
-          tree
-
-      - name: Check current directory
-        run: |
-          echo "Listing current directory"
-          pwd
-          ls -l
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v2
         with:
           name: phase-apk
-          path: /home/builder/packages/home/x86_64/*.apk
+          path: /home/builder/packages/builder/x86_64/*.apk
