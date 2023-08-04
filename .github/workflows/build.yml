@@ -69,3 +69,45 @@ jobs:
         with:
           name: ${{ runner.os }}-binary
           path: dist/phase*
+
+  build_apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    needs: build
+    container:
+      image: alpine:latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install Alpine SDK
+        run: apk add alpine-sdk
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: ubuntu-latest-binary
+          path: dist
+
+      - name: Prepare builder
+        run: |
+          adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
+          mkdir /home/builder/package
+          chown builder /home/builder/package
+
+      - name: Build APK package
+        run: |
+          su builder
+          cd /home/builder/package
+          cp /github/workspace/dist/phase .
+          cp /github/workspace/APKBUILD .
+          abuild-keygen -a -i
+          abuild checksum
+          abuild -r
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: phase-apk
+          path: /home/builder/packages/home/x86_64/*.apk
