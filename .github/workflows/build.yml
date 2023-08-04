@@ -45,8 +45,8 @@ jobs:
         run: |
           if [ "${{ runner.os }}" == "Linux" ]; then
             sudo apt-get install -y ruby-dev rubygems build-essential && sudo gem install --no-document fpm
-            fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/
-            fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/
+            fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
+            fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
           fi
         shell: bash
 
@@ -63,4 +63,3 @@ jobs:
           name: phase-rpm
           path: |
             *.rpm
-           
