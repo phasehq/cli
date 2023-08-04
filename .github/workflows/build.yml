@@ -49,11 +49,22 @@ jobs:
             fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/
           fi
 
-      - name: Upload artifact
+      - name: Upload DEB artifact
         uses: actions/upload-artifact@v2
         with:
-          name: phase-package
+          name: phase-deb
           path: |
             *.deb
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: phase-rpm
+          path: |
             *.rpm
-            dist/*
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ runner.os }}-binary
+          path: dist/phase*
