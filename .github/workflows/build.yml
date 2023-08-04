@@ -11,10 +11,9 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest, macOS-latest]
         python-version: [3.11]
 
     steps:
@@ -35,8 +34,30 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --onefile --name phase phase-cli.py
 
+      - name: Extract version
+        run: echo "PHASE_CLI_VERSION=$(python -c 'from phase_cli import __version__; print(__version__)')" >> $GITHUB_ENV
+
+      - name: Install FPM
+        run: sudo apt-get install -y ruby-dev rubygems build-essential && sudo gem install --no-document fpm
+
+      - name: Create .deb package
+        run: fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase
+
+      - name: Create .rpm package
+        run: fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase
+
+      - name: Install Docker
+        run: sudo apt-get install -y docker.io
+
+      - name: Build Alpine package (.apk)
+        run: |
+          echo -e "FROM alpine:latest\nRUN apk add -U alpine-sdk\nCOPY . /src\nWORKDIR /src\nCMD abuild -rK" > Dockerfile
+          docker build -t alpine-build .
+          docker run -v $PWD:/src alpine-build
+          mv /src/packages/src/*.apk .
+
       - name: Upload artifact
         uses: actions/upload-artifact@v2
         with:
-          name: ${{ runner.os }}-binary
-          path: dist/phase*
+          name: phase-package
+          path: "*.deb, *.rpm, *.apk"
