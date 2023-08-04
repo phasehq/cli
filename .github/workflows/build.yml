@@ -63,3 +63,9 @@ jobs:
           name: phase-rpm
           path: |
             *.rpm
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ runner.os }}-binary
+          path: dist/phase*
