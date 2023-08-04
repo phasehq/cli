@@ -110,11 +110,11 @@ jobs:
           sudo -u builder abuild -r
         shell: sh
 
-    - name: List APK files
-      run: ls -l /home/builder/packages/home/x86_64/
+      - name: List APK files
+        run: ls -l /home/builder/packages/home/x86_64/
 
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: phase-apk
-        path: /home/builder/packages/home/x86_64/*.apk
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: phase-apk
+          path: /home/builder/packages/home/x86_64/*.apk
