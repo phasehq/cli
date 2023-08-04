@@ -87,7 +87,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v2
         with:
-          name: ubuntu-latest-binary
+          name: Linux-binary
           path: dist
 
       - name: Prepare builder
