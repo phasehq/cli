@@ -12,7 +12,7 @@ import shutil
 from argparse import RawTextHelpFormatter
 from phase import Phase
 
-__version__ = "0.1.1b"
+__version__ = "0.1.2b"
 
 # Define paths to Phase configs
 PHASE_ENV_CONFIG = '.phase.json' # Holds project and environment contexts in users repo, unique to each application.
@@ -313,8 +313,12 @@ def phase_list_secrets(phApp, pss, show=False):
         print("Missing phase.json file. Please run 'phase init' first.")
         sys.exit(1)
 
-def phase_run_inject(command, env_vars):
+def phase_run_inject(command):
     # Add environment variables to current environment
+    if not phApp or not pss:
+        print("No configuration found. Please run 'phase auth' to log in.")
+        sys.exit(1)
+    env_vars = get_env_secrets(phApp, pss)
     new_env = os.environ.copy()
     new_env.update(env_vars)
 
@@ -426,8 +430,7 @@ if __name__ == '__main__':
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.run_command)
-            env_vars = get_env_secrets(phApp, pss)
-            phase_run_inject(command, env_vars)
+            phase_run_inject(command)
         elif args.command == 'logout':
             phase_cli_logout(args.purge)
         elif args.command == 'web':
