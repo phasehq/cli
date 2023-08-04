@@ -51,13 +51,11 @@ jobs:
       - name: Install Docker
         run: |
           if [ "${{ runner.os }}" == "Linux" ]; then
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-            sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
             sudo apt-get update
             sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-            echo -e "FROM alpine:latest\nRUN apk add -U alpine-sdk\nCOPY . /src\nWORKDIR /src\nCMD abuild -rK" > Dockerfile
+            echo -e "FROM alpine:latest\nRUN apk add -U alpine-sdk\nRUN adduser -D builder\nUSER builder\nCOPY . /src\nWORKDIR /src\nCMD abuild -rK" > Dockerfile
             docker build -t alpine-build .
-            docker run -v $PWD:/src alpine-build
+            docker run --user builder -v $PWD:/src alpine-build
             mv /src/packages/src/*.apk .
           fi
 
