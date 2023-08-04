@@ -98,12 +98,10 @@ jobs:
 
       - name: Build APK package
         run: |
-          pwd
-          ls -l 
           cp ./dist/phase /home/builder/package
           cp ./APKBUILD /home/builder/package
           cd /home/builder/package
-          su builder -c 'abuild-keygen -a -i'
+          su builder -c 'abuild-keygen -a -i -n'
           su builder -c 'abuild checksum'
           su builder -c 'abuild -r'
         shell: sh
