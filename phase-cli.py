@@ -12,7 +12,7 @@ import shutil
 from argparse import RawTextHelpFormatter
 from phase import Phase
 
-__version__ = "0.1.1b"
+__version__ = "0.1.2b"
 
 # Define paths to Phase configs
 PHASE_ENV_CONFIG = '.phase.json' # Holds project and environment contexts in users repo, unique to each application.
