@@ -110,10 +110,17 @@ jobs:
           sudo -u builder abuild -r
         shell: sh
 
-      - name: List APK files
+      - name: Check abuild directory
         run: |
-          echo "Listing contents of /home/builder/packages/home/x86_64/"
-          ls -l /home/builder/packages/home/x86_64/
+          echo "Listing all contents under /home/builder/packages/"
+          ls -lR /home/builder/packages/
+          tree
+
+      - name: Check current directory
+        run: |
+          echo "Listing current directory"
+          pwd
+          ls -l
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v2
