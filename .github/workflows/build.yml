@@ -35,7 +35,7 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --onefile --name phase phase-cli.py
 
-      - name: Upload artifact
+      - name: Upload dist artifact
         uses: actions/upload-artifact@v2
         with:
           name: ${{ runner.os }}-binary
