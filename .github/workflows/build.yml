@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Install requirements.txt
         run: pip install -r requirements.txt
 
       - name: Install PyInstaller
@@ -41,7 +41,7 @@ jobs:
           echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase-cli.py)" >> $GITHUB_ENV
         shell: bash
 
-      - name: Install FPM
+      - name: Package DEB & RPM linux builds
         run: |
           if [ "${{ runner.os }}" == "Linux" ]; then
             sudo apt-get install -y ruby-dev rubygems build-essential && sudo gem install --no-document fpm
