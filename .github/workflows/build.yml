@@ -48,6 +48,7 @@ jobs:
             fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/
             fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/
           fi
+        shell: bash
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v2
