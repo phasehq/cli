@@ -154,10 +154,15 @@ jobs:
             cp phase-apk/*.apk phase-${{ env.PHASE_CLI_VERSION }}.apk
           fi
 
-      - name: Commit and Push to gh-pages
+      - name: Setup git
         run: |
           git config user.name "GitHub Actions"
-          git config user.email "github-actions@github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and Push to gh-pages
+        run: |
           git add .
           git commit -m "Upload packages for version ${{ env.PHASE_CLI_VERSION }}"
           git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
