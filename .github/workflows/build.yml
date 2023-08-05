@@ -139,7 +139,19 @@ jobs:
       - name: Check and Copy DEB package
         run: |
           if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.deb ]; then
-            cp path/to/your/deb/package phase-${{ env.PHASE_CLI_VERSION }}.deb
+            cp phase-deb/*.deb phase-${{ env.PHASE_CLI_VERSION }}.deb
+          fi
+
+      - name: Check and Copy RPM package
+        run: |
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.rpm ]; then
+            cp phase-rpm/*.rpm phase-${{ env.PHASE_CLI_VERSION }}.rpm
+          fi
+
+      - name: Check and Copy APK package
+        run: |
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.apk ]; then
+            cp phase-apk/*.apk phase-${{ env.PHASE_CLI_VERSION }}.apk
           fi
 
       - name: Commit and Push to gh-pages
