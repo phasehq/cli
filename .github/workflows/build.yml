@@ -123,3 +123,41 @@ jobs:
         with:
           name: phase-apk
           path: /home/builder/packages/builder/x86_64/*.apk
+
+  publish_to_gh_pages:
+    needs: [build, build_apk] # Ensures it runs after your build jobs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v2
+        with:
+          ref: gh-pages
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v2
+
+      - name: Check and Copy DEB package
+        run: |
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.deb ]; then
+            cp phase-deb/*.deb phase-${{ env.PHASE_CLI_VERSION }}.deb
+          fi
+
+      - name: Check and Copy RPM package
+        run: |
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.rpm ]; then
+            cp phase-rpm/*.rpm phase-${{ env.PHASE_CLI_VERSION }}.rpm
+          fi
+
+      - name: Check and Copy APK package
+        run: |
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.apk ]; then
+            cp phase-apk/*.apk phase-${{ env.PHASE_CLI_VERSION }}.apk
+          fi
+
+      - name: Commit and Push to gh-pages
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "github-actions@github.com"
+          git add .
+          git commit -m "Upload packages for version ${{ env.PHASE_CLI_VERSION }}"
+          git push
