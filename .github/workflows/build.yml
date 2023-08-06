@@ -45,6 +45,15 @@ jobs:
           echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase-cli.py)" >> $GITHUB_ENV
         shell: bash
 
+      - name: Save PHASE_CLI_VERSION
+        run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
+
+      - name: Upload PHASE_CLI_VERSION
+        uses: actions/upload-artifact@v2
+        with:
+          name: phase-version
+          path: ./PHASE_CLI_VERSION.txt
+
       - name: Package DEB & RPM linux builds
         run: |
           if [ "${{ runner.os }}" == "Linux" ]; then
@@ -140,6 +149,9 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v2
 
+      - name: Get PHASE_CLI_VERSION
+        run: echo "PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
+
       - name: Check and Copy DEB package
         run: |
           if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.deb ]; then
@@ -177,7 +189,7 @@ jobs:
 
       - name: Check and Copy MacOS binary
         run: |
-          if [ ! -f macOS-binary/phase }} ]; then
+          if [ ! -f macOS-binary/phase ]; then
             mkdir -p macos
             cp macOS-binary/phase macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
@@ -185,27 +197,20 @@ jobs:
       - name: Copy packages to /latest directory
         run: |
           mkdir -p latest
-          cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64.deb
-          cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm latest/phase_cli_amd64.rpm
-          cp apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk latest/phase_cli_amd64.apk
-          cp linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_linux_amd64
-          cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe latest/phase_cli_windows_amd64.exe
-          cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64
+          cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64_latest.deb
+          cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm latest/phase_cli_amd64_latest.rpm
+          cp apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk latest/phase_cli_amd64_latest.apk
+          cp linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_linux_amd64_latest
+          cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe latest/phase_cli_windows_amd64_latest.exe
+          cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64_latest
 
-      - name: Compute and save hashes
+      - name: Configure Git
         run: |
-          echo "Computing and saving hashes..."
-          find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
 
-      - name: Setup git
+      - name: Commit and Push
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Commit and Push to gh-pages
-        run: |
-          git add *.deb *.rpm *.apk *.exe *.deb.sha512 *.rpm.sha512 *.apk.sha512 *.exe.sha512
-          git commit -m "Upload packages and hashes for version ${{ env.PHASE_CLI_VERSION }}"
+          git add .
+          git commit -m "Update builds for version ${{ env.PHASE_CLI_VERSION }}"
           git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
