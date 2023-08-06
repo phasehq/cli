@@ -14,6 +14,22 @@ detect_os() {
     fi
 }
 
+install_binary() {
+    BINARY_URL="$PACKAGE_MIRROR/latest/phase_cli_linux_amd64_latest"
+    BINARY="$TMPDIR/phase"
+
+    echo "Downloading phase-cli binary..."
+    wget $BINARY_URL -O $BINARY
+
+    echo "Making binary executable..."
+    chmod +x $BINARY
+
+    echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
+    sudo mv $BINARY /usr/local/bin/phase
+
+    echo "phase-cli installed."
+}
+
 install_package() {
     TMPDIR=$(mktemp -d)
 
@@ -21,35 +37,39 @@ install_package() {
         ubuntu|debian)
             PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.deb"
             HASH_URL="$PACKAGE_URL.sha512"
+            PACKAGE_MANAGER="dpkg"
             ;;
         fedora|rhel|centos)
             PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.rpm"
             HASH_URL="$PACKAGE_URL.sha512"
+            PACKAGE_MANAGER="rpm"
             ;;
         alpine)
             PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.apk"
             HASH_URL="$PACKAGE_URL.sha512"
+            PACKAGE_MANAGER="apk"
             ;;
         *)
-            echo "Unsupported OS: $OS"
-            exit 1
+            install_binary
+            exit 0
             ;;
     esac
 
     PACKAGE="$TMPDIR/package"
     HASH="$TMPDIR/hash"
 
-    echo "Downloading package..."
+    echo "Downloading phase-cli package..."
     wget $PACKAGE_URL -O $PACKAGE
-    echo "Downloading hash..."
+    echo "Downloading phase-cli package hash..."
     wget $HASH_URL -O $HASH
 
-    sed -i "s|.*  |$PACKAGE  |" $HASH
+    EXPECTED_HASH=$(cut -d ' ' -f 1 $HASH)
 
-    echo "Checking hash..."
-    sha512sum --check $HASH
+    echo "Verifying SHA512 hash"
+    echo "$EXPECTED_HASH $PACKAGE" | sha512sum --check
 
-    echo "Installing package..."
+    echo "Installing package using $PACKAGE_MANAGER..."
+    echo "Please enter your sudo password."
     case $OS in
         ubuntu|debian)
             sudo dpkg -i $PACKAGE
@@ -61,6 +81,8 @@ install_package() {
             sudo apk add --allow-untrusted $PACKAGE
             ;;
     esac
+
+    echo "Phase package installed."
 }
 
 main() {
