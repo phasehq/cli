@@ -142,44 +142,44 @@ jobs:
 
       - name: Check and Copy DEB package
         run: |
-          if [ ! -f deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb ]; then
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.deb ]; then
             mkdir -p deb
             cp phase-deb/*.deb deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
           fi
 
       - name: Check and Copy RPM package
         run: |
-          if [ ! -f rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm ]; then
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.rpm ]; then
             mkdir -p rpm
             cp phase-rpm/*.rpm rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
           fi
 
       - name: Check and Copy APK package
         run: |
-          if [ ! -f apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk ]; then
+          if [ ! -f phase-${{ env.PHASE_CLI_VERSION }}.apk ]; then
             mkdir -p apk
             cp phase-apk/*.apk apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
           fi
 
       - name: Check and Copy Linux binary
         run: |
-          if [ ! -f linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }} ]; then
+          if [ ! -f Linux-binary/phase ]; then
             mkdir -p linux
-            cp ubuntu-latest-binary/phase* linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
+            cp Linux-binary/phase* linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
 
       - name: Check and Copy Windows binary
         run: |
-          if [ ! -f windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe ]; then
+          if [ ! -f Windows-binary/phase.exe ]; then
             mkdir -p windows
-            cp windows-latest-binary/phase* windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
+            cp Windows-binary/phase.exe windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
           fi
 
       - name: Check and Copy MacOS binary
         run: |
-          if [ ! -f macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} ]; then
+          if [ ! -f macOS-binary/phase }} ]; then
             mkdir -p macos
-            cp macos-latest-binary/phase* macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
+            cp macOS-binary/phase macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
 
       - name: Copy packages to /latest directory
