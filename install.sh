@@ -2,8 +2,7 @@
 
 set -e
 
-REPO="https://github.com/phasehq/cli"
-PACKAGE_MIRROR="https://phasehq.github.io/cli/latest"
+PACKAGE_MIRROR="https://pkg.phase.dev"
 
 detect_os() {
     if [ -f /etc/os-release ]; then
