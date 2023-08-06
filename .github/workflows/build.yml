@@ -149,8 +149,8 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v2
 
-      - name: Get PHASE_CLI_VERSION
-        run: echo "PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
+      - name: Set phase CLI version
+        run: echo "PHASE_CLI_VERSION=$(cat phase-version/PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
 
       - name: Check and Copy DEB package
         run: |
