@@ -178,7 +178,7 @@ jobs:
           if [ ! -f Linux-binary/phase ]; then
             mkdir -p linux
             cp Linux-binary/phase linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
-            ls
+            ls linux
             pwd
           fi
 
