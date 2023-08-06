@@ -175,10 +175,17 @@ jobs:
 
       - name: Check and Copy Linux binary
         run: |
+          echo "Current directory:"
+          pwd
+          echo "Directory listing before copy:"
+          ls
           if [ ! -f Linux-binary/phase ]; then
             mkdir -p linux
             cp Linux-binary/phase linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
+          echo "Directory listing after copy:"
+          ls
+          echo "Listing of linux directory:"
           ls linux
 
       - name: Check and Copy Windows binary
