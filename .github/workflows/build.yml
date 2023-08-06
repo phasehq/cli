@@ -175,29 +175,21 @@ jobs:
 
       - name: Check and Copy Linux binary
         run: |
-          echo "Current directory:"
-          pwd
-          echo "Directory listing before copy:"
-          ls
           if [ ! -f Linux-binary ]; then
             mkdir -p linux-bin
             cp Linux-binary/phase linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
-          echo "Directory listing after copy:"
-          ls
-          echo "Listing of linux directory:"
-          ls linux-bin
 
       - name: Check and Copy Windows binary
         run: |
-          if [ ! -f Windows-binary/phase.exe ]; then
+          if [ ! -f Windows-binary ]; then
             mkdir -p windows
             cp Windows-binary/phase.exe windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
           fi
 
       - name: Check and Copy MacOS binary
         run: |
-          if [ ! -f macOS-binary/phase ]; then
+          if [ ! -f macOS-binary ]; then
             mkdir -p macos
             cp macOS-binary/phase macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
