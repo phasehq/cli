@@ -205,6 +205,10 @@ jobs:
           cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe latest/phase_cli_windows_amd64_latest.exe
           cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64_latest
 
+      - name: Compute and save hashes
+        run: |
+          find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+
       - name: Configure Git
         run: |
           git config user.name "${{ github.actor }}"
