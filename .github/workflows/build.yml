@@ -192,6 +192,11 @@ publish_to_gh_pages:
         cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe latest/phase_cli_windows_amd64.exe
         cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64
 
+    - name: Compute and save hashes
+      run: |
+        echo "Computing and saving hashes..."
+        find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+
     - name: Setup git
       run: |
         git config user.name "GitHub Actions"
@@ -199,8 +204,8 @@ publish_to_gh_pages:
 
     - name: Commit and Push to gh-pages
       run: |
-        git add .
-        git commit -m "Upload packages for version ${{ env.PHASE_CLI_VERSION }}"
+        git add *.deb *.rpm *.apk *.exe *.deb.sha512 *.rpm.sha512 *.apk.sha512 *.exe.sha512
+        git commit -m "Upload packages and hashes for version ${{ env.PHASE_CLI_VERSION }}"
         git push
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
