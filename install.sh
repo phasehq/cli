@@ -15,6 +15,8 @@ detect_os() {
 }
 
 install_package() {
+    TMPDIR=$(mktemp -d)
+
     case $OS in
         ubuntu|debian)
             PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.deb"
@@ -34,28 +36,31 @@ install_package() {
             ;;
     esac
 
+    PACKAGE="$TMPDIR/package"
+    HASH="$TMPDIR/hash"
+
     echo "Downloading package..."
-    wget $PACKAGE_URL -O package
+    wget $PACKAGE_URL -O $PACKAGE
     echo "Downloading hash..."
-    wget $HASH_URL -O hash
+    wget $HASH_URL -O $HASH
 
     echo "Checking hash..."
-    echo "$(cat hash) package" | sha512sum --check
+    cd $TMPDIR
+    sha512sum --check $HASH
 
     echo "Installing package..."
     case $OS in
         ubuntu|debian)
-            sudo dpkg -i package
+            sudo dpkg -i $PACKAGE
             ;;
         fedora|rhel|centos)
-            sudo rpm -i package
+            sudo rpm -i $PACKAGE
             ;;
         alpine)
-            sudo apk add --allow-untrusted package
+            sudo apk add --allow-untrusted $PACKAGE
             ;;
     esac
 }
-
 
 main() {
     detect_os
