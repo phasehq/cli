@@ -139,6 +139,7 @@ jobs:
 
   publish_to_gh_pages:
     needs: [build, build_apk]
+    name: Deploy packages
     runs-on: ubuntu-latest
     steps:
       - name: Checkout gh-pages branch
