@@ -44,8 +44,9 @@ install_package() {
     echo "Downloading hash..."
     wget $HASH_URL -O $HASH
 
+    sed -i "s|.*  |$PACKAGE  |" $HASH
+
     echo "Checking hash..."
-    cd $TMPDIR
     sha512sum --check $HASH
 
     echo "Installing package..."
