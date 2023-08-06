@@ -179,7 +179,7 @@ jobs:
           pwd
           echo "Directory listing before copy:"
           ls
-          if [ ! -f Linux-binary/phase ]; then
+          if [ ! -f Linux-binary ]; then
             mkdir -p linux-bin
             cp Linux-binary/phase linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
