@@ -18,15 +18,15 @@ detect_os() {
 install_package() {
     case $OS in
         ubuntu|debian)
-            PACKAGE_URL="$PACKAGE_MIRROR/deb/latest.deb"
+            PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.deb"
             HASH_URL="$PACKAGE_URL.sha512"
             ;;
         fedora|rhel|centos)
-            PACKAGE_URL="$PACKAGE_MIRROR/rpm/latest.rpm"
+            PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.rpm"
             HASH_URL="$PACKAGE_URL.sha512"
             ;;
         alpine)
-            PACKAGE_URL="$PACKAGE_MIRROR/apk/latest.apk"
+            PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.apk"
             HASH_URL="$PACKAGE_URL.sha512"
             ;;
         *)
