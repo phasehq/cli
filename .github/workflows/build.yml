@@ -180,13 +180,13 @@ jobs:
           echo "Directory listing before copy:"
           ls
           if [ ! -f Linux-binary/phase ]; then
-            mkdir -p linux
-            cp Linux-binary/phase linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
+            mkdir -p linux-bin
+            cp Linux-binary/phase linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           fi
           echo "Directory listing after copy:"
           ls
           echo "Listing of linux directory:"
-          ls linux
+          ls linux-bin
 
       - name: Check and Copy Windows binary
         run: |
@@ -208,7 +208,7 @@ jobs:
           cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64_latest.deb
           cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm latest/phase_cli_amd64_latest.rpm
           cp apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk latest/phase_cli_amd64_latest.apk
-          cp linux/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_linux_amd64_latest
+          cp linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_linux_amd64_latest
           cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe latest/phase_cli_windows_amd64_latest.exe
           cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64_latest
 
