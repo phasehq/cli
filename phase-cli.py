@@ -12,7 +12,7 @@ import shutil
 from argparse import RawTextHelpFormatter
 from phase import Phase
 
-__version__ = "0.1.2b"
+__version__ = "0.2.2b"
 
 # Define paths to Phase configs
 PHASE_ENV_CONFIG = '.phase.json' # Holds project and environment contexts in users repo, unique to each application.
@@ -326,16 +326,22 @@ def phase_run_inject(command):
     subprocess.run(command, shell=True, env=new_env)
 
 def get_credentials():
-    try:
-        phApp = keyring.get_password("phase", "phApp")
-        pss = keyring.get_password("phase", "pss")
-        return phApp, pss
-    except keyring.errors.KeyringLocked:
-        password = getpass.getpass("Please enter your keyring password: ")
-        keyring.get_keyring().unlock(password)
-        phApp = keyring.get_password("phase", "phApp")
-        pss = keyring.get_password("phase", "pss")
-        return phApp, pss
+    # Use environment variables if available
+    phApp = os.getenv("PHASE_APP_ID")
+    pss = os.getenv("PHASE_APP_SECRET")
+
+    # If environment variables are not available, use the keyring
+    if not phApp or not pss:
+        try:
+            phApp = keyring.get_password("phase", "phApp")
+            pss = keyring.get_password("phase", "pss")
+        except keyring.errors.KeyringLocked:
+            password = getpass.getpass("Please enter your keyring password: ")
+            keyring.get_keyring().unlock(password)
+            phApp = keyring.get_password("phase", "phApp")
+            pss = keyring.get_password("phase", "pss")
+    return phApp, pss
+
 
 def phase_open_web():
     url = os.getenv('PHASE_SERVICE_ENDPOINT', 'https://console.phase.dev')
@@ -423,6 +429,10 @@ if __name__ == '__main__':
         args = parser.parse_args()
 
         phApp, pss = get_credentials()
+
+        if not phApp or not pss:
+            print("No accounts found. Please run 'phase auth' or supply PHASE_APP_ID & PHASE_APP_SECRET")
+            sys.exit(1)
 
         if args.command == 'auth':
             phase_auth()
