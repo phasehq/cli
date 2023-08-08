@@ -335,13 +335,18 @@ def get_credentials():
         try:
             phApp = keyring.get_password("phase", "phApp")
             pss = keyring.get_password("phase", "pss")
+            return phApp, pss
         except keyring.errors.KeyringLocked:
             password = getpass.getpass("Please enter your keyring password: ")
             keyring.get_keyring().unlock(password)
             phApp = keyring.get_password("phase", "phApp")
             pss = keyring.get_password("phase", "pss")
-    return phApp, pss
-
+            return phApp, pss
+        except keyring.errors.KeyringError:
+            print("System keyring is not available. Please set the PHASE_APP_ID and PHASE_APP_SECRET environment variables.")
+            return None, None
+    else:
+        return phApp, pss
 
 def phase_open_web():
     url = os.getenv('PHASE_SERVICE_ENDPOINT', 'https://console.phase.dev')
