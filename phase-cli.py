@@ -433,15 +433,16 @@ if __name__ == '__main__':
 
         args = parser.parse_args()
 
-        phApp, pss = get_credentials()
+        if args.command == 'auth':
+            phase_auth()
+            sys.exit(0)
 
+        phApp, pss = get_credentials()
         if not phApp or not pss:
             print("No accounts found. Please run 'phase auth' or supply PHASE_APP_ID & PHASE_APP_SECRET")
             sys.exit(1)
 
-        if args.command == 'auth':
-            phase_auth()
-        elif args.command == 'init':
+        if args.command == 'init':
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.run_command)
