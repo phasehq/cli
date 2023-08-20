@@ -42,7 +42,7 @@ jobs:
       - name: Extract version
         run: |
           export LC_ALL=C.UTF-8
-          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase-cli.py)" >> $GITHUB_ENV
+          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
 
       - name: Save PHASE_CLI_VERSION
