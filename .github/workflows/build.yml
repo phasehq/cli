@@ -110,6 +110,7 @@ jobs:
       - name: Organize files for S3
         run: |
           mkdir -p deb rpm apk windows macos linux-bin latest
+          # Sync package versions
           mv artifacts/phase-deb/*.deb deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
           mv artifacts/phase-rpm/*.rpm rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
           mv artifacts/phase-apk/*.apk apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
@@ -120,7 +121,7 @@ jobs:
           # Checksums
           find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -name phase \) -exec sh -c 'sha512sum {} > {}.sha512' \;
 
-          # Latest copies
+          # Sync latest packages
           cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64_latest.deb
           cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb.sha512 latest/phase_cli_amd64_latest.deb.sha512
           cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm latest/phase_cli_amd64_latest.rpm
@@ -142,4 +143,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      - run: echo "./install.sh" "${{ secrets.AWS_S3_BUCKET }}/install.sh"
+      - name: Sync install script
+        run: |
+          aws s3 cp ./install.sh s3://${{ secrets.AWS_S3_BUCKET }}/install.sh --acl public-read
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
