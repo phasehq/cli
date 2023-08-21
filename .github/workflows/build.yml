@@ -50,11 +50,11 @@ jobs:
       - uses: actions/upload-artifact@v2
         with:
           name: phase-deb
-          path: *.deb
+          path: "*.deb"
       - uses: actions/upload-artifact@v2
         with:
           name: phase-rpm
-          path: *.rpm
+          path: "*.rpm"
       - uses: actions/upload-artifact@v2
         with:
           name: ${{ runner.os }}-binary
