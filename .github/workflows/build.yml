@@ -119,7 +119,7 @@ jobs:
           mv artifacts/macOS-binary/* macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
 
           # Checksums
-          find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -name phase \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+          find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* \) -exec sh -c 'sha512sum {} > {}.sha512' \;
 
           # Sync latest packages
           cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64_latest.deb
