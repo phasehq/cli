@@ -28,16 +28,21 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
       - run: pyinstaller --onefile --name phase phase-cli.py
-      - run: export LC_ALL=C.UTF-8 && echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
+      - name: Extract version
+        run: |
+          export LC_ALL=C.UTF-8
+          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
       - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
       - uses: actions/upload-artifact@v2
         with:
           name: phase-version
           path: ./PHASE_CLI_VERSION.txt
-      - run: |
-          if [ "${{ runner.os }}" == "Linux" ]; then
-            sudo apt-get install -y ruby-dev rubygems build-essential && sudo gem install --no-document fpm
+      - name: Build DEB and RPM if Linux
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            sudo apt-get install -y ruby-dev rubygems build-essential 
+            sudo gem install --no-document fpm
             fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
             fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
           fi
@@ -62,12 +67,18 @@ jobs:
       image: python:3.11-alpine
     steps:
       - uses: actions/checkout@v2
-      - run: apk add --update --no-cache python3 python3-dev build-base && python3 -m ensurepip && pip3 install --no-cache --upgrade pip setuptools
+      - run: |
+          apk add --update --no-cache python3 python3-dev build-base 
+          python3 -m ensurepip
+          pip3 install --no-cache --upgrade pip setuptools
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
       - run: pyinstaller --onefile --name phase phase-cli.py
       - run: apk add alpine-sdk
-      - run: adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder && mkdir /home/builder/package && chown builder /home/builder/package
+      - run: |
+          adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
+          mkdir /home/builder/package
+          chown builder /home/builder/package
       - run: apk add --no-cache sudo
       - run: |
           echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
@@ -92,9 +103,12 @@ jobs:
       - uses: actions/download-artifact@v2
         with:
           path: artifacts
-      - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
+      - name: Extract version
+        run: |
+          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
-      - run: |
+      - name: Organize files for S3
+        run: |
           mkdir -p deb rpm apk windows macos linux-bin latest
           mv artifacts/phase-deb/*.deb deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
           mv artifacts/phase-rpm/*.rpm rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
@@ -102,7 +116,11 @@ jobs:
           mv artifacts/Linux-binary/* linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           mv artifacts/Windows-binary/* windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
           mv artifacts/macOS-binary/* macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
+
+          # Checksums
           find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -name phase \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+
+          # Latest copies
           cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64_latest.deb
           cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb.sha512 latest/phase_cli_amd64_latest.deb.sha512
           cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm latest/phase_cli_amd64_latest.rpm
@@ -115,6 +133,7 @@ jobs:
           cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe.sha512 latest/phase_cli_windows_amd64_latest.exe.sha512
           cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64_latest
           cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}.sha512 latest/phase_cli_macos_amd64_latest.sha512
+
       - uses: jakejarvis/s3-sync-action@v0.5.1
         with:
           args: --acl public-read --follow-symlinks --delete
@@ -122,4 +141,5 @@ jobs:
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
       - run: echo "./install.sh" "${{ secrets.AWS_S3_BUCKET }}/install.sh"
