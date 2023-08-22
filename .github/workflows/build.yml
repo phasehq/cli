@@ -106,57 +106,45 @@ jobs:
           path: artifacts
 
       - name: Extract version
-        run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Generate checksums and upload to S3
         run: |
-          sudo apt-get install s3cmd
-
-          # Generate checksums directly in the artifacts directory
-          find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe \) -exec sh -c 'sha512sum {} > {}.sha512' \;
-
-          # Upload each file with inline versioning using s3cmd
-          # For .deb files
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-deb/*.deb.sha512 s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb.sha512
-
-          # For .rpm files
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-rpm/*.rpm.sha512 s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm.sha512
-
-          # For .apk files
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-apk/*.apk.sha512 s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk.sha512
-
-          # For Linux binary
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Linux-binary/*.sha512 s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}.sha512
-
-          # For Windows binary
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Windows-binary/*.exe s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Windows-binary/*.exe.sha512 s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe.sha512
-
-          # For macOS binary
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/macOS-binary/*.sha512 s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}.sha512
-
-          # Upload latest versions
-          # Just reusing the commands but targeting the `latest` directory and adjusting the naming.
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Windows-binary/*.exe s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe
-          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest
-
+          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
 
-      - name: Upload install script to S3
-        run: s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put ./install.sh s3://$AWS_S3_BUCKET/install.sh
+      - name: Organize files, generate checksums, and upload to S3
+        run: |
+          # Generating checksums
+          find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+
+          # Uploading to S3 using `aws s3 cp`
+          aws s3 cp artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
+          aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
+          aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
+          aws s3 cp artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
+          aws s3 cp artifacts/Windows-binary/* s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
+          aws s3 cp artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
+
+          # Upload the latest versions
+          aws s3 cp artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb
+          aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm
+          aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk
+          aws s3 cp artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest
+          aws s3 cp artifacts/Windows-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe
+          aws s3 cp artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest
+
+          # Upload the checksums for the latest versions
+          aws s3 cp artifacts/phase-deb/*.deb.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb.sha512
+          aws s3 cp artifacts/phase-rpm/*.rpm.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm.sha512
+          aws s3 cp artifacts/phase-apk/*.apk.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk.sha512
+          aws s3 cp artifacts/Linux-binary/*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest.sha512
+          aws s3 cp artifacts/Windows-binary/*.exe.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe.sha512
+          aws s3 cp artifacts/macOS-binary/*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest.sha512
+
+          # Copy the install script
+          aws s3 cp ./install.sh s3://$AWS_S3_BUCKET/install.sh
+
+        shell: bash
 
     env:
-      AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
       AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
