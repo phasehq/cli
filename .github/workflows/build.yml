@@ -128,7 +128,7 @@ jobs:
           aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm
           aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk
           aws s3 cp artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest
-          aws s3 cp artifacts/Windows-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe
+          aws s3 cp "artifacts/Windows-binary/phase.exe" s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe
           aws s3 cp artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest
 
           # Upload the checksums for the latest versions
@@ -136,7 +136,7 @@ jobs:
           aws s3 cp artifacts/phase-rpm/*.rpm.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm.sha512
           aws s3 cp artifacts/phase-apk/*.apk.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk.sha512
           aws s3 cp artifacts/Linux-binary/*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest.sha512
-          aws s3 cp artifacts/Windows-binary/*.exe.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe.sha512
+          aws s3 cp "artifacts/Windows-binary/phase.exe.sha512" s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe.sha512
           aws s3 cp artifacts/macOS-binary/*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest.sha512
 
           # Copy the install script
