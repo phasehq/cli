@@ -100,113 +100,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+
       - uses: actions/download-artifact@v2
         with:
           path: artifacts
+
       - name: Extract version
         run: |
           echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
-      - name: Organize files for S3
+
+      - name: Organize files and upload to S3
         run: |
           mkdir -p deb rpm apk windows macos linux-bin latest
+
+          # Organizing files
           mv artifacts/phase-deb/*.deb deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
           mv artifacts/phase-rpm/*.rpm rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
           mv artifacts/phase-apk/*.apk apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
           mv artifacts/Linux-binary/* linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           mv artifacts/Windows-binary/* windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
           mv artifacts/macOS-binary/* macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
+
+          # Generating checksums
           find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+
+          # Organizing latest directory
           cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64_latest.deb
-          cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb.sha512 latest/phase_cli_amd64_latest.deb.sha512
           cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm latest/phase_cli_amd64_latest.rpm
-          cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm.sha512 latest/phase_cli_amd64_latest.rpm.sha512
           cp apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk latest/phase_cli_amd64_latest.apk
-          cp apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk.sha512 latest/phase_cli_amd64_latest.apk.sha512
           cp linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_linux_amd64_latest
-          cp linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}.sha512 latest/phase_cli_linux_amd64_latest.sha512
           cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe latest/phase_cli_windows_amd64_latest.exe
-          cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe.sha512 latest/phase_cli_windows_amd64_latest.exe.sha512
           cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64_latest
-          cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}.sha512 latest/phase_cli_macos_amd64_latest.sha512
 
-      # Sync directories with S3
-      - uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          args: --acl public-read --follow-symlinks --delete
-          source_dir: "./deb/"
-          dest_dir: "deb/"
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Uploading to S3 using `aws s3 cp` 
+          aws s3 cp --recursive ./deb/ s3://$AWS_S3_BUCKET/deb/ --endpoint-url $AWS_S3_ENDPOINT
+          aws s3 cp --recursive ./rpm/ s3://$AWS_S3_BUCKET/rpm/ --endpoint-url $AWS_S3_ENDPOINT
+          aws s3 cp --recursive ./apk/ s3://$AWS_S3_BUCKET/apk/ --endpoint-url $AWS_S3_ENDPOINT
+          aws s3 cp --recursive ./linux-bin/ s3://$AWS_S3_BUCKET/linux-bin/ --endpoint-url $AWS_S3_ENDPOINT
+          aws s3 cp --recursive ./windows/ s3://$AWS_S3_BUCKET/windows/ --endpoint-url $AWS_S3_ENDPOINT
+          aws s3 cp --recursive ./macos/ s3://$AWS_S3_BUCKET/macos/ --endpoint-url $AWS_S3_ENDPOINT
+          aws s3 cp --recursive ./latest/ s3://$AWS_S3_BUCKET/latest/ --endpoint-url $AWS_S3_ENDPOINT
 
-      - uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          source_dir: "./rpm/"
-          dest_dir: "rpm/"
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        shell: bash
 
-      - uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          source_dir: "./apk/"
-          dest_dir: "apk/"
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      - name: Upload install script to S3
+        run: aws s3 cp ./install.sh s3://$AWS_S3_BUCKET/install.sh --endpoint-url $AWS_S3_ENDPOINT
 
-      - uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          source_dir: "./linux-bin/"
-          dest_dir: "linux-bin/"
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          source_dir: "./windows/"
-          dest_dir: "windows/"
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          source_dir: "./macos/"
-          dest_dir: "macos/"
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          source_dir: "./latest/"
-          dest_dir: "latest/"
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Sync install script
-        run: |
-          aws s3 cp ./install.sh s3://${{ secrets.AWS_S3_BUCKET }}/install.sh --acl public-read --endpoint-url ${{ secrets.AWS_S3_ENDPOINT }}
-        env:
-          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    env:
+      AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
+      AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
