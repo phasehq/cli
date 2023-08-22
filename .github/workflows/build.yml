@@ -113,7 +113,7 @@ jobs:
       - name: Organize files, generate checksums, and upload to S3
         run: |
           # Generating checksums
-          find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* \) -exec sh -c 'sha512sum {} | tee {}.sha512' \;
+          find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* -o -iname phase \) -exec sh -c 'sha512sum {} > {}.sha512' \;
 
           # Uploading to S3 using `aws s3 cp`
           aws s3 cp artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
