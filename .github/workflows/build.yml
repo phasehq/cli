@@ -106,46 +106,41 @@ jobs:
           path: artifacts
 
       - name: Extract version
-        run: |
-          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
+        run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
 
-      - name: Organize files and upload to S3
+      - name: Generate checksums and upload to S3
         run: |
-          mkdir -p deb rpm apk windows macos linux-bin latest
+          sudo apt-get install s3cmd
 
-          # Organizing files
-          mv artifacts/phase-deb/*.deb deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
-          mv artifacts/phase-rpm/*.rpm rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
-          mv artifacts/phase-apk/*.apk apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
-          mv artifacts/Linux-binary/* linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
-          mv artifacts/Windows-binary/* windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
-          mv artifacts/macOS-binary/* macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
+          # Generate checksums directly in the artifacts directory
+          find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe \) -exec sh -c 'sha512sum {} > {}.sha512' \;
 
-          # Generating checksums
-          find . -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* \) -exec sh -c 'sha512sum {} > {}.sha512' \;
+          # Upload files and their checksums to S3 with versioned naming
+          for file in $(find artifacts -type f -name '*.*'); do
+              base=$(basename $file)
+              dir=$(dirname $file)
+              subdir=$(basename $dir)
+              if [[ $base == *".sha512" ]]; then
+                  s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put $file s3://$AWS_S3_BUCKET/$subdir/
+              else
+                  s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put $file s3://$AWS_S3_BUCKET/$subdir/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}$(echo $base | awk -F "phase_cli_amd64" '{print $2}')
+              fi
+          done
 
-          # Organizing latest directory
-          cp deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb latest/phase_cli_amd64_latest.deb
-          cp rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm latest/phase_cli_amd64_latest.rpm
-          cp apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk latest/phase_cli_amd64_latest.apk
-          cp linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_linux_amd64_latest
-          cp windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe latest/phase_cli_windows_amd64_latest.exe
-          cp macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }} latest/phase_cli_macos_amd64_latest
-
-          # Uploading to S3 using `aws s3 cp` 
-          aws s3 cp --recursive ./deb/ s3://$AWS_S3_BUCKET/deb/ --endpoint-url $AWS_S3_ENDPOINT
-          aws s3 cp --recursive ./rpm/ s3://$AWS_S3_BUCKET/rpm/ --endpoint-url $AWS_S3_ENDPOINT
-          aws s3 cp --recursive ./apk/ s3://$AWS_S3_BUCKET/apk/ --endpoint-url $AWS_S3_ENDPOINT
-          aws s3 cp --recursive ./linux-bin/ s3://$AWS_S3_BUCKET/linux-bin/ --endpoint-url $AWS_S3_ENDPOINT
-          aws s3 cp --recursive ./windows/ s3://$AWS_S3_BUCKET/windows/ --endpoint-url $AWS_S3_ENDPOINT
-          aws s3 cp --recursive ./macos/ s3://$AWS_S3_BUCKET/macos/ --endpoint-url $AWS_S3_ENDPOINT
-          aws s3 cp --recursive ./latest/ s3://$AWS_S3_BUCKET/latest/ --endpoint-url $AWS_S3_ENDPOINT
+          # Upload latest versions
+          for file in $(find artifacts -type f -name '*.*'); do
+              base=$(basename $file)
+              dir=$(dirname $file)
+              if [[ ! $base == *".sha512" ]]; then
+                  s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put $file s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest$(echo $base | awk -F "phase_cli_amd64" '{print $2}')
+              fi
+          done
 
         shell: bash
 
       - name: Upload install script to S3
-        run: aws s3 cp ./install.sh s3://$AWS_S3_BUCKET/install.sh --endpoint-url $AWS_S3_ENDPOINT
+        run: s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put ./install.sh s3://$AWS_S3_BUCKET/install.sh
 
     env:
       AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
