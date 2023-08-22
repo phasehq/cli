@@ -116,26 +116,39 @@ jobs:
           # Generate checksums directly in the artifacts directory
           find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe \) -exec sh -c 'sha512sum {} > {}.sha512' \;
 
-          # Upload files and their checksums to S3 with versioned naming
-          for file in $(find artifacts -type f -name '*.*'); do
-              base=$(basename $file)
-              dir=$(dirname $file)
-              subdir=$(basename $dir)
-              if [[ $base == *".sha512" ]]; then
-                  s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put $file s3://$AWS_S3_BUCKET/$subdir/
-              else
-                  s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put $file s3://$AWS_S3_BUCKET/$subdir/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}$(echo $base | awk -F "phase_cli_amd64" '{print $2}')
-              fi
-          done
+          # Upload each file with inline versioning using s3cmd
+          # For .deb files
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-deb/*.deb.sha512 s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb.sha512
+
+          # For .rpm files
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-rpm/*.rpm.sha512 s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm.sha512
+
+          # For .apk files
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-apk/*.apk.sha512 s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk.sha512
+
+          # For Linux binary
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Linux-binary/*.sha512 s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}.sha512
+
+          # For Windows binary
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Windows-binary/*.exe s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Windows-binary/*.exe.sha512 s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe.sha512
+
+          # For macOS binary
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/macOS-binary/*.sha512 s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}.sha512
 
           # Upload latest versions
-          for file in $(find artifacts -type f -name '*.*'); do
-              base=$(basename $file)
-              dir=$(dirname $file)
-              if [[ ! $base == *".sha512" ]]; then
-                  s3cmd --no-config --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --host=$AWS_S3_ENDPOINT --host-bucket="%(bucket)s.$AWS_S3_ENDPOINT" put $file s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest$(echo $base | awk -F "phase_cli_amd64" '{print $2}')
-              fi
-          done
+          # Just reusing the commands but targeting the `latest` directory and adjusting the naming.
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/Windows-binary/*.exe s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe
+          s3cmd put --access_key=$AWS_ACCESS_KEY_ID --secret_key=$AWS_SECRET_ACCESS_KEY --ssl artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest
 
         shell: bash
 
