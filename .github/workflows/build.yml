@@ -120,7 +120,7 @@ jobs:
           aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
           aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
           aws s3 cp artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
-          aws s3 cp artifacts/Windows-binary/* s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
+          aws s3 cp "artifacts/Windows-binary/phase.exe" s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
           aws s3 cp artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
 
           # Upload the latest versions
