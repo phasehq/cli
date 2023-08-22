@@ -116,28 +116,28 @@ jobs:
           find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* -o -iname phase \) -exec sh -c 'sha512sum {} > {}.sha512' \;
 
           # Uploading to S3 using `aws s3 cp`
-          aws s3 cp artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
-          aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
-          aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
-          aws s3 cp artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
+          aws s3 cp "artifacts/phase-deb/*.deb" s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
+          aws s3 cp "artifacts/phase-rpm/*.rpm" s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
+          aws s3 cp "artifacts/phase-apk/*.apk" s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
+          aws s3 cp "artifacts/Linux-binary/phase" s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
           aws s3 cp "artifacts/Windows-binary/phase.exe" s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
-          aws s3 cp artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
+          aws s3 cp "artifacts/macOS-binary/phase" s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
 
           # Upload the latest versions
-          aws s3 cp artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb
-          aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm
-          aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk
-          aws s3 cp artifacts/Linux-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest
+          aws s3 cp "artifacts/phase-deb/*.deb" s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb
+          aws s3 cp "artifacts/phase-rpm/*.rpm" s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm
+          aws s3 cp "artifacts/phase-apk/*.apk" s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk
+          aws s3 cp "artifacts/Linux-binary/phase" s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest
           aws s3 cp "artifacts/Windows-binary/phase.exe" s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe
-          aws s3 cp artifacts/macOS-binary/* s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest
+          aws s3 cp "artifacts/macOS-binary/phase" s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest
 
           # Upload the checksums for the latest versions
-          aws s3 cp artifacts/phase-deb/*.deb.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb.sha512
-          aws s3 cp artifacts/phase-rpm/*.rpm.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm.sha512
-          aws s3 cp artifacts/phase-apk/*.apk.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk.sha512
-          aws s3 cp artifacts/Linux-binary/*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest.sha512
+          aws s3 cp "artifacts/phase-deb/*.deb.sha512" s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb.sha512
+          aws s3 cp "artifacts/phase-rpm/*.rpm.sha512" s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm.sha512
+          aws s3 cp "artifacts/phase-apk/*.apk.sha512" s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk.sha512
+          aws s3 cp "artifacts/Linux-binary/phase*.sha512" s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest.sha512
           aws s3 cp "artifacts/Windows-binary/phase.exe.sha512" s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe.sha512
-          aws s3 cp artifacts/macOS-binary/*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest.sha512
+          aws s3 cp "artifacts/macOS-binary/phase*.sha512" s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest.sha512
 
           # Copy the install script
           aws s3 cp ./install.sh s3://$AWS_S3_BUCKET/install.sh
