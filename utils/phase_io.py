@@ -124,7 +124,6 @@ class Phase:
         return create_phase_secrets(self._app_secret.app_token, id, secrets, self._api_host)
 
 
-
     def get(self, id: str, public_key: str, key: str = None):
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
@@ -166,7 +165,7 @@ class Phase:
 
 
     def update(self, id: str, public_key: str, key: str, value: str) -> str:
-        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id)
+        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
         secrets_data = secrets_response.json()
 
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
