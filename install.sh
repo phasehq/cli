@@ -108,7 +108,7 @@ install_package() {
 
     EXPECTED_HASH=$(cut -d ' ' -f 1 $HASH)
 
-    if ! echo "$EXPECTED_HASH $PACKAGE" | sha512sum --check --quiet; then
+    if ! echo "$EXPECTED_HASH $PACKAGE" | sha512sum -c -w 2>/dev/null; then
         echo "SHA-512 hash verification failed!"
         exit 1
     else
