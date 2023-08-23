@@ -6,6 +6,7 @@ from argparse import RawTextHelpFormatter
 from cmd.web import phase_open_web
 from cmd.keyring import show_keyring_info
 from utils.ascii import phaseASCii
+from cmd.update import phase_cli_update
 from cmd.phase import (
     phase_run_inject,
     phase_list_secrets,
@@ -106,6 +107,10 @@ if __name__ == '__main__':
         # Web command
         web_parser = subparsers.add_parser('console', help='🖥️` Open the Phase Console in your browser')
 
+        # Check if the operating system is Linux before adding the update command
+        if sys.platform == "linux":
+            update_parser = subparsers.add_parser('update', help='🔄 Update the Phase CLI to the latest version')
+
         # Keyring command
         keyring_parser = subparsers.add_parser('keyring', help='🔐 Display information about the Phase keyring')
 
@@ -125,6 +130,9 @@ if __name__ == '__main__':
             phase_open_web()
         elif args.command == 'keyring':
             show_keyring_info()
+        elif args.command == 'update':
+            phase_cli_update()
+            sys.exit(0)
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
                 phase_list_secrets(args.show)
