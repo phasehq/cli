@@ -96,6 +96,18 @@ def get_default_user_host() -> str:
 
 
 def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
+    """
+    Fetch the default user's ID from the config file in PHASE_SECRETS_DIR.
+
+    Parameters:
+    - all_ids (bool): If set to True, returns a list of all user IDs. Otherwise, returns the default user's ID.
+
+    Returns:
+    - Union[str, List[str]]: The default user's ID, or a list of all user IDs if all_ids is True.
+
+    Raises:
+    - ValueError: If the config file is not found or if the default user's ID is missing.
+    """
     config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
     
     if not os.path.exists(config_file_path):
@@ -110,17 +122,39 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
         return config_data.get("default-user")
 
 
-
 def phase_get_context(env_name=None):
-    # Define the path to the .phase.json file
-    PHASE_ENV_CONFIG = '.phase.json'
-    
-    with open(PHASE_ENV_CONFIG, 'r') as f:
-        config_data = json.load(f)
-    
+    """
+    Get the context (ID and publicKey) for a specified environment or the default environment.
+
+    Parameters:
+    - env_name (str, optional): The name (or partial name) of the desired environment.
+
+    Returns:
+    - tuple: A tuple containing the environment's ID and publicKey.
+
+    Raises:
+    - FileNotFoundError: If the Phase app configuration file (.phase.json) is missing.
+    - ValueError: If no matching environment is found or multiple environments match the given name.
+    """
+    try:
+        with open(PHASE_ENV_CONFIG, 'r') as f:
+            config_data = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError("Phase app config (\".phase.json\") not found. Please make sure you're in the correct directory or initialize using 'phase init'.")
+
     if env_name:
-        # Search for a matching environment by env_name
-        environment = next((env for env in config_data["phaseEnvironments"] if env["env"] == env_name), None)
+        # Search for environments with names containing the partial env_name
+        matching_envs = [env for env in config_data["phaseEnvironments"] if env_name.lower() in env["env"].lower()]
+        
+        # If more than one environment matches, prompt the user to specify the full name
+        if len(matching_envs) > 1:
+            print(f"Multiple environments matched '{env_name}': {[env['env'] for env in matching_envs]}")
+            print("Please specify the full environment name.")
+            sys.exit(1)
+        elif not matching_envs:
+            raise ValueError(f"No environment matched '{env_name}'.")
+        else:
+            environment = matching_envs[0]
     else:
         # Use default environment
         default_env_id = config_data.get("defaultEnv")
