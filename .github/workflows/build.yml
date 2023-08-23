@@ -164,11 +164,16 @@ jobs:
             image: "fedora:latest"
           - distro: "alpine"
             image: "alpine:latest"
+            pre_install: "apk --no-cache add curl bash"
           - distro: "archlinux"
             image: "archlinux:latest"
     container:
       image: ${{ matrix.image }}
     steps:
+      - name: Setup prerequisites
+        if: matrix.pre_install != ''
+        run: |
+          ${{ matrix.pre_install }}
       - name: Install phase-cli
         run: |
           curl -fsSL https://pkg.phase.dev/install.sh | bash
