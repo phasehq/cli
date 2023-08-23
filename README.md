@@ -7,7 +7,7 @@ Securely manage your secrets and environment variables with Phase.
 - Inject secrets to your application during runtime without any code changes
 - Import your existing .env files and encrypt them
 - Sync encrypted secrets with Phase cloud
-- Multiple environments eg. dev, testing, staging, production - **coming soon**
+- Multiple environments eg. dev, testing, staging, production
 
 ## Installation
 
