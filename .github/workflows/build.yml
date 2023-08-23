@@ -175,7 +175,7 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          ${matrix.install_command}
+          ${{ matrix.install_command }}
       - name: Install phase-cli
         run: |
           curl -fsSL https://pkg.phase.dev/install.sh | bash
