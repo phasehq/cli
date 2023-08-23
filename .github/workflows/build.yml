@@ -169,7 +169,7 @@ jobs:
             install_command: "apk add --no-cache curl bash"
           - distro: "archlinux"
             image: "archlinux:latest"
-            install_command: "pacman -Sy --noconfirm curl bash"
+            install_command: "pacman -Sy --noconfirm curl sudo wget bash"
     container:
       image: ${{ matrix.image }}
     steps:
