@@ -20,13 +20,13 @@ check_required_tools() {
             echo "Installing $TOOL..."
             case $OS in
                 ubuntu|debian)
-                    sudo apt-get update && sudo apt-get install -y $TOOL
+                    apt-get update && sudo apt-get install -y $TOOL
                     ;;
                 fedora|rhel|centos)
-                    sudo yum install -y $TOOL
+                    yum install -y $TOOL
                     ;;
                 alpine)
-                    sudo apk add $TOOL
+                    apk add $TOOL
                     ;;
             esac
         fi
