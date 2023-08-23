@@ -49,12 +49,21 @@ is_phase_installed() {
     fi
 }
 
+wget_download() {
+    # Check if wget supports --show-progress
+    if wget --help 2>&1 | grep -q '\--show-progress'; then
+        wget --show-progress "$1" -O "$2"
+    else
+        wget "$1" -O "$2"
+    fi
+}
+
 install_binary() {
     BINARY_URL="$PACKAGE_MIRROR/latest/phase_cli_linux_amd64_latest"
     BINARY="$TMPDIR/phase"
 
     echo "Downloading phase-cli binary..."
-    wget -q --show-progress $BINARY_URL -O $BINARY
+    wget_download $BINARY_URL $BINARY
 
     echo "Making binary executable..."
     chmod +x $BINARY
@@ -93,9 +102,9 @@ install_package() {
     HASH="$TMPDIR/hash"
 
     echo "Downloading phase-cli..."
-    wget -q --show-progress $PACKAGE_URL -O $PACKAGE
+    wget_download $PACKAGE_URL $PACKAGE
     echo "Getting phase-cli hash..."
-    wget -q --show-progress $HASH_URL -O $HASH
+    wget_download $HASH_URL $HASH
 
     EXPECTED_HASH=$(cut -d ' ' -f 1 $HASH)
 
