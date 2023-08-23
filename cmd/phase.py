@@ -86,7 +86,6 @@ def phase_auth():
         sys.exit(1)
 
 
-
 # Initializes a .phase.json in the root of the dir of where the command is run
 def phase_init():
     # Get credentials from the keyring
@@ -112,7 +111,7 @@ def phase_init():
         app_choices.append('Exit')  # Add Exit option at the end
 
         selected_app_name = questionary.select(
-            'Select an App:', 
+            'Select an App:',
             choices=app_choices
         ).ask()
 
@@ -122,26 +121,38 @@ def phase_init():
 
         # Find the selected app's details
         selected_app_details = next(
-            (app for app in data['apps'] if app['name'] == selected_app_name), 
+            (app for app in data['apps'] if app['name'] == selected_app_name),
             None
         )
-        
+
         # Check if selected_app_details is None (no matching app found)
         if selected_app_details is None:
             sys.exit(1)
 
-        # Save the selected app’s environment details to the .phase.json file
-        environment_keys = selected_app_details['environment_keys'][0]
+        # Extract the default environment ID for the environment named "Development"
+        default_env = next(
+            (env_key for env_key in selected_app_details['environment_keys'] if env_key['environment']['name'] == 'Development'),
+            None
+        )
 
+        if not default_env:
+            raise ValueError("No 'Development' environment found.")
+
+        # Build the phaseEnvironments list
+        phase_environments = [{
+            "env": env_key['environment']['name'],
+            "envType": env_key['environment']['env_type'],
+            "id": env_key['environment']['id'],  # Use the id from the environment object
+            "publicKey": env_key['identity_key'],
+            "salt": env_key['wrapped_salt']
+        } for env_key in selected_app_details['environment_keys']]
+
+        # Save the selected app’s environment details to the .phase.json file
         phase_env = {
+            "version": "1",
             "phaseApp": selected_app_name,
-            "defaultEnv": environment_keys['id'],
-            "phaseEnvironments": [{
-                "env": environment_keys['environment']['env_type'],
-                "id": environment_keys['environment']['id'],
-                "publicKey": environment_keys['identity_key'],
-                "salt": environment_keys['wrapped_salt']
-            }]
+            "defaultEnv": default_env['environment']['id'],  # Use the id from the environment object
+            "phaseEnvironments": phase_environments
         }
 
         # Create .phase.json
@@ -150,7 +161,7 @@ def phase_init():
         os.chmod(PHASE_ENV_CONFIG, 0o600)
 
         print("✅ Initialization completed successfully.")
-        
+
     except KeyboardInterrupt:
         # Handle the Ctrl+C event quietly
         sys.exit(0)
@@ -188,7 +199,7 @@ def phase_secrets_create(key=None, env_name=None):
     # Check the response status code
     if response.status_code == 200:
         # Call the phase_list_secrets function to list the secrets
-        phase_list_secrets()
+        phase_list_secrets(show=False, env_name=env_name)
     else:
         # Print an error message if the response status code indicates an error
         print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
@@ -230,7 +241,7 @@ def phase_secrets_update(key, env_name=None):
         print(f"Error: Failed to update secret. HTTP Status Code: {response.status_code}")
     
     # List remaining secrets (censored by default)
-    phase_list_secrets()
+    phase_list_secrets(show=False, env_name=env_name)
 
 
 # Deletes encrypted secrets based on key value pairs
@@ -265,7 +276,7 @@ def phase_secrets_delete(keys_to_delete=[]):
         print(f"Error: Failed to delete secrets. HTTP Status Code: {response.status_code}")
     
     # List remaining secrets (censored by default)
-    phase_list_secrets()
+    phase_list_secrets(show=False, env_name=env_name)
 
 
 
@@ -306,7 +317,7 @@ def phase_secrets_env_import(env_file, env_name=None):
     
     # Check the response status code
     if response.status_code == 200:
-        print("Successfully imported and encrypted secrets.")
+        print("Successfully imported and encrypted secrets. Run phase secrets list to view them.")
     else:
         # Print an error message if the response status code indicates an error
         print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
