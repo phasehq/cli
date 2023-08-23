@@ -95,6 +95,7 @@ jobs:
           path: /home/builder/packages/builder/x86_64/*.apk
 
   deploy_to_s3:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [build, build_apk]
     name: Deploy packages to S3
     runs-on: ubuntu-latest
@@ -149,3 +150,26 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+
+  test_installs:
+    needs: deploy_to_s3
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        distro: ["ubuntu", "fedora", "alpine", "archlinux"]
+        include:
+          - distro: "ubuntu"
+            image: "ubuntu:latest"
+          - distro: "fedora"
+            image: "fedora:latest"
+          - distro: "alpine"
+            image: "alpine:latest"
+          - distro: "archlinux"
+            image: "archlinux:latest"
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install phase-cli
+        run: |
+          curl -fsSL https://pkg.phase.dev/install.sh | bash
+          phase -v
