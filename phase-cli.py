@@ -1,3 +1,5 @@
+#!/bin/python
+
 import os
 import sys
 import traceback
@@ -51,6 +53,7 @@ class HelpfulParser(argparse.ArgumentParser):
         return super(HelpfulParser, self).add_subparsers(**kwargs)
 
 if __name__ == '__main__':
+    env_help = "Environment name eg. dev, staging, production"
 
     try:
         parser = HelpfulParser(prog='phase-cli', formatter_class=RawTextHelpFormatter)
@@ -68,6 +71,7 @@ if __name__ == '__main__':
         # Run command
         run_parser = subparsers.add_parser('run', help='🚀 Run and inject secrets to your app')
         run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run. Ex. phase run yarn dev')
+        run_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets command
         secrets_parser = subparsers.add_parser('secrets', help='🗝️` Manage your secrets')
@@ -75,30 +79,37 @@ if __name__ == '__main__':
 
         # Secrets list command
         secrets_list_parser = secrets_subparsers.add_parser('list', help='📇 List all the secrets')
-        secrets_list_parser.add_argument('--show', action='store_true', help='Show uncensored secrets')
+        secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
+        secrets_list_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets get command
         secrets_get_parser = secrets_subparsers.add_parser('get', help='🔍 Get a specific secret by key')
         secrets_get_parser.add_argument('key', type=str, help='The key associated with the secret to fetch')
+        secrets_get_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser('create', help='💳 Create a new secret')
         secrets_create_parser.add_argument('key', type=str, nargs='?', help='The key for the secret to be created')
+        secrets_create_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets update command
         secrets_update_parser = secrets_subparsers.add_parser('update', help='📝 Update an existing secret')
         secrets_update_parser.add_argument('key', type=str, help='The key associated with the secret to update')
+        secrets_update_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets delete command
         secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️` Delete a secret')
         secrets_delete_parser.add_argument('keys', nargs='*', help='Keys to be deleted')
+        secrets_delete_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets import command
         secrets_import_parser = secrets_subparsers.add_parser('import', help='📩 Import secrets from a .env file')
         secrets_import_parser.add_argument('env_file', type=str, help='The .env file to import')
+        secrets_import_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets export command
         secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets to a .env file')
+        secrets_export_parser.add_argument('--env', type=str, help=env_help)
 
         # Logout command
         logout_parser = subparsers.add_parser('logout', help='🪪 Logout from phase-cli')
@@ -119,11 +130,11 @@ if __name__ == '__main__':
         if args.command == 'auth':
             phase_auth()
             sys.exit(0)
-        if args.command == 'init':
+        elif args.command == 'init':
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
-            phase_run_inject(command)
+            phase_run_inject(command, env_name=args.env)
         elif args.command == 'logout':
             phase_cli_logout(args.purge)
         elif args.command == 'console':
@@ -135,19 +146,19 @@ if __name__ == '__main__':
             sys.exit(0)
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
-                phase_list_secrets(args.show)
+                phase_list_secrets(args.show, env_name=args.env)
             elif args.secrets_command == 'get':
-                phase_secrets_get(args.key)  
+                phase_secrets_get(args.key, env_name=args.env)  
             elif args.secrets_command == 'create':
-                phase_secrets_create(args.key)
+                phase_secrets_create(args.key, env_name=args.env)
             elif args.secrets_command == 'delete':
-                phase_secrets_delete(args.keys)  
+                phase_secrets_delete(args.keys, env_name=args.env)  
             elif args.secrets_command == 'import':
-                phase_secrets_env_import(args.env_file)
+                phase_secrets_env_import(args.env_file, env_name=args.env)
             elif args.secrets_command == 'export':
-                phase_secrets_env_export()
+                phase_secrets_env_export(env_name=args.env)
             elif args.secrets_command == 'update':
-                phase_secrets_update(args.key)
+                phase_secrets_update(args.key, env_name=args.env)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
                 parser.print_help()
