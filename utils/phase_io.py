@@ -214,7 +214,7 @@ class Phase:
             return f"Error: Failed to update secret. HTTP Status Code: {response.status_code}"
 
 
-    def delete(self, id: str, public_key: str, keys_to_delete: List[str]):
+    def delete(self, id: str, public_key: str, keys_to_delete: List[str]) -> List[str]:
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
@@ -230,15 +230,24 @@ class Phase:
         env_private_key = key_pair['privateKey']
 
         secret_ids_to_delete = []
+        keys_not_found = []
         secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
         secrets_data = secrets_response.json()
         
-        for secret in secrets_data:
-            decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
-            if decrypted_key in keys_to_delete:
-                secret_ids_to_delete.append(secret["id"])
+        for key in keys_to_delete:
+            found = False
+            for secret in secrets_data:
+                decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
+                if decrypted_key == key:
+                    secret_ids_to_delete.append(secret["id"])
+                    found = True
+                    break
+            if not found:
+                keys_not_found.append(key)
 
-        return delete_phase_secrets(self._app_secret.app_token, id, secret_ids_to_delete, self._api_host)
+        delete_phase_secrets(self._app_secret.app_token, id, secret_ids_to_delete, self._api_host)
+        
+        return keys_not_found
 
 
     # TODO: Remove
