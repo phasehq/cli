@@ -190,6 +190,7 @@ def phase_secrets_create(key=None, env_name=None):
     # If the key is not passed as an argument, prompt user for input
     if key is None:
         key = input("Please enter the key: ")
+    key = key.upper()
         
     value = getpass.getpass("Please enter the value (hidden): ")
     
@@ -222,6 +223,7 @@ def phase_secrets_update(key, env_name=None):
     
     try:
         # Check if the secret with the given key exists
+        key = key.upper()
         secret_data = phase.get(environment_id, key=key, public_key=public_key)
     except ValueError as e:
         # Key not found in the backend
@@ -232,6 +234,7 @@ def phase_secrets_update(key, env_name=None):
     new_value = getpass.getpass(f"Please enter the new value for {key} (hidden): ")
 
     # Call the update method of the Phase class
+    new_value = new_value.upper()
     response = phase.update(environment_id, public_key, key, new_value)
     
     # Check the response status code (assuming the update method returns a response with a status code)
@@ -245,38 +248,37 @@ def phase_secrets_update(key, env_name=None):
 
 
 # Deletes encrypted secrets based on key value pairs
-def phase_secrets_delete(keys_to_delete=[]):
+def phase_secrets_delete(keys_to_delete=[], env_name=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
     if not pss:
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
-    
+
     # Get context (environment ID and public key) using the optional env_name parameter
-    env_id, public_key = phase_get_context(None)
-    
+    env_id, public_key = phase_get_context(env_name)
+
     # Initialize Phase class instance
     host = get_default_user_host()
     phase = Phase(pss, host)
-    
+
     # If keys_to_delete is empty, request user input
     if not keys_to_delete:
         keys_to_delete_input = input("Please enter the keys to delete (separate multiple keys with a space): ")
-        keys_to_delete = keys_to_delete_input.split()
-    
-    # Delete keys
-    response = phase.delete(env_id, public_key, keys_to_delete)
-    
-    # Check the response status code
-    if response.status_code == 200:
-        print("Successfully deleted the secrets.")
+        keys_to_delete = [key.upper() for key in keys_to_delete_input.split()]
+
+    # Delete keys and get the list of keys not found
+    keys_not_found = phase.delete(env_id, public_key, keys_to_delete)
+
+    if keys_not_found:
+        print(f"Warning: The following keys were not found: {', '.join(keys_not_found)}")
     else:
-        # Print an error message if the response status code indicates an error
-        print(f"Error: Failed to delete secrets. HTTP Status Code: {response.status_code}")
-    
+        print("Successfully deleted the secrets.")
+
     # List remaining secrets (censored by default)
     phase_list_secrets(show=False, env_name=env_name)
+
 
 
 
@@ -297,16 +299,16 @@ def phase_secrets_env_import(env_file, env_name=None):
     phase = Phase(pss, host)
     
     # Parse the .env file
+    secrets = []
     try:
         with open(env_file) as f:
-            secrets = []
             for line in f:
                 # Ignore lines that start with a '#' or don't contain an '='
                 line = line.strip()
                 if line.startswith('#') or '=' not in line:
                     continue
                 key, _, value = line.partition('=')
-                secrets.append((key.strip(), value.strip()))
+                secrets.append((key.strip().upper(), value.strip()))
     
     except FileNotFoundError:
         print(f"Error: The file {env_file} was not found.")
@@ -317,10 +319,12 @@ def phase_secrets_env_import(env_file, env_name=None):
     
     # Check the response status code
     if response.status_code == 200:
-        print("Successfully imported and encrypted secrets. Run phase secrets list to view them.")
+        print(f"Successfully imported and encrypted {len(secrets)} secrets.")
+        print("To view them please run: phase secrets list")
     else:
         # Print an error message if the response status code indicates an error
         print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
+
 
 
 
@@ -376,7 +380,6 @@ def phase_cli_logout(purge=False):
         print("Logged out successfully.")
 
 
-
 def phase_secrets_get(key, env_name=None):
     """
     Fetch and print a single secret based on a given key.
@@ -400,9 +403,10 @@ def phase_secrets_get(key, env_name=None):
     phase = Phase(pss, host)
     
     try:
+        key = key.upper()
         secret_data = phase.get(environment_id, key=key, public_key=public_key)
     except ValueError as e:
-        print("Secret not found...")
+        print("🔍 Secret not found...")
         return
     
     # Check that secret_data is a dictionary
@@ -438,8 +442,7 @@ def phase_list_secrets(show=False, env_name=None):
     render_table(secrets_data, show=show)
 
     if not show:
-        print("\nTo uncover the secrets, use: phase secrets list --show")
-
+        print("\n🥽 To uncover the secrets, use: phase secrets list --show")
 
 
 def phase_run_inject(command, env_name=None):
