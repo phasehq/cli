@@ -53,11 +53,11 @@ def render_table(data, show=False, min_key_width=1):
     min_key_width = max(longest_key_length + 3, min_key_width)
     
     terminal_width = get_terminal_width()
-    value_width = terminal_width - min_key_width - 3
+    value_width = terminal_width - min_key_width - 4
 
     # Print the headers
-    print(f'{"Key":<{min_key_width}} | {"Value":<{value_width}}')
-    print('-' * (min_key_width + value_width + 3))
+    print(f'{"KEY 🗝️":<{min_key_width}}  | {"VALUE ✨":<{value_width}}')
+    print('-' * (min_key_width + value_width))
 
     # Print the rows
     for item in data:
