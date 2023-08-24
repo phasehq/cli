@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import keyring
 import json
@@ -8,7 +9,7 @@ import subprocess
 import getpass
 import questionary
 from utils.phase_io import Phase
-from utils.misc import censor_secret, render_table, get_default_user_host, get_default_user_id, phase_get_context
+from utils.misc import censor_secret, render_table, get_default_user_host, get_default_user_id, phase_get_context, sanitize_value
 from utils.keyring import get_credentials
 from utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
 
@@ -280,8 +281,6 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None):
     phase_list_secrets(show=False, env_name=env_name)
 
 
-
-
 # Imports existing environment variables and secrets from users .env file based on PHASE_ENV_CONFIG context
 def phase_secrets_env_import(env_file, env_name=None):
     # Get credentials from the keyring
@@ -308,7 +307,7 @@ def phase_secrets_env_import(env_file, env_name=None):
                 if line.startswith('#') or '=' not in line:
                     continue
                 key, _, value = line.partition('=')
-                secrets.append((key.strip().upper(), value.strip()))
+                secrets.append((key.strip().upper(), sanitize_value(value.strip())))
     
     except FileNotFoundError:
         print(f"Error: The file {env_file} was not found.")
@@ -320,12 +319,13 @@ def phase_secrets_env_import(env_file, env_name=None):
     # Check the response status code
     if response.status_code == 200:
         print(f"Successfully imported and encrypted {len(secrets)} secrets.")
-        print("To view them please run: phase secrets list")
+        if env_name == None:
+            print("To view them please run: phase secrets list")
+        else:
+            print(f"To view them please run: phase secrets list --env {env_name}")
     else:
         # Print an error message if the response status code indicates an error
         print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
-
-
 
 
 # Decrypts and exports environment variables and secrets based to a plain text .env file based on PHASE_ENV_CONFIG context
@@ -352,7 +352,7 @@ def phase_secrets_env_export(env_name=None):
         for secret in secrets_data:
             key = secret.get("key")
             value = secret.get("value")
-            f.write(f'{key}={value}\n')
+            f.write(f"{key}='{value}'\n")
     
     print("Exported secrets to .env file.")
 
@@ -470,8 +470,21 @@ def phase_run_inject(command, env_name=None):
     
     # Prepare the new environment variables for the command
     new_env = os.environ.copy()
-    for secret in secrets:
-        new_env[secret["key"]] = secret["value"]
+    
+    # Create a dictionary from the fetched secrets for easy look-up
+    secrets_dict = {secret["key"]: secret["value"] for secret in secrets}
+    
+    # Iterate through the secrets and resolve references
+    for key, value in secrets_dict.items():
+        match = re.match(r"\$\{(.+?)\}", value)
+        if match:
+            ref_key = match.group(1)
+            if ref_key in secrets_dict:
+                new_env[key] = secrets_dict[ref_key]
+            else:
+                print(f"Warning: Reference {ref_key} not found for key {key}. Ignoring...")
+        else:
+            new_env[key] = value
 
     # Use shell=True to allow command chaining
     subprocess.run(command, shell=True, env=new_env)

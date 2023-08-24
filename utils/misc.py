@@ -15,6 +15,14 @@ def get_terminal_width():
     except OSError:
         return 80
 
+
+def sanitize_value(value):
+    """
+    Sanitize the value by stripping single quotes if they are present.
+    """
+    return value.strip("'")
+
+
 def censor_secret(secret, max_length):
     """
     Censor a secret to not exceed a certain length.
@@ -35,6 +43,7 @@ def censor_secret(secret, max_length):
         return censored[:max_length - 3]
     
     return censored
+
 
 def render_table(data, show=False, min_key_width=1):
     """
