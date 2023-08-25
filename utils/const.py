@@ -1,6 +1,6 @@
 import os
 
-__version__ = "1.4.2"
+__version__ = "1.5.2"
 __ph_version__ = "v1"
 
 # Define paths to Phase configs

@@ -476,13 +476,20 @@ def phase_run_inject(command, env_name=None):
     
     # Iterate through the secrets and resolve references
     for key, value in secrets_dict.items():
-        match = re.match(r"\$\{(.+?)\}", value)
-        if match:
-            ref_key = match.group(1)
-            if ref_key in secrets_dict:
-                new_env[key] = secrets_dict[ref_key]
-            else:
-                print(f"Warning: Reference {ref_key} not found for key {key}. Ignoring...")
+        cross_env_match = re.match(r"\$\{(.+?)\.(.+?)\}", value)
+        local_ref_match = re.match(r"\$\{(.+?)\}", value)
+        
+        if cross_env_match:  # Cross environment reference
+            ref_env, ref_key = cross_env_match.groups()
+            ref_env_id, ref_public_key = phase_get_context(ref_env)
+            try:
+                ref_secret = phase.get(ref_env_id, key=ref_key, public_key=ref_public_key)
+                new_env[key] = ref_secret['value']
+            except ValueError as e:
+                print(f"Warning: Reference {ref_key} in environment {ref_env} not found for key {key}. Ignoring...")
+        elif local_ref_match:  # Local environment reference
+            ref_key = local_ref_match.group(1)
+            new_env[key] = secrets_dict.get(ref_key, f"Warning: Local reference {ref_key} not found for key {key}. Ignoring...")
         else:
             new_env[key] = value
 

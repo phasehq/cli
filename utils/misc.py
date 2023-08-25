@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 from typing import Union, List
 from utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR
 
@@ -45,7 +46,7 @@ def censor_secret(secret, max_length):
     return censored
 
 
-def render_table(data, show=False, min_key_width=1):
+def render_table(data, show=False, min_key_width=20):
     """
     Render a table of key-value pairs.
 
@@ -55,25 +56,45 @@ def render_table(data, show=False, min_key_width=1):
     """
     
     # Find the length of the longest key
-    longest_key_length = max(len(item.get("key", "")) for item in data)
+    longest_key_length = max([len(item.get("key", "")) for item in data], default=0)
     
     # Set min_key_width to be the length of the longest key plus a buffer of 3,
-    # but not less than 30 (or any other specified minimum)
+    # but not less than the provided minimum
     min_key_width = max(longest_key_length + 3, min_key_width)
     
     terminal_width = get_terminal_width()
-    value_width = terminal_width - min_key_width - 4
+    value_width = terminal_width - min_key_width - 4  # Deducting for spaces and pipe
 
     # Print the headers
     print(f'{"KEY 🗝️":<{min_key_width}}  | {"VALUE ✨":<{value_width}}')
-    print('-' * (min_key_width + value_width))
+    print('-' * (min_key_width + value_width + 3))  # +3 accounts for spaces and pipe
 
+    # If data is empty, just return after printing headers
+    if not data:
+        return
+    
     # Print the rows
     for item in data:
         key = item.get("key")
         value = item.get("value")
-        censored_value = censor_secret(value, value_width)
-        print(f'{key:<{min_key_width}} | {(value if show else censored_value):<{value_width}}')
+        icon = ''
+        
+        # Check for cross-env references before local references
+        cross_env_match = re.match(r"\$\{(.+?)\.(.+?)\}", value)
+        local_ref_match = re.match(r"\$\{(.+?)\}", value)
+        
+        if cross_env_match:
+            icon = '⛓️` '
+        elif local_ref_match:
+            icon = '🔗 '
+
+        censored_value = censor_secret(value, value_width-len(icon))
+        
+        # Include the icon before the value or censored value
+        displayed_value = icon + (value if show else censored_value)
+        
+        print(f'{key:<{min_key_width}} | {displayed_value:<{value_width}}')
+
 
 
 def get_default_user_host() -> str:

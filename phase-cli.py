@@ -81,6 +81,10 @@ if __name__ == '__main__':
         secrets_list_parser = secrets_subparsers.add_parser('list', help='📇 List all the secrets')
         secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
+        secrets_list_parser.epilog = (
+            "🔗 : Indicates that the secret value references another secret within the same environment.\n"
+            "⛓️` : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment."
+        )
 
         # Secrets get command
         secrets_get_parser = secrets_subparsers.add_parser('get', help='🔍 Get a specific secret by key')
@@ -112,7 +116,7 @@ if __name__ == '__main__':
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
 
         # Logout command
-        logout_parser = subparsers.add_parser('logout', help='🪪 Logout from phase-cli')
+        logout_parser = subparsers.add_parser('logout', help='🏃 Logout from phase-cli')
         logout_parser.add_argument('--purge', action='store_true', help='Purge all local data')
 
         # Web command
