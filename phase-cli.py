@@ -112,7 +112,7 @@ if __name__ == '__main__':
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
 
         # Logout command
-        logout_parser = subparsers.add_parser('logout', help='🪪 Logout from phase-cli')
+        logout_parser = subparsers.add_parser('logout', help='🏃 Logout from phase-cli')
         logout_parser.add_argument('--purge', action='store_true', help='Purge all local data')
 
         # Web command
