@@ -18,10 +18,12 @@ def get_terminal_width():
 
 
 def sanitize_value(value):
-    """
-    Sanitize the value by stripping single quotes if they are present.
-    """
-    return value.strip("'")
+    """Sanitize values by removing surrounding single or double quotes."""
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    elif value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    return value
 
 
 def censor_secret(secret, max_length):
@@ -99,19 +101,27 @@ def render_table(data, show=False, min_key_width=20):
 
 def get_default_user_host() -> str:
     """
-    Parse the config.json in PHASE_SECRETS_DIR, find the host corresponding to the default-user's id and return it.
+    Check if PHASE_HOST environment variable is set. If not, parse the config.json 
+    in PHASE_SECRETS_DIR, find the host corresponding to the default-user's id and return it.
 
     Returns:
-        str: The host corresponding to the default-user's id.
-    
+        str: The host value either from the environment variable or from the config file.
+
     Raises:
-        ValueError: If the default-user's id does not match any user in phase-users or if the config file is not found.
+        ValueError: If the default-user's id does not match any user in phase-users 
+        or if the config file is not found and the environment variable is not set.
     """
+    
+    # Check if PHASE_HOST environment variable is set
+    phase_host_env = os.environ.get('PHASE_HOST')
+    if phase_host_env:
+        return phase_host_env
+
     config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
     
     # Check if config.json exists
     if not os.path.exists(config_file_path):
-        raise ValueError("Config file not found in PHASE_SECRETS_DIR.")
+        raise ValueError("Config file not found in PHASE_SECRETS_DIR and no PHASE_HOST environment variable set.")
     
     with open(config_file_path, 'r') as f:
         config_data = json.load(f)
@@ -122,7 +132,8 @@ def get_default_user_host() -> str:
         if user["id"] == default_user_id:
             return user["host"]
 
-    raise ValueError(f"No user found in config.json with id: {default_user_id}")
+    raise ValueError(f"No user found in config.json with id: {default_user_id} and no PHASE_HOST environment variable set.")
+
 
 
 def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
