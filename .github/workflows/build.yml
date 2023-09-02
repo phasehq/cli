@@ -99,7 +99,7 @@ jobs:
           name: phase-alpine-build
           path: ./dist/phase
 
-  test_installs:
+  Test_Linux_cli:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -125,47 +125,69 @@ jobs:
       - run: phase
       - run: phase -v
 
-  test_windows:
-    runs-on: windows-latest
-    steps:
-      - run: Invoke-WebRequest -Uri "https://pkg.phase.dev/install.sh" -OutFile "install.sh"
-      - run: bash install.sh
-      - run: phase
-      - run: phase -v
-
-  test_mac:
+  Test_MacOS_cli:
     runs-on: macOS-latest
     steps:
-      - run: curl -fsSL https://pkg.phase.dev/install.sh | bash
-      - run: phase
-      - run: phase -v
+      - name: Install Homebrew
+        run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-  build_docker:
+      - name: Install phase CLI via Homebrew
+        run: brew install phasehq/cli/phase
+
+      - name: Test phase CLI
+        run: |
+          phase
+          phase -v
+
+  Test_Windows_cli:
+    runs-on: windows-latest
+    steps:
+      - name: Install Scoop
+        run: |
+          Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+          iex (New-Object Net.WebClient).DownloadString('https://get.scoop.sh')
+          scoop install git
+
+      - name: Install phase CLI via Scoop
+        run: |
+          scoop bucket add phasehq https://github.com/phasehq/scoop-cli.git
+          scoop install phase
+
+      - name: Test phase CLI
+        run: |
+          phase
+          phase -v
+
+  Build_and_push_docker:
     needs: build_apk
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+
       - name: Download phase-alpine-build artifact
         uses: actions/download-artifact@v2
         with:
           name: phase-alpine-build
           path: dist
+
       - run: docker build -t phase-cli:latest .
+
+      - name: Push to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+          docker tag phase-cli:latest phasehq/cli:latest
+          docker push phasehq/cli:latest
+
       - run: docker save phase-cli:latest > phase-cli.tar
+
       - uses: actions/upload-artifact@v2
         with:
           name: phase-docker-image
           path: ./phase-cli.tar
 
-  test_docker_image:
-    needs: build_docker
+  Pull_and_test_docker_image:
+    needs: build_and_push_docker
     runs-on: ubuntu-latest
     steps:
-      - name: Download phase-docker-image artifact
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-docker-image
-          path: .
-      - run: docker load < phase-cli.tar
       - run: docker run phasehq/cli:latest phase
       - run: docker run phasehq/cli:latest phase -v
