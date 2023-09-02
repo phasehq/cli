@@ -27,15 +27,17 @@ jobs:
       - run: pip install pyinstaller
       - run: pyinstaller --hidden-import _cffi_backend --onefile --name phase phase-cli.py
 
-      # Set LC_ALL based on the runner OS
-      - name: Set LC_ALL
-        run: |
-          if [[ "${{ runner.os }}" == "Linux" || "${{ runner.os }}" == "macOS" ]]; then
-            export LC_ALL=C.UTF-8
-          elif [[ "${{ runner.os }}" == "Windows" ]]; then
-            echo "LC_ALL=C.UTF-8" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          fi
+      # Set LC_ALL based on the runner OS for Linux and macOS
+      - name: Set LC_ALL for Linux and macOS
+        run: export LC_ALL=C.UTF-8
+        if: runner.os != 'Windows'
         shell: bash
+
+      # Set LC_ALL for Windows
+      - name: Set LC_ALL for Windows
+        run: echo "LC_ALL=C.UTF-8" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+        if: runner.os == 'Windows'
+        shell: pwsh
 
       # Extract version
       - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
