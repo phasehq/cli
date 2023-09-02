@@ -137,7 +137,7 @@ jobs:
     steps:
       - run: ${{ matrix.install_command }}
       - run: curl -fsSL https://pkg.phase.dev/install.sh | bash
-      - run: phase
+      - run: phase -h
       - run: phase -v
 
   Test_MacOS_cli:
@@ -151,7 +151,7 @@ jobs:
 
       - name: Test phase CLI
         run: |
-          phase
+          phase -h
           phase -v
 
   Test_Windows_cli:
@@ -169,7 +169,7 @@ jobs:
 
       - name: Test phase CLI
         run: |
-          phase
+          phase -h
           phase -v
 
   Build_and_push_docker:
