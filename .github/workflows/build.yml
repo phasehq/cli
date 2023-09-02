@@ -163,7 +163,7 @@ jobs:
       - name: Install Scoop
         run: |
           iex (New-Object Net.WebClient).DownloadString('https://get.scoop.sh')
-          scoop install git
+          scoop install git -UseAria2
 
       - name: Install phase CLI via Scoop
         run: |
