@@ -52,7 +52,7 @@ class HelpfulParser(argparse.ArgumentParser):
         kwargs['title'] = 'Commands'
         return super(HelpfulParser, self).add_subparsers(**kwargs)
 
-if __name__ == '__main__':
+def main ():
     env_help = "Environment name eg. dev, staging, production"
 
     try:
@@ -179,3 +179,6 @@ if __name__ == '__main__':
             # When PHASE_DEBUG is set to False, print only the error message
             print(str(e))
         sys.exit(1)
+
+if __name__ == '__main__':
+    main()
