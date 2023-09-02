@@ -160,20 +160,19 @@ jobs:
     name: Test - CLI installation - Windows
     runs-on: windows-latest
     steps:
-      - name: Install Scoop
-        run: |
-          iex (New-Object Net.WebClient).DownloadString('https://get.scoop.sh')
-          scoop install git -UseAria2
+      - name: Checkout code
+        uses: actions/checkout@v2
 
-      - name: Install phase CLI via Scoop
-        run: |
-          scoop bucket add phasehq https://github.com/phasehq/scoop-cli.git
-          scoop install phase
+      - name: Download phase CLI binary
+        uses: actions/download-artifact@v2
+        with:
+          name: windows-binary
+          path: ./phase-windows-executable
 
       - name: Test phase CLI
         run: |
-          phase -h
-          phase -v
+          ./phase-windows-executable/phase-cli.exe -h
+          ./phase-windows-executable/phase-cli.exe -v
 
   Build_and_push_docker:
     name: Build & Release - Docker
