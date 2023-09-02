@@ -203,5 +203,5 @@ jobs:
     needs: build_and_push_docker
     runs-on: ubuntu-latest
     steps:
-      - run: docker run phasehq/cli:latest phase
+      - run: docker run phasehq/cli:latest phase -h
       - run: docker run phasehq/cli:latest phase -v
