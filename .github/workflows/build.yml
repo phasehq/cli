@@ -25,39 +25,52 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --name phase phase-cli.py
+      - run: pyinstaller --hidden-import _cffi_backend --onefile --name phase phase-cli.py
+
+      # Set LC_ALL based on the runner OS
       - name: Set LC_ALL
         run: |
           if [[ "${{ runner.os }}" == "Linux" || "${{ runner.os }}" == "macOS" ]]; then
             export LC_ALL=C.UTF-8
           elif [[ "${{ runner.os }}" == "Windows" ]]; then
-            $env:LC_ALL="C.UTF-8"
+            echo "LC_ALL=C.UTF-8" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           fi
         shell: bash
+
+      # Extract version
       - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
       - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
+
+      # Upload version
       - uses: actions/upload-artifact@v2
         with:
           name: phase-version
           path: ./PHASE_CLI_VERSION.txt
+
+      # Build DEB and RPM packages for Linux
       - run: |
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            sudo apt-get update
-            sudo apt-get install -y ruby-dev rubygems build-essential 
-            sudo gem install --no-document fpm
-            fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
-            fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
-          fi
+          sudo apt-get update
+          sudo apt-get install -y ruby-dev rubygems build-essential 
+          sudo gem install --no-document fpm
+          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
+          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
+
+      # Upload DEB and RPM packages
       - uses: actions/upload-artifact@v2
         with:
           name: phase-deb
           path: "*.deb"
+        if: matrix.os == 'ubuntu-latest'
       - uses: actions/upload-artifact@v2
         with:
           name: phase-rpm
           path: "*.rpm"
+        if: matrix.os == 'ubuntu-latest'
+
+      # Upload binary
       - uses: actions/upload-artifact@v2
         with:
           name: ${{ runner.os }}-binary
@@ -75,7 +88,7 @@ jobs:
       - run: pip3 install --no-cache --upgrade pip setuptools
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --name phase phase-cli.py
+      - run: pyinstaller --hidden-import _cffi_backend --onefile --name phase phase-cli.py
       - run: apk add alpine-sdk
       - run: adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
       - run: mkdir /home/builder/package
@@ -144,7 +157,6 @@ jobs:
     steps:
       - name: Install Scoop
         run: |
-          Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
           iex (New-Object Net.WebClient).DownloadString('https://get.scoop.sh')
           scoop install git
 
