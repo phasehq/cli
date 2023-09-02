@@ -166,7 +166,7 @@ jobs:
       - name: Download phase CLI binary
         uses: actions/download-artifact@v2
         with:
-          name: windows-binary
+          name: Windows-binary
           path: ./phase-windows-executable
 
       - name: Test phase CLI
