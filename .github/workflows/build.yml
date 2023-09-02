@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build
+    name: Build CLI
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -79,7 +79,7 @@ jobs:
           path: dist/phase*
 
   build_apk:
-    name: Build APK
+    name: Build CLI (alpine-latest, 3.11)
     runs-on: ubuntu-latest
     container:
       image: python:3.11-alpine
@@ -115,6 +115,7 @@ jobs:
           path: ./dist/phase
 
   Test_Linux_cli:
+    name: Test - CLI installation - Linux
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -141,6 +142,7 @@ jobs:
       - run: phase -v
 
   Test_MacOS_cli:
+    name: Test - CLI installation - MacOS
     runs-on: macOS-latest
     steps:
       - name: Install Homebrew
@@ -155,6 +157,7 @@ jobs:
           phase -v
 
   Test_Windows_cli:
+    name: Test - CLI installation - Windows
     runs-on: windows-latest
     steps:
       - name: Install Scoop
@@ -173,6 +176,7 @@ jobs:
           phase -v
 
   Build_and_push_docker:
+    name: Build & Release - Docker
     needs: build_apk
     runs-on: ubuntu-latest
     steps:
@@ -200,6 +204,7 @@ jobs:
           path: ./phase-cli.tar
 
   Pull_and_test_docker_image:
+    name: Test - CLI - Docker
     needs: build_and_push_docker
     runs-on: ubuntu-latest
     steps:
