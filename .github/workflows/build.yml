@@ -26,7 +26,14 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
       - run: pyinstaller --onefile --name phase phase-cli.py
-      - run: export LC_ALL=C.UTF-8
+      - name: Set LC_ALL
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" || "${{ runner.os }}" == "macOS" ]]; then
+            export LC_ALL=C.UTF-8
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            $env:LC_ALL="C.UTF-8"
+          fi
+        shell: bash
       - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
       - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
