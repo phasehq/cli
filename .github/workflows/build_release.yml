@@ -214,7 +214,8 @@ jobs:
       - run: docker run phasehq/cli:latest phase -v
 
   attach-assets:
-    name: Attach assets to release
+    name: Release assets
+    needs: [build, build_apk]
     runs-on: ubuntu-latest
 
     steps:
