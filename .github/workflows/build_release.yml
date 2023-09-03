@@ -233,17 +233,17 @@ jobs:
       - name: Download Linux binary
         uses: actions/download-artifact@v2
         with:
-          name: ubuntu-latest-binary
+          name: Linux-binary
 
       - name: Download Windows binary
         uses: actions/download-artifact@v2
         with:
-          name: windows-latest-binary
+          name: Windows-binary
 
       - name: Download MacOS binary
         uses: actions/download-artifact@v2
         with:
-          name: macos-latest-binary
+          name: macOS-binary
 
       - name: Download APK
         uses: actions/download-artifact@v2
