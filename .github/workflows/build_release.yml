@@ -258,7 +258,7 @@ jobs:
       # Rename and checksum
       - name: Rename and calculate sha256
         run: |
-          VERSION=${{ github.ref }}
+          VERSION=${GITHUB_REF#refs/tags/}
           for f in *.deb; do mv "$f" "phase_cli_linux_amd64_$VERSION.deb"; done
           for f in *.rpm; do mv "$f" "phase_cli_linux_amd64_$VERSION.rpm"; done
           for f in phase; do mv "$f" "phase_cli_${f}_amd64_$VERSION"; done
@@ -272,17 +272,17 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: |
-            phase_cli_linux_amd64_${{ github.ref }}.deb
-            phase_cli_linux_amd64_${{ github.ref }}.rpm
-            phase_cli_linux_amd64_${{ github.ref }}
-            phase_cli_linux_amd64_${{ github.ref }}.deb.sha256
-            phase_cli_linux_amd64_${{ github.ref }}.rpm.sha256
-            phase_cli_linux_amd64_${{ github.ref }}.sha256
-            phase_cli_windows_amd64_${{ github.ref }}.exe
-            phase_cli_windows_amd64_${{ github.ref }}.exe.sha256
-            phase_cli_macos_amd64_${{ github.ref }}
-            phase_cli_macos_amd64_${{ github.ref }}.sha256
-            phase_cli_alpine_linux_amd64_${{ github.ref }}
-            phase_cli_alpine_linux_amd64_${{ github.ref }}.sha256
+            phase_cli_linux_amd64_$VERSION.deb
+            phase_cli_linux_amd64_$VERSION.rpm
+            phase_cli_linux_amd64_$VERSION
+            phase_cli_linux_amd64_$VERSION.deb.sha256
+            phase_cli_linux_amd64_$VERSION.rpm.sha256
+            phase_cli_linux_amd64_$VERSION.sha256
+            phase_cli_windows_amd64_$VERSION.exe
+            phase_cli_windows_amd64_$VERSION.exe.sha256
+            phase_cli_macos_amd64_$VERSION
+            phase_cli_macos_amd64_$VERSION.sha256
+            phase_cli_alpine_linux_amd64_$VERSION
+            phase_cli_alpine_linux_amd64_$VERSION.sha256
           tag: ${{ github.ref }}
           overwrite: true
