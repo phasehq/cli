@@ -2,8 +2,6 @@ name: Build and deploy cli packages
 
 on:
   pull_request:
-    branches:
-      - main
   push:
     branches:
       - main
@@ -14,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build
+    name: Build CLI
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -27,58 +25,76 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --name phase phase-cli.py
-      - name: Extract version
-        run: |
-          export LC_ALL=C.UTF-8
-          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
+      - run: pyinstaller --hidden-import _cffi_backend --onefile --name phase phase-cli.py
+
+      # Set LC_ALL based on the runner OS for Linux and macOS
+      - name: Set LC_ALL for Linux and macOS
+        run: export LC_ALL=C.UTF-8
+        if: runner.os != 'Windows'
+        shell: bash
+
+      # Set LC_ALL for Windows
+      - name: Set LC_ALL for Windows
+        run: echo "LC_ALL=C.UTF-8" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+        if: runner.os == 'Windows'
+        shell: pwsh
+
+      # Extract version
+      - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
         shell: bash
       - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
+
+      # Upload version
       - uses: actions/upload-artifact@v2
         with:
           name: phase-version
           path: ./PHASE_CLI_VERSION.txt
-      - name: Build DEB and RPM if Linux
-        run: |
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            sudo apt-get install -y ruby-dev rubygems build-essential 
-            sudo gem install --no-document fpm
-            fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
-            fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
-          fi
+
+      # Build DEB and RPM packages for Linux
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby-dev rubygems build-essential 
+          sudo gem install --no-document fpm
+          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
+          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
+
+      # Upload DEB and RPM packages
       - uses: actions/upload-artifact@v2
         with:
           name: phase-deb
           path: "*.deb"
+        if: matrix.os == 'ubuntu-latest'
       - uses: actions/upload-artifact@v2
         with:
           name: phase-rpm
           path: "*.rpm"
+        if: matrix.os == 'ubuntu-latest'
+
+      # Upload binary
       - uses: actions/upload-artifact@v2
         with:
           name: ${{ runner.os }}-binary
           path: dist/phase*
 
   build_apk:
-    name: Build APK
+    name: Build CLI (alpine-latest, 3.11)
     runs-on: ubuntu-latest
     container:
       image: python:3.11-alpine
     steps:
       - uses: actions/checkout@v2
-      - run: |
-          apk add --update --no-cache python3 python3-dev build-base 
-          python3 -m ensurepip
-          pip3 install --no-cache --upgrade pip setuptools
+      - run: apk add --update --no-cache python3 python3-dev build-base
+      - run: python3 -m ensurepip
+      - run: pip3 install --no-cache --upgrade pip setuptools
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --name phase phase-cli.py
+      - run: pyinstaller --hidden-import _cffi_backend --onefile --name phase phase-cli.py
       - run: apk add alpine-sdk
-      - run: |
-          adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
-          mkdir /home/builder/package
-          chown builder /home/builder/package
+      - run: adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
+      - run: mkdir /home/builder/package
+      - run: chown builder /home/builder/package
       - run: apk add --no-cache sudo
       - run: |
           echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
@@ -93,66 +109,13 @@ jobs:
         with:
           name: phase-apk
           path: /home/builder/packages/builder/x86_64/*.apk
-
-  deploy_to_s3:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build, build_apk]
-    name: Deploy packages to S3
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-
-      - uses: actions/download-artifact@v2
+      - uses: actions/upload-artifact@v2
         with:
-          path: artifacts
+          name: phase-alpine-build
+          path: ./dist/phase
 
-      - name: Extract version
-        run: |
-          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Organize files, generate checksums, and upload to S3
-        run: |
-          # Generating checksums
-          find artifacts -type f \( -iname \*.deb -o -iname \*.rpm -o -iname \*.apk -o -iname \*.exe -o -iname phase_cli* -o -iname phase \) -exec sh -c 'sha512sum {} > {}.sha512' \;
-
-          # Uploading to S3 using `aws s3 cp`
-          aws s3 cp artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/deb/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.deb
-          aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/rpm/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.rpm
-          aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/apk/phase_cli_amd64_${{ env.PHASE_CLI_VERSION }}.apk
-          aws s3 cp "artifacts/Linux-binary/phase" s3://$AWS_S3_BUCKET/linux-bin/phase_cli_linux_amd64_${{ env.PHASE_CLI_VERSION }}
-          aws s3 cp "artifacts/Windows-binary/phase.exe" s3://$AWS_S3_BUCKET/windows/phase_cli_windows_amd64_${{ env.PHASE_CLI_VERSION }}.exe
-          aws s3 cp "artifacts/macOS-binary/phase" s3://$AWS_S3_BUCKET/macos/phase_cli_macos_amd64_${{ env.PHASE_CLI_VERSION }}
-
-          # Upload the latest versions
-          aws s3 cp artifacts/phase-deb/*.deb s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb
-          aws s3 cp artifacts/phase-rpm/*.rpm s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm
-          aws s3 cp artifacts/phase-apk/*.apk s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk
-          aws s3 cp "artifacts/Linux-binary/phase" s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest
-          aws s3 cp "artifacts/Windows-binary/phase.exe" s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe
-          aws s3 cp "artifacts/macOS-binary/phase" s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest
-
-          # Upload the checksums for the latest versions
-          aws s3 cp artifacts/phase-deb/*.deb.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.deb.sha512
-          aws s3 cp artifacts/phase-rpm/*.rpm.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.rpm.sha512
-          aws s3 cp artifacts/phase-apk/*.apk.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_amd64_latest.apk.sha512
-          aws s3 cp artifacts/Linux-binary/phase*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_linux_amd64_latest.sha512
-          aws s3 cp artifacts/Windows-binary/phase.exe.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_windows_amd64_latest.exe.sha512
-          aws s3 cp artifacts/macOS-binary/phase*.sha512 s3://$AWS_S3_BUCKET/latest/phase_cli_macos_amd64_latest.sha512
-
-          # Copy the install script
-          aws s3 cp ./install.sh s3://$AWS_S3_BUCKET/install.sh
-
-        shell: bash
-
-    env:
-      AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
-
-  test_installs:
-    needs: deploy_to_s3
+  Test_Linux_cli:
+    name: Test - CLI installation - Linux
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -173,10 +136,76 @@ jobs:
     container:
       image: ${{ matrix.image }}
     steps:
-      - name: Install dependencies
+      - run: ${{ matrix.install_command }}
+      - run: curl -fsSL https://pkg.phase.dev/install.sh | bash
+      - run: phase -h
+      - run: phase -v
+
+  # Test_MacOS_cli:
+  #   name: Test - CLI installation - MacOS
+  #   runs-on: macOS-latest
+  #   steps:
+  #     - name: Install Homebrew
+  #       run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  #     - name: Install phase CLI via Homebrew
+  #       run: brew install phasehq/cli/phase
+
+  #     - name: Test phase CLI
+  #       run: |
+  #         phase -h
+  #         phase -v
+
+  # Test_Windows_cli:
+  #   name: Test - CLI installation - Windows
+  #   runs-on: windows-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v2
+
+  #     - name: Download phase CLI binary
+  #       uses: actions/download-artifact@v2
+  #       with:
+  #         name: Windows-binary
+  #         path: ./phase-windows-executable
+
+  #     - name: Test phase CLI
+  #       run: |
+  #         ./phase-windows-executable/phase-cli.exe -h
+  #         ./phase-windows-executable/phase-cli.exe -v
+
+  Build_and_push_docker:
+    name: Build & Release - Docker
+    needs: build_apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Download phase-alpine-build artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: phase-alpine-build
+          path: dist
+
+      - run: docker build -t phase-cli:latest .
+
+      - name: Push to Docker Hub
         run: |
-          ${{ matrix.install_command }}
-      - name: Install phase-cli
-        run: |
-          curl -fsSL https://pkg.phase.dev/install.sh | bash
-          phase -v
+          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+          docker tag phase-cli:latest phasehq/cli:latest
+          docker push phasehq/cli:latest
+
+      - run: docker save phase-cli:latest > phase-cli.tar
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: phase-docker-image
+          path: ./phase-cli.tar
+
+  Pull_and_test_docker_image:
+    name: Test - CLI - Docker
+    needs: build_and_push_docker
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker run phasehq/cli:latest phase -h
+      - run: docker run phasehq/cli:latest phase -v
