@@ -217,6 +217,7 @@ jobs:
     name: Release assets
     needs: [build, build_apk]
     runs-on: ubuntu-latest
+    if: github.event_name == 'release'
 
     steps:
       # Download the artifacts from build jobs
