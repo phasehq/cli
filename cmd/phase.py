@@ -143,7 +143,7 @@ def phase_init():
         phase_environments = [{
             "env": env_key['environment']['name'],
             "envType": env_key['environment']['env_type'],
-            "id": env_key['environment']['id'],  # Use the id from the environment object
+            "id": env_key['environment']['id'],
             "publicKey": env_key['identity_key'],
             "salt": env_key['wrapped_salt']
         } for env_key in selected_app_details['environment_keys']]
@@ -152,7 +152,8 @@ def phase_init():
         phase_env = {
             "version": "1",
             "phaseApp": selected_app_name,
-            "defaultEnv": default_env['environment']['id'],  # Use the id from the environment object
+            "encryption": selected_app_details['encryption'],  # Extracted the encryption field
+            "defaultEnv": default_env['environment']['id'],
             "phaseEnvironments": phase_environments
         }
 
@@ -170,6 +171,7 @@ def phase_init():
         # Handle other exceptions if needed
         print(e)
         sys.exit(1)
+
 
 
 # Creates new secrets, encrypts them and saves them in PHASE_SECRETS_DIR
@@ -328,6 +330,7 @@ def phase_secrets_env_import(env_file, env_name=None):
         print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
 
 
+
 # Decrypts and exports environment variables and secrets based to a plain text .env file based on PHASE_ENV_CONFIG context
 def phase_secrets_env_export(env_name=None):
     # Get credentials from the keyring
@@ -347,14 +350,13 @@ def phase_secrets_env_export(env_name=None):
     # Use phase.get function to fetch the secrets for the specified environment
     secrets_data = phase.get(environment_id, public_key=public_key)
     
-    # Create .env file
-    with open('.env', 'w') as f:
-        for secret in secrets_data:
-            key = secret.get("key")
-            value = secret.get("value")
-            f.write(f"{key}='{value}'\n")
-    
-    print("Exported secrets to .env file.")
+    # Print secrets in dotenv format
+    for secret in secrets_data:
+        key = secret.get("key")
+        value = secret.get("value")
+        
+        # Use double quotes around the value to handle any special characters or spaces
+        print(f'{key}="{value}"')
 
 
 def phase_cli_logout(purge=False):

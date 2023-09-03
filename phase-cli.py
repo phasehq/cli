@@ -7,7 +7,7 @@ import argparse
 from argparse import RawTextHelpFormatter
 from cmd.web import phase_open_web
 from cmd.keyring import show_keyring_info
-from utils.ascii import phaseASCii
+from utils.const import phaseASCii, description
 from cmd.update import phase_cli_update
 from cmd.phase import (
     phase_run_inject,
@@ -44,6 +44,7 @@ class HelpfulParser(argparse.ArgumentParser):
         super().__init__(*args, **kwargs)
         
     def error(self, message):
+        print (description)
         print(phaseASCii)
         self.print_help()
         sys.exit(2)
@@ -112,7 +113,7 @@ def main ():
         secrets_import_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets export command
-        secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets to a .env file')
+        secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets in a dotenv format')
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
 
         # Logout command
