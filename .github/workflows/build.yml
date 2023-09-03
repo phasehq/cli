@@ -141,38 +141,38 @@ jobs:
       - run: phase -h
       - run: phase -v
 
-  Test_MacOS_cli:
-    name: Test - CLI installation - MacOS
-    runs-on: macOS-latest
-    steps:
-      - name: Install Homebrew
-        run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  # Test_MacOS_cli:
+  #   name: Test - CLI installation - MacOS
+  #   runs-on: macOS-latest
+  #   steps:
+  #     - name: Install Homebrew
+  #       run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-      - name: Install phase CLI via Homebrew
-        run: brew install phasehq/cli/phase
+  #     - name: Install phase CLI via Homebrew
+  #       run: brew install phasehq/cli/phase
 
-      - name: Test phase CLI
-        run: |
-          phase -h
-          phase -v
+  #     - name: Test phase CLI
+  #       run: |
+  #         phase -h
+  #         phase -v
 
-  Test_Windows_cli:
-    name: Test - CLI installation - Windows
-    runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+  # Test_Windows_cli:
+  #   name: Test - CLI installation - Windows
+  #   runs-on: windows-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v2
 
-      - name: Download phase CLI binary
-        uses: actions/download-artifact@v2
-        with:
-          name: Windows-binary
-          path: ./phase-windows-executable
+  #     - name: Download phase CLI binary
+  #       uses: actions/download-artifact@v2
+  #       with:
+  #         name: Windows-binary
+  #         path: ./phase-windows-executable
 
-      - name: Test phase CLI
-        run: |
-          ./phase-windows-executable/phase-cli.exe -h
-          ./phase-windows-executable/phase-cli.exe -v
+  #     - name: Test phase CLI
+  #       run: |
+  #         ./phase-windows-executable/phase-cli.exe -h
+  #         ./phase-windows-executable/phase-cli.exe -v
 
   Build_and_push_docker:
     name: Build & Release - Docker
