@@ -226,7 +226,7 @@ jobs:
 
       # Extract version from the file
       - name: Set VERSION from file
-        run: echo "VERSION=$(cat PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
+        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
       # Process assets: Rename, calculate sha256, and move them to the release directory
       - name: Process assets
