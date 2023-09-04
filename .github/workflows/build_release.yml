@@ -265,6 +265,11 @@ jobs:
           name: phase-version
           path: artifacts/phase-version
 
+      # Debug: List the content of artifacts directory
+      - name: Debug - List contents of artifacts directory
+        run: |
+          find artifacts -type f
+
       # Extract version from the file
       - name: Set VERSION from file
         run: echo "VERSION=$(cat artifacts/phase-version/PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
@@ -273,10 +278,20 @@ jobs:
       - name: Rename, zip, and calculate sha256
         run: |
           mv artifacts/phase-deb/*.deb phase_cli_linux_amd64_$VERSION.deb
+          sha256sum phase_cli_linux_amd64_$VERSION.deb > phase_cli_linux_amd64_$VERSION.deb.sha256
+
           mv artifacts/phase-rpm/*.rpm phase_cli_linux_amd64_$VERSION.rpm
+          sha256sum phase_cli_linux_amd64_$VERSION.rpm > phase_cli_linux_amd64_$VERSION.rpm.sha256
+
           mv artifacts/Linux-binary/phase phase_cli_linux_amd64_$VERSION
+          sha256sum phase_cli_linux_amd64_$VERSION > phase_cli_linux_amd64_$VERSION.sha256
+
           mv artifacts/Windows-binary/phase.exe phase_cli_windows_amd64_$VERSION.exe
+          sha256sum phase_cli_windows_amd64_$VERSION.exe > phase_cli_windows_amd64_$VERSION.exe.sha256
+
           mv artifacts/phase-alpine-build/* phase_cli_alpine_linux_amd64_$VERSION
+          sha256sum phase_cli_alpine_linux_amd64_$VERSION > phase_cli_alpine_linux_amd64_$VERSION.sha256
+
           zip -r phase_cli_release_$VERSION.zip \
             phase_cli_linux_amd64_$VERSION.deb \
             phase_cli_linux_amd64_$VERSION.rpm \
@@ -284,7 +299,11 @@ jobs:
             phase_cli_windows_amd64_$VERSION.exe \
             phase_cli_macos_amd64_$VERSION \
             phase_cli_alpine_linux_amd64_$VERSION
-          sha256sum phase_cli_release_$VERSION.zip > phase_cli_release_$VERSION.zip.sha256
+
+      # Debug: List the content of the current directory after zipping
+      - name: Debug - List contents after zipping
+        run: |
+          ls -al
 
       # Upload the zip file
       - uses: actions/upload-artifact@v2
