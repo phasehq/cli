@@ -195,13 +195,6 @@ jobs:
           docker tag phase-cli:latest phasehq/cli:latest
           docker push phasehq/cli:latest
 
-      - run: docker save phase-cli:latest > phase-cli.tar
-
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-docker-image
-          path: ./phase-cli.tar
-
   Pull_and_test_docker_image:
     name: Test - CLI - Docker
     needs: build_and_push_docker
@@ -220,9 +213,9 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v2
 
-      # Debug: List the content of the current directory
-      - name: Debug - List contents of artifacts directory
-        run: find . -type f
+      # # Debug: List the content of the current directory
+      # - name: Debug - List contents of artifacts directory
+      #   run: find . -type f
 
       # Extract version from the file
       - name: Set VERSION from file
@@ -248,9 +241,9 @@ jobs:
           mv phase-alpine-build/* phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION
           sha256sum phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
 
-      # Debug: List the content of the current directory and subdirectories
-      - name: Debug - List contents after processing
-        run: ls -alR
+      # # Debug: List the content of the current directory and subdirectories
+      # - name: Debug - List contents after processing
+      #   run: ls -alR
 
       # Upload the entire release directory as a single artifact
       - uses: actions/upload-artifact@v2
