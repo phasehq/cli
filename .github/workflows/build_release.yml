@@ -265,9 +265,9 @@ jobs:
           name: phase-version
           path: artifacts/phase-version
 
-      # Debug: List the content of artifacts directory
-      - name: Debug - List contents of artifacts directory
-        run: find artifacts -type f
+      # Debug: Display the content of the version file
+      - name: Debug - Display PHASE_CLI_VERSION.txt content
+        run: cat artifacts/phase-version/PHASE_CLI_VERSION.txt
 
       # Extract version from the file
       - name: Set VERSION from file
@@ -278,38 +278,28 @@ jobs:
         id: get_version
         run: echo "::set-output name=version::$VERSION"
 
-      # Rename, zip, and checksum
-      - name: Rename, zip, and calculate sha256
+      # Move packages, binaries, and checksums to a single directory
+      - name: Organize files in directory
         run: |
-          mv artifacts/phase-deb/*.deb phase_cli_linux_amd64_$VERSION.deb
-          sha256sum phase_cli_linux_amd64_$VERSION.deb > phase_cli_linux_amd64_$VERSION.deb.sha256
-          mv artifacts/phase-rpm/*.rpm phase_cli_linux_amd64_$VERSION.rpm
-          sha256sum phase_cli_linux_amd64_$VERSION.rpm > phase_cli_linux_amd64_$VERSION.rpm.sha256
-          mv artifacts/Linux-binary/phase phase_cli_linux_amd64_$VERSION
-          sha256sum phase_cli_linux_amd64_$VERSION > phase_cli_linux_amd64_$VERSION.sha256
-          mv artifacts/Windows-binary/phase.exe phase_cli_windows_amd64_$VERSION.exe
-          sha256sum phase_cli_windows_amd64_$VERSION.exe > phase_cli_windows_amd64_$VERSION.exe.sha256
-          mv artifacts/phase-alpine-build/* phase_cli_alpine_linux_amd64_$VERSION
-          sha256sum phase_cli_alpine_linux_amd64_$VERSION > phase_cli_alpine_linux_amd64_$VERSION.sha256
-          zip -r phase_cli_release_$VERSION.zip \
-            phase_cli_linux_amd64_$VERSION.deb \
-            phase_cli_linux_amd64_$VERSION.rpm \
-            phase_cli_linux_amd64_$VERSION \
-            phase_cli_windows_amd64_$VERSION.exe \
-            phase_cli_macos_amd64_$VERSION \
-            phase_cli_alpine_linux_amd64_$VERSION \
-            phase_cli_linux_amd64_$VERSION.deb.sha256 \
-            phase_cli_linux_amd64_$VERSION.rpm.sha256 \
-            phase_cli_linux_amd64_$VERSION.sha256 \
-            phase_cli_windows_amd64_$VERSION.exe.sha256 \
-            phase_cli_alpine_linux_amd64_$VERSION.sha256
+          mkdir phase_cli_release_$VERSION
+          mv phase_cli_linux_amd64_$VERSION.deb phase_cli_release_$VERSION/
+          mv phase_cli_linux_amd64_$VERSION.rpm phase_cli_release_$VERSION/
+          mv phase_cli_linux_amd64_$VERSION phase_cli_release_$VERSION/
+          mv phase_cli_windows_amd64_$VERSION.exe phase_cli_release_$VERSION/
+          mv phase_cli_macos_amd64_$VERSION phase_cli_release_$VERSION/
+          mv phase_cli_alpine_linux_amd64_$VERSION phase_cli_release_$VERSION/
+          mv phase_cli_linux_amd64_$VERSION.deb.sha256 phase_cli_release_$VERSION/
+          mv phase_cli_linux_amd64_$VERSION.rpm.sha256 phase_cli_release_$VERSION/
+          mv phase_cli_linux_amd64_$VERSION.sha256 phase_cli_release_$VERSION/
+          mv phase_cli_windows_amd64_$VERSION.exe.sha256 phase_cli_release_$VERSION/
+          mv phase_cli_alpine_linux_amd64_$VERSION.sha256 phase_cli_release_$VERSION/
 
-      # Debug: List the content of the current directory after zipping
-      - name: Debug - List contents after zipping
-        run: ls -al
+      # Debug: List the content of the release directory
+      - name: Debug - List contents of release directory
+        run: ls -al phase_cli_release_$VERSION
 
-      # Upload the zip file
+      # Upload the directory (actions/upload-artifact will zip it by default)
       - uses: actions/upload-artifact@v2
         with:
-          name: phase-cli-release-zip
-          path: ./phase_cli_release_*.zip
+          name: phase-cli-release-$VERSION
+          path: ./phase_cli_release_$VERSION/
