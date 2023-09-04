@@ -5,11 +5,11 @@ import sys
 import traceback
 import argparse
 from argparse import RawTextHelpFormatter
-from cmd.web import phase_open_web
-from cmd.keyring import show_keyring_info
+from phase_cmd.web import phase_open_web
+from phase_cmd.keyring import show_keyring_info
 from utils.const import phaseASCii, description
-from cmd.update import phase_cli_update
-from cmd.phase import (
+from phase_cmd.update import phase_cli_update
+from phase_cmd.phase import (
     phase_run_inject,
     phase_list_secrets,
     phase_secrets_get, 
