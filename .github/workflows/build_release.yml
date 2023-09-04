@@ -5,9 +5,6 @@ on:
   push:
     branches:
       - main
-  release:
-    types:
-      - published
 
 permissions:
   contents: write
@@ -198,13 +195,6 @@ jobs:
           docker tag phase-cli:latest phasehq/cli:latest
           docker push phasehq/cli:latest
 
-      - run: docker save phase-cli:latest > phase-cli.tar
-
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-docker-image
-          path: ./phase-cli.tar
-
   Pull_and_test_docker_image:
     name: Test - CLI - Docker
     needs: build_and_push_docker
@@ -214,76 +204,49 @@ jobs:
       - run: docker run phasehq/cli:latest phase -v
 
   attach-assets:
-    name: Release assets
+    name: Package assets
     needs: [build, build_apk]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
 
     steps:
-      # Download the artifacts from build jobs
-      - name: Download DEB package
+      # Download all the artifacts from the build jobs
+      - name: Download all artifacts
         uses: actions/download-artifact@v2
-        with:
-          name: phase-deb
 
-      - name: Download RPM package
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-rpm
+      # # Debug: List the content of the current directory
+      # - name: Debug - List contents of artifacts directory
+      #   run: find . -type f
 
-      - name: Download Linux binary
-        uses: actions/download-artifact@v2
-        with:
-          name: Linux-binary
+      # Extract version from the file
+      - name: Set VERSION from file
+        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
-      - name: Download Windows binary
-        uses: actions/download-artifact@v2
-        with:
-          name: Windows-binary
-
-      - name: Download MacOS binary
-        uses: actions/download-artifact@v2
-        with:
-          name: macOS-binary
-
-      - name: Download APK
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-apk
-
-      - name: Download Alpine Linux standalone binary
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-alpine-build
-
-      # Rename and checksum
-      - name: Rename and calculate sha256
+      # Process assets: Rename, calculate sha256, and move them to the release directory
+      - name: Process assets
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          for f in *.deb; do mv "$f" "phase_cli_linux_amd64_$VERSION.deb"; done
-          for f in *.rpm; do mv "$f" "phase_cli_linux_amd64_$VERSION.rpm"; done
-          for f in phase; do mv "$f" "phase_cli_${f}_amd64_$VERSION"; done
-          for f in phase.exe; do mv "$f" "phase_cli_windows_amd64_$VERSION.exe"; done
-          for f in phase-alpine-build; do mv "$f" "phase_cli_alpine_linux_amd64_$VERSION"; done
-          find . -type f \( -iname "*.deb" -o -iname "*.rpm" -o -iname "phase_cli_*" \) -exec sh -c 'sha256sum {} > {}.sha256' \;
+          mkdir phase_cli_release_$VERSION
 
-      # Attach the artifacts to the release
-      - name: Attach assets to release
-        uses: svenstaro/upload-release-action@v2
+          mv phase-deb/*.deb phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb
+          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb.sha256
+
+          mv phase-rpm/*.rpm phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm
+          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm.sha256
+
+          mv Linux-binary/phase phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION
+          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.sha256
+
+          mv Windows-binary/phase.exe phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe
+          sha256sum phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe.sha256
+
+          mv phase-alpine-build/* phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION
+          sha256sum phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
+
+      # # Debug: List the content of the current directory and subdirectories
+      # - name: Debug - List contents after processing
+      #   run: ls -alR
+
+      # Upload the entire release directory as a single artifact
+      - uses: actions/upload-artifact@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: |
-            phase_cli_linux_amd64_$VERSION.deb
-            phase_cli_linux_amd64_$VERSION.rpm
-            phase_cli_linux_amd64_$VERSION
-            phase_cli_linux_amd64_$VERSION.deb.sha256
-            phase_cli_linux_amd64_$VERSION.rpm.sha256
-            phase_cli_linux_amd64_$VERSION.sha256
-            phase_cli_windows_amd64_$VERSION.exe
-            phase_cli_windows_amd64_$VERSION.exe.sha256
-            phase_cli_macos_amd64_$VERSION
-            phase_cli_macos_amd64_$VERSION.sha256
-            phase_cli_alpine_linux_amd64_$VERSION
-            phase_cli_alpine_linux_amd64_$VERSION.sha256
-          tag: ${{ github.ref }}
-          overwrite: true
+          name: phase-cli-release
+          path: ./phase_cli_release_*/
