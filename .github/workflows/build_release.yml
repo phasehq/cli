@@ -229,7 +229,41 @@ jobs:
           name: phase-rpm
           path: artifacts/phase-rpm
 
-      # ... [repeat this for other artifacts with their respective directories] ...
+      - name: Download Linux binary
+        uses: actions/download-artifact@v2
+        with:
+          name: Linux-binary
+          path: artifacts/Linux-binary
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v2
+        with:
+          name: Windows-binary
+          path: artifacts/Windows-binary
+
+      - name: Download MacOS binary
+        uses: actions/download-artifact@v2
+        with:
+          name: macOS-binary
+          path: artifacts/macOS-binary
+
+      - name: Download APK
+        uses: actions/download-artifact@v2
+        with:
+          name: phase-apk
+          path: artifacts/phase-apk
+
+      - name: Download Alpine Linux standalone binary
+        uses: actions/download-artifact@v2
+        with:
+          name: phase-alpine-build
+          path: artifacts/phase-alpine-build
+
+      - name: Download phase-version
+        uses: actions/download-artifact@v2
+        with:
+          name: phase-version
+          path: artifacts/phase-version
 
       # Extract version from the file
       - name: Set VERSION from file
@@ -238,24 +272,18 @@ jobs:
       # Rename, zip, and checksum
       - name: Rename, zip, and calculate sha256
         run: |
-          for f in artifacts/phase-deb/*.deb; do mv "$f" "phase_cli_linux_amd64_$VERSION.deb"; done
-          for f in artifacts/phase-rpm/*.rpm; do mv "$f" "phase_cli_linux_amd64_$VERSION.rpm"; done
-          for f in artifacts/Linux-binary/phase; do mv "$f" "phase_cli_${f##*/}_amd64_$VERSION"; done
-          for f in artifacts/Windows-binary/phase.exe; do mv "$f" "phase_cli_windows_amd64_$VERSION.exe"; done
-          for f in artifacts/phase-alpine-build/phase-alpine-build; do mv "$f" "phase_cli_alpine_linux_amd64_$VERSION"; done
+          mv artifacts/phase-deb/*.deb phase_cli_linux_amd64_$VERSION.deb
+          mv artifacts/phase-rpm/*.rpm phase_cli_linux_amd64_$VERSION.rpm
+          mv artifacts/Linux-binary/phase phase_cli_linux_amd64_$VERSION
+          mv artifacts/Windows-binary/phase.exe phase_cli_windows_amd64_$VERSION.exe
+          mv artifacts/phase-alpine-build/phase-alpine-build phase_cli_alpine_linux_amd64_$VERSION
           zip -r phase_cli_release_$VERSION.zip \
             phase_cli_linux_amd64_$VERSION.deb \
             phase_cli_linux_amd64_$VERSION.rpm \
             phase_cli_linux_amd64_$VERSION \
-            phase_cli_linux_amd64_$VERSION.deb.sha256 \
-            phase_cli_linux_amd64_$VERSION.rpm.sha256 \
-            phase_cli_linux_amd64_$VERSION.sha256 \
             phase_cli_windows_amd64_$VERSION.exe \
-            phase_cli_windows_amd64_$VERSION.exe.sha256 \
             phase_cli_macos_amd64_$VERSION \
-            phase_cli_macos_amd64_$VERSION.sha256 \
-            phase_cli_alpine_linux_amd64_$VERSION \
-            phase_cli_alpine_linux_amd64_$VERSION.sha256
+            phase_cli_alpine_linux_amd64_$VERSION
           sha256sum phase_cli_release_$VERSION.zip > phase_cli_release_$VERSION.zip.sha256
 
       # Upload the zip file
