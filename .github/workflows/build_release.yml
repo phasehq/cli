@@ -217,89 +217,41 @@ jobs:
 
     steps:
       # Download the artifacts from build jobs to specific directories
-      - name: Download DEB package
+      - name: Download all artifacts
         uses: actions/download-artifact@v2
-        with:
-          name: phase-deb
-          path: artifacts/phase-deb
 
-      - name: Download RPM package
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-rpm
-          path: artifacts/phase-rpm
-
-      - name: Download Linux binary
-        uses: actions/download-artifact@v2
-        with:
-          name: Linux-binary
-          path: artifacts/Linux-binary
-
-      - name: Download Windows binary
-        uses: actions/download-artifact@v2
-        with:
-          name: Windows-binary
-          path: artifacts/Windows-binary
-
-      - name: Download MacOS binary
-        uses: actions/download-artifact@v2
-        with:
-          name: macOS-binary
-          path: artifacts/macOS-binary
-
-      - name: Download APK
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-apk
-          path: artifacts/phase-apk
-
-      - name: Download Alpine Linux standalone binary
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-alpine-build
-          path: artifacts/phase-alpine-build
-
-      - name: Download phase-version
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-version
-          path: artifacts/phase-version
-
-      # Debug: Display the content of the version file
-      - name: Debug - Display PHASE_CLI_VERSION.txt content
-        run: cat artifacts/phase-version/PHASE_CLI_VERSION.txt
+      # Debug: List the content of artifacts directory
+      - name: Debug - List contents of artifacts directory
+        run: find . -type f
 
       # Extract version from the file
       - name: Set VERSION from file
-        run: echo "VERSION=$(cat artifacts/phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
+        run: echo "VERSION=$(cat PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
-      # Set version as an output variable
-      - name: Set version as output
-        id: get_version
-        run: echo "::set-output name=version::$VERSION"
-
-      # Move packages, binaries, and checksums to a single directory
-      - name: Organize files in directory
+      # Rename, checksum, and move files to the release directory
+      - name: Process assets
         run: |
           mkdir phase_cli_release_$VERSION
-          mv phase_cli_linux_amd64_$VERSION.deb phase_cli_release_$VERSION/
-          mv phase_cli_linux_amd64_$VERSION.rpm phase_cli_release_$VERSION/
-          mv phase_cli_linux_amd64_$VERSION phase_cli_release_$VERSION/
-          mv phase_cli_windows_amd64_$VERSION.exe phase_cli_release_$VERSION/
-          mv phase_cli_macos_amd64_$VERSION phase_cli_release_$VERSION/
-          mv phase_cli_alpine_linux_amd64_$VERSION phase_cli_release_$VERSION/
-          mv phase_cli_linux_amd64_$VERSION.deb.sha256 phase_cli_release_$VERSION/
-          mv phase_cli_linux_amd64_$VERSION.rpm.sha256 phase_cli_release_$VERSION/
-          mv phase_cli_linux_amd64_$VERSION.sha256 phase_cli_release_$VERSION/
-          mv phase_cli_windows_amd64_$VERSION.exe.sha256 phase_cli_release_$VERSION/
-          mv phase_cli_alpine_linux_amd64_$VERSION.sha256 phase_cli_release_$VERSION/
+          mv phase-deb/*.deb phase_cli_linux_amd64_$VERSION.deb
+          sha256sum phase_cli_linux_amd64_$VERSION.deb > phase_cli_linux_amd64_$VERSION.deb.sha256
+          mv phase-rpm/*.rpm phase_cli_linux_amd64_$VERSION.rpm
+          sha256sum phase_cli_linux_amd64_$VERSION.rpm > phase_cli_linux_amd64_$VERSION.rpm.sha256
+          mv Linux-binary/phase phase_cli_linux_amd64_$VERSION
+          sha256sum phase_cli_linux_amd64_$VERSION > phase_cli_linux_amd64_$VERSION.sha256
+          mv Windows-binary/phase.exe phase_cli_windows_amd64_$VERSION.exe
+          sha256sum phase_cli_windows_amd64_$VERSION.exe > phase_cli_windows_amd64_$VERSION.exe.sha256
+          mv phase-alpine-build/* phase_cli_alpine_linux_amd64_$VERSION
+          sha256sum phase_cli_alpine_linux_amd64_$VERSION > phase_cli_alpine_linux_amd64_$VERSION.sha256
 
-      # Debug: List the content of the release directory
-      - name: Debug - List contents of release directory
-        run: ls -al phase_cli_release_$VERSION
+          # Move all the processed files to the release directory
+          mv phase_cli_* phase_cli_release_$VERSION/
 
-      # Upload the directory (actions/upload-artifact will zip it by default)
+      # Debug: List the content of the current directory after processing
+      - name: Debug - List contents after processing
+        run: ls -alR
+
+      # Upload the release directory as an artifact
       - uses: actions/upload-artifact@v2
         with:
-          name: phase-cli-release-$VERSION
+          name: phase-cli-release
           path: ./phase_cli_release_$VERSION/
