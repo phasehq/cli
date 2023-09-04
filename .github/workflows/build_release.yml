@@ -5,9 +5,7 @@ on:
   push:
     branches:
       - main
-  release:
-    types:
-      - published
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -214,10 +212,9 @@ jobs:
       - run: docker run phasehq/cli:latest phase -v
 
   attach-assets:
-    name: Release assets
+    name: Package assets
     needs: [build, build_apk]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
 
     steps:
       # Download the artifacts from build jobs
@@ -256,34 +253,40 @@ jobs:
         with:
           name: phase-alpine-build
 
-      # Rename and checksum
-      - name: Rename and calculate sha256
+      - name: Download phase-version
+        uses: actions/download-artifact@v2
+        with:
+          name: phase-version
+
+      # Extract version from the file
+      - name: Set VERSION from file
+        run: echo "VERSION=$(cat PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
+
+      # Rename, zip, and checksum
+      - name: Rename, zip, and calculate sha256
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
           for f in *.deb; do mv "$f" "phase_cli_linux_amd64_$VERSION.deb"; done
           for f in *.rpm; do mv "$f" "phase_cli_linux_amd64_$VERSION.rpm"; done
           for f in phase; do mv "$f" "phase_cli_${f}_amd64_$VERSION"; done
           for f in phase.exe; do mv "$f" "phase_cli_windows_amd64_$VERSION.exe"; done
           for f in phase-alpine-build; do mv "$f" "phase_cli_alpine_linux_amd64_$VERSION"; done
-          find . -type f \( -iname "*.deb" -o -iname "*.rpm" -o -iname "phase_cli_*" \) -exec sh -c 'sha256sum {} > {}.sha256' \;
-
-      # Attach the artifacts to the release
-      - name: Attach assets to release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: |
-            phase_cli_linux_amd64_$VERSION.deb
-            phase_cli_linux_amd64_$VERSION.rpm
-            phase_cli_linux_amd64_$VERSION
-            phase_cli_linux_amd64_$VERSION.deb.sha256
-            phase_cli_linux_amd64_$VERSION.rpm.sha256
-            phase_cli_linux_amd64_$VERSION.sha256
-            phase_cli_windows_amd64_$VERSION.exe
-            phase_cli_windows_amd64_$VERSION.exe.sha256
-            phase_cli_macos_amd64_$VERSION
-            phase_cli_macos_amd64_$VERSION.sha256
-            phase_cli_alpine_linux_amd64_$VERSION
+          zip -r phase_cli_release_$VERSION.zip \
+            phase_cli_linux_amd64_$VERSION.deb \
+            phase_cli_linux_amd64_$VERSION.rpm \
+            phase_cli_linux_amd64_$VERSION \
+            phase_cli_linux_amd64_$VERSION.deb.sha256 \
+            phase_cli_linux_amd64_$VERSION.rpm.sha256 \
+            phase_cli_linux_amd64_$VERSION.sha256 \
+            phase_cli_windows_amd64_$VERSION.exe \
+            phase_cli_windows_amd64_$VERSION.exe.sha256 \
+            phase_cli_macos_amd64_$VERSION \
+            phase_cli_macos_amd64_$VERSION.sha256 \
+            phase_cli_alpine_linux_amd64_$VERSION \
             phase_cli_alpine_linux_amd64_$VERSION.sha256
-          tag: ${{ github.ref }}
-          overwrite: true
+          sha256sum phase_cli_release_$VERSION.zip > phase_cli_release_$VERSION.zip.sha256
+
+      # Upload the zip file
+      - uses: actions/upload-artifact@v2
+        with:
+          name: phase-cli-release-zip
+          path: ./phase_cli_release_$VERSION.zip
