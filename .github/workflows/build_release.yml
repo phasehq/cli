@@ -216,11 +216,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Download the artifacts from build jobs to specific directories
+      # Download all the artifacts from the build jobs
       - name: Download all artifacts
         uses: actions/download-artifact@v2
 
-      # Debug: List the content of artifacts directory
+      # Debug: List the content of the current directory
       - name: Debug - List contents of artifacts directory
         run: find . -type f
 
@@ -228,29 +228,31 @@ jobs:
       - name: Set VERSION from file
         run: echo "VERSION=$(cat PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
-      # Rename, checksum, and move files to the release directory
+      # Process assets: Rename, calculate sha256, and move them to the release directory
       - name: Process assets
         run: |
           mkdir phase_cli_release_$VERSION
-          mv phase-deb/*.deb phase_cli_linux_amd64_$VERSION.deb
-          sha256sum phase_cli_linux_amd64_$VERSION.deb > phase_cli_linux_amd64_$VERSION.deb.sha256
-          mv phase-rpm/*.rpm phase_cli_linux_amd64_$VERSION.rpm
-          sha256sum phase_cli_linux_amd64_$VERSION.rpm > phase_cli_linux_amd64_$VERSION.rpm.sha256
-          mv Linux-binary/phase phase_cli_linux_amd64_$VERSION
-          sha256sum phase_cli_linux_amd64_$VERSION > phase_cli_linux_amd64_$VERSION.sha256
-          mv Windows-binary/phase.exe phase_cli_windows_amd64_$VERSION.exe
-          sha256sum phase_cli_windows_amd64_$VERSION.exe > phase_cli_windows_amd64_$VERSION.exe.sha256
-          mv phase-alpine-build/* phase_cli_alpine_linux_amd64_$VERSION
-          sha256sum phase_cli_alpine_linux_amd64_$VERSION > phase_cli_alpine_linux_amd64_$VERSION.sha256
 
-          # Move all the processed files to the release directory
-          mv phase_cli_* phase_cli_release_$VERSION/
+          mv phase-deb/*.deb phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb
+          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb.sha256
 
-      # Debug: List the content of the current directory after processing
+          mv phase-rpm/*.rpm phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm
+          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm.sha256
+
+          mv Linux-binary/phase phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION
+          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.sha256
+
+          mv Windows-binary/phase.exe phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe
+          sha256sum phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe.sha256
+
+          mv phase-alpine-build/* phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION
+          sha256sum phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
+
+      # Debug: List the content of the current directory and subdirectories
       - name: Debug - List contents after processing
         run: ls -alR
 
-      # Upload the release directory as an artifact
+      # Upload the entire release directory as a single artifact
       - uses: actions/upload-artifact@v2
         with:
           name: phase-cli-release
