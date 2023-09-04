@@ -298,7 +298,12 @@ jobs:
             phase_cli_linux_amd64_$VERSION \
             phase_cli_windows_amd64_$VERSION.exe \
             phase_cli_macos_amd64_$VERSION \
-            phase_cli_alpine_linux_amd64_$VERSION
+            phase_cli_alpine_linux_amd64_$VERSION \
+            phase_cli_linux_amd64_$VERSION.deb.sha256 \
+            phase_cli_linux_amd64_$VERSION.rpm.sha256 \
+            phase_cli_linux_amd64_$VERSION.sha256 \
+            phase_cli_windows_amd64_$VERSION.exe.sha256 \
+            phase_cli_alpine_linux_amd64_$VERSION.sha256
 
       # Debug: List the content of the current directory after zipping
       - name: Debug - List contents after zipping
