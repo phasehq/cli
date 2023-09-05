@@ -2,7 +2,8 @@
 
 set -e
 
-PACKAGE_MIRROR="https://phase-pkg.s3.eu-central-1.amazonaws.com"
+REPO="phasehq/cli"
+BASE_URL="https://github.com/$REPO/releases/download"
 
 detect_os() {
     if [ -f /etc/os-release ]; then
@@ -15,7 +16,7 @@ detect_os() {
 }
 
 check_required_tools() {
-    for TOOL in sudo wget curl; do
+    for TOOL in sudo wget curl jq; do
         if ! command -v $TOOL > /dev/null; then
             echo "Installing $TOOL..."
             case $OS in
@@ -31,6 +32,18 @@ check_required_tools() {
             esac
         fi
     done
+}
+
+get_latest_version() {
+    curl -s "https://api.github.com/repos/$REPO/releases/latest" | jq -r .tag_name | cut -c 2- # remove the 'v' prefix
+}
+
+wget_download() {
+    if wget --help 2>&1 | grep -q '\--show-progress'; then
+        wget --show-progress "$1" -O "$2"
+    else
+        wget "$1" -O "$2"
+    fi
 }
 
 has_sudo_access() {
@@ -49,116 +62,43 @@ is_phase_installed() {
     fi
 }
 
-wget_download() {
-    if wget --help 2>&1 | grep -q '\--show-progress'; then
-        wget --show-progress "$1" -O "$2"
-    else
-        wget "$1" -O "$2"
-    fi
-}
-
-install_binary() {
-    BINARY_URL="$PACKAGE_MIRROR/latest/phase_cli_linux_amd64_latest"
-    BINARY="$TMPDIR/phase"
-
-    echo "Downloading phase-cli binary..."
-    wget_download $BINARY_URL $BINARY
-
-    echo "Making binary executable..."
-    chmod +x $BINARY
-
-    if ! has_sudo_access; then
-        echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
-    fi
-    sudo mv $BINARY /usr/local/bin/phase
-
-    echo "phase-cli installed."
-}
-
 install_package() {
+    VERSION=$(get_latest_version)
     TMPDIR=$(mktemp -d)
 
     case $OS in
         ubuntu|debian)
-            PACKAGE_PATH="$TMPDIR/phase_cli_amd64_latest.deb"
-            HASH_PATH="$TMPDIR/hash"
-            PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.deb"
-            HASH_URL="$PACKAGE_URL.sha512"
-            
-            echo "Downloading phase-cli..."
-            wget_download $PACKAGE_URL $PACKAGE_PATH
-            echo "Getting phase-cli hash..."
-            wget_download $HASH_URL $HASH_PATH
-
-            EXPECTED_HASH=$(cut -d ' ' -f 1 $HASH_PATH)
-
-            if ! echo "$EXPECTED_HASH $PACKAGE_PATH" | sha512sum -c -w 2>/dev/null; then
-                echo "SHA-512 hash verification failed!"
-                exit 1
-            else
-                echo "SHA-512 hash verification successful."
-            fi
-            
-            sudo dpkg -i $PACKAGE_PATH
+            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
+            wget_download $PACKAGE_URL $TMPDIR/phase.deb
+            sudo dpkg -i $TMPDIR/phase.deb
             ;;
 
         fedora|rhel|centos)
-            PACKAGE_PATH="$TMPDIR/phase_cli_amd64_latest.rpm"
-            HASH_PATH="$TMPDIR/hash"
-            PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.rpm"
-            HASH_URL="$PACKAGE_URL.sha512"
-            
-            echo "Downloading phase-cli..."
-            wget_download $PACKAGE_URL $PACKAGE_PATH
-            echo "Getting phase-cli hash..."
-            wget_download $HASH_URL $HASH_PATH
-
-            EXPECTED_HASH=$(cut -d ' ' -f 1 $HASH_PATH)
-
-            if ! echo "$EXPECTED_HASH $PACKAGE_PATH" | sha512sum -c -w 2>/dev/null; then
-                echo "SHA-512 hash verification failed!"
-                exit 1
-            else
-                echo "SHA-512 hash verification successful."
-            fi
-
+            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.rpm"
+            wget_download $PACKAGE_URL $TMPDIR/phase.rpm
             if is_phase_installed; then
-                sudo rpm -U $PACKAGE_PATH
+                sudo rpm -U $TMPDIR/phase.rpm
             else
-                sudo rpm -i $PACKAGE_PATH
+                sudo rpm -i $TMPDIR/phase.rpm
             fi
             ;;
 
         alpine)
-            PACKAGE_PATH="$TMPDIR/phase_cli_amd64_latest.apk"
-            HASH_PATH="$TMPDIR/hash"
-            PACKAGE_URL="$PACKAGE_MIRROR/latest/phase_cli_amd64_latest.apk"
-            HASH_URL="$PACKAGE_URL.sha512"
-            
-            echo "Downloading phase-cli..."
-            wget_download $PACKAGE_URL $PACKAGE_PATH
-            echo "Getting phase-cli hash..."
-            wget_download $HASH_URL $HASH_PATH
-
-            EXPECTED_HASH=$(cut -d ' ' -f 1 $HASH_PATH)
-
-            if ! echo "$EXPECTED_HASH $PACKAGE_PATH" | sha512sum -c -w 2>/dev/null; then
-                echo "SHA-512 hash verification failed!"
-                exit 1
-            else
-                echo "SHA-512 hash verification successful."
+            BINARY_URL="$BASE_URL/v$VERSION/phase_cli_alpine_linux_amd64_$VERSION"
+            wget_download $BINARY_URL $TMPDIR/phase
+            chmod +x $TMPDIR/phase
+            if ! has_sudo_access; then
+                echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
             fi
-            
-            sudo apk add --allow-untrusted $PACKAGE_PATH
+            sudo mv $TMPDIR/phase /usr/local/bin/
             ;;
 
         *)
-            install_binary
-            exit 0
+            echo "Unsupported OS type."
+            exit 1
             ;;
     esac
 
-    VERSION=$(phase -v 2>/dev/null || echo "Unknown")
     echo "phase-cli version $VERSION successfully installed"
 }
 
