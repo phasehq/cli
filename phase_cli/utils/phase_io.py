@@ -96,11 +96,13 @@ class Phase:
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
+        
 
         user_data = user_response.json()
         environment_key = self._find_matching_environment_key(user_data, id)
         if environment_key is None:
             raise ValueError(f"No environment found with id: {id}")
+    
 
         wrapped_salt = environment_key.get("wrapped_salt")
         decrypted_salt = self.decrypt(wrapped_salt)
@@ -353,3 +355,46 @@ def fetch_app_key(appToken, wrapKey, host) -> str:
     unwrapped_key = CryptoUtils.decrypt_raw(bytes.fromhex(wrapped_key_share), bytes.fromhex(wrapKey))
     
     return unwrapped_key.decode("utf-8")
+
+
+def phase_get_context(user_data, app_name=None, env_name=None):
+    """
+    Get the context (ID and publicKey) for a specified application and environment or the default application and environment.
+
+    Parameters:
+    - user_data (dict): The user data from the API response.
+    - app_name (str, optional): The name of the desired application.
+    - env_name (str, optional): The name (or partial name) of the desired environment.
+
+    Returns:
+    - tuple: A tuple containing the application's ID, environment's ID and publicKey.
+
+    Raises:
+    - ValueError: If no matching application or environment is found or multiple environments match the given name.
+    """
+    
+    # Find the desired application by name or use the first one if app_name is not provided
+    if app_name:
+        matching_apps = [app for app in user_data["apps"] if app["name"] == app_name]
+        if not matching_apps:
+            raise ValueError(f"No application matched '{app_name}'.")
+        application = matching_apps[0]
+    else:
+        application = user_data["apps"][0]
+    
+    if env_name:
+        # Search for environments with names containing the partial env_name
+        matching_envs = [env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()]
+        
+        # If more than one environment matches, raise an error
+        if len(matching_envs) > 1:
+            raise ValueError(f"Multiple environments matched '{env_name}' for application '{application['name']}': {[env['environment']['name'] for env in matching_envs]}.\nPlease specify the full environment name.")
+        elif not matching_envs:
+            raise ValueError(f"No environment matched '{env_name}' for application '{application['name']}'.")
+        else:
+            environment = matching_envs[0]
+    else:
+        # Use the first environment for the chosen application
+        environment = application["environment_keys"][0]
+
+    return application["id"], environment["environment"]["id"], environment["identity_key"]
