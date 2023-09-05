@@ -243,7 +243,7 @@ jobs:
           sha256sum phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe.sha256
 
           # For MacOS
-          mv MacOS-binary/phase phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION
+          mv macOS-binary/phase phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION
           sha256sum phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION.sha256
 
           # For Alpine package
