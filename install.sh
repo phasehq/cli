@@ -99,39 +99,39 @@ install_package() {
     case $OS in
         ubuntu|debian)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
-            wget_download $PACKAGE_URL $TMPDIR/phase.deb
-            verify_checksum "$TMPDIR/phase.deb" "$PACKAGE_URL.sha256"
-            sudo dpkg -i $TMPDIR/phase.deb
+            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
+            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.deb" "$PACKAGE_URL.sha256"
+            sudo dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
             ;;
 
         fedora|rhel|centos)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.rpm"
-            wget_download $PACKAGE_URL $TMPDIR/phase.rpm
-            verify_checksum "$TMPDIR/phase.rpm" "$PACKAGE_URL.sha256"
+            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
+            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.rpm" "$PACKAGE_URL.sha256"
             if is_phase_installed; then
-                sudo rpm -U $TMPDIR/phase.rpm
+                sudo rpm -U $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
             else
-                sudo rpm -i $TMPDIR/phase.rpm
+                sudo rpm -i $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
             fi
             ;;
 
         alpine)
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_alpine_linux_amd64_$VERSION.apk"
-            wget_download $PACKAGE_URL $TMPDIR/phase.apk
-            verify_checksum "$TMPDIR/phase.apk" "$PACKAGE_URL.sha256"
-            sudo apk add --allow-untrusted $TMPDIR/phase.apk
+            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.apk"
+            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
+            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.apk" "$PACKAGE_URL.sha256"
+            sudo apk add --allow-untrusted $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
             ;;
 
         *)
             if [ "$(uname -m)" == "x86_64" ]; then
                 BINARY_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION"
-                wget_download $BINARY_URL $TMPDIR/phase
-                verify_checksum "$TMPDIR/phase" "$BINARY_URL.sha256"
-                chmod +x $TMPDIR/phase
+                wget_download $BINARY_URL $TMPDIR/phase_cli_linux_amd64_$VERSION
+                verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION" "$BINARY_URL.sha256"
+                chmod +x $TMPDIR/phase_cli_linux_amd64_$VERSION
                 if ! has_sudo_access; then
                     echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
                 fi
-                sudo mv $TMPDIR/phase /usr/local/bin/
+                sudo mv $TMPDIR/phase_cli_linux_amd64_$VERSION /usr/local/bin/phase
             else
                 echo "Unsupported OS type and architecture."
                 exit 1
