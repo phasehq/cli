@@ -38,7 +38,7 @@ check_required_tools() {
 }
 
 get_latest_version() {
-    curl -s "https://api.github.com/repos/$REPO/releases/latest" | jq -r .tag_name | cut -c 2- # remove the 'v' prefix
+    curl -s "https://api.github.com/repos/$REPO/releases/latest" | jq -r .tag_name | cut -c 2-
 }
 
 wget_download() {
