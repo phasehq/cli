@@ -30,7 +30,7 @@ check_required_tools() {
                     apk add $TOOL
                     ;;
                 arch)
-                    sudo pacman -Sy --noconfirm $TOOL
+                    pacman -Sy --noconfirm $TOOL
                     ;;
             esac
         fi
@@ -55,12 +55,23 @@ verify_checksum() {
     local checksum_file="$TMPDIR/checksum.sha256"
     
     wget_download "$checksum_url" "$checksum_file"
-    sha256sum -c "$checksum_file" --ignore-missing
+    
+    while IFS= read -r line; do
+        local expected_checksum=$(echo "$line" | awk '{print $1}')
+        local target_file=$(echo "$line" | awk '{print $2}')
 
-    if [[ $? -ne 0 ]]; then
-        echo "Checksum verification failed!"
-        exit 1
-    fi
+        # Check if the target file exists
+        if [[ -e "$target_file" ]]; then
+            # Compute the checksum
+            local computed_checksum=$(sha256sum "$target_file" | awk '{print $1}')
+            
+            # Verify the checksum
+            if [[ "$expected_checksum" != "$computed_checksum" ]]; then
+                echo "Checksum verification failed for $target_file!"
+                exit 1
+            fi
+        fi
+    done < "$checksum_file"
 }
 
 has_sudo_access() {
