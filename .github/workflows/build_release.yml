@@ -114,66 +114,6 @@ jobs:
           name: phase-alpine-build
           path: ./dist/phase
 
-  Test_Linux_cli:
-    name: Test - CLI installation - Linux
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        distro: ["ubuntu", "fedora", "alpine", "archlinux"]
-        include:
-          - distro: "ubuntu"
-            image: "ubuntu:latest"
-            install_command: "apt-get update && apt-get install -y curl bash"
-          - distro: "fedora"
-            image: "fedora:latest"
-            install_command: "dnf -y install curl bash"
-          - distro: "alpine"
-            image: "alpine:latest"
-            install_command: "apk add --no-cache curl bash"
-          - distro: "archlinux"
-            image: "archlinux:latest"
-            install_command: "pacman -Sy --noconfirm curl sudo wget bash"
-    container:
-      image: ${{ matrix.image }}
-    steps:
-      - run: ${{ matrix.install_command }}
-      - run: curl -fsSL https://pkg.phase.dev/install.sh | bash
-      - run: phase -h
-      - run: phase -v
-
-  # Test_MacOS_cli:
-  #   name: Test - CLI installation - MacOS
-  #   runs-on: macOS-latest
-  #   steps:
-  #     - name: Install Homebrew
-  #       run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  #     - name: Install phase CLI via Homebrew
-  #       run: brew install phasehq/cli/phase
-
-  #     - name: Test phase CLI
-  #       run: |
-  #         phase -h
-  #         phase -v
-
-  # Test_Windows_cli:
-  #   name: Test - CLI installation - Windows
-  #   runs-on: windows-latest
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v2
-
-  #     - name: Download phase CLI binary
-  #       uses: actions/download-artifact@v2
-  #       with:
-  #         name: Windows-binary
-  #         path: ./phase-windows-executable
-
-  #     - name: Test phase CLI
-  #       run: |
-  #         ./phase-windows-executable/phase-cli.exe -h
-  #         ./phase-windows-executable/phase-cli.exe -v
-
   Build_and_push_docker:
     name: Build & Release - Docker
     needs: build_apk
@@ -226,18 +166,31 @@ jobs:
         run: |
           mkdir phase_cli_release_$VERSION
 
+          # For DEB
           mv phase-deb/*.deb phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb.sha256
 
+          # For RPM
           mv phase-rpm/*.rpm phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm.sha256
 
+          # For Linux
           mv Linux-binary/phase phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.sha256
 
+          # For Windows
           mv Windows-binary/phase.exe phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe
           sha256sum phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe.sha256
 
+          # For MacOS
+          mv macOS-binary/phase phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION
+          sha256sum phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION.sha256
+
+          # For Alpine package
+          mv phase-apk/*.apk phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk
+          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk.sha256
+
+          # For Alpine build
           mv phase-alpine-build/* phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION
           sha256sum phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
 
@@ -250,3 +203,66 @@ jobs:
         with:
           name: phase-cli-release
           path: ./phase_cli_release_*/
+
+  Test_Linux_cli:
+    name: Test - CLI installation - Linux
+    needs: attach-assets
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        distro: ["ubuntu", "fedora", "alpine", "archlinux"]
+        include:
+          - distro: "ubuntu"
+            image: "ubuntu:latest"
+            install_command: "apt-get update && apt-get install -y curl bash"
+          - distro: "fedora"
+            image: "fedora:latest"
+            install_command: "dnf -y install curl bash"
+          - distro: "alpine"
+            image: "alpine:latest"
+            install_command: "apk add --no-cache curl bash"
+          - distro: "archlinux"
+            image: "archlinux:latest"
+            install_command: "pacman -Sy --noconfirm curl sudo wget bash"
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - run: ${{ matrix.install_command }}
+      - run: curl -fsSL https://pkg.phase.dev/install.sh | bash
+      - run: phase -h
+      - run: phase -v
+
+  # Test_MacOS_cli:
+  #   name: Test - CLI installation - MacOS
+  #   needs: attach-assets
+  #   runs-on: macOS-latest
+  #   steps:
+  #     - name: Install Homebrew
+  #       run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  #     - name: Install phase CLI via Homebrew
+  #       run: brew install phasehq/cli/phase
+
+  #     - name: Test phase CLI
+  #       run: |
+  #         phase -h
+  #         phase -v
+
+  # Test_Windows_cli:
+  #   name: Test - CLI installation - Windows
+  #   needs: attach-assets
+  #   runs-on: windows-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v2
+
+  #     - name: Download phase CLI binary
+  #       uses: actions/download-artifact@v2
+  #       with:
+  #         name: Windows-binary
+  #         path: ./phase-windows-executable
+
+  #     - name: Test phase CLI
+  #       run: |
+  #         ./phase-windows-executable/phase-cli.exe -h
+  #         ./phase-windows-executable/phase-cli.exe -v
