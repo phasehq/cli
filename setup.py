@@ -21,7 +21,7 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/phasehq/cli',
-    packages=find_packages(include=['phase_cmd*', 'utils*', 'phase_cli*']),
+    packages=find_packages(include=['phase_cli*']),
     entry_points={
         'console_scripts': [
             'phase=phase_cli.main:main',

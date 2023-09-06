@@ -3,7 +3,7 @@ import sys
 import json
 import re
 from typing import Union, List
-from utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR
+from phase_cli.utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR
 
 def get_terminal_width():
     """
@@ -163,45 +163,53 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
         return config_data.get("default-user")
 
 
-def phase_get_context(env_name=None):
+def phase_get_context(user_data, app_name=None, env_name=None):
     """
-    Get the context (ID and publicKey) for a specified environment or the default environment.
+    Get the context (ID and publicKey) for a specified application and environment or the default application and environment.
 
     Parameters:
+    - user_data (dict): The user data from the API response.
+    - app_name (str, optional): The name of the desired application.
     - env_name (str, optional): The name (or partial name) of the desired environment.
 
     Returns:
-    - tuple: A tuple containing the environment's ID and publicKey.
+    - tuple: A tuple containing the application's ID, environment's ID and publicKey.
 
     Raises:
-    - FileNotFoundError: If the Phase app configuration file (.phase.json) is missing.
-    - ValueError: If no matching environment is found or multiple environments match the given name.
+    - ValueError: If no matching application or environment is found or multiple environments match the given name.
     """
-    try:
-        with open(PHASE_ENV_CONFIG, 'r') as f:
-            config_data = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError("Phase app config (\".phase.json\") not found. Please make sure you're in the correct directory or initialize using 'phase init'.")
-
-    if env_name:
-        # Search for environments with names containing the partial env_name
-        matching_envs = [env for env in config_data["phaseEnvironments"] if env_name.lower() in env["env"].lower()]
-        
-        # If more than one environment matches, prompt the user to specify the full name
-        if len(matching_envs) > 1:
-            print(f"Multiple environments matched '{env_name}': {[env['env'] for env in matching_envs]}")
-            print("Please specify the full environment name.")
-            sys.exit(1)
-        elif not matching_envs:
-            raise ValueError(f"No environment matched '{env_name}'.")
-        else:
-            environment = matching_envs[0]
+    
+    # If env_name is not provided, fetch it from the .phase.json file
+    if not env_name:
+        try:
+            with open(PHASE_ENV_CONFIG, 'r') as f:
+                config_data = json.load(f)
+            env_name = config_data["defaultEnv"]
+            app_id = config_data.get("appId")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Phase app config not found. Please make sure you're in the correct directory or initialize using 'phase init'.")
+    
+    # If appId is provided, use it to find the desired application
+    if app_id:
+        application = next((app for app in user_data["apps"] if app["id"] == app_id), None)
+    # If app_name is provided, use it to find the desired application
+    elif app_name:
+        application = next((app for app in user_data["apps"] if app["name"] == app_name), None)
     else:
-        # Use default environment
-        default_env_id = config_data.get("defaultEnv")
-        environment = next((env for env in config_data["phaseEnvironments"] if env["id"] == default_env_id), None)
-    
-    if not environment:
-        raise ValueError("No matching environment found.")
-    
-    return environment["id"], environment["publicKey"]
+        application = user_data["apps"][0]
+
+    if not application:
+        raise ValueError(f"No application matched using ID '{app_id}' or name '{app_name}'.")
+
+    # Search for environments with names containing the env_name
+    matching_envs = [env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()]
+        
+    # If more than one environment matches, raise an error
+    if len(matching_envs) > 1:
+        raise ValueError(f"Multiple environments matched '{env_name}' for application '{application['name']}': {[env['environment']['name'] for env in matching_envs]}.\nPlease specify the full environment name.")
+    elif not matching_envs:
+        raise ValueError(f"No environment matched '{env_name}' for application '{application['name']}'.")
+    else:
+        environment = matching_envs[0]
+
+    return application["id"], environment["environment"]["id"], environment["identity_key"]

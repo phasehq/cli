@@ -8,10 +8,10 @@ import shutil
 import subprocess
 import getpass
 import questionary
-from utils.phase_io import Phase
-from utils.misc import censor_secret, render_table, get_default_user_host, get_default_user_id, phase_get_context, sanitize_value
-from utils.keyring import get_credentials
-from utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
+from phase_cli.utils.phase_io import Phase
+from phase_cli.utils.misc import censor_secret, render_table, get_default_user_host, get_default_user_id, sanitize_value
+from phase_cli.utils.keyring import get_credentials
+from phase_cli.utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
 
 # Takes Phase credentials from user and stored them securely in the system keyring
 def phase_auth():
@@ -139,27 +139,17 @@ def phase_init():
         if not default_env:
             raise ValueError("No 'Development' environment found.")
 
-        # Build the phaseEnvironments list
-        phase_environments = [{
-            "env": env_key['environment']['name'],
-            "envType": env_key['environment']['env_type'],
-            "id": env_key['environment']['id'],
-            "publicKey": env_key['identity_key'],
-            "salt": env_key['wrapped_salt']
-        } for env_key in selected_app_details['environment_keys']]
-
         # Save the selected app’s environment details to the .phase.json file
         phase_env = {
             "version": "1",
             "phaseApp": selected_app_name,
-            "encryption": selected_app_details['encryption'],  # Extracted the encryption field
-            "defaultEnv": default_env['environment']['id'],
-            "phaseEnvironments": phase_environments
+            "appId": selected_app_details['id'],  # Save the app id
+            "defaultEnv": default_env['environment']['name'],
         }
 
         # Create .phase.json
         with open(PHASE_ENV_CONFIG, 'w') as f:
-            json.dump(phase_env, f, indent=4)
+            json.dump(phase_env, f, indent=2)
         os.chmod(PHASE_ENV_CONFIG, 0o600)
 
         print("✅ Initialization completed successfully.")
@@ -173,19 +163,15 @@ def phase_init():
         sys.exit(1)
 
 
-
 # Creates new secrets, encrypts them and saves them in PHASE_SECRETS_DIR
-def phase_secrets_create(key=None, env_name=None):
+def phase_secrets_create(key=None, env_name=None, phase_app=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
     if not pss:
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
-    
-    # Get context (environment ID and public key) using the optional env_name parameter
-    env_id, public_key = phase_get_context(env_name)
-    
+
     # Initialize Phase class instance
     host = get_default_user_host()
     phase = Phase(pss, host)
@@ -198,7 +184,7 @@ def phase_secrets_create(key=None, env_name=None):
     value = getpass.getpass("Please enter the value (hidden): ")
     
     # Encrypt and send secret to the backend using the `create` method
-    response = phase.create(env_id, public_key, [(key, value)])
+    response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app )
     
     # Check the response status code
     if response.status_code == 200:
@@ -209,16 +195,13 @@ def phase_secrets_create(key=None, env_name=None):
         print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
 
 
-def phase_secrets_update(key, env_name=None):
+def phase_secrets_update(key, env_name=None, phase_app=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
     if not pss:
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
-
-    # Use phase_get_context function to get environment id and public key
-    environment_id, public_key = phase_get_context(env_name)
 
     # Fetch secrets using Phase.get
     host = get_default_user_host()
@@ -227,7 +210,7 @@ def phase_secrets_update(key, env_name=None):
     try:
         # Check if the secret with the given key exists
         key = key.upper()
-        secret_data = phase.get(environment_id, key=key, public_key=public_key)
+        secret_data = phase.get(env_name=env_name, key=key, app_name=phase_app)
     except ValueError as e:
         # Key not found in the backend
         print("Secret not found...")
@@ -238,7 +221,7 @@ def phase_secrets_update(key, env_name=None):
 
     # Call the update method of the Phase class
     new_value = new_value.upper()
-    response = phase.update(environment_id, public_key, key, new_value)
+    response = phase.update(env_name=env_name, key=key, value=new_value, app_name=phase_app)
     
     # Check the response status code (assuming the update method returns a response with a status code)
     if response == "Success":
@@ -251,16 +234,13 @@ def phase_secrets_update(key, env_name=None):
 
 
 # Deletes encrypted secrets based on key value pairs
-def phase_secrets_delete(keys_to_delete=[], env_name=None):
+def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
     if not pss:
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
-
-    # Get context (environment ID and public key) using the optional env_name parameter
-    env_id, public_key = phase_get_context(env_name)
 
     # Initialize Phase class instance
     host = get_default_user_host()
@@ -272,7 +252,7 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None):
         keys_to_delete = [key.upper() for key in keys_to_delete_input.split()]
 
     # Delete keys and get the list of keys not found
-    keys_not_found = phase.delete(env_id, public_key, keys_to_delete)
+    keys_not_found = phase.delete(env_name=env_name, keys_to_delete=keys_to_delete, app_name=phase_app)
 
     if keys_not_found:
         print(f"Warning: The following keys were not found: {', '.join(keys_not_found)}")
@@ -284,16 +264,13 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None):
 
 
 # Imports existing environment variables and secrets from users .env file based on PHASE_ENV_CONFIG context
-def phase_secrets_env_import(env_file, env_name=None):
+def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
     if not pss:
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
-    
-    # Get context (environment ID and public key) using the optional env_name parameter
-    env_id, public_key = phase_get_context(env_name)
     
     # Initialize Phase class instance
     host = get_default_user_host()
@@ -316,7 +293,7 @@ def phase_secrets_env_import(env_file, env_name=None):
         sys.exit(1)
     
     # Encrypt and send secrets to the backend using the `create` method
-    response = phase.create(env_id, public_key, secrets)
+    response = phase.create(key_value_pairs=secrets, env_name=phase_app, app_name=phase_app)
     
     # Check the response status code
     if response.status_code == 200:
@@ -330,9 +307,8 @@ def phase_secrets_env_import(env_file, env_name=None):
         print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
 
 
-
 # Decrypts and exports environment variables and secrets based to a plain text .env file based on PHASE_ENV_CONFIG context
-def phase_secrets_env_export(env_name=None):
+def phase_secrets_env_export(env_name=None, phase_app=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
@@ -340,15 +316,12 @@ def phase_secrets_env_export(env_name=None):
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
     
-    # Use phase_get_context function to get environment id and public key
-    environment_id, public_key = phase_get_context(env_name)
-    
     # Initialize Phase object
     host = get_default_user_host()
     phase = Phase(pss, host)
     
     # Use phase.get function to fetch the secrets for the specified environment
-    secrets_data = phase.get(environment_id, public_key=public_key)
+    secrets_data = phase.get(env_name=env_name, app_name=phase_app)
     
     # Print secrets in dotenv format
     for secret in secrets_data:
@@ -382,7 +355,7 @@ def phase_cli_logout(purge=False):
         print("Logged out successfully.")
 
 
-def phase_secrets_get(key, env_name=None):
+def phase_secrets_get(key, env_name=None, phase_app=None):
     """
     Fetch and print a single secret based on a given key.
     
@@ -397,16 +370,13 @@ def phase_secrets_get(key, env_name=None):
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
 
-    # Use phase_get_context function to get environment id and public key
-    environment_id, public_key = phase_get_context(env_name)
-
     # Fetch secrets using Phase.get
     host = get_default_user_host()
     phase = Phase(pss, host)
     
     try:
         key = key.upper()
-        secret_data = phase.get(environment_id, key=key, public_key=public_key)
+        secret_data = phase.get(env_name=env_name, key=key, app_name=phase_app)
     except ValueError as e:
         print("🔍 Secret not found...")
         return
@@ -419,22 +389,18 @@ def phase_secrets_get(key, env_name=None):
     render_table([secret_data], show=True)
             
 
-def phase_list_secrets(show=False, env_name=None):
+def phase_list_secrets(show=False, env_name=None, phase_app=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
     if not pss:
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
-
-    # Use phase_get_context function to get environment id and public key
-    environment_id, public_key = phase_get_context(env_name)
-    
-
+ 
     # Fetch secrets using Phase.get
     host = get_default_user_host()
     phase = Phase(pss, host)
-    secrets_data = phase.get(environment_id, public_key=public_key)
+    secrets_data = phase.get(env_name=env_name, app_name=phase_app)
 
     # Check that secrets_data is a list of dictionaries
     if not isinstance(secrets_data, list):
@@ -447,7 +413,7 @@ def phase_list_secrets(show=False, env_name=None):
         print("\n🥽 To uncover the secrets, use: phase secrets list --show")
 
 
-def phase_run_inject(command, env_name=None):
+def phase_run_inject(command, env_name=None, phase_app=None):
     # Get credentials from the keyring
     pss = get_credentials()
 
@@ -456,16 +422,13 @@ def phase_run_inject(command, env_name=None):
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         sys.exit(1)
     
-    # Use phase_get_context function to get environment id and public key
-    env_id, public_key = phase_get_context(env_name)
-    
     # Initialize Phase class instance
     host = get_default_user_host()
     phase = Phase(pss, host)
     
     # Fetch the decrypted secrets using the `get` method
     try:
-        secrets = phase.get(env_id, public_key)
+        secrets = phase.get(env_name=env_name, app_name=phase_app)
     except ValueError as e:
         print(f"Failed to fetch secrets: {e}")
         sys.exit(1)
@@ -483,9 +446,9 @@ def phase_run_inject(command, env_name=None):
         
         if cross_env_match:  # Cross environment reference
             ref_env, ref_key = cross_env_match.groups()
-            ref_env_id, ref_public_key = phase_get_context(ref_env)
+            #ref_env_id, ref_public_key = phase_get_context(ref_env)
             try:
-                ref_secret = phase.get(ref_env_id, key=ref_key, public_key=ref_public_key)
+                ref_secret = phase.get(env_name=ref_env, key=ref_key, app_name=phase_app)
                 new_env[key] = ref_secret['value']
             except ValueError as e:
                 print(f"Warning: Reference {ref_key} in environment {ref_env} not found for key {key}. Ignoring...")

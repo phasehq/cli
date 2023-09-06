@@ -1,7 +1,7 @@
 import os
 import getpass
 import keyring
-from utils.misc import get_default_user_id
+from phase_cli.utils.misc import get_default_user_id
 
 def get_credentials():
     # Fetch user ID for keyring service name

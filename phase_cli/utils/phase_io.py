@@ -4,7 +4,7 @@ import requests, json
 from typing import Tuple
 from typing import List
 from dataclasses import dataclass
-from utils.network import (
+from phase_cli.utils.network import (
     fetch_phase_user,
     fetch_phase_secrets,
     create_phase_secrets,
@@ -21,8 +21,9 @@ from nacl.bindings import (
     crypto_kx_client_session_keys,
     crypto_kx_seed_keypair,
 )
-from utils.crypto import CryptoUtils
-from utils.const import __ph_version__
+from phase_cli.utils.crypto import CryptoUtils
+from phase_cli.utils.const import __ph_version__, PHASE_ENV_CONFIG
+from phase_cli.utils.misc import phase_get_context
 
 
 @dataclass
@@ -81,28 +82,27 @@ class Phase:
         return response.json()
 
 
-    def create(self, id: str, public_key: str, key_value_pairs: List[Tuple[str, str]]) -> requests.Response:
+    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str) -> requests.Response:
         """
         Create secrets in Phase KMS.
         
         Args:
-            id (str): The environment ID.
-            public_key (str): The public key used for asymmetric encryption.
             key_value_pairs (List[Tuple[str, str]]): List of tuples where each tuple contains a key and a value.
-            
+            env_name (str): The name (or partial name) of the desired environment.
+                
         Returns:
             requests.Response: The HTTP response from the Phase KMS.
         """
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
-        
 
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
-    
+            raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_salt = environment_key.get("wrapped_salt")
         decrypted_salt = self.decrypt(wrapped_salt)
@@ -123,25 +123,40 @@ class Phase:
             }
             secrets.append(secret)
 
-        return create_phase_secrets(self._app_secret.app_token, id, secrets, self._api_host)
+        return create_phase_secrets(self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, id: str, public_key: str, key: str = None):
+    def get(self, env_name: str, key: str = None, app_name: str = None):
+        """
+        Get secrets from Phase KMS based on key and environment.
+        
+        Args:
+            key (str, optional): The key for which to retrieve the secret value.
+            env_name (str): The name (or partial name) of the desired environment.
+            app_name (str, optional): The name of the desired application.
+                
+        Returns:
+            dict or list: A dictionary containing the decrypted key and value if key is provided, 
+                        otherwise a list of dictionaries for all secrets in the environment.
+        """
+        
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
+            raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
-        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
+        secrets_response = fetch_phase_secrets(self._app_secret.app_token, env_id, self._api_host)
         secrets_data = secrets_response.json()
 
         if key:
@@ -166,15 +181,33 @@ class Phase:
             return results
 
 
-    def update(self, id: str, public_key: str, key: str, value: str) -> str:
-        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
-        secrets_data = secrets_response.json()
-
+    def update(self, env_name: str, key: str, value: str, app_name: str = None) -> str:
+        """
+        Update a secret in Phase KMS based on key and environment.
+        
+        Args:
+            env_name (str): The name (or partial name) of the desired environment.
+            key (str): The key for which to update the secret value.
+            value (str): The new value for the secret.
+            app_name (str, optional): The name of the desired application.
+                
+        Returns:
+            str: A message indicating the outcome of the update operation.
+        """
+        
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
+        if user_response.status_code != 200:
+            raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
+
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
+            raise ValueError(f"No environment found with id: {env_id}")
+
+        secrets_response = fetch_phase_secrets(self._app_secret.app_token, env_id, self._api_host)
+        secrets_data = secrets_response.json()
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
@@ -208,7 +241,7 @@ class Phase:
             "comment": ""
         }
 
-        response = update_phase_secrets(self._app_secret.app_token, id, [secret_update_payload], self._api_host)
+        response = update_phase_secrets(self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
         if response.status_code == 200:
             return "Success"
@@ -216,15 +249,29 @@ class Phase:
             return f"Error: Failed to update secret. HTTP Status Code: {response.status_code}"
 
 
-    def delete(self, id: str, public_key: str, keys_to_delete: List[str]) -> List[str]:
+    def delete(self, env_name: str, keys_to_delete: List[str], app_name: str = None) -> List[str]:
+        """
+        Delete secrets in Phase KMS based on keys and environment.
+        
+        Args:
+            env_name (str): The name (or partial name) of the desired environment.
+            keys_to_delete (List[str]): The keys for which to delete the secrets.
+            app_name (str, optional): The name of the desired application.
+                
+        Returns:
+            List[str]: A list of keys that were not found and could not be deleted.
+        """
+        
         user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
+            raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
@@ -233,9 +280,9 @@ class Phase:
 
         secret_ids_to_delete = []
         keys_not_found = []
-        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
+        secrets_response = fetch_phase_secrets(self._app_secret.app_token, env_id, self._api_host)
         secrets_data = secrets_response.json()
-        
+            
         for key in keys_to_delete:
             found = False
             for secret in secrets_data:
@@ -247,8 +294,8 @@ class Phase:
             if not found:
                 keys_not_found.append(key)
 
-        delete_phase_secrets(self._app_secret.app_token, id, secret_ids_to_delete, self._api_host)
-        
+        delete_phase_secrets(self._app_secret.app_token, env_id, secret_ids_to_delete, self._api_host)
+            
         return keys_not_found
 
 
@@ -355,46 +402,3 @@ def fetch_app_key(appToken, wrapKey, host) -> str:
     unwrapped_key = CryptoUtils.decrypt_raw(bytes.fromhex(wrapped_key_share), bytes.fromhex(wrapKey))
     
     return unwrapped_key.decode("utf-8")
-
-
-def phase_get_context(user_data, app_name=None, env_name=None):
-    """
-    Get the context (ID and publicKey) for a specified application and environment or the default application and environment.
-
-    Parameters:
-    - user_data (dict): The user data from the API response.
-    - app_name (str, optional): The name of the desired application.
-    - env_name (str, optional): The name (or partial name) of the desired environment.
-
-    Returns:
-    - tuple: A tuple containing the application's ID, environment's ID and publicKey.
-
-    Raises:
-    - ValueError: If no matching application or environment is found or multiple environments match the given name.
-    """
-    
-    # Find the desired application by name or use the first one if app_name is not provided
-    if app_name:
-        matching_apps = [app for app in user_data["apps"] if app["name"] == app_name]
-        if not matching_apps:
-            raise ValueError(f"No application matched '{app_name}'.")
-        application = matching_apps[0]
-    else:
-        application = user_data["apps"][0]
-    
-    if env_name:
-        # Search for environments with names containing the partial env_name
-        matching_envs = [env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()]
-        
-        # If more than one environment matches, raise an error
-        if len(matching_envs) > 1:
-            raise ValueError(f"Multiple environments matched '{env_name}' for application '{application['name']}': {[env['environment']['name'] for env in matching_envs]}.\nPlease specify the full environment name.")
-        elif not matching_envs:
-            raise ValueError(f"No environment matched '{env_name}' for application '{application['name']}'.")
-        else:
-            environment = matching_envs[0]
-    else:
-        # Use the first environment for the chosen application
-        environment = application["environment_keys"][0]
-
-    return application["id"], environment["environment"]["id"], environment["identity_key"]

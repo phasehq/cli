@@ -5,11 +5,11 @@ import sys
 import traceback
 import argparse
 from argparse import RawTextHelpFormatter
-from phase_cmd.web import phase_open_web
-from phase_cmd.keyring import show_keyring_info
-from utils.const import phaseASCii, description
-from phase_cmd.update import phase_cli_update
-from phase_cmd.phase import (
+from phase_cli.cmd.web import phase_open_web
+from phase_cli.cmd.keyring import show_keyring_info
+from phase_cli.utils.const import phaseASCii, description
+from phase_cli.cmd.update import phase_cli_update
+from phase_cli.cmd.phase import (
     phase_run_inject,
     phase_list_secrets,
     phase_secrets_get, 
@@ -22,7 +22,7 @@ from phase_cmd.phase import (
     phase_init, 
     phase_auth
 )
-from utils.const import __version__
+from phase_cli.utils.const import __version__
 
 def print_phase_cli_version():
     print(f"Version: {__version__}")
