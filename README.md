@@ -26,9 +26,9 @@ Commands:
     auth                💻 Authenticate with Phase
     init                🔗 Link your project to your Phase app
     run                 🚀 Run and inject secrets to your app
-    secrets             🗝️` Manage your secrets
+    secrets             🗝️ Manage your secrets
     logout              🏃 Logout from phase-cli
-    console             🖥️` Open the Phase Console in your browser
+    console             🖥️ Open the Phase Console in your browser
     update              🔄 Update the Phase CLI to the latest version
     keyring             🔐 Display information about the Phase keyring
 ```
