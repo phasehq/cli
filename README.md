@@ -22,7 +22,7 @@ options:
   --version, -v         show program's version number and exit
 
 Commands:
-  {auth,init,run,secrets,logout,console,update,keyring}
+
     auth                💻 Authenticate with Phase
     init                🔗 Link your project to your Phase app
     run                 🚀 Run and inject secrets to your app
