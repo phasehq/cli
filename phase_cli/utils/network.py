@@ -120,6 +120,48 @@ def fetch_app_key(token_type: str, app_token, host) -> str:
     return wrapped_key_share
 
 
+def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
+    """
+    Fetches the wrapped application key share from Phase KMS.
+
+    Args:
+        token_type (str): The type of token being used, either "user" or "service".
+        app_token (str): The token for the application to retrieve the key for.
+        host (str): The host for the API call.
+
+    Returns:
+        str: The wrapped key share.
+
+    Raises:
+        ValueError: If any errors occur during the fetch operation.
+    """
+
+    headers = {
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
+    }
+
+    URL = f"{host}/tokens/{token_type}"
+
+    response = requests.get(URL, headers=headers)
+
+    if response.status_code != 200:
+        raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
+
+    if not response.text:
+        raise ValueError("The response body is empty!")
+
+    try:
+        json_data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        raise ValueError(f"Failed to decode JSON from response: {response.text}")
+
+    wrapped_key_share = json_data.get("wrapped_key_share")
+    if not wrapped_key_share:
+        raise ValueError("Wrapped key share not found in the response!")
+
+    return wrapped_key_share
+
+
 def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str) -> requests.Response:
     """
     Fetch secrets from Phase KMS.

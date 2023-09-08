@@ -5,6 +5,7 @@ from typing import List
 from dataclasses import dataclass
 from phase_cli.utils.network import (
     fetch_phase_user,
+    fetch_wrapped_key_share,
     fetch_phase_secrets,
     create_phase_secrets,
     update_phase_secrets,
@@ -342,15 +343,15 @@ class Phase:
         Raises:
             ValueError: If the ciphertext is not in the expected format (e.g. wrong prefix, wrong number of fields).
         """
-
         try:
             [prefix, version, client_pub_key_hex, ct] = phase_ciphertext.split(':')
             if prefix != 'ph' or len(phase_ciphertext.split(':')) != 4:
                 raise ValueError('Ciphertext is invalid')
             client_pub_key = bytes.fromhex(client_pub_key_hex)
 
-            keyshare1 = fetch_app_key(
-                self._token_type, self._app_secret.app_token, self._app_secret.keyshare1_unwrap_key, self._api_host)
+            wrapped_key_share = fetch_wrapped_key_share(
+                self._token_type, self._app_secret.app_token, self._api_host)
+            keyshare1 = CryptoUtils.decrypt_raw(bytes.fromhex(wrapped_key_share), bytes.fromhex(self._app_secret.keyshare1_unwrap_key)).decode("utf-8")
 
             app_priv_key = CryptoUtils.reconstruct_secret(
                 [self._app_secret.keyshare0, keyshare1])
@@ -364,48 +365,3 @@ class Phase:
 
         except ValueError as err:
             raise ValueError(f"Something went wrong: {err}")
-
-
-# TODO: Move this to utils.network
-
-def fetch_app_key(token_type: str, app_token, wrapKey, host) -> str:
-    """
-    Fetches the application key share from Phase KMS.
-
-    Args:
-        app_token (str): The token for the application to retrieve the key for.
-        wrapKey (str): The key used to encrypt the wrapped key share.
-        token_type (str): The type of token being used, either "user" or "service". Defaults to "user".
-
-    Returns:
-        str: The unwrapped share obtained by decrypting the wrapped key share.
-    Raises:
-        Exception: If the app token is invalid (HTTP status code 404).
-    """
-
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-    }
-
-    URL =  f"{host}/tokens/{token_type}"
-
-    response = requests.get(URL, headers=headers)
-
-    if response.status_code != 200:
-        raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
-
-    if not response.text:
-        raise ValueError("The response body is empty!")
-
-    try:
-        json_data = response.json()
-    except requests.exceptions.JSONDecodeError:
-        raise ValueError(f"Failed to decode JSON from response: {response.text}")
-
-    wrapped_key_share = json_data.get("wrapped_key_share")
-    if not wrapped_key_share:
-        raise ValueError("Wrapped key share not found in the response!")
-
-    unwrapped_key = CryptoUtils.decrypt_raw(bytes.fromhex(wrapped_key_share), bytes.fromhex(wrapKey))
-    
-    return unwrapped_key.decode("utf-8")
