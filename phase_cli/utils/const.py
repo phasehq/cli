@@ -1,5 +1,5 @@
 import os
-
+import re
 __version__ = "1.5.3"
 __ph_version__ = "v1"
 
@@ -26,3 +26,7 @@ PHASE_ENV_CONFIG = '.phase.json' # Holds project and environment contexts in use
 PHASE_SECRETS_DIR = os.path.expanduser('~/.phase/secrets') # Holds local encrypted caches of secrets and environment variables, common to all projects.
 
 PHASE_CLOUD_API_HOST = "https://api.phase.dev"
+
+pss_user_pattern = re.compile(r"^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$")
+
+pss_service_pattern = re.compile(r"^pss_service:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$")

@@ -121,7 +121,7 @@ def get_default_user_host() -> str:
     
     # Check if config.json exists
     if not os.path.exists(config_file_path):
-        raise ValueError("Config file not found in PHASE_SECRETS_DIR and no PHASE_HOST environment variable set.")
+        raise ValueError("PHASE_HOST missing: Please set PHASE_HOST environment variable or login via phase auth")
     
     with open(config_file_path, 'r') as f:
         config_data = json.load(f)
