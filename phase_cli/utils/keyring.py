@@ -16,6 +16,9 @@ def get_credentials():
 
     try:
         pss = keyring.get_password(service_name, "pss")
+        if not pss:
+            print("No configuration found. Please run 'phase auth' to set up your configuration.")
+            sys.exit(1)
         return pss
     except keyring.errors.KeyringLocked:
         password = getpass.getpass("Please enter your keyring password: ")
@@ -24,4 +27,4 @@ def get_credentials():
         return pss
     except keyring.errors.KeyringError:
         print("System keyring is not available. Please set the PHASE_APP_SECRET environment variable.")
-        return None
+        sys.exit(1)

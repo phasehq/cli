@@ -23,8 +23,8 @@ from nacl.bindings import (
 )
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.const import __ph_version__, PHASE_ENV_CONFIG, pss_user_pattern, pss_service_pattern
-from phase_cli.utils.misc import phase_get_context
-
+from phase_cli.utils.misc import phase_get_context, get_default_user_host
+from phase_cli.utils.keyring import get_credentials
 
 @dataclass
 class AppSecret:
@@ -41,7 +41,11 @@ class Phase:
     _api_host = ''
     _app_secret = None
 
-    def __init__(self, app_secret, host=None):
+    def __init__(self):
+        
+        app_secret = get_credentials()
+        self._api_host = get_default_user_host()
+
         # Determine the type of the token (service token or user token)
         self.is_service_token = pss_service_pattern.match(app_secret) is not None
         self.is_user_token = pss_user_pattern.match(app_secret) is not None
@@ -56,9 +60,6 @@ class Phase:
 
         pss_segments = app_secret.split(':')
         self._app_secret = AppSecret(*pss_segments)
-
-        # Initialize Phase API host
-        self._api_host = host
 
     def _find_matching_environment_key(self, user_data, env_id):
         for app in user_data.get("apps", []):

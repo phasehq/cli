@@ -178,6 +178,8 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     Raises:
     - ValueError: If no matching application or environment is found or multiple environments match the given name.
     """
+    # Initialize app_id as null
+    app_id = None
     
     # If env_name is not provided, fetch it from the .phase.json file
     if not env_name:

@@ -6,3 +6,4 @@ def show_keyring_info():
     print("Supported keyring backends:")
     for backend in keyring.backend.get_all_keyring():
         print(f"- {backend.__class__.__name__}")
+        

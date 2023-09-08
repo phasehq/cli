@@ -1,17 +1,15 @@
 import os
-import re
 import sys
+import re
 import keyring
 import json
-import uuid
 import shutil
 import subprocess
 import getpass
 import questionary
 from phase_cli.utils.phase_io import Phase
-from phase_cli.utils.misc import censor_secret, render_table, get_default_user_host, get_default_user_id, sanitize_value
-from phase_cli.utils.keyring import get_credentials
-from phase_cli.utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
+from phase_cli.utils.misc import render_table, get_default_user_id, sanitize_value
+from phase_cli.utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST, cross_env_pattern, local_ref_pattern
 
 # Takes Phase credentials from user and stored them securely in the system keyring
 def phase_auth():
@@ -44,7 +42,7 @@ def phase_auth():
         pss = getpass.getpass("Please enter Phase user token (hidden): ")
 
         # Check if the creds are valid
-        phase = Phase(pss, host=PHASE_API_HOST)
+        phase = Phase()
         result = phase.auth()  # Trying to authenticate using the provided pss
 
         if result == "Success":
@@ -89,16 +87,8 @@ def phase_auth():
 
 # Initializes a .phase.json in the root of the dir of where the command is run
 def phase_init():
-    # Get credentials from the keyring
-    pss = get_credentials()
-
-    # Check if Phase credentials exist
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
 
     try:
         data = phase.init()
@@ -165,16 +155,8 @@ def phase_init():
 
 # Creates new secrets, encrypts them and saves them in PHASE_SECRETS_DIR
 def phase_secrets_create(key=None, env_name=None, phase_app=None):
-    # Get credentials from the keyring
-    pss = get_credentials()
-
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-
-    # Initialize Phase class instance
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
     
     # If the key is not passed as an argument, prompt user for input
     if key is None:
@@ -196,16 +178,8 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None):
 
 
 def phase_secrets_update(key, env_name=None, phase_app=None):
-    # Get credentials from the keyring
-    pss = get_credentials()
-
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-
-    # Fetch secrets using Phase.get
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
     
     try:
         # Check if the secret with the given key exists
@@ -235,16 +209,8 @@ def phase_secrets_update(key, env_name=None, phase_app=None):
 
 # Deletes encrypted secrets based on key value pairs
 def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
-    # Get credentials from the keyring
-    pss = get_credentials()
-
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-
-    # Initialize Phase class instance
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
 
     # If keys_to_delete is empty, request user input
     if not keys_to_delete:
@@ -265,16 +231,8 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
 
 # Imports existing environment variables and secrets from users .env file based on PHASE_ENV_CONFIG context
 def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
-    # Get credentials from the keyring
-    pss = get_credentials()
-
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-    
-    # Initialize Phase class instance
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
     
     # Parse the .env file
     secrets = []
@@ -309,16 +267,8 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
 
 # Decrypts and exports environment variables and secrets based to a plain text .env file based on PHASE_ENV_CONFIG context
 def phase_secrets_env_export(env_name=None, phase_app=None):
-    # Get credentials from the keyring
-    pss = get_credentials()
-
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-    
-    # Initialize Phase object
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
     
     # Use phase.get function to fetch the secrets for the specified environment
     secrets_data = phase.get(env_name=env_name, app_name=phase_app)
@@ -362,17 +312,9 @@ def phase_secrets_get(key, env_name=None, phase_app=None):
     :param key: The key associated with the secret to fetch.
     :param env_name: The name of the environment, if any. Defaults to None.
     """
-    
-    # Get credentials from the keyring
-    pss = get_credentials()
 
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-
-    # Fetch secrets using Phase.get
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
     
     try:
         key = key.upper()
@@ -390,16 +332,9 @@ def phase_secrets_get(key, env_name=None, phase_app=None):
             
 
 def phase_list_secrets(show=False, env_name=None, phase_app=None):
-    # Get credentials from the keyring
-    pss = get_credentials()
+    # Initialize the Phase class
+    phase = Phase()
 
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
- 
-    # Fetch secrets using Phase.get
-    host = get_default_user_host()
-    phase = Phase(pss, host)
     secrets_data = phase.get(env_name=env_name, app_name=phase_app)
 
     # Check that secrets_data is a list of dictionaries
@@ -414,17 +349,8 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None):
 
 
 def phase_run_inject(command, env_name=None, phase_app=None):
-    # Get credentials from the keyring
-    pss = get_credentials()
-
-    # Check if Phase credentials exist
-    if not pss:
-        print("No configuration found. Please run 'phase auth' to set up your configuration.")
-        sys.exit(1)
-    
-    # Initialize Phase class instance
-    host = get_default_user_host()
-    phase = Phase(pss, host)
+    # Initialize the Phase class
+    phase = Phase()
     
     # Fetch the decrypted secrets using the `get` method
     try:
@@ -441,9 +367,9 @@ def phase_run_inject(command, env_name=None, phase_app=None):
     
     # Iterate through the secrets and resolve references
     for key, value in secrets_dict.items():
-        cross_env_match = re.match(r"\$\{(.+?)\.(.+?)\}", value)
-        local_ref_match = re.match(r"\$\{(.+?)\}", value)
-        
+        cross_env_match = re.match(cross_env_pattern, value)
+        local_ref_match = re.match(local_ref_pattern, value)
+
         if cross_env_match:  # Cross environment reference
             ref_env, ref_key = cross_env_match.groups()
             #ref_env_id, ref_public_key = phase_get_context(ref_env)
