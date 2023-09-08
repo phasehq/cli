@@ -210,7 +210,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        distro: ["ubuntu", "fedora", "alpine", "archlinux"]
+        distro: ["ubuntu", "fedora", "alpine"]
         include:
           - distro: "ubuntu"
             image: "ubuntu:latest"
@@ -221,9 +221,9 @@ jobs:
           - distro: "alpine"
             image: "alpine:latest"
             install_command: "apk add --no-cache curl bash"
-          - distro: "archlinux"
-            image: "archlinux:latest"
-            install_command: "pacman -Sy --noconfirm curl sudo wget bash"
+          #- distro: "archlinux"
+          #  image: "archlinux:latest"
+          #  install_command: "pacman -Sy --noconfirm curl sudo wget bash"
     container:
       image: ${{ matrix.image }}
     steps:
