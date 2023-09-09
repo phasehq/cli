@@ -97,3 +97,14 @@ phase run go run
 ```bash
 phase run npm start
 ```
+
+Development:
+
+```bash
+cd /root of this git repo
+
+export PYTHONPATH="$PWD"
+
+./phase_cli/main.py
+
+```
