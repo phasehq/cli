@@ -319,7 +319,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
     for secret in secrets_data:
         key = secret.get("key")
         value = secret.get("value")
-        print(f'{key}={value}')
+        print(f'{key}="{value}"')
 
 
 def phase_cli_logout(purge=False):
