@@ -114,6 +114,7 @@ def main ():
 
         # Secrets export command
         secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets in a dotenv format')
+        secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
 
         # Logout command
@@ -161,7 +162,8 @@ def main ():
             elif args.secrets_command == 'import':
                 phase_secrets_env_import(args.env_file, env_name=args.env)
             elif args.secrets_command == 'export':
-                phase_secrets_env_export(env_name=args.env)
+                phase_secrets_env_export(env_name=args.env, keys=args.keys)
+                #phase_secrets_env_export(env_name=args.env)
             elif args.secrets_command == 'update':
                 phase_secrets_update(args.key, env_name=args.env)
             else:

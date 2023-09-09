@@ -133,7 +133,7 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, key: str = None, app_name: str = None):
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None):
         """
         Get secrets from Phase KMS based on key and environment.
         
@@ -166,26 +166,15 @@ class Phase:
         secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host)
         secrets_data = secrets_response.json()
 
-        if key:
-            salt = self.decrypt(environment_key.get("wrapped_salt"))
-            key_digest = CryptoUtils.blake2b_digest(key, salt)
+        results = []
+        for secret in secrets_data:
+            decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
+            if keys and decrypted_key not in keys:
+                continue
+            decrypted_value = CryptoUtils.decrypt_asymmetric(secret["value"], env_private_key, public_key)
+            results.append({"key": decrypted_key, "value": decrypted_value})
 
-            matching_secret = next((item for item in secrets_data if item["key_digest"] == key_digest), None)
-            if not matching_secret:
-                raise ValueError(f"No matching secret found for digest: {key_digest}")
-
-            decrypted_key = CryptoUtils.decrypt_asymmetric(matching_secret["key"], env_private_key, public_key)
-            decrypted_value = CryptoUtils.decrypt_asymmetric(matching_secret["value"], env_private_key, public_key)
-
-            return {"key": decrypted_key, "value": decrypted_value}
-        else:
-            results = []
-            for secret in secrets_data:
-                decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
-                decrypted_value = CryptoUtils.decrypt_asymmetric(secret["value"], env_private_key, public_key)
-                results.append({"key": decrypted_key, "value": decrypted_value})
-
-            return results
+        return results
 
 
     def update(self, env_name: str, key: str, value: str, app_name: str = None) -> str:

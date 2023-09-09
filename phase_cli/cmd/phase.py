@@ -13,16 +13,10 @@ from phase_cli.utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, PHASE_CLO
 
 # Takes Phase credentials from user and stored them securely in the system keyring
 def phase_auth():
+    """
+    Authenticates the user with Phase, takes credentials, and stores them securely in the system keyring.
+    """
     try:
-        # If credentials already exist, ask for confirmation to overwrite
-        # default_user_id = get_default_user_id()
-        # if keyring.get_password("phase", "pss"):
-        #     confirmation = questionary.confirm(
-        #         "You are already logged in. Do you want to switch accounts?"
-        #     ).ask()
-        #     if not confirmation:
-        #         return
-
         # Ask the user for the type of Phase instance they are using
         phase_instance_type = questionary.select(
             'Choose your Phase instance type:',
@@ -87,6 +81,9 @@ def phase_auth():
 
 # Initializes a .phase.json in the root of the dir of where the command is run
 def phase_init():
+    """
+    Initializes the Phase application by linking the user's project to a Phase app.
+    """
     # Initialize the Phase class
     phase = Phase()
 
@@ -155,6 +152,14 @@ def phase_init():
 
 # Creates new secrets, encrypts them and saves them in PHASE_SECRETS_DIR
 def phase_secrets_create(key=None, env_name=None, phase_app=None):
+    """
+    Creates a new secret, encrypts it, and saves it in PHASE_SECRETS_DIR.
+
+    Args:
+        key (str, optional): The key of the new secret. Defaults to None.
+        env_name (str, optional): The name of the environment where the secret will be created. Defaults to None.
+        phase_app (str, optional): The name of the Phase application. Defaults to None.
+    """
     # Initialize the Phase class
     phase = Phase()
     
@@ -178,23 +183,39 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None):
 
 
 def phase_secrets_update(key, env_name=None, phase_app=None):
+    """
+    Updates a secret with a new value.
+
+    Args:
+        key (str): The key of the secret to update.
+        env_name (str, optional): The name of the environment in which the secret is located. Defaults to None.
+        phase_app (str, optional): The name of the Phase application. Defaults to None.
+    """
     # Initialize the Phase class
     phase = Phase()
     
     try:
         # Check if the secret with the given key exists
         key = key.upper()
-        secret_data = phase.get(env_name=env_name, key=key, app_name=phase_app)
+        # Pass the key within a list to the get method
+        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
     except ValueError as e:
         # Key not found in the backend
         print("Secret not found...")
+        return
+
+    # Find the specific secret for the given key
+    secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
+
+    # If no matching secret found, raise an error
+    if not secret_data:
+        print(f"No secret found for key: {key}")
         return
 
     # Prompt user for the new value in a hidden manner
     new_value = getpass.getpass(f"Please enter the new value for {key} (hidden): ")
 
     # Call the update method of the Phase class
-    new_value = new_value.upper()
     response = phase.update(env_name=env_name, key=key, value=new_value, app_name=phase_app)
     
     # Check the response status code (assuming the update method returns a response with a status code)
@@ -209,6 +230,14 @@ def phase_secrets_update(key, env_name=None, phase_app=None):
 
 # Deletes encrypted secrets based on key value pairs
 def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
+    """
+    Deletes encrypted secrets based on key values.
+
+    Args:
+        keys_to_delete (list, optional): List of keys to delete. Defaults to empty list.
+        env_name (str, optional): The name of the environment from which secrets will be deleted. Defaults to None.
+        phase_app (str, optional): The name of the Phase application. Defaults to None.
+    """
     # Initialize the Phase class
     phase = Phase()
 
@@ -229,8 +258,18 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
     phase_list_secrets(show=False, env_name=env_name)
 
 
-# Imports existing environment variables and secrets from users .env file based on PHASE_ENV_CONFIG context
 def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
+    """
+    Imports existing environment variables and secrets from a user's .env file.
+
+    Args:
+        env_file (str): Path to the .env file.
+        env_name (str, optional): The name of the environment to which secrets should be saved. Defaults to None.
+        phase_app (str, optional): The name of the Phase application. Defaults to None.
+
+    Raises:
+        FileNotFoundError: If the provided .env file is not found.
+    """
     # Initialize the Phase class
     phase = Phase()
     
@@ -265,21 +304,22 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
         print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
 
 
-# Decrypts and exports environment variables and secrets based to a plain text .env file based on PHASE_ENV_CONFIG context
-def phase_secrets_env_export(env_name=None, phase_app=None):
-    # Initialize the Phase class
+def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
+    """
+    Decrypts and exports secrets to a plain text .env format based on the provided environment and keys.
+
+    Args:
+        env_name (str, optional): The name of the environment from which secrets are fetched. Defaults to None.
+        phase_app (str, optional): The name of the Phase application. Defaults to None.
+        keys (list, optional): List of keys for which to fetch the secrets. If None, fetches all secrets. Defaults to None.
+    """
     phase = Phase()
+    secrets_data = phase.get(env_name=env_name, keys=keys, app_name=phase_app)
     
-    # Use phase.get function to fetch the secrets for the specified environment
-    secrets_data = phase.get(env_name=env_name, app_name=phase_app)
-    
-    # Print secrets in dotenv format
     for secret in secrets_data:
         key = secret.get("key")
         value = secret.get("value")
-        
-        # Use double quotes around the value to handle any special characters or spaces
-        print(f'{key}="{value}"')
+        print(f'{key}={value}')
 
 
 def phase_cli_logout(purge=False):
@@ -318,12 +358,19 @@ def phase_secrets_get(key, env_name=None, phase_app=None):
     
     try:
         key = key.upper()
-        secret_data = phase.get(env_name=env_name, key=key, app_name=phase_app)
+        # Here we wrap the key in a list since the get method now expects a list of keys
+        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
     except ValueError as e:
         print("🔍 Secret not found...")
         return
+
+    # Find the specific secret for the given key
+    secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
     
-    # Check that secret_data is a dictionary
+    # Check that secret_data was found and is a dictionary
+    if not secret_data:
+        print("🔍 Secret not found...")
+        return
     if not isinstance(secret_data, dict):
         raise ValueError("Unexpected format: secret data is not a dictionary")
     
@@ -332,6 +379,17 @@ def phase_secrets_get(key, env_name=None, phase_app=None):
             
 
 def phase_list_secrets(show=False, env_name=None, phase_app=None):
+    """
+    Lists the secrets fetched from Phase for the specified environment.
+
+    Args:
+        show (bool, optional): Whether to show the decrypted secrets. Defaults to False.
+        env_name (str, optional): The name of the environment from which secrets are fetched. Defaults to None.
+        phase_app (str, optional): The name of the Phase application. Defaults to None.
+
+    Raises:
+        ValueError: If the returned secrets data from Phase is not in the expected list format.
+    """
     # Initialize the Phase class
     phase = Phase()
 
@@ -348,7 +406,25 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None):
         print("\n🥽 To uncover the secrets, use: phase secrets list --show")
 
 
+
 def phase_run_inject(command, env_name=None, phase_app=None):
+    """
+    Executes a given shell command with the environment variables set to the secrets 
+    fetched from Phase for the specified environment.
+    
+    The function fetches the decrypted secrets, resolves any references to other secrets, 
+    and then runs the specified command with the secrets injected as environment variables.
+    
+    Args:
+        command (str): The shell command to be executed.
+        env_name (str, optional): The name of the environment from which secrets are fetched. Defaults to None.
+        phase_app (str, optional): The name of the Phase application. Defaults to None.
+        
+    Raises:
+        ValueError: If there's an issue with fetching the secrets or if the data format is unexpected.
+        Exception: For any subprocess-related errors.
+    """
+    
     # Initialize the Phase class
     phase = Phase()
     
@@ -372,9 +448,9 @@ def phase_run_inject(command, env_name=None, phase_app=None):
 
         if cross_env_match:  # Cross environment reference
             ref_env, ref_key = cross_env_match.groups()
-            #ref_env_id, ref_public_key = phase_get_context(ref_env)
             try:
-                ref_secret = phase.get(env_name=ref_env, key=ref_key, app_name=phase_app)
+                # Wrap ref_key in a list when calling the get method
+                ref_secret = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)[0]
                 new_env[key] = ref_secret['value']
             except ValueError as e:
                 print(f"Warning: Reference {ref_key} in environment {ref_env} not found for key {key}. Ignoring...")
