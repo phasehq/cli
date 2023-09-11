@@ -69,7 +69,7 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
         "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
     }
 
-    URL =  f"{host}/tokens/{token_type}"
+    URL =  f"{host}/secrets/tokens/"
 
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
@@ -98,7 +98,7 @@ def fetch_app_key(token_type: str, app_token, host) -> str:
         "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
     }
 
-    URL =  f"{host}/tokens/{token_type}"
+    URL =  f"{host}/secrets/tokens/"
 
     response = requests.get(URL, headers=headers)
 
@@ -140,7 +140,7 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
         "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
     }
 
-    URL = f"{host}/tokens/{token_type}"
+    URL = f"{host}/secrets/tokens/"
 
     response = requests.get(URL, headers=headers)
 
