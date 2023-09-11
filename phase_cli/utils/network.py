@@ -21,6 +21,10 @@ def handle_request_errors(response: requests.Response) -> None:
     Args:
         response (requests.Response): The HTTP response to check.
     """
+    if response.status_code == 403:
+        print("🚫 Not authorized. Token expired or revoked.")
+        return
+    
     if response.status_code != 200:
         error_message = f"🗿 Request failed with status code {response.status_code}"
         if PHASE_DEBUG:
