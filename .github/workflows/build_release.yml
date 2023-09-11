@@ -228,7 +228,7 @@ jobs:
       image: ${{ matrix.image }}
     steps:
       - run: ${{ matrix.install_command }}
-      - run: curl -fsSL https://pkg.phase.dev/install.sh | bash
+      - run: curl -fsSL https://get.phase.dev | bash
       - run: phase -h
       - run: phase -v
 
