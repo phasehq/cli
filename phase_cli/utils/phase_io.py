@@ -5,6 +5,7 @@ from typing import List
 from dataclasses import dataclass
 from phase_cli.utils.network import (
     fetch_phase_user,
+    fetch_app_key,
     fetch_wrapped_key_share,
     fetch_phase_secrets,
     create_phase_secrets,
@@ -41,10 +42,25 @@ class Phase:
     _api_host = ''
     _app_secret = None
 
-    def __init__(self):
-        
-        app_secret = get_credentials()
-        self._api_host = get_default_user_host()
+
+    def __init__(self, init=True, pss=None, host=None):
+        """
+        Initializes the Phase class with optional parameters.
+
+        Parameters:
+            - init (bool): Whether to initialize using default methods or use provided parameters.
+            - pss (str): The Phase user token. Used if init is False.
+            - host (str): The host URL. Used if init is False.
+        """
+
+        if init:
+            app_secret = get_credentials()
+            self._api_host = get_default_user_host()
+        else:
+            if not pss or not host:
+                raise ValueError("Both pss and host must be provided when init is set to False.")
+            app_secret = pss
+            self._api_host = host
 
         # Determine the type of the token (service token or user token)
         self.is_service_token = pss_service_pattern.match(app_secret) is not None
@@ -61,6 +77,7 @@ class Phase:
         pss_segments = app_secret.split(':')
         self._app_secret = AppSecret(*pss_segments)
 
+
     def _find_matching_environment_key(self, user_data, env_id):
         for app in user_data.get("apps", []):
             for environment_key in app.get("environment_keys", []):
@@ -68,15 +85,17 @@ class Phase:
                     return environment_key
         return None
 
+
     def auth(self):
         try:
             key = fetch_app_key(
-                self._token_type, self._app_secret.app_token, self._app_secret.keyshare1_unwrap_key, self._api_host)
+                self._token_type, self._app_secret.app_token, self._api_host)
 
             return "Success"
 
         except ValueError as err:
             raise ValueError(f"Invalid Phase credentials")
+
 
     def init(self):
         response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)

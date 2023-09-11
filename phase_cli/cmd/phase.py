@@ -36,7 +36,7 @@ def phase_auth():
         pss = getpass.getpass("Please enter Phase user token (hidden): ")
 
         # Check if the creds are valid
-        phase = Phase()
+        phase = Phase(init=False, pss=pss, host=PHASE_API_HOST)
         result = phase.auth()  # Trying to authenticate using the provided pss
 
         if result == "Success":
@@ -66,7 +66,7 @@ def phase_auth():
             with open(os.path.join(PHASE_SECRETS_DIR, 'config.json'), 'w') as f:
                 json.dump(config_data, f, indent=4)
             
-            print("Authentication successful. Credentials saved in the Phase keyring.")
+            print("✅ Authentication successful. Credentials saved in the Phase keyring.")
         else:
             print("Failed to authenticate with the provided credentials.")
             
