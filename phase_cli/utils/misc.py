@@ -98,7 +98,6 @@ def render_table(data, show=False, min_key_width=20):
         print(f'{key:<{min_key_width}} | {displayed_value:<{value_width}}')
 
 
-
 def get_default_user_host() -> str:
     """
     Check if PHASE_HOST environment variable is set. If not, parse the config.json 
@@ -133,7 +132,6 @@ def get_default_user_host() -> str:
             return user["host"]
 
     raise ValueError(f"No user found in config.json with id: {default_user_id} and no PHASE_HOST environment variable set.")
-
 
 
 def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
