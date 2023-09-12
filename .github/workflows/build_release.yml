@@ -116,7 +116,7 @@ jobs:
 
   Build_and_push_docker:
     name: Build & Release - Docker
-    needs: build_apk
+    needs: [build, build_apk]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
