@@ -121,25 +121,52 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Download phase-version artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: phase-version
+          path: phase-version
+
+      - name: Set VERSION from file
+        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
+
       - name: Download phase-alpine-build artifact
         uses: actions/download-artifact@v2
         with:
           name: phase-alpine-build
           path: dist
 
-      - run: docker build -t phase-cli:latest .
+      - run: docker build -t phase-cli:${{ env.VERSION }} .
 
       - name: Push to Docker Hub
         run: |
           echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
-          docker tag phase-cli:latest phasehq/cli:latest
+          docker tag phase-cli:${{ env.VERSION }} phasehq/cli:${{ env.VERSION }}
+          docker push phasehq/cli:${{ env.VERSION }}
+          docker tag phase-cli:${{ env.VERSION }} phasehq/cli:latest
           docker push phasehq/cli:latest
 
   Pull_and_test_docker_image:
     name: Test - CLI - Docker
-    needs: build_and_push_docker
+    needs: Build_and_push_docker
     runs-on: ubuntu-latest
     steps:
+      - name: Download phase-version artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: phase-version
+          path: phase-version
+
+      - name: Set VERSION from file
+        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
+
+      # Pull and test the versioned Docker image
+      - run: docker pull phasehq/cli:${{ env.VERSION }}
+      - run: docker run phasehq/cli:${{ env.VERSION }} phase -h
+      - run: docker run phasehq/cli:${{ env.VERSION }} phase -v
+
+      # Pull and test the latest Docker image
+      - run: docker pull phasehq/cli:latest
       - run: docker run phasehq/cli:latest phase -h
       - run: docker run phasehq/cli:latest phase -v
 
