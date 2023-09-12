@@ -4,7 +4,7 @@ import os
 
 def phase_cli_update():
     # URL of the remote bash script
-    url = "https://pkg.phase.dev/install.sh"
+    url = "https://get.phase.dev"
     
     try:
         # Fetch the script

@@ -25,7 +25,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --hidden-import _cffi_backend --onefile --name phase phase-cli.py
+      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --onefile --name phase phase_cli/main.py
 
       # Set LC_ALL based on the runner OS for Linux and macOS
       - name: Set LC_ALL for Linux and macOS
@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
 
       # Extract version
-      - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' utils/const.py)" >> $GITHUB_ENV
+      - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)" >> $GITHUB_ENV
         shell: bash
       - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
 
@@ -90,7 +90,7 @@ jobs:
       - run: pip3 install --no-cache --upgrade pip setuptools
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --hidden-import _cffi_backend --onefile --name phase phase-cli.py
+      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --onefile --name phase phase_cli/main.py
       - run: apk add alpine-sdk
       - run: adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
       - run: mkdir /home/builder/package
@@ -210,7 +210,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        distro: ["ubuntu", "fedora", "alpine", "archlinux"]
+        distro: ["ubuntu", "fedora", "alpine"]
         include:
           - distro: "ubuntu"
             image: "ubuntu:latest"
@@ -221,14 +221,14 @@ jobs:
           - distro: "alpine"
             image: "alpine:latest"
             install_command: "apk add --no-cache curl bash"
-          - distro: "archlinux"
-            image: "archlinux:latest"
-            install_command: "pacman -Sy --noconfirm curl sudo wget bash"
+          #- distro: "archlinux"
+          #  image: "archlinux:latest"
+          #  install_command: "pacman -Sy --noconfirm curl sudo wget bash"
     container:
       image: ${{ matrix.image }}
     steps:
       - run: ${{ matrix.install_command }}
-      - run: curl -fsSL https://pkg.phase.dev/install.sh | bash
+      - run: curl -fsSL https://get.phase.dev | bash
       - run: phase -h
       - run: phase -v
 

@@ -21,6 +21,10 @@ def handle_request_errors(response: requests.Response) -> None:
     Args:
         response (requests.Response): The HTTP response to check.
     """
+    if response.status_code == 403:
+        print("🚫 Not authorized. Token expired or revoked.")
+        return
+    
     if response.status_code != 200:
         error_message = f"🗿 Request failed with status code {response.status_code}"
         if PHASE_DEBUG:
@@ -54,7 +58,7 @@ def handle_ssl_error(e: Exception) -> None:
     raise Exception(error_message)
 
 
-def fetch_phase_user(app_token: str, host: str) -> requests.Response:
+def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Response:
     """
     Fetch users from the Phase API.
 
@@ -64,10 +68,13 @@ def fetch_phase_user(app_token: str, host: str) -> requests.Response:
     Returns:
         requests.Response: The HTTP response from the Phase KMS.
     """
+
     headers = {
-        "Authorization": f"Bearer User {app_token}",
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
     }
-    URL =  f"{host}/tokens/user"
+
+    URL =  f"{host}/secrets/tokens/"
+
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
@@ -77,7 +84,89 @@ def fetch_phase_user(app_token: str, host: str) -> requests.Response:
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
 
-def fetch_phase_secrets(app_token: str, id: str, host: str) -> requests.Response:
+def fetch_app_key(token_type: str, app_token, host) -> str:
+    """
+    Fetches the application key share from Phase KMS.
+
+    Args:
+        app_token (str): The token for the application to retrieve the key for.
+        token_type (str): The type of token being used, either "user" or "service". Defaults to "user".
+
+    Returns:
+        str: The wrapped key share.
+    Raises:
+        Exception: If the app token is invalid (HTTP status code 404).
+    """
+
+    headers = {
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
+    }
+
+    URL =  f"{host}/secrets/tokens/"
+
+    response = requests.get(URL, headers=headers)
+
+    if response.status_code != 200:
+        raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
+
+    if not response.text:
+        raise ValueError("The response body is empty!")
+
+    try:
+        json_data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        raise ValueError(f"Failed to decode JSON from response: {response.text}")
+
+    wrapped_key_share = json_data.get("wrapped_key_share")
+    if not wrapped_key_share:
+        raise ValueError("Wrapped key share not found in the response!")
+
+    return wrapped_key_share
+
+
+def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
+    """
+    Fetches the wrapped application key share from Phase KMS.
+
+    Args:
+        token_type (str): The type of token being used, either "user" or "service".
+        app_token (str): The token for the application to retrieve the key for.
+        host (str): The host for the API call.
+
+    Returns:
+        str: The wrapped key share.
+
+    Raises:
+        ValueError: If any errors occur during the fetch operation.
+    """
+
+    headers = {
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
+    }
+
+    URL = f"{host}/secrets/tokens/"
+
+    response = requests.get(URL, headers=headers)
+
+    if response.status_code != 200:
+        raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
+
+    if not response.text:
+        raise ValueError("The response body is empty!")
+
+    try:
+        json_data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        raise ValueError(f"Failed to decode JSON from response: {response.text}")
+
+    wrapped_key_share = json_data.get("wrapped_key_share")
+    if not wrapped_key_share:
+        raise ValueError("Wrapped key share not found in the response!")
+
+    return wrapped_key_share
+
+
+def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str) -> requests.Response:
     """
     Fetch secrets from Phase KMS.
 
@@ -88,8 +177,9 @@ def fetch_phase_secrets(app_token: str, id: str, host: str) -> requests.Response
     Returns:
         requests.Response: The HTTP response from the Phase KMS.
     """
+
     headers = {
-        "Authorization": f"Bearer User {app_token}",
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
         "Environment": id
     }
 
@@ -105,7 +195,7 @@ def fetch_phase_secrets(app_token: str, id: str, host: str) -> requests.Response
         handle_ssl_error(e)
 
 
-def create_phase_secrets(app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
+def create_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
     """
     Create secrets in Phase KMS through HTTP POST request.
 
@@ -117,8 +207,9 @@ def create_phase_secrets(app_token: str, environment_id: str, secrets: List[dict
     Returns:
         requests.Response: The HTTP response from the Phase KMS.
     """
+
     headers = {
-        "Authorization": f"Bearer User {app_token}",
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
         "Environment": environment_id
     }
 
@@ -138,7 +229,7 @@ def create_phase_secrets(app_token: str, environment_id: str, secrets: List[dict
         handle_ssl_error(e)
 
 
-def update_phase_secrets(app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
+def update_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
     """
     Update secrets in Phase KMS through HTTP PUT request.
 
@@ -150,8 +241,9 @@ def update_phase_secrets(app_token: str, environment_id: str, secrets: List[dict
     Returns:
         requests.Response: The HTTP response from the Phase KMS.
     """
+
     headers = {
-        "Authorization": f"Bearer User {app_token}",
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
         "Environment": environment_id
     }
 
@@ -172,7 +264,7 @@ def update_phase_secrets(app_token: str, environment_id: str, secrets: List[dict
         handle_ssl_error(e)
 
 
-def delete_phase_secrets(app_token: str, environment_id: str, secret_ids: List[str], host: str) -> requests.Response:
+def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, secret_ids: List[str], host: str) -> requests.Response:
     """
     Delete secrets from Phase KMS.
 
@@ -184,8 +276,9 @@ def delete_phase_secrets(app_token: str, environment_id: str, secret_ids: List[s
     Returns:
         requests.Response: The HTTP response from the Phase KMS.
     """
+
     headers = {
-        "Authorization": f"Bearer User {app_token}",
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
         "Environment": environment_id
     }
 

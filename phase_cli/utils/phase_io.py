@@ -1,11 +1,12 @@
 import base64
-import re
 import requests, json
 from typing import Tuple
 from typing import List
 from dataclasses import dataclass
-from utils.network import (
+from phase_cli.utils.network import (
     fetch_phase_user,
+    fetch_app_key,
+    fetch_wrapped_key_share,
     fetch_phase_secrets,
     create_phase_secrets,
     update_phase_secrets,
@@ -21,9 +22,10 @@ from nacl.bindings import (
     crypto_kx_client_session_keys,
     crypto_kx_seed_keypair,
 )
-from utils.crypto import CryptoUtils
-from utils.const import __ph_version__
-
+from phase_cli.utils.crypto import CryptoUtils
+from phase_cli.utils.const import __ph_version__, PHASE_ENV_CONFIG, pss_user_pattern, pss_service_pattern
+from phase_cli.utils.misc import phase_get_context, get_default_user_host
+from phase_cli.utils.keyring import get_credentials
 
 @dataclass
 class AppSecret:
@@ -40,18 +42,41 @@ class Phase:
     _api_host = ''
     _app_secret = None
 
-    def __init__(self, app_secret, host=None):
 
-        pss_user_pattern = re.compile(r"^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$")
+    def __init__(self, init=True, pss=None, host=None):
+        """
+        Initializes the Phase class with optional parameters.
 
-        if not pss_user_pattern.match(app_secret):
-            raise ValueError("Invalid Phase APP_SECRET")
+        Parameters:
+            - init (bool): Whether to initialize using default methods or use provided parameters.
+            - pss (str): The Phase user token. Used if init is False.
+            - host (str): The host URL. Used if init is False.
+        """
 
-        pss_user_segments = app_secret.split(':')
-        self._app_secret = AppSecret(*pss_user_segments)
+        if init:
+            app_secret = get_credentials()
+            self._api_host = get_default_user_host()
+        else:
+            if not pss or not host:
+                raise ValueError("Both pss and host must be provided when init is set to False.")
+            app_secret = pss
+            self._api_host = host
 
-        # Initialize Phase API host
-        self._api_host = host
+        # Determine the type of the token (service token or user token)
+        self.is_service_token = pss_service_pattern.match(app_secret) is not None
+        self.is_user_token = pss_user_pattern.match(app_secret) is not None
+
+        # If it's neither a service token nor a user token, raise an error
+        if not self.is_service_token and not self.is_user_token:
+            token_type = "service token" if "pss_service" in app_secret else "user token"
+            raise ValueError(f"Invalid Phase {token_type}")
+
+        # Storing the token type as a string for easier access
+        self._token_type = "service" if self.is_service_token else "user"
+
+        pss_segments = app_secret.split(':')
+        self._app_secret = AppSecret(*pss_segments)
+
 
     def _find_matching_environment_key(self, user_data, env_id):
         for app in user_data.get("apps", []):
@@ -60,18 +85,20 @@ class Phase:
                     return environment_key
         return None
 
+
     def auth(self):
         try:
             key = fetch_app_key(
-                self._app_secret.app_token, self._app_secret.keyshare1_unwrap_key, self._api_host)
+                self._token_type, self._app_secret.app_token, self._api_host)
 
             return "Success"
 
         except ValueError as err:
             raise ValueError(f"Invalid Phase credentials")
 
+
     def init(self):
-        response = fetch_phase_user(self._app_secret.app_token, self._api_host)
+        response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
 
         # Ensure the response is OK
         if response.status_code != 200:
@@ -81,26 +108,27 @@ class Phase:
         return response.json()
 
 
-    def create(self, id: str, public_key: str, key_value_pairs: List[Tuple[str, str]]) -> requests.Response:
+    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str) -> requests.Response:
         """
         Create secrets in Phase KMS.
         
         Args:
-            id (str): The environment ID.
-            public_key (str): The public key used for asymmetric encryption.
             key_value_pairs (List[Tuple[str, str]]): List of tuples where each tuple contains a key and a value.
-            
+            env_name (str): The name (or partial name) of the desired environment.
+                
         Returns:
             requests.Response: The HTTP response from the Phase KMS.
         """
-        user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
+        user_response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
+            raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_salt = environment_key.get("wrapped_salt")
         decrypted_salt = self.decrypt(wrapped_salt)
@@ -121,58 +149,80 @@ class Phase:
             }
             secrets.append(secret)
 
-        return create_phase_secrets(self._app_secret.app_token, id, secrets, self._api_host)
+        return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, id: str, public_key: str, key: str = None):
-        user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None):
+        """
+        Get secrets from Phase KMS based on key and environment.
+        
+        Args:
+            key (str, optional): The key for which to retrieve the secret value.
+            env_name (str): The name (or partial name) of the desired environment.
+            app_name (str, optional): The name of the desired application.
+                
+        Returns:
+            dict or list: A dictionary containing the decrypted key and value if key is provided, 
+                        otherwise a list of dictionaries for all secrets in the environment.
+        """
+        
+        user_response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
+            raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
-        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host)
         secrets_data = secrets_response.json()
 
-        if key:
-            salt = self.decrypt(environment_key.get("wrapped_salt"))
-            key_digest = CryptoUtils.blake2b_digest(key, salt)
+        results = []
+        for secret in secrets_data:
+            decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
+            if keys and decrypted_key not in keys:
+                continue
+            decrypted_value = CryptoUtils.decrypt_asymmetric(secret["value"], env_private_key, public_key)
+            results.append({"key": decrypted_key, "value": decrypted_value})
 
-            matching_secret = next((item for item in secrets_data if item["key_digest"] == key_digest), None)
-            if not matching_secret:
-                raise ValueError(f"No matching secret found for digest: {key_digest}")
-
-            decrypted_key = CryptoUtils.decrypt_asymmetric(matching_secret["key"], env_private_key, public_key)
-            decrypted_value = CryptoUtils.decrypt_asymmetric(matching_secret["value"], env_private_key, public_key)
-
-            return {"key": decrypted_key, "value": decrypted_value}
-        else:
-            results = []
-            for secret in secrets_data:
-                decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
-                decrypted_value = CryptoUtils.decrypt_asymmetric(secret["value"], env_private_key, public_key)
-                results.append({"key": decrypted_key, "value": decrypted_value})
-
-            return results
+        return results
 
 
-    def update(self, id: str, public_key: str, key: str, value: str) -> str:
-        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
-        secrets_data = secrets_response.json()
+    def update(self, env_name: str, key: str, value: str, app_name: str = None) -> str:
+        """
+        Update a secret in Phase KMS based on key and environment.
+        
+        Args:
+            env_name (str): The name (or partial name) of the desired environment.
+            key (str): The key for which to update the secret value.
+            value (str): The new value for the secret.
+            app_name (str, optional): The name of the desired application.
+                
+        Returns:
+            str: A message indicating the outcome of the update operation.
+        """
+        
+        user_response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
+        if user_response.status_code != 200:
+            raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
-        user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
+            raise ValueError(f"No environment found with id: {env_id}")
+
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host)
+        secrets_data = secrets_response.json()
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
@@ -206,7 +256,7 @@ class Phase:
             "comment": ""
         }
 
-        response = update_phase_secrets(self._app_secret.app_token, id, [secret_update_payload], self._api_host)
+        response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
         if response.status_code == 200:
             return "Success"
@@ -214,15 +264,29 @@ class Phase:
             return f"Error: Failed to update secret. HTTP Status Code: {response.status_code}"
 
 
-    def delete(self, id: str, public_key: str, keys_to_delete: List[str]) -> List[str]:
-        user_response = fetch_phase_user(self._app_secret.app_token, self._api_host)
+    def delete(self, env_name: str, keys_to_delete: List[str], app_name: str = None) -> List[str]:
+        """
+        Delete secrets in Phase KMS based on keys and environment.
+        
+        Args:
+            env_name (str): The name (or partial name) of the desired environment.
+            keys_to_delete (List[str]): The keys for which to delete the secrets.
+            app_name (str, optional): The name of the desired application.
+                
+        Returns:
+            List[str]: A list of keys that were not found and could not be deleted.
+        """
+        
+        user_response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        environment_key = self._find_matching_environment_key(user_data, id)
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+
+        environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {id}")
+            raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
@@ -231,9 +295,9 @@ class Phase:
 
         secret_ids_to_delete = []
         keys_not_found = []
-        secrets_response = fetch_phase_secrets(self._app_secret.app_token, id, self._api_host)
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host)
         secrets_data = secrets_response.json()
-        
+            
         for key in keys_to_delete:
             found = False
             for secret in secrets_data:
@@ -245,8 +309,8 @@ class Phase:
             if not found:
                 keys_not_found.append(key)
 
-        delete_phase_secrets(self._app_secret.app_token, id, secret_ids_to_delete, self._api_host)
-        
+        delete_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secret_ids_to_delete, self._api_host)
+            
         return keys_not_found
 
 
@@ -288,15 +352,15 @@ class Phase:
         Raises:
             ValueError: If the ciphertext is not in the expected format (e.g. wrong prefix, wrong number of fields).
         """
-
         try:
             [prefix, version, client_pub_key_hex, ct] = phase_ciphertext.split(':')
             if prefix != 'ph' or len(phase_ciphertext.split(':')) != 4:
                 raise ValueError('Ciphertext is invalid')
             client_pub_key = bytes.fromhex(client_pub_key_hex)
 
-            keyshare1 = fetch_app_key(
-                self._app_secret.app_token, self._app_secret.keyshare1_unwrap_key, self._api_host)
+            wrapped_key_share = fetch_wrapped_key_share(
+                self._token_type, self._app_secret.app_token, self._api_host)
+            keyshare1 = CryptoUtils.decrypt_raw(bytes.fromhex(wrapped_key_share), bytes.fromhex(self._app_secret.keyshare1_unwrap_key)).decode("utf-8")
 
             app_priv_key = CryptoUtils.reconstruct_secret(
                 [self._app_secret.keyshare0, keyshare1])
@@ -310,46 +374,3 @@ class Phase:
 
         except ValueError as err:
             raise ValueError(f"Something went wrong: {err}")
-
-# TODO: Move this to utils.network
-
-def fetch_app_key(appToken, wrapKey, host) -> str:
-    """
-    Fetches the application key share from Phase KMS.
-
-    Args:
-        appToken (str): The token for the application to retrieve the key for.
-        wrapKey (str): The key used to encrypt the wrapped key share.
-
-    Returns:
-        str: The unwrapped share obtained by decrypting the wrapped key share.
-    Raises:
-        Exception: If the app token is invalid (HTTP status code 404).
-    """
-
-    headers = {
-        "Authorization": f"Bearer User {appToken}",
-    }
-
-    URL =  f"{host}/tokens/user"
-
-    response = requests.get(URL, headers=headers)
-
-    if response.status_code != 200:
-        raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
-
-    if not response.text:
-        raise ValueError("The response body is empty!")
-
-    try:
-        json_data = response.json()
-    except requests.exceptions.JSONDecodeError:
-        raise ValueError(f"Failed to decode JSON from response: {response.text}")
-
-    wrapped_key_share = json_data.get("wrapped_key_share")
-    if not wrapped_key_share:
-        raise ValueError("Wrapped key share not found in the response!")
-
-    unwrapped_key = CryptoUtils.decrypt_raw(bytes.fromhex(wrapped_key_share), bytes.fromhex(wrapKey))
-    
-    return unwrapped_key.decode("utf-8")
