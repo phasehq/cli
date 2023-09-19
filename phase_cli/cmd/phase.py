@@ -28,7 +28,7 @@ def phase_auth():
 
         # If the user chooses "Self Hosted", ask for the host URL
         if phase_instance_type == '🛠️` Self Hosted':
-            PHASE_API_HOST = questionary.text("Please enter your host (URL):").ask()
+            PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
         else:
             PHASE_API_HOST = PHASE_CLOUD_API_HOST
 
@@ -290,7 +290,7 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
         sys.exit(1)
     
     # Encrypt and send secrets to the backend using the `create` method
-    response = phase.create(key_value_pairs=secrets, env_name=phase_app, app_name=phase_app)
+    response = phase.create(key_value_pairs=secrets, env_name=env_name, app_name=phase_app)
     
     # Check the response status code
     if response.status_code == 200:
@@ -443,22 +443,23 @@ def phase_run_inject(command, env_name=None, phase_app=None):
     
     # Iterate through the secrets and resolve references
     for key, value in secrets_dict.items():
-        cross_env_match = re.match(cross_env_pattern, value)
-        local_ref_match = re.match(local_ref_pattern, value)
-
-        if cross_env_match:  # Cross environment reference
-            ref_env, ref_key = cross_env_match.groups()
+        
+        # Handle cross environment references
+        cross_env_matches = re.findall(cross_env_pattern, value)
+        for ref_env, ref_key in cross_env_matches:
             try:
-                # Wrap ref_key in a list when calling the get method
                 ref_secret = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)[0]
-                new_env[key] = ref_secret['value']
+                value = value.replace(f"${{{ref_env}.{ref_key}}}", ref_secret['value'])
             except ValueError as e:
                 print(f"Warning: Reference {ref_key} in environment {ref_env} not found for key {key}. Ignoring...")
-        elif local_ref_match:  # Local environment reference
-            ref_key = local_ref_match.group(1)
-            new_env[key] = secrets_dict.get(ref_key, f"Warning: Local reference {ref_key} not found for key {key}. Ignoring...")
-        else:
-            new_env[key] = value
+                value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
+        
+        # Handle local references
+        local_ref_matches = re.findall(local_ref_pattern, value)
+        for ref_key in local_ref_matches:
+            value = value.replace(f"${{{ref_key}}}", secrets_dict.get(ref_key, f"Warning: Local reference {ref_key} not found for key {key}. Ignoring..."))
+        
+        new_env[key] = value
 
     # Use shell=True to allow command chaining
     subprocess.run(command, shell=True, env=new_env)
