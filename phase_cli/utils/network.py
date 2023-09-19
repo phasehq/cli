@@ -1,6 +1,8 @@
 import os
 import requests
+from phase_cli.utils.misc import get_user_agent
 from typing import List
+from typing import Dict
 
 # Check if SSL verification should be skipped
 VERIFY_SSL = os.environ.get('PHASE_VERIFY_SSL', 'True').lower() != 'false'
@@ -58,6 +60,23 @@ def handle_ssl_error(e: Exception) -> None:
     raise Exception(error_message)
 
 
+def construct_http_headers(token_type: str, app_token: str) -> Dict[str, str]:
+    """
+    Construct common headers used for HTTP requests.
+    
+    Args:
+        token_type (str): The type of token being used.
+        app_token (str): The token for the application.
+    
+    Returns:
+        Dict[str, str]: The common headers including User-Agent.
+    """
+    return {
+        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
+        "User-Agent": get_user_agent()
+    }
+
+
 def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Response:
     """
     Fetch users from the Phase API.
@@ -69,9 +88,7 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-    }
+    headers = construct_http_headers(token_type, app_token)
 
     URL =  f"{host}/secrets/tokens/"
 
@@ -98,9 +115,7 @@ def fetch_app_key(token_type: str, app_token, host) -> str:
         Exception: If the app token is invalid (HTTP status code 404).
     """
 
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-    }
+    headers = construct_http_headers(token_type, app_token)
 
     URL =  f"{host}/secrets/tokens/"
 
@@ -140,9 +155,7 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
         ValueError: If any errors occur during the fetch operation.
     """
 
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-    }
+    headers = construct_http_headers(token_type, app_token)
 
     URL = f"{host}/secrets/tokens/"
 
@@ -178,11 +191,8 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str) -> 
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-        "Environment": id
-    }
-
+    headers = {**construct_http_headers(token_type, app_token), "Environment": id}
+    
     URL =  f"{host}/secrets/"
 
     try:
@@ -208,10 +218,7 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-        "Environment": environment_id
-    }
+    headers = {**construct_http_headers(token_type, app_token), "Environment": environment_id}
 
     data = {
         "secrets": secrets
@@ -242,10 +249,7 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-        "Environment": environment_id
-    }
+    headers = {**construct_http_headers(token_type, app_token), "Environment": environment_id}
 
     data = {
         "secrets": secrets
@@ -277,10 +281,7 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
-        "Environment": environment_id
-    }
+    headers = {**construct_http_headers(token_type, app_token), "Environment": environment_id}
 
     data = {
         "secrets": secret_ids
