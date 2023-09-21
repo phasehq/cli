@@ -90,7 +90,7 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
 
     headers = construct_http_headers(token_type, app_token)
 
-    URL =  f"{host}/secrets/tokens/"
+    URL =  f"{host}/service/secrets/tokens/"
 
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
@@ -117,7 +117,7 @@ def fetch_app_key(token_type: str, app_token, host) -> str:
 
     headers = construct_http_headers(token_type, app_token)
 
-    URL =  f"{host}/secrets/tokens/"
+    URL =  f"{host}/service/secrets/tokens/"
 
     response = requests.get(URL, headers=headers)
 
@@ -157,7 +157,7 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
 
     headers = construct_http_headers(token_type, app_token)
 
-    URL = f"{host}/secrets/tokens/"
+    URL = f"{host}/service/secrets/tokens/"
 
     response = requests.get(URL, headers=headers)
 
@@ -193,7 +193,7 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str) -> 
 
     headers = {**construct_http_headers(token_type, app_token), "Environment": id}
     
-    URL =  f"{host}/secrets/"
+    URL =  f"{host}/service/secrets/"
 
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
@@ -224,7 +224,7 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         "secrets": secrets
     }
 
-    URL =  f"{host}/secrets/"
+    URL =  f"{host}/service/secrets/"
 
     try:
         response = requests.post(URL, headers=headers, json=data, verify=VERIFY_SSL)
@@ -255,8 +255,7 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         "secrets": secrets
     }
 
-    URL =  f"{host}/secrets/"
-
+    URL =  f"{host}/service/secrets/"
 
     try:
         response = requests.put(URL, headers=headers, json=data, verify=VERIFY_SSL)
@@ -287,7 +286,7 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         "secrets": secret_ids
     }
 
-    URL =  f"{host}/secrets/"
+    URL =  f"{host}/service/secrets/"
 
     try:
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
