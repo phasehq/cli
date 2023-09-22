@@ -451,7 +451,7 @@ def phase_run_inject(command, env_name=None, phase_app=None):
                 ref_secret = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)[0]
                 value = value.replace(f"${{{ref_env}.{ref_key}}}", ref_secret['value'])
             except ValueError as e:
-                print(f"Warning: Reference {ref_key} in environment {ref_env} not found for key {key}. Ignoring...")
+                print(f"⚠️  Warning: Reference {ref_key} in environment {ref_env} not found for key {key}. Ignoring...")
                 value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
         
         # Handle local references
