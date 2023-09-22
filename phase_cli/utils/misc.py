@@ -1,9 +1,10 @@
 import os
+import platform
 import sys
 import json
 import re
 from typing import Union, List
-from phase_cli.utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR
+from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 
 def get_terminal_width():
     """
@@ -75,26 +76,39 @@ def render_table(data, show=False, min_key_width=20):
     if not data:
         return
     
+    # Tokenizing function
+    def tokenize(value):
+        delimiters = [':', '@', '/', ' ']
+        tokens = [value]
+        for delimiter in delimiters:
+            new_tokens = []
+            for token in tokens:
+                new_tokens.extend(token.split(delimiter))
+            tokens = new_tokens
+        return tokens
+
     # Print the rows
     for item in data:
         key = item.get("key")
         value = item.get("value")
         icon = ''
         
-        # Check for cross-env references before local references
-        cross_env_match = re.match(r"\$\{(.+?)\.(.+?)\}", value)
-        local_ref_match = re.match(r"\$\{(.+?)\}", value)
-        
-        if cross_env_match:
-            icon = '⛓️` '
-        elif local_ref_match:
-            icon = '🔗 '
+        # Tokenize value and check each token for references
+        tokens = tokenize(value)
+        cross_env_detected = any(cross_env_pattern.match(token) for token in tokens)
+        local_ref_detected = any(local_ref_pattern.match(token) for token in tokens if not cross_env_pattern.match(token))
+
+        # Set icon based on detected references
+        if cross_env_detected:
+            icon += '⛓️` '
+        if local_ref_detected:
+            icon += '🔗 '
 
         censored_value = censor_secret(value, value_width-len(icon))
-        
+
         # Include the icon before the value or censored value
         displayed_value = icon + (value if show else censored_value)
-        
+
         print(f'{key:<{min_key_width}} | {displayed_value:<{value_width}}')
 
 
@@ -213,3 +227,49 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         environment = matching_envs[0]
 
     return application["id"], environment["environment"]["id"], environment["identity_key"]
+
+
+def get_user_agent():
+    """
+    Constructs a user agent string containing information about the CLI's version, 
+    the operating system, its version, its architecture, and the local username with machine name.
+    
+    Returns:
+        str: The constructed user agent string.
+    """
+
+    details = []
+    
+    # Get CLI version
+    try:
+        cli_version = f"phase-cli/{__version__}"
+        details.append(cli_version)
+    except:
+        pass
+
+    # Get OS and version
+    try:
+        os_type = platform.system()  # e.g., Windows, Linux, Darwin (for macOS)
+        os_version = platform.release()
+        details.append(f"{os_type} {os_version}")
+    except:
+        pass
+
+    # Get architecture
+    try:
+        architecture = platform.machine()
+        details.append(architecture)
+    except:
+        pass
+
+    # Get username and hostname
+    try:
+        username = os.getlogin()
+        hostname = platform.node()
+        user_host_string = f"{username}@{hostname}"
+        details.append(user_host_string)
+    except:
+        pass
+
+    user_agent_str = ' '.join(details)
+    return user_agent_str
