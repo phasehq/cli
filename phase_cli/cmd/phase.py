@@ -164,10 +164,10 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None):
     
     # If the key is not passed as an argument, prompt user for input
     if key is None:
-        key = input("Please enter the key: ")
+        key = input("🗝️  Please enter the key: ")
     key = key.upper()
         
-    value = getpass.getpass("Please enter the value (hidden): ")
+    value = getpass.getpass("✨ Please enter the value (hidden): ")
     
     try:
         # Encrypt and send secret to the backend using the `create` method
@@ -251,7 +251,10 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
     # If keys_to_delete is empty, request user input
     if not keys_to_delete:
         keys_to_delete_input = input("Please enter the keys to delete (separate multiple keys with a space): ")
-        keys_to_delete = [key.upper() for key in keys_to_delete_input.split()]
+        keys_to_delete = keys_to_delete_input.split()
+
+    # Convert each key to uppercase
+    keys_to_delete = [key.upper() for key in keys_to_delete]
 
     try:
         # Delete keys and get the list of keys not found

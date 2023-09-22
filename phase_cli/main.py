@@ -94,7 +94,7 @@ def main ():
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser('create', help='💳 Create a new secret')
-        secrets_create_parser.add_argument('key', type=str, nargs='?', help='The key for the secret to be created')
+        secrets_create_parser.add_argument('key', type=str, nargs='?', help='The key for the secret to be created. (Will be converted to uppercase.)')
         secrets_create_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets update command
