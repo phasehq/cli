@@ -150,7 +150,6 @@ def phase_init():
         sys.exit(1)
 
 
-# Creates new secrets, encrypts them and saves them in PHASE_SECRETS_DIR
 def phase_secrets_create(key=None, env_name=None, phase_app=None):
     """
     Creates a new secret, encrypts it, and saves it in PHASE_SECRETS_DIR.
@@ -170,16 +169,20 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None):
         
     value = getpass.getpass("Please enter the value (hidden): ")
     
-    # Encrypt and send secret to the backend using the `create` method
-    response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app )
-    
-    # Check the response status code
-    if response.status_code == 200:
-        # Call the phase_list_secrets function to list the secrets
-        phase_list_secrets(show=False, env_name=env_name)
-    else:
-        # Print an error message if the response status code indicates an error
-        print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
+    try:
+        # Encrypt and send secret to the backend using the `create` method
+        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app)
+        
+        # Check the response status code
+        if response.status_code == 200:
+            # Call the phase_list_secrets function to list the secrets
+            phase_list_secrets(show=False, env_name=env_name)
+        else:
+            # Print an error message if the response status code indicates an error
+            print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
+            
+    except ValueError:
+        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
 
 
 def phase_secrets_update(key, env_name=None, phase_app=None):
@@ -199,33 +202,37 @@ def phase_secrets_update(key, env_name=None, phase_app=None):
         key = key.upper()
         # Pass the key within a list to the get method
         secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
+
+        # Find the specific secret for the given key
+        secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
+
+        # If no matching secret found, raise an error
+        if not secret_data:
+            print(f"No secret found for key: {key}")
+            return
+        
     except ValueError as e:
-        # Key not found in the backend
-        print("Secret not found...")
-        return
-
-    # Find the specific secret for the given key
-    secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
-
-    # If no matching secret found, raise an error
-    if not secret_data:
-        print(f"No secret found for key: {key}")
+        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
         return
 
     # Prompt user for the new value in a hidden manner
     new_value = getpass.getpass(f"Please enter the new value for {key} (hidden): ")
 
-    # Call the update method of the Phase class
-    response = phase.update(env_name=env_name, key=key, value=new_value, app_name=phase_app)
+    try:
+        # Call the update method of the Phase class
+        response = phase.update(env_name=env_name, key=key, value=new_value, app_name=phase_app)
+        
+        # Check the response status code (assuming the update method returns a response with a status code)
+        if response == "Success":
+            print("Successfully updated the secret. ")
+        else:
+            print(f"Error: Failed to update secret. HTTP Status Code: {response.status_code}")
+
+        # List remaining secrets (censored by default)
+        phase_list_secrets(show=False, env_name=env_name)
     
-    # Check the response status code (assuming the update method returns a response with a status code)
-    if response == "Success":
-        print("Successfully updated the secret. ")
-    else:
-        print(f"Error: Failed to update secret. HTTP Status Code: {response.status_code}")
-    
-    # List remaining secrets (censored by default)
-    phase_list_secrets(show=False, env_name=env_name)
+    except ValueError:
+        print(f"⚠️  Error occurred while updating the secret.")
 
 
 # Deletes encrypted secrets based on key value pairs
@@ -246,16 +253,20 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
         keys_to_delete_input = input("Please enter the keys to delete (separate multiple keys with a space): ")
         keys_to_delete = [key.upper() for key in keys_to_delete_input.split()]
 
-    # Delete keys and get the list of keys not found
-    keys_not_found = phase.delete(env_name=env_name, keys_to_delete=keys_to_delete, app_name=phase_app)
+    try:
+        # Delete keys and get the list of keys not found
+        keys_not_found = phase.delete(env_name=env_name, keys_to_delete=keys_to_delete, app_name=phase_app)
 
-    if keys_not_found:
-        print(f"Warning: The following keys were not found: {', '.join(keys_not_found)}")
-    else:
-        print("Successfully deleted the secrets.")
+        if keys_not_found:
+            print(f"Warning: The following keys were not found: {', '.join(keys_not_found)}")
+        else:
+            print("Successfully deleted the secrets.")
 
-    # List remaining secrets (censored by default)
-    phase_list_secrets(show=False, env_name=env_name)
+        # List remaining secrets (censored by default)
+        phase_list_secrets(show=False, env_name=env_name)
+    
+    except ValueError as e:
+        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
 
 
 def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
@@ -289,19 +300,23 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
         print(f"Error: The file {env_file} was not found.")
         sys.exit(1)
     
-    # Encrypt and send secrets to the backend using the `create` method
-    response = phase.create(key_value_pairs=secrets, env_name=env_name, app_name=phase_app)
-    
-    # Check the response status code
-    if response.status_code == 200:
-        print(f"Successfully imported and encrypted {len(secrets)} secrets.")
-        if env_name == None:
-            print("To view them please run: phase secrets list")
+    try:
+        # Encrypt and send secrets to the backend using the `create` method
+        response = phase.create(key_value_pairs=secrets, env_name=env_name, app_name=phase_app)
+        
+        # Check the response status code
+        if response.status_code == 200:
+            print(f"Successfully imported and encrypted {len(secrets)} secrets.")
+            if env_name == None:
+                print("To view them please run: phase secrets list")
+            else:
+                print(f"To view them please run: phase secrets list --env {env_name}")
         else:
-            print(f"To view them please run: phase secrets list --env {env_name}")
-    else:
-        # Print an error message if the response status code indicates an error
-        print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
+            # Print an error message if the response status code indicates an error
+            print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
+
+    except ValueError as e:
+        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
 
 
 def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
@@ -314,12 +329,17 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
         keys (list, optional): List of keys for which to fetch the secrets. If None, fetches all secrets. Defaults to None.
     """
     phase = Phase()
-    secrets_data = phase.get(env_name=env_name, keys=keys, app_name=phase_app)
     
-    for secret in secrets_data:
-        key = secret.get("key")
-        value = secret.get("value")
-        print(f'{key}="{value}"')
+    try:
+        secrets_data = phase.get(env_name=env_name, keys=keys, app_name=phase_app)
+
+        for secret in secrets_data:
+            key = secret.get("key")
+            value = secret.get("value")
+            print(f'{key}="{value}"')
+
+    except ValueError as e:
+        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
 
 
 def phase_cli_logout(purge=False):
@@ -360,22 +380,22 @@ def phase_secrets_get(key, env_name=None, phase_app=None):
         key = key.upper()
         # Here we wrap the key in a list since the get method now expects a list of keys
         secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
-    except ValueError as e:
-        print("🔍 Secret not found...")
-        return
+        
+        # Find the specific secret for the given key
+        secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
+        
+        # Check that secret_data was found and is a dictionary
+        if not secret_data:
+            print("🔍 Secret not found...")
+            return
+        if not isinstance(secret_data, dict):
+            raise ValueError("Unexpected format: secret data is not a dictionary")
+        
+        # Print the secret data in a table-like format
+        render_table([secret_data], show=True)
 
-    # Find the specific secret for the given key
-    secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
-    
-    # Check that secret_data was found and is a dictionary
-    if not secret_data:
-        print("🔍 Secret not found...")
-        return
-    if not isinstance(secret_data, dict):
-        raise ValueError("Unexpected format: secret data is not a dictionary")
-    
-    # Print the secret data in a table-like format
-    render_table([secret_data], show=True)
+    except ValueError as e:
+        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
             
 
 def phase_list_secrets(show=False, env_name=None, phase_app=None):
@@ -393,17 +413,22 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None):
     # Initialize the Phase class
     phase = Phase()
 
-    secrets_data = phase.get(env_name=env_name, app_name=phase_app)
+    try:
+        secrets_data = phase.get(env_name=env_name, app_name=phase_app)
+        
+        # Check that secrets_data is a list of dictionaries
+        if not isinstance(secrets_data, list):
+            raise ValueError("Unexpected format: secrets data is not a list")
 
-    # Check that secrets_data is a list of dictionaries
-    if not isinstance(secrets_data, list):
-        raise ValueError("Unexpected format: secrets data is not a list")
+        # Render the table
+        render_table(secrets_data, show=show)
 
-    # Render the table
-    render_table(secrets_data, show=show)
+        if not show:
+            print("\n🥽 To uncover the secrets, use: phase secrets list --show")
 
-    if not show:
-        print("\n🥽 To uncover the secrets, use: phase secrets list --show")
+    except ValueError as e:
+        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
+
 
 
 
@@ -432,7 +457,7 @@ def phase_run_inject(command, env_name=None, phase_app=None):
     try:
         secrets = phase.get(env_name=env_name, app_name=phase_app)
     except ValueError as e:
-        print(f"Failed to fetch secrets: {e}")
+        print(f"⚠️  Failed to fetch secrets: The environment '{env_name}' either does not exist or you do not have access to it.")
         sys.exit(1)
     
     # Prepare the new environment variables for the command
@@ -451,7 +476,7 @@ def phase_run_inject(command, env_name=None, phase_app=None):
                 ref_secret = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)[0]
                 value = value.replace(f"${{{ref_env}.{ref_key}}}", ref_secret['value'])
             except ValueError as e:
-                print(f"⚠️  Warning: Reference {ref_key} in environment {ref_env} not found for key {key}. Ignoring...")
+                print(f"⚠️  Warning: The environment '{ref_env}' for key '{key}' either does not exist or you do not have access to it. Reference {ref_key} not found. Ignoring...")
                 value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
         
         # Handle local references
