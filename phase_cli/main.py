@@ -163,7 +163,6 @@ def main ():
                 phase_secrets_env_import(args.env_file, env_name=args.env)
             elif args.secrets_command == 'export':
                 phase_secrets_env_export(env_name=args.env, keys=args.keys)
-                #phase_secrets_env_export(env_name=args.env)
             elif args.secrets_command == 'update':
                 phase_secrets_update(args.key, env_name=args.env)
             else:
