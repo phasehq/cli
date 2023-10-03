@@ -171,7 +171,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
