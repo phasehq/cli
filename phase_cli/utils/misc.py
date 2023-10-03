@@ -188,43 +188,40 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     - tuple: A tuple containing the application's ID, environment's ID and publicKey.
 
     Raises:
-    - ValueError: If no matching application or environment is found or multiple environments match the given name.
+    - ValueError: If no matching application or environment is found.
     """
     # Initialize app_id as null
     app_id = None
     
-    # If env_name is not provided, fetch it from the .phase.json file
-    if not env_name:
-        try:
-            with open(PHASE_ENV_CONFIG, 'r') as f:
-                config_data = json.load(f)
-            env_name = config_data["defaultEnv"]
-            app_id = config_data.get("appId")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Phase app config not found. Please make sure you're in the correct directory or initialize using 'phase init'.")
-    
-    # If appId is provided, use it to find the desired application
-    if app_id:
-        application = next((app for app in user_data["apps"] if app["id"] == app_id), None)
-    # If app_name is provided, use it to find the desired application
-    elif app_name:
+    # 1. Get the default app_id and env_name from .phase.json if available
+    try:
+        with open(PHASE_ENV_CONFIG, 'r') as f:
+            config_data = json.load(f)
+        default_env_name = config_data.get("defaultEnv")
+        app_id = config_data.get("appId")
+    except FileNotFoundError:
+        default_env_name = None
+        app_id = None   
+
+    # 2. If env_name isn't explicitly provided, use the default from .phase.json
+    env_name = env_name if env_name else default_env_name
+
+    # 3. Get the application using app_id or app_name
+    if app_name:  # Override app_id if app_name is provided
         application = next((app for app in user_data["apps"] if app["name"] == app_name), None)
+    elif app_id:
+        application = next((app for app in user_data["apps"] if app["id"] == app_id), None)
     else:
         application = user_data["apps"][0]
 
     if not application:
         raise ValueError(f"No application matched using ID '{app_id}' or name '{app_name}'.")
 
-    # Search for environments with names containing the env_name
-    matching_envs = [env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()]
-        
-    # If more than one environment matches, raise an error
-    if len(matching_envs) > 1:
-        raise ValueError(f"Multiple environments matched '{env_name}' for application '{application['name']}': {[env['environment']['name'] for env in matching_envs]}.\nPlease specify the full environment name.")
-    elif not matching_envs:
+    # 4. Attempt to match environment with the exact name or a name that contains the env_name string
+    environment = next((env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()), None)
+    
+    if not environment:
         raise ValueError(f"No environment matched '{env_name}' for application '{application['name']}'.")
-    else:
-        environment = matching_envs[0]
 
     return application["id"], environment["environment"]["id"], environment["identity_key"]
 
