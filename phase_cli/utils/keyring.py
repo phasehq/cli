@@ -1,4 +1,5 @@
 import os
+import sys
 import getpass
 import keyring
 from phase_cli.utils.misc import get_default_user_id
