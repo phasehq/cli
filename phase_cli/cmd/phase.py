@@ -202,9 +202,10 @@ def phase_secrets_update(key, env_name=None, phase_app=None):
     # Initialize the Phase class
     phase = Phase()
     
+    # Convert the key to uppercase
+    key = key.upper()
+
     try:
-        # Check if the secret with the given key exists
-        key = key.upper()
         # Pass the key within a list to the get method
         secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
 
@@ -220,8 +221,11 @@ def phase_secrets_update(key, env_name=None, phase_app=None):
         print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
         return
 
-    # Prompt user for the new value in a hidden manner
-    new_value = getpass.getpass(f"Please enter the new value for {key} (hidden): ")
+    # Check if input is being piped
+    if sys.stdin.isatty():
+        new_value = getpass.getpass(f"Please enter the new value for {key} (hidden): ")
+    else:
+        new_value = sys.stdin.read().strip()
 
     try:
         # Call the update method of the Phase class
