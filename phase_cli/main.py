@@ -93,13 +93,30 @@ def main ():
         secrets_get_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets create command
-        secrets_create_parser = secrets_subparsers.add_parser('create', help='💳 Create a new secret')
-        secrets_create_parser.add_argument('key', type=str, nargs='?', help='The key for the secret to be created. (Will be converted to uppercase.)')
+        secrets_create_parser = secrets_subparsers.add_parser(
+            'create', 
+            description='💳 Create a new secret. Optionally, you can provide the secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_rsa | phase secrets create SSH_PRIVATE_KEY',
+            help='Create a new secret'
+        )
+        secrets_create_parser.add_argument(
+            'key', 
+            type=str, 
+            nargs='?', 
+            help='The key for the secret to be created. (Will be converted to uppercase.) If the value is not provided as an argument, it will be read from stdin.'
+        )
         secrets_create_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets update command
-        secrets_update_parser = secrets_subparsers.add_parser('update', help='📝 Update an existing secret')
-        secrets_update_parser.add_argument('key', type=str, help='The key associated with the secret to update')
+        secrets_update_parser = secrets_subparsers.add_parser(
+            'update', 
+            description='📝 Update an existing secret. Optionally, you can provide the new secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_ed25519 | phase secrets update SSH_PRIVATE_KEY',
+            help='Update an existing secret'
+        )
+        secrets_update_parser.add_argument(
+            'key', 
+            type=str, 
+            help='The key associated with the secret to update. If the new value is not provided as an argument, it will be read from stdin.'
+        )
         secrets_update_parser.add_argument('--env', type=str, help=env_help)
 
         # Secrets delete command
