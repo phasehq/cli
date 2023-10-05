@@ -9,6 +9,7 @@ from phase_cli.cmd.web import phase_open_web
 from phase_cli.cmd.keyring import show_keyring_info
 from phase_cli.utils.const import phaseASCii, description
 from phase_cli.cmd.update import phase_cli_update
+from phase_cli.cmd.users import phase_users_whoami
 from phase_cli.cmd.phase import (
     phase_run_inject,
     phase_list_secrets,
@@ -138,6 +139,14 @@ def main ():
         logout_parser = subparsers.add_parser('logout', help='🏃 Logout from phase-cli')
         logout_parser.add_argument('--purge', action='store_true', help='Purge all local data')
 
+        # Adding a new 'users' command
+        users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
+        users_subparsers = users_parser.add_subparsers(dest='users_command', required=True)
+
+        # Adding a 'whoami' command under 'users'
+        whoami_parser = users_subparsers.add_parser('whoami', help='🙋 See details of the current user')
+
+
         # Web command
         web_parser = subparsers.add_parser('console', help='🖥️` Open the Phase Console in your browser')
 
@@ -167,6 +176,13 @@ def main ():
         elif args.command == 'update':
             phase_cli_update()
             sys.exit(0)
+        elif args.command == 'users':
+            if args.users_command == 'whoami':
+                phase_users_whoami()
+            else:
+                print("Unknown users sub-command: " + args.users_command)
+                parser.print_help()
+                sys.exit(1)
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
                 phase_list_secrets(args.show, env_name=args.env)
