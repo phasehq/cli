@@ -7,37 +7,75 @@ import shutil
 import subprocess
 import getpass
 import questionary
+import http.server
+import socketserver
+import threading
+import webbrowser
+import time, random
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import render_table, get_default_user_id, sanitize_value
 from phase_cli.utils.const import PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST, cross_env_pattern, local_ref_pattern
 
+class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+    # Override do_POST method to handle incoming POST requests
+    def do_POST(self):
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        try:
+            data = json.loads(post_data)
+            self.server.received_data = data
+            self.send_response(200)
+            self.end_headers()
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()      
+
+
+def start_server(port):
+    handler = SimpleHTTPRequestHandler
+    httpd = socketserver.TCPServer(("", port), handler)
+    httpd.received_data = None
+
+    thread = threading.Thread(target=httpd.serve_forever)
+    thread.start()
+
+    return httpd
+
 # Takes Phase credentials from user and stored them securely in the system keyring
 def phase_auth():
-    """
-    Authenticates the user with Phase, takes credentials, and stores them securely in the system keyring.
-    """
+    # 1. Start an HTTP web server at a random port.
+    port = random.randint(8000, 9000)
+    server = start_server(port)
+
     try:
-        # Ask the user for the type of Phase instance they are using
+        # 2. Ask the user for the type of Phase instance.
         phase_instance_type = questionary.select(
             'Choose your Phase instance type:',
-            choices=['☁️` Phase Cloud', '🛠️` Self Hosted']
+            choices=['☁️ Phase Cloud', '🛠️ Self Hosted']
         ).ask()
 
         # Set up the PHASE_API_HOST variable
-        PHASE_API_HOST = None
-
-        # If the user chooses "Self Hosted", ask for the host URL
-        if phase_instance_type == '🛠️` Self Hosted':
+        if phase_instance_type == '🛠️ Self Hosted':
             PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+            webbrowser.open(f"{PHASE_API_HOST}/auth#port={port}")
         else:
             PHASE_API_HOST = PHASE_CLOUD_API_HOST
+            webbrowser.open(f"{PHASE_API_HOST}/auth#port={port}")
 
-        user_email = questionary.text("Please enter your email:").ask()
-        pss = getpass.getpass("Please enter Phase user token (hidden): ")
+        # 3. Wait for the POST request from the web UI.
+        while not server.received_data:
+            time.sleep(1)
 
-        # Check if the creds are valid
+        # 4. Extract credentials from the received data
+        user_email = server.received_data.get('email')
+        pss = server.received_data.get('pss')
+
+        if not (user_email and pss):
+            raise ValueError("Email or pss not received from the web UI.")
+
+        # 5. Authenticate with the received credentials.
         phase = Phase(init=False, pss=pss, host=PHASE_API_HOST)
-        result = phase.auth()  # Trying to authenticate using the provided pss
+        result = phase.auth()
 
         if result == "Success":
             user_data = phase.init()
@@ -69,14 +107,14 @@ def phase_auth():
             print("✅ Authentication successful. Credentials saved in the Phase keyring.")
         else:
             print("Failed to authenticate with the provided credentials.")
-            
     except KeyboardInterrupt:
-        # Handle the Ctrl+C event quietly
         sys.exit(0)
     except Exception as e:
-        # Handle other exceptions if needed
         print(f"An error occurred: {e}")
         sys.exit(1)
+    finally:
+        server.shutdown()
+
 
 
 # Initializes a .phase.json in the root of the dir of where the command is run
