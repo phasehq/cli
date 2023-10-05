@@ -32,7 +32,31 @@ class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def start_server(port):
-    handler = SimpleHTTPRequestHandler
+    class QuietHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format, *args):
+            # Do not log anything to keep the console quiet.
+            pass
+        
+        def do_POST(self):
+            # Here we'll handle the POST request. 
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            
+            # Assuming the client sends JSON data, parse it.
+            try:
+                data = json.loads(post_data)
+                self.server.received_data = data
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "Success: CLI authentication complete"}).encode('utf-8'))
+            except json.JSONDecodeError:
+                self.send_response(400)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode('utf-8'))
+
+    handler = QuietHTTPRequestHandler
     httpd = socketserver.TCPServer(("", port), handler)
     httpd.received_data = None
 
@@ -40,6 +64,7 @@ def start_server(port):
     thread.start()
 
     return httpd
+
 
 # Takes Phase credentials from user and stored them securely in the system keyring
 def phase_auth():
