@@ -1,7 +1,7 @@
 # Phase-CLI
 
 ```
-$ phase
+λ phase
 Securely manage and sync environment variables with Phase.
 
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⠔⠋⣳⣖⠚⣲⢖⠙⠳⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -25,15 +25,14 @@ options:
   --version, -v         show program's version number and exit
 
 Commands:
-  {auth,init,run,secrets,logout,console,update,keyring}
+  {auth,init,run,secrets,users,console,update}
     auth                💻 Authenticate with Phase
-    init                🔗 Link your project to your Phase app
+    init                🔗 Link your project with your Phase app
     run                 🚀 Run and inject secrets to your app
-    secrets             🗝️ Manage your secrets
-    logout              🏃 Logout from phase-cli
+    secrets             🗝️` Manage your secrets
+    users               👥 Manage users and accounts
     console             🖥️ Open the Phase Console in your browser
-    update              🔄 Update the Phase CLI to the latest version
-    keyring             🔐 Display information about the Phase keyring
+    update              🆙 Update the Phase CLI to the latest version
 ```
 
 ## Features
