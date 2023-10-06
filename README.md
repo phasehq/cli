@@ -20,19 +20,30 @@ Securely manage and sync environment variables with Phase.
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⣆⠀⠙⣆⠀⠹⣄⠀⣠⠎⠁⣠⠞⠀⡤⠏⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⢤⣈⣳⣤⣼⣹⢥⣰⣋⡥⡴⠊⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-options:
-  -h, --help            show this help message and exit
-  --version, -v         show program's version number and exit
+Options:
+  -h, --help   show this help message and exit
+  --version, -v
+               show program's version number and exit
 
 Commands:
-  {auth,init,run,secrets,users,console,update}
-    auth                💻 Authenticate with Phase
-    init                🔗 Link your project with your Phase app
-    run                 🚀 Run and inject secrets to your app
-    secrets             🗝️` Manage your secrets
-    users               👥 Manage users and accounts
-    console             🖥️ Open the Phase Console in your browser
-    update              🆙 Update the Phase CLI to the latest version
+  
+    auth             💻 Authenticate with Phase
+    init             🔗 Link your project with your Phase app
+    run              🚀 Run and inject secrets to your app
+    secrets          🗝️ Manage your secrets
+    secrets list     📇 List all the secrets
+    secrets get      🔍 Get a specific secret by key
+    secrets create   💳 Create a new secret
+    secrets update   📝 Update an existing secret
+    secrets delete   🗑️ Delete a secret
+    secrets import   📩 Import secrets from a .env file
+    secrets export   🥡 Export secrets in a dotenv format
+    users            👥 Manage users and accounts
+    whoami           🙋 See details of the current user
+    logout           🏃 Logout from phase-cli
+    keyring          🔐 Display information about the Phase keyring
+    console          🖥️ Open the Phase Console in your browser
+    update           🆙 Update the Phase CLI to the latest version
 ```
 
 ## Features
