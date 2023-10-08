@@ -4,7 +4,7 @@ import sys
 import traceback
 import argparse
 from argparse import RawTextHelpFormatter
-from phase_cli.cmd.web import phase_open_web
+from phase_cli.cmd.open_console import phase_open_web
 from phase_cli.cmd.update import phase_cli_update
 from phase_cli.cmd.users.whoami import phase_users_whoami
 from phase_cli.cmd.users.keyring import show_keyring_info
@@ -33,10 +33,23 @@ def print_phase_cli_version_only():
 PHASE_DEBUG = os.environ.get('PHASE_DEBUG', 'False').lower() == 'true'
 
 class CustomHelpFormatter(argparse.HelpFormatter):
+    def __init__(self, prog):
+        super().__init__(prog, max_help_position=15, width=sys.maxsize) # set the alignment and wrapping width
+
     def add_usage(self, usage, actions, groups, prefix=None):
-        if prefix is None:
-            prefix = 'Commands: '
-        return super(CustomHelpFormatter, self)
+        # Override to prevent the default behavior
+        return 
+
+    def _format_action(self, action):
+        # If the action type is subparsers, skip its formatting
+        if isinstance(action, argparse._SubParsersAction):
+            # Filter out the metavar option
+            action.metavar = None
+        parts = super(CustomHelpFormatter, self)._format_action(action)
+        # remove the unnecessary line
+        if "{auth,init,run,secrets,users,console,update}" in parts:
+            parts = parts.replace("{auth,init,run,secrets,users,console,update}", "")
+        return parts
 
 class HelpfulParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
