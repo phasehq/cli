@@ -116,7 +116,7 @@ jobs:
 
   Build_and_push_docker:
     name: Build & Release - Docker
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
+    if: github.ref == 'refs/heads/main' && github.event.pull_request.merged == true
     needs: [build, build_apk]
     runs-on: ubuntu-latest
     steps:
