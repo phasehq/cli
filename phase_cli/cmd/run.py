@@ -30,7 +30,7 @@ def phase_run_inject(command, env_name=None, phase_app=None):
     try:
         secrets = phase.get(env_name=env_name, app_name=phase_app)
     except ValueError as e:
-        print(f"⚠️  Failed to fetch secrets: The environment '{env_name}' either does not exist or you do not have access to it.")
+        print(e)
         sys.exit(1)
     
     # Prepare the new environment variables for the command

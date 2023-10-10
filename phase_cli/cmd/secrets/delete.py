@@ -35,4 +35,4 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
         phase_list_secrets(show=False, env_name=env_name)
     
     except ValueError as e:
-        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
+        print(e)

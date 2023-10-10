@@ -30,4 +30,4 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None):
             print("\n🥽 To uncover the secrets, use: phase secrets list --show")
 
     except ValueError as e:
-        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
+        print(e)

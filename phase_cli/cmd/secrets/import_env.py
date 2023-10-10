@@ -49,4 +49,4 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
             print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
 
     except ValueError as e:
-        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
+        print(e)

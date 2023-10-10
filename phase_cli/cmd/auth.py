@@ -1,4 +1,5 @@
 import json
+import os
 import keyring
 import sys
 import http.server

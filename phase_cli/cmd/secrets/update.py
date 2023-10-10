@@ -31,8 +31,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None):
             return
         
     except ValueError as e:
-        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
-        return
+        print(e)
 
     # Check if input is being piped
     if sys.stdin.isatty():

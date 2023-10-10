@@ -39,5 +39,5 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None):
             # Print an error message if the response status code indicates an error
             print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
 
-    except ValueError:
-        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
+    except ValueError as e:
+        print(e)

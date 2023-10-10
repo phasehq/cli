@@ -31,5 +31,4 @@ def phase_secrets_get(key, env_name=None, phase_app=None):
         render_table([secret_data], show=True)
 
     except ValueError as e:
-        print(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
-      
+        print(e)
