@@ -204,7 +204,6 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     - ValueError: If no matching application or environment is found.
     """
     app_id = None
-
     # 1. Get the default app_id and env_name from .phase.json if available
     try:
         with open(PHASE_ENV_CONFIG, 'r') as f:
