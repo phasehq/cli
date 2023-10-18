@@ -45,7 +45,7 @@ Commands:
 
 ## See it in action
 
-[![asciicast](https://asciinema.org/a/9rvH2HTEfgN27cjNguTGiS0lz.svg)](https://asciinema.org/a/9rvH2HTEfgN27cjNguTGiS0lz)
+[![asciicast](media/phase-cli-demo.gif)](asciinema-cli-demo)
 
 ## Installation
 
