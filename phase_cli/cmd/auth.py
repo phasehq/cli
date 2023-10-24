@@ -35,6 +35,13 @@ def start_server(port):
             # Do not log anything to keep the console quiet.
             pass
         
+        def do_OPTIONS(self):           
+            self.send_response(200, "ok")       
+            self.send_header('Access-Control-Allow-Origin', '*')  # You should limit this to known domains
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type")
+            self.end_headers()
+        
         def do_POST(self):
             # Here we'll handle the POST request. 
             content_length = int(self.headers['Content-Length'])
@@ -46,6 +53,9 @@ def start_server(port):
                 self.server.received_data = data
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
+                self.send_header('Access-Control-Allow-Origin', '*')  # You should limit this to known domains
+                self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type")
                 self.end_headers()
                 self.wfile.write(json.dumps({"status": "Success: CLI authentication complete"}).encode('utf-8'))
             except json.JSONDecodeError:
@@ -87,10 +97,10 @@ def phase_auth():
         # Set up the PHASE_API_HOST variable
         if phase_instance_type == '🛠️ Self Hosted':
             PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
-            webbrowser.open(f"{PHASE_API_HOST}/auth#{port}-{public_key.hex()}-{personal_access_token_name}")
+            webbrowser.open(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
         else:
             PHASE_API_HOST = PHASE_CLOUD_API_HOST
-            webbrowser.open(f"{PHASE_API_HOST}/auth#{port}-{public_key.hex()}-{personal_access_token_name}")
+            webbrowser.open(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
 
         # 3. Wait for the POST request from the web UI.
         while not server.received_data:
