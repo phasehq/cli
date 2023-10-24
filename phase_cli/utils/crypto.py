@@ -7,12 +7,12 @@ import nacl.bindings
 from nacl.encoding import HexEncoder
 from nacl.public import PrivateKey
 from nacl.bindings import (
-    crypto_kx_keypair, 
-    crypto_aead_xchacha20poly1305_ietf_encrypt, 
+    crypto_kx_keypair,
+    crypto_aead_xchacha20poly1305_ietf_encrypt,
     crypto_aead_xchacha20poly1305_ietf_decrypt,
-    randombytes, 
-    crypto_secretbox_NONCEBYTES, 
-    crypto_kx_server_session_keys, 
+    randombytes,
+    crypto_secretbox_NONCEBYTES,
+    crypto_kx_server_session_keys,
     crypto_kx_client_session_keys,
     crypto_kx_seed_keypair,
 )
@@ -24,15 +24,14 @@ from phase_cli.utils.network import (
     fetch_phase_secrets,
     create_phase_secrets,
     update_phase_secrets,
-    delete_phase_secrets
+    delete_phase_secrets,
 )
 from phase_cli.utils.const import __ph_version__
 
 
 class CryptoUtils:
-    
     VERSION = 1
-    
+
     @staticmethod
     def random_key_pair() -> Tuple[bytes, bytes]:
         """
@@ -44,57 +43,50 @@ class CryptoUtils:
         """
         keypair = crypto_kx_keypair()
         return keypair
-    
+
     @staticmethod
     def client_session_keys(ephemeral_key_pair, recipient_pub_key):
         client_public_key, client_private_key = ephemeral_key_pair
         return nacl.bindings.crypto_kx_client_session_keys(
-            client_public_key,
-            client_private_key,
-            recipient_pub_key
+            client_public_key, client_private_key, recipient_pub_key
         )
-
 
     @staticmethod
     def server_session_keys(app_key_pair, data_pub_key):
         server_public_key, server_private_key = app_key_pair
         return nacl.bindings.crypto_kx_server_session_keys(
-            server_public_key,
-            server_private_key,
-            data_pub_key
+            server_public_key, server_private_key, data_pub_key
         )
 
     @staticmethod
     def encrypt_asymmetric(plaintext, public_key_hex):
-
         public_key, private_key = CryptoUtils.random_key_pair()
 
-        symmetric_keys = CryptoUtils.client_session_keys((public_key, private_key), bytes.fromhex(public_key_hex))
-        
+        symmetric_keys = CryptoUtils.client_session_keys(
+            (public_key, private_key), bytes.fromhex(public_key_hex)
+        )
+
         ciphertext = CryptoUtils.encrypt_string(plaintext, symmetric_keys[1])
 
         return f"ph:v{CryptoUtils.VERSION}:{public_key.hex()}:{ciphertext}"
 
-
     @staticmethod
     def decrypt_asymmetric(ciphertext_string, private_key_hex, public_key_hex):
-        ciphertext_segments = ciphertext_string.split(':')
+        ciphertext_segments = ciphertext_string.split(":")
 
         if len(ciphertext_segments) != 4:
-            raise ValueError('Invalid ciphertext')
+            raise ValueError("Invalid ciphertext")
 
         public_key = bytes.fromhex(public_key_hex)
         private_key = bytes.fromhex(private_key_hex)
-        
+
         session_keys = CryptoUtils.server_session_keys(
-            (public_key, private_key),
-            bytes.fromhex(ciphertext_segments[2])
+            (public_key, private_key), bytes.fromhex(ciphertext_segments[2])
         )
 
         plaintext = CryptoUtils.decrypt_string(ciphertext_segments[3], session_keys[0])
 
         return plaintext
-
 
     @staticmethod
     def digest(input):
@@ -105,10 +97,7 @@ class CryptoUtils:
     def encrypt_raw(plaintext, key):
         nonce = random(nacl.bindings.crypto_secretbox_NONCEBYTES)
         ciphertext = crypto_aead_xchacha20poly1305_ietf_encrypt(
-            plaintext.encode(),
-            None,   
-            nonce,
-            key
+            plaintext.encode(), None, nonce, key
         )
         return bytearray(ciphertext + nonce)
 
@@ -116,17 +105,14 @@ class CryptoUtils:
     def decrypt_raw(ct, key) -> bytes:
         try:
             nonce = ct[-24:]
-            ciphertext = ct[:-24]    
+            ciphertext = ct[:-24]
             plaintext_bytes = crypto_aead_xchacha20poly1305_ietf_decrypt(
-                ciphertext, 
-                None, 
-                nonce, 
-                key
+                ciphertext, None, nonce, key
             )
             return plaintext_bytes
         except Exception as e:
             print(f"Exception during decryption: {e}")
-            raise ValueError('Decryption error') from e
+            raise ValueError("Decryption error") from e
 
     @staticmethod
     def encrypt_b64(plaintext, key_bytes) -> str:
@@ -141,9 +127,9 @@ class CryptoUtils:
             str: The ciphertext obtained by encrypting the string with the key, encoded with base64.
         """
 
-        plaintext_bytes = bytes(plaintext, 'utf-8')
+        plaintext_bytes = bytes(plaintext, "utf-8")
         ciphertext = CryptoUtils.encrypt_raw(plaintext_bytes, key_bytes)
-        return base64.b64encode(ciphertext).decode('utf-8')
+        return base64.b64encode(ciphertext).decode("utf-8")
 
     @staticmethod
     def decrypt_b64(ct, key) -> bytes:
@@ -163,7 +149,7 @@ class CryptoUtils:
 
         plaintext_bytes = CryptoUtils.decrypt_raw(ct_bytes, key_bytes)
 
-        return plaintext_bytes.decode('utf-8')
+        return plaintext_bytes.decode("utf-8")
 
     @staticmethod
     def encrypt_string(plaintext, key):
@@ -184,16 +170,16 @@ class CryptoUtils:
 
         # Convert the hex seed to bytes
         seed_bytes = bytes.fromhex(env_seed)
-        
+
         # Generate the key pair
         public_key, private_key = nacl.bindings.crypto_kx_seed_keypair(seed_bytes)
-        
+
         # Convert the keys to hex format
         public_key_hex = public_key.hex()
         private_key_hex = private_key.hex()
-        
+
         # Return the keys in a dictionary
-        return {'publicKey': public_key_hex, 'privateKey': private_key_hex}
+        return {"publicKey": public_key_hex, "privateKey": private_key_hex}
 
     @staticmethod
     def blake2b_digest(input_str: str, salt: str) -> str:
@@ -208,7 +194,12 @@ class CryptoUtils:
             str: The hexadecimal representation of the hash.
         """
         hash_size = 32  # 32 bytes (256 bits)
-        hashed = blake2b(input_str.encode('utf-8'), key=salt.encode('utf-8'), encoder=nacl.encoding.RawEncoder, digest_size=hash_size)
+        hashed = blake2b(
+            input_str.encode("utf-8"),
+            key=salt.encode("utf-8"),
+            encoder=nacl.encoding.RawEncoder,
+            digest_size=hash_size,
+        )
         hex_encoded = hashed.hex()
         return hex_encoded
 
@@ -237,4 +228,6 @@ class CryptoUtils:
         Returns:
             str: The reconstructed secret as a hex-encoded string.
         """
-        return functools.reduce(CryptoUtils.xor_bytes, [bytes.fromhex(share) for share in shares]).hex()
+        return functools.reduce(
+            CryptoUtils.xor_bytes, [bytes.fromhex(share) for share in shares]
+        ).hex()
