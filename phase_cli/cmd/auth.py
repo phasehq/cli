@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import keyring
 import sys
 import http.server
@@ -77,14 +78,19 @@ def phase_auth():
             'Choose your Phase instance type:',
             choices=['☁️ Phase Cloud', '🛠️ Self Hosted']
         ).ask()
+        
+        # Fetch local username and hostname. To be used as title for personal access token
+        username = os.getlogin()
+        hostname = platform.node()
+        personal_access_token_name = f"{username}@{hostname}"
 
         # Set up the PHASE_API_HOST variable
         if phase_instance_type == '🛠️ Self Hosted':
             PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
-            webbrowser.open(f"{PHASE_API_HOST}/auth#{port}-{public_key.hex()}")
+            webbrowser.open(f"{PHASE_API_HOST}/auth#{port}-{public_key.hex()}-{personal_access_token_name}")
         else:
             PHASE_API_HOST = PHASE_CLOUD_API_HOST
-            webbrowser.open(f"{PHASE_API_HOST}/auth#{port}-{public_key.hex()}")
+            webbrowser.open(f"{PHASE_API_HOST}/auth#{port}-{public_key.hex()}-{personal_access_token_name}")
 
         # 3. Wait for the POST request from the web UI.
         while not server.received_data:
