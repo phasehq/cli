@@ -1,12 +1,13 @@
 import json
 import os
 import platform
+import subprocess
 import keyring
 import sys
 import http.server
 import socketserver
 import threading
-import webbrowser
+import platform
 import time, random
 import questionary
 from phase_cli.utils.crypto import CryptoUtils
@@ -73,6 +74,19 @@ def start_server(port):
 
     return httpd
 
+def open_url_silently(url):
+    """Open a URL in the default browser without any console output."""
+    # Determine the right command based on the OS
+    if platform.system() == "Windows":
+        cmd = ['start', url]
+    elif platform.system() == "Darwin":
+        cmd = ['open', url]
+    else:  # Assume Linux
+        cmd = ['xdg-open', url]
+
+    # Suppress output by redirecting to devnull
+    with open(os.devnull, 'w') as fnull:
+        subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
 
 # Takes Phase credentials from user and stored them securely in the system keyring
 def phase_auth():
@@ -97,14 +111,19 @@ def phase_auth():
         # Set up the PHASE_API_HOST variable
         if phase_instance_type == '🛠️ Self Hosted':
             PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
-            webbrowser.open(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
+            open_url_silently(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
         else:
             PHASE_API_HOST = PHASE_CLOUD_API_HOST
-            webbrowser.open(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
+            open_url_silently(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
 
         # 3. Wait for the POST request from the web UI.
         while not server.received_data:
             time.sleep(1)
+
+        # Highlight server response (raw JSON).
+        print("\nServer Response:")
+        print(json.dumps(server.received_data, indent=4))
+        print("====================================")
 
         # 4. Extract credentials from the received data
         user_email = server.received_data.get('email')
