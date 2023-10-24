@@ -19,13 +19,6 @@ from nacl.bindings import (
 from nacl.hash import blake2b
 from nacl.utils import random
 from base64 import b64encode, b64decode
-from phase_cli.utils.network import (
-    fetch_phase_user,
-    fetch_phase_secrets,
-    create_phase_secrets,
-    update_phase_secrets,
-    delete_phase_secrets,
-)
 from phase_cli.utils.const import __ph_version__
 
 
