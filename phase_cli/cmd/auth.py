@@ -8,6 +8,7 @@ import http.server
 import socketserver
 import threading
 import platform
+import base64
 import time, random
 import questionary
 from phase_cli.utils.crypto import CryptoUtils
@@ -88,12 +89,12 @@ def open_url_silently(url):
     with open(os.devnull, 'w') as fnull:
         subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
 
-# Takes Phase credentials from user and stored them securely in the system keyring
 def phase_auth():
     # 1. Start an HTTP web server at a random port.
     port = random.randint(8000, 9000)
     server = start_server(port)
 
+    # Spin up ephemeral X25519 keys for webauth 
     public_key, private_key = CryptoUtils.random_key_pair()
 
     try:
@@ -108,32 +109,32 @@ def phase_auth():
         hostname = platform.node()
         personal_access_token_name = f"{username}@{hostname}"
 
-        # Set up the PHASE_API_HOST variable
+        # Prepare the string to be encoded
+        raw_data = f"{port}-{public_key.hex()}-{personal_access_token_name}"
+        encoded_data = base64.b64encode(raw_data.encode()).decode()
+
         if phase_instance_type == '🛠️ Self Hosted':
             PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
-            open_url_silently(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
+            open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
         else:
             PHASE_API_HOST = PHASE_CLOUD_API_HOST
-            open_url_silently(f"{PHASE_API_HOST}/webauth#{port}-{public_key.hex()}-{personal_access_token_name}")
-
+            open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
         # 3. Wait for the POST request from the web UI.
         while not server.received_data:
             time.sleep(1)
 
-        # Highlight server response (raw JSON).
-        print("\nServer Response:")
-        print(json.dumps(server.received_data, indent=4))
-        print("====================================")
-
         # 4. Extract credentials from the received data
         user_email = server.received_data.get('email')
-        pss = server.received_data.get('pss')
+        pss_encrypted = server.received_data.get('pss')
 
-        if not (user_email and pss):
+        if not (user_email and pss_encrypted):
             raise ValueError("Email or pss not received from the web UI.")
 
-        # 5. Authenticate with the received credentials.
-        phase = Phase(init=False, pss=pss, host=PHASE_API_HOST)
+        # Decrypt user's Phase personal access token from the webauth payload
+        pss_decrypted = CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex())
+
+        # 5. Authenticate with the decrypted pss
+        phase = Phase(init=False, pss=pss_decrypted, host=PHASE_API_HOST)
         result = phase.auth()
 
         if result == "Success":
@@ -143,7 +144,7 @@ def phase_auth():
             wrapped_key_share = None if not offline_enabled else user_data["wrapped_key_share"]
 
             # Save the credentials in the Phase keyring
-            keyring.set_password(f"phase-cli-user-{user_id}", "pss", pss)
+            keyring.set_password(f"phase-cli-user-{user_id}", "pss", pss_decrypted)
 
             # Prepare the data to be saved in config.json
             config_data = {
