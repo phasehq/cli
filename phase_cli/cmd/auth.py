@@ -31,7 +31,7 @@ class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()      
 
 
-def start_server(port):
+def start_server(port, PHASE_API_HOST):
     class QuietHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args):
             # Do not log anything to keep the console quiet.
@@ -39,7 +39,7 @@ def start_server(port):
         
         def do_OPTIONS(self):           
             self.send_response(200, "ok")       
-            self.send_header('Access-Control-Allow-Origin', '*')  # You should limit this to known domains
+            self.send_header('Access-Control-Allow-Origin', PHASE_API_HOST)  
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type")
             self.end_headers()
@@ -55,7 +55,7 @@ def start_server(port):
                 self.server.received_data = data
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
-                self.send_header('Access-Control-Allow-Origin', '*')  # You should limit this to known domains
+                self.send_header('Access-Control-Allow-Origin', PHASE_API_HOST)  
                 self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
                 self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type")
                 self.end_headers()
@@ -90,19 +90,22 @@ def open_url_silently(url):
         subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
 
 def phase_auth():
-    # 1. Start an HTTP web server at a random port.
-    port = random.randint(8000, 9000)
-    server = start_server(port)
-
-    # Spin up ephemeral X25519 keys for webauth 
-    public_key, private_key = CryptoUtils.random_key_pair()
-
     try:
-        # 2. Ask the user for the type of Phase instance.
+        # 1. Ask the user for the type of Phase instance.
         phase_instance_type = questionary.select(
             'Choose your Phase instance type:',
             choices=['☁️ Phase Cloud', '🛠️ Self Hosted']
         ).ask()
+        
+        if phase_instance_type == '🛠️ Self Hosted':
+            PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+        else:
+            PHASE_API_HOST = PHASE_CLOUD_API_HOST
+
+        # 2. Start an HTTP web server at a random port and spin up the keys.
+        port = random.randint(8000, 20000)
+        server = start_server(port, PHASE_API_HOST)
+        public_key, private_key = CryptoUtils.random_key_pair()
         
         # Fetch local username and hostname. To be used as title for personal access token
         username = os.getlogin()
@@ -113,12 +116,8 @@ def phase_auth():
         raw_data = f"{port}-{public_key.hex()}-{personal_access_token_name}"
         encoded_data = base64.b64encode(raw_data.encode()).decode()
 
-        if phase_instance_type == '🛠️ Self Hosted':
-            PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
-            open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
-        else:
-            PHASE_API_HOST = PHASE_CLOUD_API_HOST
-            open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
+        open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
+        
         # 3. Wait for the POST request from the web UI.
         while not server.received_data:
             time.sleep(1)
