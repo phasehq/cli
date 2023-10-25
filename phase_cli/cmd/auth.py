@@ -1,7 +1,6 @@
 import json
 import os
 import platform
-import subprocess
 import keyring
 import sys
 import http.server
@@ -11,6 +10,7 @@ import threading
 import base64
 import time, random
 import questionary
+from phase_cli.utils.misc import open_browser
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
@@ -75,19 +75,6 @@ def start_server(port, PHASE_API_HOST):
 
     return httpd
 
-def open_url_silently(url):
-    """Open a URL in the default browser without any console output."""
-    # Determine the right command based on the OS
-    if platform.system() == "Windows":
-        cmd = ['start', url]
-    elif platform.system() == "Darwin":
-        cmd = ['open', url]
-    else:  # Assume Linux
-        cmd = ['xdg-open', url]
-
-    # Suppress output by redirecting to devnull
-    with open(os.devnull, 'w') as fnull:
-        subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
 
 def phase_auth(mode="webauth"):
     try:
@@ -141,7 +128,7 @@ def phase_auth(mode="webauth"):
             print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth#{encoded_data}")
 
             # Open the URL silently
-            open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
+            open_browser(f"{PHASE_API_HOST}/webauth#{encoded_data}")
 
             # Wait for the POST request from the web UI.
             while not server.received_data:

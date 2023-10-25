@@ -1,8 +1,7 @@
 import os
 import platform
-import sys
+import subprocess
 import json
-import re
 from typing import Union, List
 from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 
@@ -235,6 +234,21 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         raise ValueError(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
 
     return application["id"], environment["environment"]["id"], environment["identity_key"]
+
+
+def open_browser(url):
+    """Open a URL in the default browser without any console output."""
+    # Determine the right command based on the OS
+    if platform.system() == "Windows":
+        cmd = ['start', url]
+    elif platform.system() == "Darwin":
+        cmd = ['open', url]
+    else:  # Assume Linux
+        cmd = ['xdg-open', url]
+
+    # Suppress output by redirecting to devnull
+    with open(os.devnull, 'w') as fnull:
+        subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
 
 
 def get_user_agent():
