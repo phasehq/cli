@@ -94,10 +94,11 @@ def phase_auth():
         # 1. Ask the user for the type of Phase instance.
         phase_instance_type = questionary.select(
             'Choose your Phase instance type:',
-            choices=['☁️ Phase Cloud', '🛠️ Self Hosted']
+            choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
         ).ask()
         
-        if phase_instance_type == '🛠️ Self Hosted':
+        # Get the API host based on user's choice.
+        if phase_instance_type == '🛠️  Self Hosted':
             PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
         else:
             PHASE_API_HOST = PHASE_CLOUD_API_HOST
@@ -116,6 +117,10 @@ def phase_auth():
         raw_data = f"{port}-{public_key.hex()}-{personal_access_token_name}"
         encoded_data = base64.b64encode(raw_data.encode()).decode()
 
+        # Print the link in the console
+        print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth#{encoded_data}")
+
+        # Open the URL silently
         open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
         
         # 3. Wait for the POST request from the web UI.
