@@ -78,6 +78,7 @@ def main ():
 
         # Auth command
         auth_parser = subparsers.add_parser('auth', help='💻 Authenticate with Phase')
+        auth_parser.add_argument('--mode', choices=['token', 'webauth'], default='webauth', help='Mode of authentication. Default: webauth')
 
         # Init command
         init_parser = subparsers.add_parser('init', help='🔗 Link your project with your Phase app')
@@ -171,7 +172,7 @@ def main ():
         args = parser.parse_args()
 
         if args.command == 'auth':
-            phase_auth()
+            phase_auth(args.mode)
             sys.exit(0)
         elif args.command == 'init':
             phase_init()

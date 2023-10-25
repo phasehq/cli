@@ -105,10 +105,10 @@ def phase_auth(mode="webauth"):
                 PHASE_API_HOST = PHASE_CLOUD_API_HOST
 
             user_email = questionary.text("Please enter your email:").ask()
-            pss = getpass.getpass("Please enter Phase user token (hidden): ")
+            personal_access_token = getpass.getpass("Please enter Phase user token (hidden): ")
 
             # Authenticate using the provided token
-            phase = Phase(init=False, pss=pss, host=PHASE_API_HOST)
+            phase = Phase(init=False, pss=personal_access_token, host=PHASE_API_HOST)
             result = phase.auth()
 
         else:
@@ -155,10 +155,11 @@ def phase_auth(mode="webauth"):
                 raise ValueError("Email or pss not received from the web UI.")
 
             # Decrypt user's Phase personal access token from the webauth payload
-            pss_decrypted = CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex())
+            decrypted_personal_access_token = CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex())
 
             # Authenticate with the decrypted pss
-            phase = Phase(init=False, pss=pss_decrypted, host=PHASE_API_HOST)
+            phase = Phase(init=False, pss=decrypted_personal_access_token, host=PHASE_API_HOST)
+            personal_access_token=decrypted_personal_access_token
             result = phase.auth()
 
         if result == "Success":
@@ -168,7 +169,7 @@ def phase_auth(mode="webauth"):
             wrapped_key_share = None if not offline_enabled else user_data["wrapped_key_share"]
 
             # Save the credentials in the Phase keyring
-            keyring.set_password(f"phase-cli-user-{user_id}", "pss", pss_decrypted)
+            keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
 
             # Prepare the data to be saved in config.json
             config_data = {
