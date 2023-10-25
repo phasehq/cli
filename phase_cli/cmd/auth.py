@@ -5,9 +5,9 @@ import subprocess
 import keyring
 import sys
 import http.server
+import getpass
 import socketserver
 import threading
-import platform
 import base64
 import time, random
 import questionary
@@ -89,57 +89,77 @@ def open_url_silently(url):
     with open(os.devnull, 'w') as fnull:
         subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
 
-def phase_auth():
+def phase_auth(mode="webauth"):
     try:
-        # 1. Ask the user for the type of Phase instance.
-        phase_instance_type = questionary.select(
-            'Choose your Phase instance type:',
-            choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
-        ).ask()
-        
-        # Get the API host based on user's choice.
-        if phase_instance_type == '🛠️  Self Hosted':
-            PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+        # Choose the authentication mode: webauth (default) or token-based.
+        if mode == 'token':
+            # Manual token-based authentication
+            phase_instance_type = questionary.select(
+                'Choose your Phase instance type:',
+                choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+            ).ask()
+
+            if phase_instance_type == '🛠️  Self Hosted':
+                PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+            else:
+                PHASE_API_HOST = PHASE_CLOUD_API_HOST
+
+            user_email = questionary.text("Please enter your email:").ask()
+            pss = getpass.getpass("Please enter Phase user token (hidden): ")
+
+            # Authenticate using the provided token
+            phase = Phase(init=False, pss=pss, host=PHASE_API_HOST)
+            result = phase.auth()
+
         else:
-            PHASE_API_HOST = PHASE_CLOUD_API_HOST
+            # Web-based authentication
+            phase_instance_type = questionary.select(
+                'Choose your Phase instance type:',
+                choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+            ).ask()
 
-        # 2. Start an HTTP web server at a random port and spin up the keys.
-        port = random.randint(8000, 20000)
-        server = start_server(port, PHASE_API_HOST)
-        public_key, private_key = CryptoUtils.random_key_pair()
-        
-        # Fetch local username and hostname. To be used as title for personal access token
-        username = os.getlogin()
-        hostname = platform.node()
-        personal_access_token_name = f"{username}@{hostname}"
+            if phase_instance_type == '🛠️  Self Hosted':
+                PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+            else:
+                PHASE_API_HOST = PHASE_CLOUD_API_HOST
 
-        # Prepare the string to be encoded
-        raw_data = f"{port}-{public_key.hex()}-{personal_access_token_name}"
-        encoded_data = base64.b64encode(raw_data.encode()).decode()
+            # Start an HTTP web server at a random port and spin up the keys.
+            port = random.randint(8000, 20000)
+            server = start_server(port, PHASE_API_HOST)
+            public_key, private_key = CryptoUtils.random_key_pair()
 
-        # Print the link in the console
-        print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth#{encoded_data}")
+            # Fetch local username and hostname. To be used as title for personal access token
+            username = os.getlogin()
+            hostname = platform.node()
+            personal_access_token_name = f"{username}@{hostname}"
 
-        # Open the URL silently
-        open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
-        
-        # 3. Wait for the POST request from the web UI.
-        while not server.received_data:
-            time.sleep(1)
+            # Prepare the string to be encoded
+            raw_data = f"{port}-{public_key.hex()}-{personal_access_token_name}"
+            encoded_data = base64.b64encode(raw_data.encode()).decode()
 
-        # 4. Extract credentials from the received data
-        user_email = server.received_data.get('email')
-        pss_encrypted = server.received_data.get('pss')
+            # Print the link in the console
+            print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth#{encoded_data}")
 
-        if not (user_email and pss_encrypted):
-            raise ValueError("Email or pss not received from the web UI.")
+            # Open the URL silently
+            open_url_silently(f"{PHASE_API_HOST}/webauth#{encoded_data}")
 
-        # Decrypt user's Phase personal access token from the webauth payload
-        pss_decrypted = CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex())
+            # Wait for the POST request from the web UI.
+            while not server.received_data:
+                time.sleep(1)
 
-        # 5. Authenticate with the decrypted pss
-        phase = Phase(init=False, pss=pss_decrypted, host=PHASE_API_HOST)
-        result = phase.auth()
+            # Extract credentials from the received data
+            user_email = server.received_data.get('email')
+            pss_encrypted = server.received_data.get('pss')
+
+            if not (user_email and pss_encrypted):
+                raise ValueError("Email or pss not received from the web UI.")
+
+            # Decrypt user's Phase personal access token from the webauth payload
+            pss_decrypted = CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex())
+
+            # Authenticate with the decrypted pss
+            phase = Phase(init=False, pss=pss_decrypted, host=PHASE_API_HOST)
+            result = phase.auth()
 
         if result == "Success":
             user_data = phase.init()
@@ -167,7 +187,7 @@ def phase_auth():
             os.makedirs(PHASE_SECRETS_DIR, exist_ok=True)
             with open(os.path.join(PHASE_SECRETS_DIR, 'config.json'), 'w') as f:
                 json.dump(config_data, f, indent=4)
-            
+
             print("✅ Authentication successful. Credentials saved in the Phase keyring.")
         else:
             print("Failed to authenticate with the provided credentials.")
@@ -177,4 +197,5 @@ def phase_auth():
         print(f"An error occurred: {e}")
         sys.exit(1)
     finally:
-        server.shutdown()
+        if mode == "webauth":
+            server.shutdown()
