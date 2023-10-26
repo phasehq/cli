@@ -140,10 +140,10 @@ def phase_auth(mode="webauth"):
             encoded_data = base64.b64encode(raw_data.encode()).decode()
 
             # Print the link in the console
-            print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth#{encoded_data}")
+            print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth/{encoded_data}")
 
             # Open the URL silently
-            open_browser(f"{PHASE_API_HOST}/webauth#{encoded_data}")
+            open_browser(f"{PHASE_API_HOST}/webauth/{encoded_data}")
 
             # Wait for the POST request from the web UI.
             while not server.received_data:
