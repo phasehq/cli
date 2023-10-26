@@ -10,7 +10,7 @@ import threading
 import base64
 import time, random
 import questionary
-from phase_cli.utils.misc import open_browser
+from phase_cli.utils.misc import open_browser, validate_url
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
@@ -77,6 +77,7 @@ def start_server(port, PHASE_API_HOST):
 
 
 def phase_auth(mode="webauth"):
+    server = None
     try:
         # Choose the authentication mode: webauth (default) or token-based.
         if mode == 'token':
@@ -85,6 +86,10 @@ def phase_auth(mode="webauth"):
                 'Choose your Phase instance type:',
                 choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
             ).ask()
+
+            if not phase_instance_type:
+                print("\nExiting phase...")
+                return
 
             if phase_instance_type == '🛠️  Self Hosted':
                 PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
@@ -105,10 +110,20 @@ def phase_auth(mode="webauth"):
                 choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
             ).ask()
 
+            if not phase_instance_type:
+                return
+
             if phase_instance_type == '🛠️  Self Hosted':
                 PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
             else:
                 PHASE_API_HOST = PHASE_CLOUD_API_HOST
+
+            if not PHASE_API_HOST:
+                return
+            
+            if not validate_url(PHASE_API_HOST):
+                print("Invalid URL. Please ensure you include the scheme (e.g., https) and domain. Keep in mind, path and port are optional.")
+                return
 
             # Start an HTTP web server at a random port and spin up the keys.
             port = random.randint(8000, 20000)
@@ -180,10 +195,10 @@ def phase_auth(mode="webauth"):
         else:
             print("Failed to authenticate with the provided credentials.")
     except KeyboardInterrupt:
-        sys.exit(0)
+        print("\nExiting phase...")
     except Exception as e:
         print(f"An error occurred: {e}")
         sys.exit(1)
     finally:
-        if mode == "webauth":
+        if server:
             server.shutdown()

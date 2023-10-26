@@ -2,6 +2,7 @@ import os
 import platform
 import subprocess
 import json
+from urllib.parse import urlparse
 from typing import Union, List
 from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 
@@ -109,6 +110,14 @@ def render_table(data, show=False, min_key_width=20):
         displayed_value = icon + (value if show else censored_value)
 
         print(f'{key:<{min_key_width}} | {displayed_value:<{value_width}}')
+
+
+def validate_url(url):
+    parsed_url = urlparse(url)
+    return all([
+        parsed_url.scheme,   # Scheme should be present (e.g., "https")
+        parsed_url.netloc,   # Network location (e.g., "example.com") should be present
+    ])
 
 
 def get_default_user_host() -> str:
