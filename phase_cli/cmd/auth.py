@@ -127,11 +127,21 @@ def phase_auth(mode="webauth"):
 
             if phase_instance_type == '🛠️  Self Hosted':
                 PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+                if not PHASE_API_HOST:
+                    print("\nExiting phase...")
+                    return
             else:
                 PHASE_API_HOST = PHASE_CLOUD_API_HOST
 
             user_email = questionary.text("Please enter your email:").ask()
+            if not user_email:
+                print("\nExiting phase...")
+                return
+
             personal_access_token = getpass.getpass("Please enter Phase user token (hidden): ")
+            if not personal_access_token:
+                print("\nExiting phase...")
+                return
 
             # Authenticate using the provided token
             phase = Phase(init=False, pss=personal_access_token, host=PHASE_API_HOST)

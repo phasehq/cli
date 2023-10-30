@@ -27,7 +27,7 @@ def print_phase_links():
     
     print("\033[1;34m" + separator_line + "\033[0m")
     print("🙋 Need help?: \033[4mhttps://slack.phase.dev\033[0m")
-    print("🐞 Bug reports / feature requests: \033[4mhttps://github.com/phasehq/cli\033[0m")
+    print("💻 Bug reports / feature requests: \033[4mhttps://github.com/phasehq/cli\033[0m")
     print("\033[1;34m" + separator_line + "\033[0m")
 
 
