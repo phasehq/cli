@@ -1,7 +1,7 @@
 # Phase-CLI
 
 ```
-$ phase
+λ phase
 Securely manage and sync environment variables with Phase.
 
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⠔⠋⣳⣖⠚⣲⢖⠙⠳⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -20,20 +20,30 @@ Securely manage and sync environment variables with Phase.
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⣆⠀⠙⣆⠀⠹⣄⠀⣠⠎⠁⣠⠞⠀⡤⠏⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⢤⣈⣳⣤⣼⣹⢥⣰⣋⡥⡴⠊⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-options:
-  -h, --help            show this help message and exit
-  --version, -v         show program's version number and exit
+Options:
+  -h, --help   show this help message and exit
+  --version, -v
+               show program's version number and exit
 
 Commands:
-  {auth,init,run,secrets,logout,console,update,keyring}
-    auth                💻 Authenticate with Phase
-    init                🔗 Link your project to your Phase app
-    run                 🚀 Run and inject secrets to your app
-    secrets             🗝️ Manage your secrets
-    logout              🏃 Logout from phase-cli
-    console             🖥️ Open the Phase Console in your browser
-    update              🔄 Update the Phase CLI to the latest version
-    keyring             🔐 Display information about the Phase keyring
+  
+    auth             💻 Authenticate with Phase
+    init             🔗 Link your project with your Phase app
+    run              🚀 Run and inject secrets to your app
+    secrets          🗝️ Manage your secrets
+    secrets list     📇 List all the secrets
+    secrets get      🔍 Get a specific secret by key
+    secrets create   💳 Create a new secret
+    secrets update   📝 Update an existing secret
+    secrets delete   🗑️ Delete a secret
+    secrets import   📩 Import secrets from a .env file
+    secrets export   🥡 Export secrets in a dotenv format
+    users            👥 Manage users and accounts
+    users whoami     🙋 See details of the current user
+    users logout     🏃 Logout from phase-cli
+    users keyring    🔐 Display information about the Phase keyring
+    console          🖥️ Open the Phase Console in your browser
+    update           🆙 Update the Phase CLI to the latest version
 ```
 
 ## Features
