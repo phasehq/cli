@@ -10,15 +10,20 @@ import threading
 import base64
 import time, random
 import questionary
-from phase_cli.utils.misc import open_browser, validate_url
+from phase_cli.utils.misc import open_browser, validate_url, print_phase_links
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
 
 
 class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-    # Override do_POST method to handle incoming POST requests
+    """
+    A custom HTTP request handler that overrides the default behavior to handle POST requests.
+    """
     def do_POST(self):
+        """
+        Handle incoming POST requests.
+        """
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
         try:
@@ -32,6 +37,16 @@ class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def start_server(port, PHASE_API_HOST):
+    """
+    Starts an HTTP server on a specified port.
+
+    Args:
+    - port (int): The port number on which the server should run.
+    - PHASE_API_HOST (str): The API host for setting CORS headers.
+
+    Returns:
+    - httpd (socketserver.TCPServer): The HTTP server instance.
+    """
     class QuietHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args):
             # Do not log anything to keep the console quiet.
@@ -39,7 +54,8 @@ def start_server(port, PHASE_API_HOST):
         
         def do_OPTIONS(self):           
             self.send_response(200, "ok")       
-            self.send_header('Access-Control-Allow-Origin', PHASE_API_HOST)  
+            self.send_header('Access-Control-Allow-Origin', PHASE_API_HOST)
+            #self.send_header('Access-Control-Allow-Origin', 'https://localhost')
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type")
             self.end_headers()
@@ -56,6 +72,7 @@ def start_server(port, PHASE_API_HOST):
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header('Access-Control-Allow-Origin', PHASE_API_HOST)  
+                #self.send_header('Access-Control-Allow-Origin', 'https://localhost')
                 self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
                 self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type")
                 self.end_headers()
@@ -77,6 +94,23 @@ def start_server(port, PHASE_API_HOST):
 
 
 def phase_auth(mode="webauth"):
+    """
+    Handles authentication for the Phase CLI using either web-based or token-based authentication.
+
+    For webauth:
+        - Start an http server on http://localhost<random_port>
+        - Spin up ephemeral X25519 keypair - used to secure user's personal access token in flight during authentication for added protection
+        - Fetch local username and hostname - used to name users personal access tokens in the Phase Console
+        - Open the web browser on the PHASE_API_HOST/webauth/b64(port-X25519_public_key-personal_access_token_name)
+        - Wait for the Phase Console to hit a POST request to http://localhost<random_port> with the encrypted payload containing (user_email, personal_access_token)
+        - Decrypt the payload via CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex()) and write it to keyring
+
+    Args:
+    - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth" or "token".
+
+    Returns:
+    None
+    """
     server = None
     try:
         # Choose the authentication mode: webauth (default) or token-based.
@@ -191,7 +225,10 @@ def phase_auth(mode="webauth"):
             with open(os.path.join(PHASE_SECRETS_DIR, 'config.json'), 'w') as f:
                 json.dump(config_data, f, indent=4)
 
-            print("✅ Authentication successful. Credentials saved in the Phase keyring.")
+            print("\033[1;32m✅ Authentication successful. Credentials saved in the Phase keyring.\033[0m")
+            print("\033[1;36m🎉 Welcome to Phase CLI!\033[0m\n")
+            print_phase_links()
+
         else:
             print("Failed to authenticate with the provided credentials.")
     except KeyboardInterrupt:
