@@ -1,28 +1,28 @@
 #!/bin/python
-
 import os
 import sys
 import traceback
 import argparse
 from argparse import RawTextHelpFormatter
-from phase_cli.cmd.web import phase_open_web
-from phase_cli.cmd.keyring import show_keyring_info
-from phase_cli.utils.const import phaseASCii, description
+from phase_cli.cmd.open_console import phase_open_web
 from phase_cli.cmd.update import phase_cli_update
-from phase_cli.cmd.phase import (
-    phase_run_inject,
-    phase_list_secrets,
-    phase_secrets_get, 
-    phase_cli_logout, 
-    phase_secrets_env_export, 
-    phase_secrets_env_import, 
-    phase_secrets_delete, 
-    phase_secrets_create,
-    phase_secrets_update, 
-    phase_init, 
-    phase_auth
-)
+from phase_cli.cmd.users.whoami import phase_users_whoami
+from phase_cli.cmd.users.keyring import show_keyring_info
+from phase_cli.cmd.users.logout import phase_cli_logout
+from phase_cli.cmd.run import phase_run_inject
+from phase_cli.cmd.init import phase_init
+from phase_cli.cmd.auth import phase_auth
+from phase_cli.cmd.secrets.list import phase_list_secrets
+from phase_cli.cmd.secrets.get import phase_secrets_get
+from phase_cli.cmd.secrets.export import phase_secrets_env_export
+from phase_cli.cmd.secrets.import_env import phase_secrets_env_import
+from phase_cli.cmd.secrets.delete import phase_secrets_delete
+from phase_cli.cmd.secrets.create import phase_secrets_create
+from phase_cli.cmd.secrets.update import phase_secrets_update
+
 from phase_cli.utils.const import __version__
+from phase_cli.utils.const import phaseASCii, description
+
 
 def print_phase_cli_version():
     print(f"Version: {__version__}")
@@ -33,10 +33,23 @@ def print_phase_cli_version_only():
 PHASE_DEBUG = os.environ.get('PHASE_DEBUG', 'False').lower() == 'true'
 
 class CustomHelpFormatter(argparse.HelpFormatter):
+    def __init__(self, prog):
+        super().__init__(prog, max_help_position=15, width=sys.maxsize) # set the alignment and wrapping width
+
     def add_usage(self, usage, actions, groups, prefix=None):
-        if prefix is None:
-            prefix = 'Commands: '
-        return super(CustomHelpFormatter, self)
+        # Override to prevent the default behavior
+        return 
+
+    def _format_action(self, action):
+        # If the action type is subparsers, skip its formatting
+        if isinstance(action, argparse._SubParsersAction):
+            # Filter out the metavar option
+            action.metavar = None
+        parts = super(CustomHelpFormatter, self)._format_action(action)
+        # remove the unnecessary line
+        if "{auth,init,run,secrets,users,console,update}" in parts:
+            parts = parts.replace("{auth,init,run,secrets,users,console,update}", "")
+        return parts
 
 class HelpfulParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -65,9 +78,10 @@ def main ():
 
         # Auth command
         auth_parser = subparsers.add_parser('auth', help='💻 Authenticate with Phase')
+        auth_parser.add_argument('--mode', choices=['token', 'webauth'], default='webauth', help='Mode of authentication. Default: webauth')
 
         # Init command
-        init_parser = subparsers.add_parser('init', help='🔗 Link your project to your Phase app')
+        init_parser = subparsers.add_parser('init', help='🔗 Link your project with your Phase app')
 
         # Run command
         run_parser = subparsers.add_parser('run', help='🚀 Run and inject secrets to your app')
@@ -96,7 +110,7 @@ def main ():
         secrets_create_parser = secrets_subparsers.add_parser(
             'create', 
             description='💳 Create a new secret. Optionally, you can provide the secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_rsa | phase secrets create SSH_PRIVATE_KEY',
-            help='Create a new secret'
+            help='💳 Create a new secret'
         )
         secrets_create_parser.add_argument(
             'key', 
@@ -110,7 +124,7 @@ def main ():
         secrets_update_parser = secrets_subparsers.add_parser(
             'update', 
             description='📝 Update an existing secret. Optionally, you can provide the new secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_ed25519 | phase secrets update SSH_PRIVATE_KEY',
-            help='Update an existing secret'
+            help='📝 Update an existing secret'
         )
         secrets_update_parser.add_argument(
             'key', 
@@ -134,39 +148,53 @@ def main ():
         secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
 
-        # Logout command
-        logout_parser = subparsers.add_parser('logout', help='🏃 Logout from phase-cli')
+        # Users command
+        users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
+        users_subparsers = users_parser.add_subparsers(dest='users_command', required=True)
+
+        # Users whoami command
+        whoami_parser = users_subparsers.add_parser('whoami', help='🙋 See details of the current user')
+
+        # Users logout command
+        logout_parser = users_subparsers.add_parser('logout', help='🏃 Logout from phase-cli')
         logout_parser.add_argument('--purge', action='store_true', help='Purge all local data')
+
+        # Users keyring command
+        keyring_parser = users_subparsers.add_parser('keyring', help='🔐 Display information about the Phase keyring')
 
         # Web command
         web_parser = subparsers.add_parser('console', help='🖥️` Open the Phase Console in your browser')
 
         # Check if the operating system is Linux before adding the update command
         if sys.platform == "linux":
-            update_parser = subparsers.add_parser('update', help='🔄 Update the Phase CLI to the latest version')
-
-        # Keyring command
-        keyring_parser = subparsers.add_parser('keyring', help='🔐 Display information about the Phase keyring')
+            update_parser = subparsers.add_parser('update', help='🆙 Update the Phase CLI to the latest version')
 
         args = parser.parse_args()
 
         if args.command == 'auth':
-            phase_auth()
+            phase_auth(args.mode)
             sys.exit(0)
         elif args.command == 'init':
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
             phase_run_inject(command, env_name=args.env)
-        elif args.command == 'logout':
-            phase_cli_logout(args.purge)
         elif args.command == 'console':
             phase_open_web()
-        elif args.command == 'keyring':
-            show_keyring_info()
         elif args.command == 'update':
             phase_cli_update()
             sys.exit(0)
+        elif args.command == 'users':
+            if args.users_command == 'whoami':
+                phase_users_whoami()
+            elif args.users_command == 'logout':
+                phase_cli_logout(args.purge)
+            elif args.users_command == 'keyring':
+                show_keyring_info()
+            else:
+                print("Unknown users sub-command: " + args.users_command)
+                parser.print_help()
+                sys.exit(1)
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
                 phase_list_secrets(args.show, env_name=args.env)

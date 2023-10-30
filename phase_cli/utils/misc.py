@@ -1,10 +1,10 @@
 import os
 import platform
-import sys
+import subprocess
 import json
-import re
+from urllib.parse import urlparse
 from typing import Union, List
-from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
+from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 
 def get_terminal_width():
     """
@@ -16,6 +16,19 @@ def get_terminal_width():
         return os.get_terminal_size().columns
     except OSError:
         return 80
+
+
+def print_phase_links():
+    """
+    Print a beautiful welcome message inviting users to Phase's community and GitHub repository.
+    """
+    # Calculate the dynamic width of the terminal for the separator line
+    separator_line = "─" * get_terminal_width()
+    
+    print("\033[1;34m" + separator_line + "\033[0m")
+    print("🙋 Need help?: \033[4mhttps://slack.phase.dev\033[0m")
+    print("💻 Bug reports / feature requests: \033[4mhttps://github.com/phasehq/cli\033[0m")
+    print("\033[1;34m" + separator_line + "\033[0m")
 
 
 def sanitize_value(value):
@@ -112,29 +125,50 @@ def render_table(data, show=False, min_key_width=20):
         print(f'{key:<{min_key_width}} | {displayed_value:<{value_width}}')
 
 
+def validate_url(url):
+    parsed_url = urlparse(url)
+    return all([
+        parsed_url.scheme,   # Scheme should be present (e.g., "https")
+        parsed_url.netloc,   # Network location (e.g., "example.com") should be present
+    ])
+
+
 def get_default_user_host() -> str:
     """
-    Check if PHASE_HOST environment variable is set. If not, parse the config.json 
-    in PHASE_SECRETS_DIR, find the host corresponding to the default-user's id and return it.
+    Determine the Phase host based on the available environment variables or the local configuration file.
+    
+    The function operates in the following order of preference:
+    1. If the `PHASE_SERVICE_TOKEN` environment variable is available:
+        a. Returns the value of the `PHASE_HOST` environment variable if set.
+        b. If `PHASE_HOST` is not set, returns the default `PHASE_CLOUD_API_HOST`.
+    2. If the `PHASE_SERVICE_TOKEN` environment variable is not available:
+        a. Reads the local `config.json` file to retrieve the host for the default user.
+
+    Parameters:
+        None
 
     Returns:
-        str: The host value either from the environment variable or from the config file.
+        str: The Phase host, determined based on the environment variables or local configuration.
 
     Raises:
-        ValueError: If the default-user's id does not match any user in phase-users 
-        or if the config file is not found and the environment variable is not set.
+        ValueError: 
+            - If the `config.json` file does not exist and the `PHASE_SERVICE_TOKEN` environment variable is not set.
+            - If the default user's ID from the `config.json` does not correspond to any user entry in the file.
+
+    Examples:
+        >>> get_default_user_host()
+        'https://console.phase.dev'  # This is just an example and the returned value might be different based on the actual environment and config.
     """
-    
-    # Check if PHASE_HOST environment variable is set
-    phase_host_env = os.environ.get('PHASE_HOST')
-    if phase_host_env:
-        return phase_host_env
+
+    # If PHASE_SERVICE_TOKEN is available
+    if os.environ.get('PHASE_SERVICE_TOKEN'):
+        return os.environ.get('PHASE_HOST', PHASE_CLOUD_API_HOST)
 
     config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
     
     # Check if config.json exists
     if not os.path.exists(config_file_path):
-        raise ValueError("PHASE_HOST missing: Please set PHASE_HOST environment variable or login via phase auth")
+        raise ValueError("Config file not found and no PHASE_SERVICE_TOKEN environment variable set.")
     
     with open(config_file_path, 'r') as f:
         config_data = json.load(f)
@@ -145,7 +179,7 @@ def get_default_user_host() -> str:
         if user["id"] == default_user_id:
             return user["host"]
 
-    raise ValueError(f"No user found in config.json with id: {default_user_id} and no PHASE_HOST environment variable set.")
+    raise ValueError(f"No user found in config.json with id: {default_user_id}.")
 
 
 def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
@@ -185,14 +219,12 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     - env_name (str, optional): The name (or partial name) of the desired environment.
 
     Returns:
-    - tuple: A tuple containing the application's ID, environment's ID and publicKey.
+    - tuple: A tuple containing the application's ID, environment's ID, and publicKey.
 
     Raises:
     - ValueError: If no matching application or environment is found.
     """
-    # Initialize app_id as null
     app_id = None
-    
     # 1. Get the default app_id and env_name from .phase.json if available
     try:
         with open(PHASE_ENV_CONFIG, 'r') as f:
@@ -200,11 +232,11 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         default_env_name = config_data.get("defaultEnv")
         app_id = config_data.get("appId")
     except FileNotFoundError:
-        default_env_name = None
-        app_id = None   
+        default_env_name = "Development"  # Set the default environment to "Development"
+        app_id = None
 
-    # 2. If env_name isn't explicitly provided, use the default from .phase.json
-    env_name = env_name if env_name else default_env_name
+    # 2. If env_name isn't explicitly provided, use the default
+    env_name = env_name or default_env_name
 
     # 3. Get the application using app_id or app_name
     if app_name:  # Override app_id if app_name is provided
@@ -219,11 +251,26 @@ def phase_get_context(user_data, app_name=None, env_name=None):
 
     # 4. Attempt to match environment with the exact name or a name that contains the env_name string
     environment = next((env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()), None)
-    
+
     if not environment:
-        raise ValueError(f"No environment matched '{env_name}' for application '{application['name']}'.")
+        raise ValueError(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
 
     return application["id"], environment["environment"]["id"], environment["identity_key"]
+
+
+def open_browser(url):
+    """Open a URL in the default browser without any console output."""
+    # Determine the right command based on the OS
+    if platform.system() == "Windows":
+        cmd = ['start', url]
+    elif platform.system() == "Darwin":
+        cmd = ['open', url]
+    else:  # Assume Linux
+        cmd = ['xdg-open', url]
+
+    # Suppress output by redirecting to devnull
+    with open(os.devnull, 'w') as fnull:
+        subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
 
 
 def get_user_agent():
