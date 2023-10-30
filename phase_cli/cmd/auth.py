@@ -97,20 +97,42 @@ def phase_auth(mode="webauth"):
     """
     Handles authentication for the Phase CLI using either web-based or token-based authentication.
 
+    If a user is already authenticated, the function will notify the user of their logged-in status and provide instructions for logging out and logging back in.
+
     For webauth:
-        - Start an http server on http://localhost<random_port>
-        - Spin up ephemeral X25519 keypair - used to secure user's personal access token in flight during authentication for added protection
-        - Fetch local username and hostname - used to name users personal access tokens in the Phase Console
-        - Open the web browser on the PHASE_API_HOST/webauth/b64(port-X25519_public_key-personal_access_token_name)
-        - Wait for the Phase Console to hit a POST request to http://localhost<random_port> with the encrypted payload containing (user_email, personal_access_token)
-        - Decrypt the payload via CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex()) and write it to keyring
+        - Checks if the user is already authenticated.
+        - If authenticated, displays the user's email and provides instructions for logging out and logging back in.
+        - Otherwise, starts an http server on http://localhost<random_port>.
+        - Spins up an ephemeral X25519 keypair to secure the user's personal access token during authentication.
+        - Fetches the local username and hostname to name the user's personal access tokens in the Phase Console.
+        - Opens the web browser on the PHASE_API_HOST/webauth/b64(port-X25519_public_key-personal_access_token_name).
+        - Waits for the Phase Console to send a POST request to http://localhost<random_port> with the encrypted payload containing the user_email and personal_access_token.
+        - Decrypts the payload using CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex()).
+        - Validates the credentials and writes them to the keyring.
+
+    For token:
+        - Asks the user for their email and personal access token.
+        - Validates the credentials and writes them to the keyring.
 
     Args:
-    - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth" or "token".
+        - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth" or "token".
 
     Returns:
-    None
+        None
     """
+
+    # Check if the user is already authenticated
+    config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
+    if os.path.exists(config_file_path):
+        with open(config_file_path, 'r') as f:
+            config_data = json.load(f)
+            default_user_id = config_data.get('default-user')
+            for user in config_data.get('phase-users', []):
+                if user.get('id') == default_user_id:
+                    print(f"🙋 You are currently logged in as: \033[1;34m{user.get('email')}\033[0m")
+                    print("To switch accounts: \033[1mphase users logout --purge\033[0m & \033[1mphase auth\033[0m.")
+                    return
+                
     server = None
     try:
         # Choose the authentication mode: webauth (default) or token-based.

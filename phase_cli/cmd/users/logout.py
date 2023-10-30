@@ -14,7 +14,7 @@ def phase_cli_logout(purge=False):
         # Delete PHASE_SECRETS_DIR if it exists
         if os.path.exists(PHASE_SECRETS_DIR):
             shutil.rmtree(PHASE_SECRETS_DIR)
-            print("Purged all local data.")
+            print("Logged out and purged all local data.")
         else:
             print("No local data found to purge.")
 
