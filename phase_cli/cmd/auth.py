@@ -107,7 +107,7 @@ def phase_auth(mode="webauth"):
         - Fetches the local username and hostname to name the user's personal access tokens in the Phase Console.
         - Opens the web browser on the PHASE_API_HOST/webauth/b64(port-X25519_public_key-personal_access_token_name).
         - Waits for the Phase Console to send a POST request to http://localhost<random_port> with the encrypted payload containing the user_email and personal_access_token.
-        - Decrypts the payload using CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex()).
+        - Decrypts the payload using CryptoUtils.decrypt_asymmetric(personal_access_token_encrypted, private_key.hex(), public_key.hex()).
         - Validates the credentials and writes them to the keyring.
 
     For token:
@@ -130,7 +130,7 @@ def phase_auth(mode="webauth"):
             for user in config_data.get('phase-users', []):
                 if user.get('id') == default_user_id:
                     print(f"🙋 You are currently logged in as: \033[1;34m{user.get('email')}\033[0m")
-                    print("To switch accounts: \033[1mphase users logout --purge\033[0m & \033[1mphase auth\033[0m.")
+                    print("To switch accounts: '\033[1mphase users logout --purge\033[0m && \033[1mphase auth\033[0m'")
                     return
                 
     server = None
@@ -216,14 +216,15 @@ def phase_auth(mode="webauth"):
                 time.sleep(1)
 
             # Extract credentials from the received data
-            user_email = server.received_data.get('email')
-            pss_encrypted = server.received_data.get('pss')
+            user_email_encrypted = server.received_data.get('email')
+            personal_access_token_encrypted = server.received_data.get('pss')
 
-            if not (user_email and pss_encrypted):
-                raise ValueError("Email or pss not received from the web UI.")
+            if not (user_email_encrypted and personal_access_token_encrypted):
+                raise ValueError("Webauth unsuccessful: User email or personal access token missing.")
 
             # Decrypt user's Phase personal access token from the webauth payload
-            decrypted_personal_access_token = CryptoUtils.decrypt_asymmetric(pss_encrypted, private_key.hex(), public_key.hex())
+            decrypted_personal_access_token = CryptoUtils.decrypt_asymmetric(personal_access_token_encrypted, private_key.hex(), public_key.hex())
+            decrypted_user_email = CryptoUtils.decrypt_asymmetric(user_email_encrypted, private_key.hex(), public_key.hex())
 
             # Authenticate with the decrypted pss
             phase = Phase(init=False, pss=decrypted_personal_access_token, host=PHASE_API_HOST)
@@ -244,7 +245,7 @@ def phase_auth(mode="webauth"):
                 "default-user": user_id,
                 "phase-users": [
                     {
-                        "email": user_email,
+                        "email": decrypted_user_email,
                         "host": PHASE_API_HOST,
                         "id": user_id,
                         "wrapped_key_share": wrapped_key_share
