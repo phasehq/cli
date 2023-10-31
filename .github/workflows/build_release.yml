@@ -221,9 +221,9 @@ jobs:
           mv phase-apk/*.apk phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk.sha256
 
-          # For Alpine build
-          mv phase-alpine-build/* phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION
-          sha256sum phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
+        # # For Alpine build
+        # mv phase-alpine-build/* phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION
+        # sha256sum phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
 
       # # Debug: List the content of the current directory and subdirectories
       # - name: Debug - List contents after processing
