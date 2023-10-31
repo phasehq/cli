@@ -17,7 +17,7 @@ source="phase"
 sha256sums="SKIP"
 
 package() {
-    cd "$srcdir"
+    cd "$startdir"
     
     # Install the executable
     install -Dm755 phase "$pkgdir/usr/bin/phase"
