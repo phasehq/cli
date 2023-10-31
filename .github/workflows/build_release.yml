@@ -55,10 +55,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
-          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=/usr/bin/phase/
-          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=/usr/bin/phase/
+          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/phase/=/usr/bin/phase/
+          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/phase/=/usr/bin/phase/
         if: matrix.os == 'ubuntu-latest'
         shell: bash
+
+      # Change this
 
       # Upload DEB and RPM packages
       - uses: actions/upload-artifact@v2
@@ -90,6 +92,7 @@ jobs:
       - run: pip3 install --no-cache --upgrade pip setuptools
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
+      # Change this
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --onefile --name phase phase_cli/main.py
       - run: apk add alpine-sdk
       - run: adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
@@ -130,7 +133,7 @@ jobs:
 
       - name: Set VERSION from file
         run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
-
+      # Change this
       - name: Download phase-alpine-build artifact
         uses: actions/download-artifact@v2
         with:
