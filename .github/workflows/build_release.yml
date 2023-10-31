@@ -100,7 +100,7 @@ jobs:
       - run: apk add --no-cache sudo
       - run: |
           echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
-          cp ./dist/phase/phase /home/builder/package/
+          cp -r ./dist/phase/* /home/builder/package/
           cp ./APKBUILD /home/builder/package
           cd /home/builder/package
           sudo -u builder abuild-keygen -a -i -n

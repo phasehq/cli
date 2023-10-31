@@ -18,17 +18,6 @@ sha256sums="SKIP"
 
 package() {
     cd "$srcdir"
-
-    # Create the directory structure for the CLI
-    mkdir -p "$pkgdir/usr/bin/"
-    mkdir -p "$pkgdir/usr/lib/phase/"
-
-    # Copy the main executable to /usr/bin
-    install -Dm755 phase/phase "$pkgdir/usr/bin/phase"
-    
-    # Copy all other dependencies to /usr/lib/phase
-    cp -R phase/* "$pkgdir/usr/lib/phase/"
-    
-    # Remove the main executable from /usr/lib/phase to avoid duplication
-    rm "$pkgdir/usr/lib/phase/phase"
+    install -Dm755 phase "$pkgdir/usr/bin/phase"
+    cp -r _internal "$pkgdir/usr/bin/"
 }
