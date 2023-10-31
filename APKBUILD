@@ -19,5 +19,4 @@ sha256sums="SKIP"
 package() {
     cd "$srcdir"
     install -Dm755 phase "$pkgdir/usr/bin/phase"
-    cp -r _internal "$pkgdir/usr/bin/"
 }
