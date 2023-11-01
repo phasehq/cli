@@ -25,7 +25,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --onefile --name phase phase_cli/main.py
+      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
 
       # Set LC_ALL based on the runner OS for Linux and macOS
       - name: Set LC_ALL for Linux and macOS
@@ -55,10 +55,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
-          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
-          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase=/usr/bin/
+          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
+          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
         if: matrix.os == 'ubuntu-latest'
         shell: bash
+
+      # Change this
 
       # Upload DEB and RPM packages
       - uses: actions/upload-artifact@v2
@@ -90,7 +92,7 @@ jobs:
       - run: pip3 install --no-cache --upgrade pip setuptools
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
-      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --onefile --name phase phase_cli/main.py
+      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
       - run: apk add alpine-sdk
       - run: adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
       - run: mkdir /home/builder/package
@@ -98,7 +100,8 @@ jobs:
       - run: apk add --no-cache sudo
       - run: |
           echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
-          cp ./dist/phase /home/builder/package
+          ls ./dist/phase
+          cp -r ./dist/phase/* /home/builder/package/
           cp ./APKBUILD /home/builder/package
           cd /home/builder/package
           sudo -u builder abuild-keygen -a -i -n
@@ -130,7 +133,7 @@ jobs:
 
       - name: Set VERSION from file
         run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
-
+      # Change this
       - name: Download phase-alpine-build artifact
         uses: actions/download-artifact@v2
         with:
@@ -203,24 +206,32 @@ jobs:
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm.sha256
 
           # For Linux
-          mv Linux-binary/phase phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION
-          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.sha256
+          ZIPNAME="phase_cli_linux_amd64_$VERSION.zip"
+          zip -r "$ZIPNAME" Linux-binary/phase/ Linux-binary/phase/_internal
+          mv "$ZIPNAME" phase_cli_release_$VERSION/
+          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.sha256
 
           # For Windows
-          mv Windows-binary/phase.exe phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe
-          sha256sum phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.exe.sha256
+          ZIPNAME="phase_cli_windows_amd64_$VERSION.zip"
+          zip -r "$ZIPNAME" Windows-binary/phase/ Windows-binary/phase/_internal
+          mv "$ZIPNAME" phase_cli_release_$VERSION/
+          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.sha256
 
           # For MacOS
-          mv macOS-binary/phase phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION
-          sha256sum phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION.sha256
+          ZIPNAME="phase_cli_macos_amd64_$VERSION.zip"
+          zip -r "$ZIPNAME" macOS-binary/phase/ macOS-binary/phase/_internal
+          mv "$ZIPNAME" phase_cli_release_$VERSION/
+          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION.sha256
 
+          # For Alpine build
+          ZIPNAME="phase_cli_alpine_linux_amd64_$VERSION.zip"
+          zip -r "$ZIPNAME" phase-alpine-build/phase phase-alpine-build/_internal
+          mv "$ZIPNAME" phase_cli_release_$VERSION/
+          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
+              
           # For Alpine package
           mv phase-apk/*.apk phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk.sha256
-
-          # For Alpine build
-          mv phase-alpine-build/* phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION
-          sha256sum phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
 
       # # Debug: List the content of the current directory and subdirectories
       # - name: Debug - List contents after processing

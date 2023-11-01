@@ -16,7 +16,7 @@ detect_os() {
 }
 
 check_required_tools() {
-    for TOOL in sudo wget curl jq sha256sum; do
+    for TOOL in sudo wget curl jq sha256sum unzip; do
         if ! command -v $TOOL > /dev/null; then
             echo "Installing $TOOL..."
             case $OS in
@@ -82,31 +82,27 @@ has_sudo_access() {
     fi
 }
 
-is_phase_installed() {
-    if command -v phase > /dev/null; then
-        return 0
+install_from_binary() {
+    if [ "$(uname -m)" == "x86_64" ]; then
+        ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
+        CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+        wget_download $ZIP_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.zip
+        
+        unzip $TMPDIR/phase_cli_linux_amd64_$VERSION.zip -d $TMPDIR
+        verify_checksum "$TMPDIR/phase" "$CHECKSUM_URL"
+        
+        chmod +x $TMPDIR/phase
+        if ! has_sudo_access; then
+            echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
+        fi
+        sudo mv $TMPDIR/phase /usr/local/bin/phase
     else
-        return 1
-    fi
-}
-
-is_phase_installed_via_pip() {
-    if pip list 2>/dev/null | grep -q phase-cli || pip3 list 2>/dev/null | grep -q phase-cli; then
-        return 0
-    else
-        return 1
+        echo "Unsupported OS type and architecture."
+        exit 1
     fi
 }
 
 install_package() {
-    if is_phase_installed_via_pip; then
-        echo "phase-cli is already installed via pip. Please upgrade using pip."
-        exit 0
-    fi
-
-    VERSION=$(get_latest_version)
-    TMPDIR=$(mktemp -d)
-
     case $OS in
         ubuntu|debian)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
@@ -119,11 +115,7 @@ install_package() {
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.rpm"
             wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
             verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.rpm" "$PACKAGE_URL.sha256"
-            if is_phase_installed; then
-                sudo rpm -U $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            else
-                sudo rpm -i $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            fi
+            sudo rpm -U $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
             ;;
 
         alpine)
@@ -134,29 +126,24 @@ install_package() {
             ;;
 
         *)
-            if [ "$(uname -m)" == "x86_64" ]; then
-                BINARY_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION"
-                wget_download $BINARY_URL $TMPDIR/phase_cli_linux_amd64_$VERSION
-                verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION" "$BINARY_URL.sha256"
-                chmod +x $TMPDIR/phase_cli_linux_amd64_$VERSION
-                if ! has_sudo_access; then
-                    echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
-                fi
-                sudo mv $TMPDIR/phase_cli_linux_amd64_$VERSION /usr/local/bin/phase
-            else
-                echo "Unsupported OS type and architecture."
-                exit 1
-            fi
+            install_from_binary
             ;;
     esac
-
     echo "phase-cli version $VERSION successfully installed"
 }
 
 main() {
     detect_os
     check_required_tools
-    install_package
+
+    VERSION=$(get_latest_version)
+    TMPDIR=$(mktemp -d)
+    
+    if [[ "$1" == "--binary" ]]; then
+        install_from_binary
+    else
+        install_package
+    fi
 }
 
-main
+main "$@"
