@@ -16,7 +16,7 @@ detect_os() {
 }
 
 check_required_tools() {
-    for TOOL in sudo wget curl jq sha256sum; do
+    for TOOL in sudo wget curl jq sha256sum unzip; do
         if ! command -v $TOOL > /dev/null; then
             echo "Installing $TOOL..."
             case $OS in
@@ -135,14 +135,18 @@ install_package() {
 
         *)
             if [ "$(uname -m)" == "x86_64" ]; then
-                BINARY_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION"
-                wget_download $BINARY_URL $TMPDIR/phase_cli_linux_amd64_$VERSION
-                verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION" "$BINARY_URL.sha256"
-                chmod +x $TMPDIR/phase_cli_linux_amd64_$VERSION
+                ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
+                CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+                wget_download $ZIP_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.zip
+                
+                unzip $TMPDIR/phase_cli_linux_amd64_$VERSION.zip -d $TMPDIR
+                verify_checksum "$TMPDIR/phase" "$CHECKSUM_URL"
+                
+                chmod +x $TMPDIR/phase
                 if ! has_sudo_access; then
                     echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
                 fi
-                sudo mv $TMPDIR/phase_cli_linux_amd64_$VERSION /usr/local/bin/phase
+                sudo mv $TMPDIR/phase /usr/local/bin/phase
             else
                 echo "Unsupported OS type and architecture."
                 exit 1
