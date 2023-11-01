@@ -60,8 +60,6 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         shell: bash
 
-      # Change this
-
       # Upload DEB and RPM packages
       - uses: actions/upload-artifact@v2
         with:
@@ -133,7 +131,6 @@ jobs:
 
       - name: Set VERSION from file
         run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
-      # Change this
       - name: Download phase-alpine-build artifact
         uses: actions/download-artifact@v2
         with:
