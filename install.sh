@@ -86,16 +86,26 @@ install_from_binary() {
     if [ "$(uname -m)" == "x86_64" ]; then
         ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
         CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+        
         wget_download $ZIP_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.zip
         
         unzip $TMPDIR/phase_cli_linux_amd64_$VERSION.zip -d $TMPDIR
-        verify_checksum "$TMPDIR/phase" "$CHECKSUM_URL"
         
-        chmod +x $TMPDIR/phase
+        # Correct the paths after unzipping
+        BINARY_PATH="$TMPDIR/Linux-binary/phase/phase"
+        INTERNAL_DIR_PATH="$TMPDIR/Linux-binary/phase/_internal"
+        
+        verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
+        
+        chmod +x $BINARY_PATH
+        
         if ! has_sudo_access; then
-            echo "Moving binary to /usr/local/bin. Please enter your sudo password or run as root."
+            echo "Moving items to /usr/local/bin. Please enter your sudo password or run as root."
         fi
-        sudo mv $TMPDIR/phase /usr/local/bin/phase
+
+        # Move the binary and the _internal directory to /usr/local/bin
+        sudo mv $BINARY_PATH /usr/local/bin/phase
+        sudo mv $INTERNAL_DIR_PATH /usr/local/bin/_internal
     else
         echo "Unsupported OS type and architecture."
         exit 1
