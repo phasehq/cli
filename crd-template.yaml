@@ -1,0 +1,162 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: phasesecrets.secrets.phase.com
+spec:
+  group: secrets.phase.com
+  names:
+    kind: PhaseSecret
+    listKind: PhaseSecretList
+    plural: phasesecrets
+    singular: phasesecret
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        type: object
+        description: PhaseSecret is the Schema for the phasesecrets API
+        properties:
+          apiVersion:
+            description: APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values.
+            type: string
+          kind:
+            description: Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PhaseSecretSpec defines the desired state of PhaseSecret
+            properties:
+              authentication:
+                properties:
+                  serviceAccount:
+                    properties:
+                      PhaseAppEnv:
+                        description: The environment variable representing the app environment in Phase.
+                        type: string
+                      projectId:
+                        type: string
+                      serviceAccountSecretReference:
+                        properties:
+                          secretName:
+                            description: The name of the Kubernetes Secret.
+                            type: string
+                          secretNamespace:
+                            description: The namespace where the Kubernetes Secret is located.
+                            type: string
+                        required:
+                        - secretName
+                        - secretNamespace
+                        type: object
+                    required:
+                    - PhaseAppEnv
+                    - projectId
+                    - serviceAccountSecretReference
+                    type: object
+                  serviceToken:
+                    properties:
+                      PhaseAppEnv:
+                        description: The environment variable representing the app environment in Phase.
+                        type: string
+                      serviceTokenSecretReference:
+                        properties:
+                          secretName:
+                            description: The name of the Kubernetes Secret.
+                            type: string
+                          secretNamespace:
+                            description: The namespace where the Kubernetes Secret is located.
+                            type: string
+                        required:
+                        - secretName
+                        - secretNamespace
+                        type: object
+                    required:
+                    - PhaseAppEnv
+                    - serviceTokenSecretReference
+                    type: object
+                type: object
+              hostAPI:
+                description: Phase host to pull secrets from.
+                type: string
+                default: https://console.phase.dev
+              managedSecretReferences:
+                description: References to multiple managed Kubernetes Secrets.
+                type: array
+                items:
+                  properties:
+                    secretName:
+                      description: The name of the Kubernetes Secret.
+                      type: string
+                    secretNamespace:
+                      description: The namespace where the Kubernetes Secret is located.
+                      type: string
+                  required:
+                  - secretName
+                  - secretNamespace
+                  type: object
+              pollingInterval:
+                description: Interval at which to poll for secret updates.
+                type: integer
+                default: 60
+            required:
+            - managedSecretReferences
+            - pollingInterval
+            type: object
+          status:
+            description: PhaseSecretStatus defines the observed state of PhaseSecret
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: lastTransitionTime is the last time the condition transitioned from one status to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: message is a human readable message indicating details about the transition.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: observedGeneration represents the .metadata.generation that the condition was set based upon.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: reason contains a programmatic identifier indicating the reason for the conditions last transition.
+                      maxLength: 1024
+                      minLength: 1
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+            required:
+            - conditions
+            type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []

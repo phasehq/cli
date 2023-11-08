@@ -1,0 +1,20 @@
+apiVersion: secrets.phase.com/v1alpha1
+kind: PhaseSecret
+metadata:
+  name: example-phase-secret
+  namespace: default
+spec:
+  authentication:
+    serviceAccount:
+    serviceToken:
+      PhaseAppEnv: "staging"
+      serviceTokenSecretReference:
+        secretName: "service-token-secret"
+        secretNamespace: "default"
+  hostAPI: "https://console.phase.dev"
+  managedSecretReferences:
+  - secretName: "managed-secret-1"
+    secretNamespace: "default"
+  - secretName: "managed-secret-2"
+    secretNamespace: "default"
+  pollingInterval: 120 # Time in seconds
