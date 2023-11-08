@@ -33,27 +33,38 @@ def fetch_secrets(spec, name, namespace, logger, **kwargs):
         sys.stdout = old_stdout
 
         # Parse the captured output into a dictionary
-        secrets_fetched = dict(line.strip().split('=', 1) for line in output.splitlines() if line)
+        fetched_secrets_dict = dict(line.strip().split('=', 1) for line in output.splitlines() if line)
 
-        # Loop through the managed secrets and update them
+        # Construct the secret data for updating
+        secret_data = {
+            key: base64.b64encode(value.strip('"').encode()).decode('utf-8')
+            for key, value in fetched_secrets_dict.items()
+        }
+
+        # Loop through the managed secrets and update or delete them
         for secret_reference in managed_secret_references:
             secret_name = secret_reference['secretName']
             secret_namespace = secret_reference.get('secretNamespace', namespace)
 
-            # Construct the secret data
-            secret_data = {
-                key: base64.b64encode(value.strip('"').encode()).decode('utf-8') 
-                for key, value in secrets_fetched.items()
-            }
-
-            # Patch or create the secret in Kubernetes
             try:
                 # Check if secret exists
                 existing_secret = api_instance.read_namespaced_secret(name=secret_name, namespace=secret_namespace)
-                api_instance.patch_namespaced_secret(name=secret_name, namespace=secret_namespace, body={
-                    "data": secret_data
-                })
+                existing_secret_data_keys = set(existing_secret.data.keys())
+
+                # Determine which keys are no longer present in fetched secrets
+                keys_to_delete = existing_secret_data_keys - set(fetched_secrets_dict.keys())
+
+                # If there are keys to delete, delete them from the existing secret data
+                for key in keys_to_delete:
+                    del existing_secret.data[key]
+
+                # Update the secret with new data, and remove keys that are not part of fetched secrets
+                api_instance.replace_namespaced_secret(name=secret_name, namespace=secret_namespace, body=kubernetes.client.V1Secret(
+                    metadata=kubernetes.client.V1ObjectMeta(name=secret_name),
+                    data=secret_data
+                ))
                 logger.info(f"Updated secret {secret_name} in namespace {secret_namespace}")
+
             except ApiException as e:
                 if e.status == 404:
                     # Secret does not exist, so let's create it
@@ -67,6 +78,7 @@ def fetch_secrets(spec, name, namespace, logger, **kwargs):
 
         # Log a successful operation
         logger.info(f"Secrets for PhaseSecret {name} have been successfully updated in namespace {namespace}")
+
 
     except ApiException as e:
         if e.status == 403:
