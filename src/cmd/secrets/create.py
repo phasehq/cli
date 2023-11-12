@@ -1,7 +1,7 @@
 import sys
 import getpass
-from phase_cli.utils.phase_io import Phase
-from phase_cli.cmd.secrets.list import phase_list_secrets
+from src.utils.phase_io import Phase
+from src.cmd.secrets.list import phase_list_secrets
 
 def phase_secrets_create(key=None, env_name=None, phase_app=None):
     """

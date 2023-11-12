@@ -19,7 +19,7 @@ from nacl.bindings import (
 from nacl.hash import blake2b
 from nacl.utils import random
 from base64 import b64encode, b64decode
-from phase_cli.utils.const import __ph_version__
+from src.utils.const import __ph_version__
 
 
 class CryptoUtils:

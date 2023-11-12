@@ -4,7 +4,7 @@ import subprocess
 import json
 from urllib.parse import urlparse
 from typing import Union, List
-from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
+from src.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 
 def get_terminal_width():
     """
@@ -286,7 +286,7 @@ def get_user_agent():
     
     # Get CLI version
     try:
-        cli_version = f"phase-cli/{__version__}"
+        cli_version = f"phase-kubernetes-operator/{__version__}"
         details.append(cli_version)
     except:
         pass

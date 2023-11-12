@@ -4,24 +4,24 @@ import sys
 import traceback
 import argparse
 from argparse import RawTextHelpFormatter
-from phase_cli.cmd.open_console import phase_open_web
-from phase_cli.cmd.update import phase_cli_update
-from phase_cli.cmd.users.whoami import phase_users_whoami
-from phase_cli.cmd.users.keyring import show_keyring_info
-from phase_cli.cmd.users.logout import phase_cli_logout
-from phase_cli.cmd.run import phase_run_inject
-from phase_cli.cmd.init import phase_init
-from phase_cli.cmd.auth import phase_auth
-from phase_cli.cmd.secrets.list import phase_list_secrets
-from phase_cli.cmd.secrets.get import phase_secrets_get
-from phase_cli.cmd.secrets.export import phase_secrets_env_export
-from phase_cli.cmd.secrets.import_env import phase_secrets_env_import
-from phase_cli.cmd.secrets.delete import phase_secrets_delete
-from phase_cli.cmd.secrets.create import phase_secrets_create
-from phase_cli.cmd.secrets.update import phase_secrets_update
+from src.cmd.open_console import phase_open_web
+from src.cmd.update import phase_cli_update
+from src.cmd.users.whoami import phase_users_whoami
+from src.cmd.users.keyring import show_keyring_info
+from src.cmd.users.logout import phase_cli_logout
+from src.cmd.run import phase_run_inject
+from src.cmd.init import phase_init
+from src.cmd.auth import phase_auth
+from src.cmd.secrets.list import phase_list_secrets
+from src.cmd.secrets.get import phase_secrets_get
+from src.cmd.secrets.export import phase_secrets_env_export
+from src.cmd.secrets.import_env import phase_secrets_env_import
+from src.cmd.secrets.delete import phase_secrets_delete
+from src.cmd.secrets.create import phase_secrets_create
+from src.cmd.secrets.update import phase_secrets_update
 
-from phase_cli.utils.const import __version__
-from phase_cli.utils.const import phaseASCii, description
+from src.utils.const import __version__
+from src.utils.const import phaseASCii, description
 
 
 def print_phase_cli_version():

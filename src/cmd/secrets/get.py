@@ -1,5 +1,5 @@
-from phase_cli.utils.phase_io import Phase
-from phase_cli.utils.misc import render_table
+from src.utils.phase_io import Phase
+from src.utils.misc import render_table
 
 def phase_secrets_get(key, env_name=None, phase_app=None):
     """
