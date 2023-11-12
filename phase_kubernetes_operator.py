@@ -2,43 +2,42 @@ import kopf
 import base64
 import kubernetes.client
 from kubernetes.client.rest import ApiException
-from phase_cli.cmd.secrets.export import phase_secrets_env_export
+from datetime import datetime
+from src.cmd.secrets.export import phase_secrets_env_export
 
-@kopf.timer('secrets.phase.com', 'v1alpha1', 'phasesecrets', interval=60)
-def fetch_secrets(spec, name, namespace, logger, **kwargs):
+@kopf.timer('secrets.phase.dev', 'v1alpha1', 'phasesecrets', interval=10)
+def sync_secrets(spec, name, namespace, logger, **kwargs):
     try:
         # Extract information from the spec
-        managed_secret_references = spec.get('managedSecretReferences')
-        hostAPI = spec.get('hostAPI', 'https://console.phase.dev')
+        managed_secret_references = spec.get('managedSecretReferences', [])
+        phase_host = spec.get('phaseHost', 'https://console.phase.dev')
 
         # Initialize Kubernetes client
         api_instance = kubernetes.client.CoreV1Api()
 
-        # Read the secret containing the service token
-        secret_name = spec.get('serviceTokenSecretName', 'phase-service-token')
-        api_response = api_instance.read_namespaced_secret(secret_name, namespace)
+        # Fetch and process the Phase service token from the Kubernetes managed secret
+        service_token_secret_name = spec.get('authentication', {}).get('serviceToken', {}).get('serviceTokenSecretReference', {}).get('secretName', 'phase-service-token')
+        api_response = api_instance.read_namespaced_secret(service_token_secret_name, namespace)
         token = api_response.data['token']
-
-        # Decode the service token
         service_token = base64.b64decode(token).decode('utf-8')
 
-        # Fetch the secrets using the updated phase_secrets_env_export function
+        # Fetch secrets from the Phase application
         fetched_secrets_dict = phase_secrets_env_export(
             phase_service_token=service_token,
-            phase_service_host=hostAPI,
+            phase_service_host=phase_host,
             export_type='k8'
         )
 
-        # Loop through the managed secrets and update or create them
+        # Update the Kubernetes managed secrets -- update if: available, create if: unavailable.
         for secret_reference in managed_secret_references:
             secret_name = secret_reference['secretName']
             secret_namespace = secret_reference.get('secretNamespace', namespace)
 
             try:
-                # Check if the secret exists
+                # Check if the secret exists in Kubernetes
                 api_instance.read_namespaced_secret(name=secret_name, namespace=secret_namespace)
 
-                # Replace the secret with the new data
+                # Update the secret with the new data
                 api_instance.replace_namespaced_secret(
                     name=secret_name,
                     namespace=secret_namespace,
@@ -50,7 +49,7 @@ def fetch_secrets(spec, name, namespace, logger, **kwargs):
                 logger.info(f"Updated secret {secret_name} in namespace {secret_namespace}")
             except ApiException as e:
                 if e.status == 404:
-                    # Secret does not exist, create it
+                    # Secret does not exist in kubernetes, create it
                     api_instance.create_namespaced_secret(
                         namespace=secret_namespace,
                         body=kubernetes.client.V1Secret(
@@ -62,7 +61,6 @@ def fetch_secrets(spec, name, namespace, logger, **kwargs):
                 else:
                     logger.error(f"Failed to update secret {secret_name} in namespace {secret_namespace}: {e}")
 
-        # Log a successful operation
         logger.info(f"Secrets for PhaseSecret {name} have been successfully updated in namespace {namespace}")
 
     except ApiException as e:
