@@ -5,7 +5,7 @@ from kubernetes.client.rest import ApiException
 from datetime import datetime
 from src.cmd.secrets.export import phase_secrets_env_export
 
-@kopf.timer('secrets.phase.dev', 'v1alpha1', 'phasesecrets', interval=10)
+@kopf.timer('secrets.phase.dev', 'v1alpha1', 'phasesecrets', interval=60)
 def sync_secrets(spec, name, namespace, logger, **kwargs):
     try:
         # Extract information from the spec
