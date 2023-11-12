@@ -1,20 +1,16 @@
-apiVersion: secrets.phase.com/v1alpha1
+apiVersion: secrets.phase.dev/v1alpha1
 kind: PhaseSecret
 metadata:
   name: example-phase-secret
   namespace: default
 spec:
+  phaseAppEnv: "production" # OPTIONAL - The Phase application environment to fetch secrets from
+  phaseHost: "https://console.phase.dev" # OPTIONAL - URL of a Phase Console instance
   authentication:
-    serviceAccount:
     serviceToken:
-      PhaseAppEnv: "staging"
       serviceTokenSecretReference:
-        secretName: "service-token-secret"
+        secretName: "phase-service-token" # Name of the Phase service token with access to your application
         secretNamespace: "default"
-  hostAPI: "https://console.phase.dev"
-  managedSecretReferences:
-  - secretName: "managed-secret-1"
-    secretNamespace: "default"
-  - secretName: "managed-secret-2"
-    secretNamespace: "default"
-  pollingInterval: 120 # Time in seconds
+  managedSecretReferences: # Managed secrets in Kubernetes that Phase will sync secrets with
+    - secretName: "my-application-secret" # Name of the managed secret in Kubernetes that will be consumed by your application 
+      secretNamespace: "default"
