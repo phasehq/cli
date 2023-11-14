@@ -32,9 +32,10 @@ jobs:
       - name: Build and push (PR)
         if: github.event_name == 'pull_request'
         run: |
-          SHORT_SHA=$(git rev-parse --verify HEAD | cut -c 1-7)
-          docker build -t phasehq/kubernetes-operator:${SHORT_SHA} .
-          docker push phasehq/kubernetes-operator:${SHORT_SHA}
+          SHORT_SHA=${{ github.event.pull_request.head.sha }}
+          echo "Short SHA: $SHORT_SHA"
+          docker build -t phasehq/kubernetes-operator:${SHORT_SHA:0:7} .
+          docker push phasehq/kubernetes-operator:${SHORT_SHA:0:7}
 
       - name: Build and push (Main branch)
         if: github.ref == 'refs/heads/main'
