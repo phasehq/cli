@@ -1,10 +1,22 @@
-FROM alpine:latest
+# Use Python 3.9.18 Alpine image
+FROM python:3.9.18-alpine3.18
 
-# Copy the phase executable
-COPY ./dist/phase /usr/local/bin/phase
+# Set the working directory in the container
+WORKDIR /app
 
-# Copy the _internal directory
-COPY ./dist/_internal /usr/local/bin/_internal
+# Copy the necessary files
+COPY src/ /app/src/
+COPY requirements.txt phase_kubernetes_operator.py /app/
 
-# Give execute permission to the phase binary
-RUN chmod +x /usr/local/bin/phase
+# Install required Python packages
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Kopf
+RUN pip install kopf
+
+# Create a non-root user
+RUN adduser -D operator-usr
+USER operator-usr
+
+# Run the operator script using Kopf
+CMD ["kopf", "run", "/app/phase_kubernetes_operator.py"]

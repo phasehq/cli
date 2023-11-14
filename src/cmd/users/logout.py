@@ -2,8 +2,8 @@ import os
 import sys
 import shutil
 import keyring
-from phase_cli.utils.const import PHASE_SECRETS_DIR
-from phase_cli.utils.misc import get_default_user_id
+from src.utils.const import PHASE_SECRETS_DIR
+from src.utils.misc import get_default_user_id
 
 def phase_cli_logout(purge=False):
     if purge:

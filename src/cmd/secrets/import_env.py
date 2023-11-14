@@ -1,6 +1,6 @@
 import sys
-from phase_cli.utils.phase_io import Phase
-from phase_cli.utils.misc import render_table, get_default_user_id, sanitize_value
+from src.utils.phase_io import Phase
+from src.utils.misc import render_table, get_default_user_id, sanitize_value
 
 def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
     """

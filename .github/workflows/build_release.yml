@@ -1,304 +1,50 @@
-name: Build, Test, and Attach Artifacts to Release
+name: Build and Push Docker Image
 
 on:
   pull_request:
+    branches: [ main ]
   push:
-    branches:
-      - main
-
-permissions:
-  contents: write
-  pull-requests: write
+    branches: [ main ]
+    tags:
+      - 'v*'
 
 jobs:
-  build:
-    name: Build CLI
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: [3.11]
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -r requirements.txt
-      - run: pip install pyinstaller
-      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
-
-      # Set LC_ALL based on the runner OS for Linux and macOS
-      - name: Set LC_ALL for Linux and macOS
-        run: export LC_ALL=C.UTF-8
-        if: runner.os != 'Windows'
-        shell: bash
-
-      # Set LC_ALL for Windows
-      - name: Set LC_ALL for Windows
-        run: echo "LC_ALL=C.UTF-8" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-        if: runner.os == 'Windows'
-        shell: pwsh
-
-      # Extract version
-      - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)" >> $GITHUB_ENV
-        shell: bash
-      - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
-
-      # Upload version
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-version
-          path: ./PHASE_CLI_VERSION.txt
-
-      # Build DEB and RPM packages for Linux
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y ruby-dev rubygems build-essential 
-          sudo gem install --no-document fpm
-          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
-          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-
-      # Upload DEB and RPM packages
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-deb
-          path: "*.deb"
-        if: matrix.os == 'ubuntu-latest'
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-rpm
-          path: "*.rpm"
-        if: matrix.os == 'ubuntu-latest'
-
-      # Upload binary
-      - uses: actions/upload-artifact@v2
-        with:
-          name: ${{ runner.os }}-binary
-          path: dist/phase*
-
-  build_apk:
-    name: Build CLI (alpine-latest, 3.11)
-    runs-on: ubuntu-latest
-    container:
-      image: python:3.11-alpine
-    steps:
-      - uses: actions/checkout@v2
-      - run: apk add --update --no-cache python3 python3-dev build-base
-      - run: python3 -m ensurepip
-      - run: pip3 install --no-cache --upgrade pip setuptools
-      - run: pip install -r requirements.txt
-      - run: pip install pyinstaller
-      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
-      - run: apk add alpine-sdk
-      - run: adduser -G abuild -g "Alpine Package Builder" -s /bin/ash -D builder
-      - run: mkdir /home/builder/package
-      - run: chown builder /home/builder/package
-      - run: apk add --no-cache sudo
-      - run: |
-          echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
-          ls ./dist/phase
-          cp -r ./dist/phase/* /home/builder/package/
-          cp ./APKBUILD /home/builder/package
-          cd /home/builder/package
-          sudo -u builder abuild-keygen -a -i -n
-          sudo -u builder abuild checksum
-          sudo -u builder abuild -r
-        shell: sh
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-apk
-          path: /home/builder/packages/builder/x86_64/*.apk
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-alpine-build
-          path: ./dist/phase
-
-  Build_and_push_docker:
-    name: Build & Release - Docker
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [build, build_apk]
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout code
+        uses: actions/checkout@v2
 
-      - name: Download phase-version artifact
-        uses: actions/download-artifact@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v1
         with:
-          name: phase-version
-          path: phase-version
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Set VERSION from file
-        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
-      - name: Download phase-alpine-build artifact
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-alpine-build
-          path: dist
+      - name: Extract tag name
+        shell: bash
+        run: echo "##[set-output name=tag;]$(echo ${GITHUB_REF#refs/tags/})"
+        id: extract_tag
 
-      - run: docker build -t phase-cli:${{ env.VERSION }} .
-
-      - name: Push to Docker Hub
+      - name: Build and push (PR)
+        if: github.event_name == 'pull_request'
         run: |
-          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
-          docker tag phase-cli:${{ env.VERSION }} phasehq/cli:${{ env.VERSION }}
-          docker push phasehq/cli:${{ env.VERSION }}
-          docker tag phase-cli:${{ env.VERSION }} phasehq/cli:latest
-          docker push phasehq/cli:latest
+          SHORT_SHA=${{ github.event.pull_request.head.sha }}
+          echo "Short SHA: $SHORT_SHA"
+          docker build -t phasehq/kubernetes-operator:${SHORT_SHA:0:7} .
+          docker push phasehq/kubernetes-operator:${SHORT_SHA:0:7}
 
-  Pull_and_test_docker_image:
-    name: Test - CLI - Docker
-    needs: Build_and_push_docker
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download phase-version artifact
-        uses: actions/download-artifact@v2
-        with:
-          name: phase-version
-          path: phase-version
-
-      - name: Set VERSION from file
-        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
-
-      # Pull and test the versioned Docker image
-      - run: docker pull phasehq/cli:${{ env.VERSION }}
-      - run: docker run phasehq/cli:${{ env.VERSION }} phase -h
-      - run: docker run phasehq/cli:${{ env.VERSION }} phase -v
-
-      # Pull and test the latest Docker image
-      - run: docker pull phasehq/cli:latest
-      - run: docker run phasehq/cli:latest phase -h
-      - run: docker run phasehq/cli:latest phase -v
-
-  attach-assets:
-    name: Package assets
-    needs: [build, build_apk]
-    runs-on: ubuntu-latest
-
-    steps:
-      # Download all the artifacts from the build jobs
-      - name: Download all artifacts
-        uses: actions/download-artifact@v2
-
-      # # Debug: List the content of the current directory
-      # - name: Debug - List contents of artifacts directory
-      #   run: find . -type f
-
-      # Extract version from the file
-      - name: Set VERSION from file
-        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
-
-      # Process assets: Rename, calculate sha256, and move them to the release directory
-      - name: Process assets
+      - name: Build and push (Main branch)
+        if: github.ref == 'refs/heads/main'
         run: |
-          mkdir phase_cli_release_$VERSION
+          docker build -t phasehq/kubernetes-operator:latest .
+          docker push phasehq/kubernetes-operator:latest
 
-          # For DEB
-          mv phase-deb/*.deb phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb
-          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.deb.sha256
-
-          # For RPM
-          mv phase-rpm/*.rpm phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm
-          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.rpm.sha256
-
-          # For Linux
-          ZIPNAME="phase_cli_linux_amd64_$VERSION.zip"
-          zip -r "$ZIPNAME" Linux-binary/phase/ Linux-binary/phase/_internal
-          mv "$ZIPNAME" phase_cli_release_$VERSION/
-          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.sha256
-
-          # For Windows
-          ZIPNAME="phase_cli_windows_amd64_$VERSION.zip"
-          zip -r "$ZIPNAME" Windows-binary/phase/ Windows-binary/phase/_internal
-          mv "$ZIPNAME" phase_cli_release_$VERSION/
-          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.sha256
-
-          # For MacOS
-          ZIPNAME="phase_cli_macos_amd64_$VERSION.zip"
-          zip -r "$ZIPNAME" macOS-binary/phase/ macOS-binary/phase/_internal
-          mv "$ZIPNAME" phase_cli_release_$VERSION/
-          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION.sha256
-
-          # For Alpine build
-          ZIPNAME="phase_cli_alpine_linux_amd64_$VERSION.zip"
-          zip -r "$ZIPNAME" phase-alpine-build/phase phase-alpine-build/_internal
-          mv "$ZIPNAME" phase_cli_release_$VERSION/
-          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
-              
-          # For Alpine package
-          mv phase-apk/*.apk phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk
-          sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk.sha256
-
-      # # Debug: List the content of the current directory and subdirectories
-      # - name: Debug - List contents after processing
-      #   run: ls -alR
-
-      # Upload the entire release directory as a single artifact
-      - uses: actions/upload-artifact@v2
-        with:
-          name: phase-cli-release
-          path: ./phase_cli_release_*/
-
-  Test_Linux_cli:
-    name: Test - CLI installation - Linux
-    needs: attach-assets
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        distro: ["ubuntu", "fedora", "alpine"]
-        include:
-          - distro: "ubuntu"
-            image: "ubuntu:latest"
-            install_command: "apt-get update && apt-get install -y curl bash"
-          - distro: "fedora"
-            image: "fedora:latest"
-            install_command: "dnf -y install curl bash"
-          - distro: "alpine"
-            image: "alpine:latest"
-            install_command: "apk add --no-cache curl bash"
-          #- distro: "archlinux"
-          #  image: "archlinux:latest"
-          #  install_command: "pacman -Sy --noconfirm curl sudo wget bash"
-    container:
-      image: ${{ matrix.image }}
-    steps:
-      - run: ${{ matrix.install_command }}
-      - run: curl -fsSL https://get.phase.dev | bash
-      - run: phase -h
-      - run: phase -v
-
-  # Test_MacOS_cli:
-  #   name: Test - CLI installation - MacOS
-  #   needs: attach-assets
-  #   runs-on: macOS-latest
-  #   steps:
-  #     - name: Install Homebrew
-  #       run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  #     - name: Install phase CLI via Homebrew
-  #       run: brew install phasehq/cli/phase
-
-  #     - name: Test phase CLI
-  #       run: |
-  #         phase -h
-  #         phase -v
-
-  # Test_Windows_cli:
-  #   name: Test - CLI installation - Windows
-  #   needs: attach-assets
-  #   runs-on: windows-latest
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v2
-
-  #     - name: Download phase CLI binary
-  #       uses: actions/download-artifact@v2
-  #       with:
-  #         name: Windows-binary
-  #         path: ./phase-windows-executable
-
-  #     - name: Test phase CLI
-  #       run: |
-  #         ./phase-windows-executable/phase-cli.exe -h
-  #         ./phase-windows-executable/phase-cli.exe -v
+      - name: Build and push (Release tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          docker build -t phasehq/kubernetes-operator:${{ steps.extract_tag.outputs.tag }} .
+          docker push phasehq/kubernetes-operator:${{ steps.extract_tag.outputs.tag }}

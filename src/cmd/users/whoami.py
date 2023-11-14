@@ -1,5 +1,5 @@
 import json
-from phase_cli.utils.const import CONFIG_FILE
+from src.utils.const import CONFIG_FILE
 
 
 def phase_users_whoami():

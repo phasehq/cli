@@ -1,6 +1,6 @@
 import os
 import requests
-from phase_cli.utils.misc import get_user_agent
+from src.utils.misc import get_user_agent
 from typing import List
 from typing import Dict
 
