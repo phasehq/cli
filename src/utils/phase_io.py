@@ -58,7 +58,7 @@ class Phase:
             self._api_host = get_default_user_host()
         else:
             if not pss or not host:
-                raise ValueError("Both pss and host must be provided when init is set to False.")
+                raise ValueError("Invalid PHASE_HOST or PHASE_SERVICE_TOKEN")
             app_secret = pss
             self._api_host = host
 

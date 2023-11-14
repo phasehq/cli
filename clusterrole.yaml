@@ -1,0 +1,11 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: phase-kubernetes-operator
+rules:
+- apiGroups: ["secrets.phase.dev"]
+  resources: ["phasesecrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["secrets", "events"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

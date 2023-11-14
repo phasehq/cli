@@ -4,7 +4,7 @@ metadata:
   name: example-phase-secret
   namespace: default
 spec:
-  phaseAppEnv: "production" # OPTIONAL - The Phase application environment to fetch secrets from
+  phaseAppEnv: "dev" # OPTIONAL - The Phase application environment to fetch secrets from
   phaseHost: "https://console.phase.dev" # OPTIONAL - URL of a Phase Console instance
   authentication:
     serviceToken:
