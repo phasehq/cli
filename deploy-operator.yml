@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: phase-kubernetes-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: phase-kubernetes-operator
+  template:
+    metadata:
+      labels:
+        app: phase-kubernetes-operator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: phase-kubernetes-operator
+        image: phasehq/kubernetes-operator:latest
+        imagePullPolicy: IfNotPresent
