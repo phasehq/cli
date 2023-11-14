@@ -2,9 +2,9 @@ import os
 import sys
 import json
 import questionary
-from phase_cli.utils.phase_io import Phase
+from src.utils.phase_io import Phase
 
-from phase_cli.utils.const import PHASE_ENV_CONFIG
+from src.utils.const import PHASE_ENV_CONFIG
 
 # Initializes a .phase.json in the root of the dir of where the command is run
 def phase_init():

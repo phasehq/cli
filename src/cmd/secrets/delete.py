@@ -1,5 +1,5 @@
-from phase_cli.utils.phase_io import Phase
-from phase_cli.cmd.secrets.list import phase_list_secrets
+from src.utils.phase_io import Phase
+from src.cmd.secrets.list import phase_list_secrets
 
 # Deletes encrypted secrets based on key value pairs
 def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):

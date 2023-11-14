@@ -3,7 +3,7 @@ import requests, json
 from typing import Tuple
 from typing import List
 from dataclasses import dataclass
-from phase_cli.utils.network import (
+from src.utils.network import (
     fetch_phase_user,
     fetch_app_key,
     fetch_wrapped_key_share,
@@ -22,10 +22,10 @@ from nacl.bindings import (
     crypto_kx_client_session_keys,
     crypto_kx_seed_keypair,
 )
-from phase_cli.utils.crypto import CryptoUtils
-from phase_cli.utils.const import __ph_version__, PHASE_ENV_CONFIG, pss_user_pattern, pss_service_pattern
-from phase_cli.utils.misc import phase_get_context, get_default_user_host
-from phase_cli.utils.keyring import get_credentials
+from src.utils.crypto import CryptoUtils
+from src.utils.const import __ph_version__, PHASE_ENV_CONFIG, pss_user_pattern, pss_service_pattern
+from src.utils.misc import phase_get_context, get_default_user_host
+from src.utils.keyring import get_credentials
 
 @dataclass
 class AppSecret:
