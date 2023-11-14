@@ -2,7 +2,6 @@ import kopf
 import base64
 import kubernetes.client
 from kubernetes.client.rest import ApiException
-from datetime import datetime
 from src.cmd.secrets.export import phase_secrets_env_export
 
 @kopf.timer('secrets.phase.dev', 'v1alpha1', 'phasesecrets', interval=60)
@@ -11,6 +10,7 @@ def sync_secrets(spec, name, namespace, logger, **kwargs):
         # Extract information from the spec
         managed_secret_references = spec.get('managedSecretReferences', [])
         phase_host = spec.get('phaseHost', 'https://console.phase.dev')
+        phase_app_env = spec.get('phaseAppEnv', 'production')
 
         # Initialize Kubernetes client
         api_instance = kubernetes.client.CoreV1Api()
@@ -25,6 +25,7 @@ def sync_secrets(spec, name, namespace, logger, **kwargs):
         fetched_secrets_dict = phase_secrets_env_export(
             phase_service_token=service_token,
             phase_service_host=phase_host,
+            env_name=phase_app_env,
             export_type='k8'
         )
 
