@@ -1,4 +1,4 @@
-import base64
+from typing import Optional
 import requests, json
 from typing import Tuple
 from typing import List
@@ -315,7 +315,7 @@ class Phase:
 
 
     # TODO: Remove
-    def encrypt(self, plaintext, tag="") -> str | None:
+    def encrypt(self, plaintext, tag="") -> Optional[str]:
         """
         Encrypts a plaintext string.
 
@@ -339,7 +339,7 @@ class Phase:
             raise ValueError(f"Something went wrong: {err}")
 
 
-    def decrypt(self, phase_ciphertext) -> str | None:
+    def decrypt(self, phase_ciphertext) -> Optional[str]:
         """
         Decrypts a Phase ciphertext string.
 
