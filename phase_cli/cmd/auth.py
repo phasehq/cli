@@ -224,7 +224,7 @@ def phase_auth(mode="webauth"):
 
             # Decrypt user's Phase personal access token from the webauth payload
             decrypted_personal_access_token = CryptoUtils.decrypt_asymmetric(personal_access_token_encrypted, private_key.hex(), public_key.hex())
-            decrypted_user_email = CryptoUtils.decrypt_asymmetric(user_email_encrypted, private_key.hex(), public_key.hex())
+            user_email = CryptoUtils.decrypt_asymmetric(user_email_encrypted, private_key.hex(), public_key.hex())
 
             # Authenticate with the decrypted pss
             phase = Phase(init=False, pss=decrypted_personal_access_token, host=PHASE_API_HOST)
@@ -245,7 +245,7 @@ def phase_auth(mode="webauth"):
                 "default-user": user_id,
                 "phase-users": [
                     {
-                        "email": decrypted_user_email,
+                        "email": user_email,
                         "host": PHASE_API_HOST,
                         "id": user_id,
                         "wrapped_key_share": wrapped_key_share
