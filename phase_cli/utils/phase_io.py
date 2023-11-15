@@ -1,5 +1,4 @@
-import base64
-import requests, json
+import requests
 from typing import Tuple
 from typing import List
 from dataclasses import dataclass
@@ -13,17 +12,10 @@ from phase_cli.utils.network import (
     delete_phase_secrets
 )
 from nacl.bindings import (
-    crypto_kx_keypair, 
-    crypto_aead_xchacha20poly1305_ietf_encrypt, 
-    crypto_aead_xchacha20poly1305_ietf_decrypt,
-    randombytes, 
-    crypto_secretbox_NONCEBYTES, 
     crypto_kx_server_session_keys, 
-    crypto_kx_client_session_keys,
-    crypto_kx_seed_keypair,
 )
 from phase_cli.utils.crypto import CryptoUtils
-from phase_cli.utils.const import __ph_version__, PHASE_ENV_CONFIG, pss_user_pattern, pss_service_pattern
+from phase_cli.utils.const import __ph_version__, pss_user_pattern, pss_service_pattern
 from phase_cli.utils.misc import phase_get_context, get_default_user_host
 from phase_cli.utils.keyring import get_credentials
 
@@ -324,32 +316,7 @@ class Phase:
         delete_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secret_ids_to_delete, self._api_host)
             
         return keys_not_found
-
-
-    # TODO: Remove
-    def encrypt(self, plaintext, tag="") -> str | None:
-        """
-        Encrypts a plaintext string.
-
-        Args:
-            plaintext (str): The plaintext to encrypt.
-            tag (str, optional): A tag to include in the encrypted message. The tag will not be encrypted.
-
-        Returns:
-            str: The encrypted message, formatted as a string that includes the public key used for the one-time keypair, 
-            the ciphertext, and the tag. Returns `None` if an error occurs.
-        """
-        try:
-            one_time_keypair = random_key_pair()
-            symmetric_keys = crypto_kx_client_session_keys(
-                one_time_keypair[0], one_time_keypair[1], bytes.fromhex(self._app_secret.pss_user_public_key))
-            ciphertext = CryptoUtils.encrypt_b64(plaintext, symmetric_keys[1])
-            pub_key = one_time_keypair[0].hex()
-
-            return f"ph:{__ph_version__}:{pub_key}:{ciphertext}:{tag}"
-        except ValueError as err:
-            raise ValueError(f"Something went wrong: {err}")
-
+    
 
     def decrypt(self, phase_ciphertext) -> str | None:
         """
