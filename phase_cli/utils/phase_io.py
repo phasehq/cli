@@ -154,18 +154,18 @@ class Phase:
 
     def get(self, env_name: str, keys: List[str] = None, app_name: str = None):
         """
-        Get secrets from Phase KMS based on key and environment.
-        
+        Get secrets from Phase KMS based on key and environment, with support for personal overrides.
+
         Args:
             key (str, optional): The key for which to retrieve the secret value.
             env_name (str): The name (or partial name) of the desired environment.
             app_name (str, optional): The name of the desired application.
-                
+
         Returns:
-            dict or list: A dictionary containing the decrypted key and value if key is provided, 
+            dict or list: A dictionary containing the decrypted key and value if key is provided,
                         otherwise a list of dictionaries for all secrets in the environment.
         """
-        
+
         user_response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
@@ -187,11 +187,23 @@ class Phase:
 
         results = []
         for secret in secrets_data:
-            decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
-            if keys and decrypted_key not in keys:
-                continue
-            decrypted_value = CryptoUtils.decrypt_asymmetric(secret["value"], env_private_key, public_key)
-            results.append({"key": decrypted_key, "value": decrypted_value})
+            secret_id = secret["id"]
+            use_override = secret.get("override") and secret["override"].get("secret") == secret_id
+
+            # Always use the shared key, but use the overridden value when applicable
+            key_to_decrypt = secret["key"]
+            value_to_decrypt = secret["override"]["value"] if use_override else secret["value"]
+
+            decrypted_key = CryptoUtils.decrypt_asymmetric(key_to_decrypt, env_private_key, public_key)
+            decrypted_value = CryptoUtils.decrypt_asymmetric(value_to_decrypt, env_private_key, public_key)
+
+            if not keys or decrypted_key in keys:
+                result = {
+                    "key": decrypted_key,
+                    "value": decrypted_value,
+                    "overridden": use_override
+                }
+                results.append(result)
 
         return results
 
