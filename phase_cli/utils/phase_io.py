@@ -180,11 +180,12 @@ class Phase:
         results = []
         for secret in secrets_data:
             secret_id = secret["id"]
-            use_override = secret.get("override") and secret["override"].get("secret") == secret_id
+            override = secret.get("override")
+            use_override = override and override.get("secret") == secret_id and override.get("is_active")
 
-            # Always use the shared key, but use the overridden value when applicable
+            # Always use the shared key, but use the overridden value when applicable and active
             key_to_decrypt = secret["key"]
-            value_to_decrypt = secret["override"]["value"] if use_override else secret["value"]
+            value_to_decrypt = override["value"] if use_override else secret["value"]
 
             decrypted_key = CryptoUtils.decrypt_asymmetric(key_to_decrypt, env_private_key, public_key)
             decrypted_value = CryptoUtils.decrypt_asymmetric(value_to_decrypt, env_private_key, public_key)
