@@ -99,7 +99,7 @@ def main ():
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
             "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
-            "🔏 : Indicates a personal secret, visible or retrievable only by the user who set it."
+            "🔏 : Indicates a personal secret, visible only to the user who set it."
         )
 
 
