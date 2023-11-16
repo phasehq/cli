@@ -219,12 +219,8 @@ def main ():
         sys.exit(0)
         
     except Exception as e:
-        if os.getenv("PHASE_DEBUG") == "True":
-            # When PHASE_DEBUG is set to True, print the full traceback
-            traceback.print_exc()
-        else:
-            # When PHASE_DEBUG is set to False, print only the error message
-            print(str(e))
+        # Always print the full traceback, regardless of PHASE_DEBUG
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == '__main__':
