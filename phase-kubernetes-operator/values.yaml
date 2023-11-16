@@ -1,0 +1,33 @@
+# Default values for phase-kubernetes-operator.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+image:
+  repository: phasehq/kubernetes-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Security context for the operator pod
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Service account configuration
+serviceAccount:
+  create: true
+  name: phase-kubernetes-operator
+
+# RBAC settings
+rbac:
+  create: true
+
+# Operator specific configuration
+operator:
+  logLevel: INFO
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi

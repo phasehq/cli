@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: phase-service-token_2
+  namespace: default  # You specify the desired namespace here.
+type: Opaque
+data:
+  token: "cHNzX3NlcnZpY2U6djE6MjIzYTdiZGVjMzIzOTc1YjgxZDc4ZWY2ZGQ0YjQ0Y2ViNjIyMWU2Nzc1MDMwOTYwNGEyMDk1YWI4YTNhMjBjODozMWRlMjVlZmQ2ZTQwZjk1NjRmYjU1ODM0NjI2YjVlZjY4M2MzYjQxNDJjMWI2MzQ1YzUzMDZhOWZhNmIyNzdmOjBjMzJiMjdiYTkwMjM0MGM0NTc2MmQ5YzkxZjY1YzVjODhiMzgyOWIyNmUyZjM0ZTU1M2YxNDM0MDYzZDNhZTE6MGM1OTJkNDBlZjBmOTQ0YzZmZjFmZjI5ZTJkZTAyZTljN2UxYTAxZjUzYzA5ZjY5ZTZmYTgzZjcxMDAzNTNlZQ=="

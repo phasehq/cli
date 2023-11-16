@@ -1,0 +1,23 @@
+apiVersion: v2
+name: phase-kubernetes-operator
+description: A Helm chart for deploying the Phase Kubernetes Operator
+type: application
+
+# Version of the chart
+version: 0.1.0
+
+# Version of the application (operator) that is being deployed
+appVersion: "0.1.0"
+
+# Keywords, maintainers, and source URLs can also be added here
+keywords:
+  - phase
+  - kubernetes
+  - operator
+  - secrets
+maintainers:
+  - name: Phase Security Inc.
+    email: info@phase.dev
+home: https://github.com/phasehq/kubernetes-operator
+sources:
+  - https://github.com/phasehq/kubernetes-operator
