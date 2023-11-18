@@ -64,31 +64,25 @@ def censor_secret(secret, max_length):
 
 def render_table(data, show=False, min_key_width=20):
     """
-    Render a table of key-value pairs.
+    Render a table of key-value pairs with icons for cross-environment and local references,
+    and an emoji for personal secrets.
 
-    :param data: List of dictionaries containing keys and values
-    :param show: Whether to show the values or censor them
-    :param min_key_width: Minimum width for the "Key" column
+    Args:
+        data: List of dictionaries containing keys, values, and overridden status
+        show: Whether to show the values or censor them
+        min_key_width: Minimum width for the "Key" column
     """
-    
-    # Find the length of the longest key
+
+    # Calculate column widths
     longest_key_length = max([len(item.get("key", "")) for item in data], default=0)
-    
-    # Set min_key_width to be the length of the longest key plus a buffer of 3,
-    # but not less than the provided minimum
     min_key_width = max(longest_key_length + 3, min_key_width)
-    
     terminal_width = get_terminal_width()
-    value_width = terminal_width - min_key_width - 4  # Deducting for spaces and pipe
+    value_width = terminal_width - min_key_width - 4  # Accounting for spaces and pipe
 
-    # Print the headers
-    print(f'{"KEY 🗝️":<{min_key_width}}  | {"VALUE ✨":<{value_width}}')
-    print('-' * (min_key_width + value_width + 3))  # +3 accounts for spaces and pipe
+    # Print table headers
+    print(f'{"KEY 🗝️":<{min_key_width}} | {"VALUE ✨":<{value_width}}')
+    print('-' * (min_key_width + value_width + 3))  # +3 for spaces and pipe
 
-    # If data is empty, just return after printing headers
-    if not data:
-        return
-    
     # Tokenizing function
     def tokenize(value):
         delimiters = [':', '@', '/', ' ']
@@ -100,28 +94,32 @@ def render_table(data, show=False, min_key_width=20):
             tokens = new_tokens
         return tokens
 
-    # Print the rows
+    # Print each row
     for item in data:
         key = item.get("key")
         value = item.get("value")
-        icon = ''
-        
+        overridden = item.get("overridden", False)
+
         # Tokenize value and check each token for references
         tokens = tokenize(value)
         cross_env_detected = any(cross_env_pattern.match(token) for token in tokens)
         local_ref_detected = any(local_ref_pattern.match(token) for token in tokens if not cross_env_pattern.match(token))
 
         # Set icon based on detected references
+        icon = ''
         if cross_env_detected:
-            icon += '⛓️` '
+            icon += '⛓️ '
         if local_ref_detected:
             icon += '🔗 '
 
-        censored_value = censor_secret(value, value_width-len(icon))
+        # Display personal secret indicator
+        personal_indicator = '🔏 ' if overridden else ''
 
-        # Include the icon before the value or censored value
-        displayed_value = icon + (value if show else censored_value)
+        # Censor value if not showing
+        censored_value = censor_secret(value, value_width - len(icon) - len(personal_indicator))
 
+        # Print row with personal secret indicator and other icons
+        displayed_value = icon + personal_indicator + (value if show else censored_value)
         print(f'{key:<{min_key_width}} | {displayed_value:<{value_width}}')
 
 

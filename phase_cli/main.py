@@ -98,13 +98,20 @@ def main ():
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
-            "⛓️` : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment."
+            "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
+            "🔏 : Indicates a personal secret, visible only to the user who set it."
         )
+
 
         # Secrets get command
         secrets_get_parser = secrets_subparsers.add_parser('get', help='🔍 Get a specific secret by key')
         secrets_get_parser.add_argument('key', type=str, help='The key associated with the secret to fetch')
         secrets_get_parser.add_argument('--env', type=str, help=env_help)
+        secrets_get_parser.epilog = (
+            "🔗 : Indicates that the secret value references another secret within the same environment.\n"
+            "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
+            "🔏 : Indicates a personal secret, visible only to the user who set it."
+        )
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
