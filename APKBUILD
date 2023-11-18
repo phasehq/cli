@@ -1,6 +1,6 @@
 # Maintainer: Phase <info@phase.dev>
 pkgname=phase
-pkgver=1.8.1
+pkgver=1.9.0
 pkgrel=0
 pkgdesc="Phase CLI"
 url="https://phase.dev"
