@@ -27,7 +27,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None):
 
         # If no matching secret found, raise an error
         if not secret_data:
-            print(f"No secret found for key: {key}")
+            print(f"🔍 No secret found for key: {key}")
             return
         
     except ValueError as e:
