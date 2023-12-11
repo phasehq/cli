@@ -236,17 +236,21 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     # 2. If env_name isn't explicitly provided, use the default
     env_name = env_name or default_env_name
 
-    # 3. Match the application using app_id or partial app_name
+    # 3. Match the application using app_id or find the best match for partial app_name
     try:
         if app_name:
-            application = next((app for app in user_data["apps"] if app_name.lower() in app["name"].lower()), None)
+            matching_apps = [app for app in user_data["apps"] if app_name.lower() in app["name"].lower()]
+            if not matching_apps:
+                raise ValueError(f"🔍 No application found with the name '{app_name}'.")
+            # Sort matching applications by the length of their names, shorter names are likely to be more specific matches
+            matching_apps.sort(key=lambda app: len(app["name"]))
+            application = matching_apps[0]
         elif app_id:
             application = next((app for app in user_data["apps"] if app["id"] == app_id), None)
+            if not application:
+                raise ValueError(f"No application matched using ID '{app_id}'.")
         else:
             application = user_data["apps"][0]
-
-        if not application:
-            raise ValueError(f"No application matched using ID '{app_id}' or name '{app_name}'.")
 
         # 4. Attempt to match environment with the exact name or a name that contains the env_name string
         environment = next((env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()), None)
@@ -257,8 +261,7 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         return application["id"], environment["environment"]["id"], environment["identity_key"]
     
     except StopIteration:
-        raise ValueError("Application or environment not found.")
-
+        raise ValueError("🔍 Application or environment not found.")
 
 
 def open_browser(url):
