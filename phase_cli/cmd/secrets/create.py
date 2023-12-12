@@ -24,6 +24,18 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         key = input("🗝️  Please enter the key: ")
     key = key.upper()
 
+    # Check if the secret already exists
+    try:
+        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
+        secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
+        if secret_data:
+            optional_flags = f"--env {env_name} --app {phase_app}" if env_name or phase_app else ""
+            print(f"🗝️  Secret with key '{key}' already exists. Use 'phase secrets update {key} {optional_flags}' to update it.")
+            return
+    except ValueError as e:
+        print(e)
+        return
+
     # Generate a random value or get value from user
     if random_type:
         # Check if length is specified for key128 or key256
