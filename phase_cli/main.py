@@ -119,7 +119,7 @@ def main ():
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
             'create', 
-            description='💳 Create a new secret. Optionally, you can provide the secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_rsa | phase secrets create SSH_PRIVATE_KEY',
+            description='💳 Create a new secret. Optionally, you can provide the secret value via stdin, or generate a random value of a specified type and length.\n\nExamples:\n  cat ~/.ssh/id_rsa | phase secrets create SSH_PRIVATE_KEY\n  phase secrets create RAND --random hex --length 32',
             help='💳 Create a new secret'
         )
         secrets_create_parser.add_argument(
@@ -130,6 +130,19 @@ def main ():
         )
         secrets_create_parser.add_argument('--env', type=str, help=env_help)
         secrets_create_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+
+        # Adding the --random argument
+        random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
+        secrets_create_parser.add_argument('--random', 
+                                        type=str, 
+                                        choices=random_types, 
+                                        help='🎲 Specify the type of random value to generate. Available types: ' + ', '.join(random_types) + '. Example usage: --random hex')
+
+        # Adding the --length argument
+        secrets_create_parser.add_argument('--length', 
+                                        type=int, 
+                                        default=32, 
+                                        help='🔢 Specify the length of the random value. Applicable for types other than key128 and key256. Default is 32. Example usage: --length 16')
 
         # Secrets update command
         secrets_update_parser = secrets_subparsers.add_parser(
@@ -216,7 +229,7 @@ def main ():
             elif args.secrets_command == 'get':
                 phase_secrets_get(args.key, env_name=args.env, phase_app=args.app)  
             elif args.secrets_command == 'create':
-                phase_secrets_create(args.key, env_name=args.env, phase_app=args.app)
+                phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
             elif args.secrets_command == 'delete':
                 phase_secrets_delete(args.keys, env_name=args.env, phase_app=args.app)  
             elif args.secrets_command == 'import':
