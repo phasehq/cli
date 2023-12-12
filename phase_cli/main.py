@@ -104,7 +104,6 @@ def main ():
             "🔏 : Indicates a personal secret, visible only to the user who set it."
         )
 
-
         # Secrets get command
         secrets_get_parser = secrets_subparsers.add_parser('get', help='🔍 Get a specific secret by key')
         secrets_get_parser.add_argument('key', type=str, help='The key associated with the secret to fetch')
@@ -147,7 +146,7 @@ def main ():
         # Secrets update command
         secrets_update_parser = secrets_subparsers.add_parser(
             'update', 
-            description='📝 Update an existing secret. Optionally, you can provide the new secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_ed25519 | phase secrets update SSH_PRIVATE_KEY',
+            description='📝 Update an existing secret. Optionally, you can provide the new secret value via stdin or generate a random value of a specified type and length.\n\nExample:\n  cat ~/.ssh/id_ed25519 | phase secrets update SSH_PRIVATE_KEY\n  phase secrets update MY_SECRET_KEY --random hex --length 32',
             help='📝 Update an existing secret'
         )
         secrets_update_parser.add_argument(
@@ -157,6 +156,19 @@ def main ():
         )
         secrets_update_parser.add_argument('--env', type=str, help=env_help)
         secrets_update_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+
+        # Adding the --random argument
+        random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
+        secrets_update_parser.add_argument('--random', 
+                                        type=str, 
+                                        choices=random_types, 
+                                        help='🎲 Specify the type of random value to generate. Available types: ' + ', '.join(random_types) + '. Example usage: --random hex')
+
+        # Adding the --length argument
+        secrets_update_parser.add_argument('--length', 
+                                        type=int, 
+                                        default=32, 
+                                        help='🔢 Specify the length of the random value. Applicable for types other than key128 and key256. Default is 32. Example usage: --length 16')
 
         # Secrets delete command
         secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️` Delete a secret')
@@ -237,7 +249,7 @@ def main ():
             elif args.secrets_command == 'export':
                 phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app)
             elif args.secrets_command == 'update':
-                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app)
+                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
                 parser.print_help()
