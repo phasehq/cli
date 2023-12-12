@@ -99,6 +99,7 @@ jobs:
   build_apk:
     name: Build CLI (alpine-latest, 3.11)
     runs-on: ubuntu-latest
+    needs: [pytest]
     container:
       image: python:3.11-alpine
     steps:
