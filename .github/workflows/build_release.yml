@@ -11,6 +11,21 @@ permissions:
   pull-requests: write
 
 jobs:
+  pytest:
+    name: Run Pytest
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11]
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements.txt
+      - run: pip install pytest
+      - run: pytest
+
   build:
     name: Build CLI
     runs-on: ${{ matrix.os }}
