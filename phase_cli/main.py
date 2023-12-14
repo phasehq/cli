@@ -87,6 +87,7 @@ def main ():
         run_parser = subparsers.add_parser('run', help='🚀 Run and inject secrets to your app')
         run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run. Ex. phase run yarn dev')
         run_parser.add_argument('--env', type=str, help=env_help)
+        run_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
 
         # Secrets command
         secrets_parser = subparsers.add_parser('secrets', help='🗝️` Manage your secrets')
@@ -96,17 +97,18 @@ def main ():
         secrets_list_parser = secrets_subparsers.add_parser('list', help='📇 List all the secrets')
         secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
+        secrets_list_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
             "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
             "🔏 : Indicates a personal secret, visible only to the user who set it."
         )
 
-
         # Secrets get command
         secrets_get_parser = secrets_subparsers.add_parser('get', help='🔍 Get a specific secret by key')
         secrets_get_parser.add_argument('key', type=str, help='The key associated with the secret to fetch')
         secrets_get_parser.add_argument('--env', type=str, help=env_help)
+        secrets_get_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
         secrets_get_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
             "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
@@ -116,7 +118,7 @@ def main ():
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
             'create', 
-            description='💳 Create a new secret. Optionally, you can provide the secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_rsa | phase secrets create SSH_PRIVATE_KEY',
+            description='💳 Create a new secret. Optionally, you can provide the secret value via stdin, or generate a random value of a specified type and length.\n\nExamples:\n  cat ~/.ssh/id_rsa | phase secrets create SSH_PRIVATE_KEY\n  phase secrets create RAND --random hex --length 32',
             help='💳 Create a new secret'
         )
         secrets_create_parser.add_argument(
@@ -126,11 +128,25 @@ def main ():
             help='The key for the secret to be created. (Will be converted to uppercase.) If the value is not provided as an argument, it will be read from stdin.'
         )
         secrets_create_parser.add_argument('--env', type=str, help=env_help)
+        secrets_create_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+
+        # Adding the --random argument
+        random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
+        secrets_create_parser.add_argument('--random', 
+                                        type=str, 
+                                        choices=random_types, 
+                                        help='🎲 Specify the type of random value to generate. Available types: ' + ', '.join(random_types) + '. Example usage: --random hex')
+
+        # Adding the --length argument
+        secrets_create_parser.add_argument('--length', 
+                                        type=int, 
+                                        default=32, 
+                                        help='🔢 Specify the length of the random value. Applicable for types other than key128 and key256. Default is 32. Example usage: --length 16')
 
         # Secrets update command
         secrets_update_parser = secrets_subparsers.add_parser(
             'update', 
-            description='📝 Update an existing secret. Optionally, you can provide the new secret value via stdin.\n\nExample:\n  cat ~/.ssh/id_ed25519 | phase secrets update SSH_PRIVATE_KEY',
+            description='📝 Update an existing secret. Optionally, you can provide the new secret value via stdin or generate a random value of a specified type and length.\n\nExample:\n  cat ~/.ssh/id_ed25519 | phase secrets update SSH_PRIVATE_KEY\n  phase secrets update MY_SECRET_KEY --random hex --length 32',
             help='📝 Update an existing secret'
         )
         secrets_update_parser.add_argument(
@@ -139,21 +155,38 @@ def main ():
             help='The key associated with the secret to update. If the new value is not provided as an argument, it will be read from stdin.'
         )
         secrets_update_parser.add_argument('--env', type=str, help=env_help)
+        secrets_update_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+
+        # Adding the --random argument
+        random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
+        secrets_update_parser.add_argument('--random', 
+                                        type=str, 
+                                        choices=random_types, 
+                                        help='🎲 Specify the type of random value to generate. Available types: ' + ', '.join(random_types) + '. Example usage: --random hex')
+
+        # Adding the --length argument
+        secrets_update_parser.add_argument('--length', 
+                                        type=int, 
+                                        default=32, 
+                                        help='🔢 Specify the length of the random value. Applicable for types other than key128 and key256. Default is 32. Example usage: --length 16')
 
         # Secrets delete command
         secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️` Delete a secret')
         secrets_delete_parser.add_argument('keys', nargs='*', help='Keys to be deleted')
         secrets_delete_parser.add_argument('--env', type=str, help=env_help)
+        secrets_delete_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
 
         # Secrets import command
         secrets_import_parser = secrets_subparsers.add_parser('import', help='📩 Import secrets from a .env file')
         secrets_import_parser.add_argument('env_file', type=str, help='The .env file to import')
         secrets_import_parser.add_argument('--env', type=str, help=env_help)
+        secrets_import_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
 
         # Secrets export command
         secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets in a dotenv format')
         secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
+        secrets_export_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
 
         # Users command
         users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
@@ -185,7 +218,7 @@ def main ():
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
-            phase_run_inject(command, env_name=args.env)
+            phase_run_inject(command, env_name=args.env, phase_app=args.app)
         elif args.command == 'console':
             phase_open_web()
         elif args.command == 'update':
@@ -204,19 +237,19 @@ def main ():
                 sys.exit(1)
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
-                phase_list_secrets(args.show, env_name=args.env)
+                phase_list_secrets(args.show, env_name=args.env, phase_app=args.app)
             elif args.secrets_command == 'get':
-                phase_secrets_get(args.key, env_name=args.env)  
+                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app)  
             elif args.secrets_command == 'create':
-                phase_secrets_create(args.key, env_name=args.env)
+                phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
             elif args.secrets_command == 'delete':
-                phase_secrets_delete(args.keys, env_name=args.env)  
+                phase_secrets_delete(args.keys, env_name=args.env, phase_app=args.app)  
             elif args.secrets_command == 'import':
-                phase_secrets_env_import(args.env_file, env_name=args.env)
+                phase_secrets_env_import(args.env_file, env_name=args.env, phase_app=args.app)
             elif args.secrets_command == 'export':
-                phase_secrets_env_export(env_name=args.env, keys=args.keys)
+                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app)
             elif args.secrets_command == 'update':
-                phase_secrets_update(args.key, env_name=args.env)
+                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
                 parser.print_help()
