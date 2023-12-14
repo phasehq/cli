@@ -248,9 +248,9 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         elif app_id:
             application = next((app for app in user_data["apps"] if app["id"] == app_id), None)
             if not application:
-                raise ValueError(f"No application matched using ID '{app_id}'.")
+                raise ValueError(f"No application found with the ID '{app_id}'.")
         else:
-            application = user_data["apps"][0]
+            raise ValueError("🤔 No application context provided. Please run 'phase init' or pass the '--app' flag followed by your application name.")
 
         # 4. Attempt to match environment with the exact name or a name that contains the env_name string
         environment = next((env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()), None)
