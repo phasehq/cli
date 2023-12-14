@@ -1,5 +1,7 @@
 import base64
 from typing import Tuple
+import string
+from nacl.secret import SecretBox
 from typing import List
 from nacl.encoding import RawEncoder
 import functools
@@ -224,3 +226,34 @@ class CryptoUtils:
         return functools.reduce(
             CryptoUtils.xor_bytes, [bytes.fromhex(share) for share in shares]
         ).hex()
+
+
+def generate_random_secret(type='hex', length=32):
+    """
+    Generates a random secret based on the specified type and length.
+
+    Args:
+        type (str): Type of secret to generate ('alphanumeric', 'hex', 'base64', 'base64url', 'key128', 'key256').
+        length (int): Length of the secret (1 to 256). For 'key128' and 'key256', length is ignored.
+
+    Returns:
+        str: The generated secret.
+    """
+    if not 1 <= length <= 256:
+        raise ValueError("Length must be between 1 and 256.")
+
+    if type == 'alphanumeric':
+        chars = string.ascii_letters + string.digits
+        return ''.join(chars[byte % len(chars)] for byte in nacl.utils.random(length))
+    elif type == 'hex':
+        return nacl.utils.random(length).hex()
+    elif type == 'base64':
+        return base64.b64encode(nacl.utils.random(length)).decode()
+    elif type == 'base64url':
+        return base64.urlsafe_b64encode(nacl.utils.random(length)).decode()
+    elif type == 'key128':
+        return base64.b64encode(nacl.utils.random(SecretBox.KEY_SIZE // 2)).decode()
+    elif type == 'key256':
+        return base64.b64encode(nacl.utils.random(SecretBox.KEY_SIZE)).decode()
+    else:
+        raise ValueError("Invalid secret type specified.")
