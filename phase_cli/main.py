@@ -19,10 +19,9 @@ from phase_cli.cmd.secrets.import_env import phase_secrets_env_import
 from phase_cli.cmd.secrets.delete import phase_secrets_delete
 from phase_cli.cmd.secrets.create import phase_secrets_create
 from phase_cli.cmd.secrets.update import phase_secrets_update
-
 from phase_cli.utils.const import __version__
 from phase_cli.utils.const import phaseASCii, description
-
+from rich.console import Console
 
 def print_phase_cli_version():
     print(f"Version: {__version__}")
@@ -68,6 +67,7 @@ class HelpfulParser(argparse.ArgumentParser):
 
 def main ():
     env_help = "Environment name eg. dev, staging, production"
+    console = Console()
 
     try:
         parser = HelpfulParser(prog='phase-cli', formatter_class=RawTextHelpFormatter)
@@ -266,7 +266,7 @@ def main ():
             traceback.print_exc()
         else:
             # When PHASE_DEBUG is set to False, print only the error message
-            print(str(e))
+            console.log(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':
