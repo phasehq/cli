@@ -2,6 +2,7 @@ import sys
 import re
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import cross_env_pattern, local_ref_pattern
+from rich.console import Console
 
 def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None):
     """
