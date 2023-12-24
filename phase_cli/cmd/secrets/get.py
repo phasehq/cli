@@ -4,7 +4,7 @@ from rich.json import JSON
 from rich.console import Console
 import json
 
-def phase_secrets_get(key, env_name=None, phase_app=None):
+def phase_secrets_get(key, env_name=None, phase_app=None, tags=None):
     """
     Fetch and print a single secret based on a given key as beautified JSON with syntax highlighting.
     
@@ -17,7 +17,7 @@ def phase_secrets_get(key, env_name=None, phase_app=None):
     
     try:
         key = key.upper()
-        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
+        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, tag=tags)
         
         # Find the specific secret for the given key
         secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
