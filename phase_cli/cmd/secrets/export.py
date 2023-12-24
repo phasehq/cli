@@ -3,7 +3,7 @@ import re
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import cross_env_pattern, local_ref_pattern
 
-def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
+def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None):
     """
     Decrypts and exports secrets to a plain text .env format based on the provided environment and keys. 
     The function also resolves any references to other secrets, whether they are within the same environment 
@@ -19,9 +19,10 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
 
     # Initialize the Phase class
     phase = Phase()
+    console = Console()
 
     try:
-        secrets = phase.get(env_name=env_name, keys=keys, app_name=phase_app)
+        secrets = phase.get(env_name=env_name, keys=keys, app_name=phase_app, tag=tags)
 
         # Create a dictionary from the fetched secrets for easy look-up
         secrets_dict = {secret["key"]: secret["value"] for secret in secrets}
@@ -29,7 +30,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
         # Iterate through the secrets and resolve references
         for key, value in secrets_dict.items():
 
-            # Handle cross environment references
+            # Resolve cross environment references
             cross_env_matches = re.findall(cross_env_pattern, value)
             for ref_env, ref_key in cross_env_matches:
                 try:
@@ -38,7 +39,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
                 except ValueError as e:
                     print(f"# Warning: The environment '{ref_env}' for key '{key}' either does not exist or you do not have access to it.")
 
-            # Handle local references
+            # Resolve local references
             local_ref_matches = re.findall(local_ref_pattern, value)
             for ref_key in local_ref_matches:
                 value = value.replace(f"${{{ref_key}}}", secrets_dict.get(ref_key, ""))
@@ -47,4 +48,4 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None):
             print(f'{key}="{value}"')
 
     except ValueError as e:
-        print(e)
+        console.log(f"Error: {e}")
