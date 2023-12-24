@@ -264,6 +264,37 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         raise ValueError("🔍 Application or environment not found.")
 
 
+def normalize_tag(tag):
+    """
+    Normalize a tag by replacing underscores with spaces.
+
+    Args:
+        tag (str): The tag to normalize.
+
+    Returns:
+        str: The normalized tag.
+    """
+    return tag.replace('_', ' ').lower()
+
+
+def tag_matches(secret_tags, user_tag):
+    """
+    Check if the user-provided tag partially matches any of the secret tags.
+
+    Args:
+        secret_tags (list): The list of tags associated with a secret.
+        user_tag (str): The user-provided tag to match.
+
+    Returns:
+        bool: True if there's a partial match, False otherwise.
+    """
+    normalized_user_tag = normalize_tag(user_tag)
+    for tag in secret_tags:
+        normalized_secret_tag = normalize_tag(tag)
+        if normalized_user_tag in normalized_secret_tag:
+            return True
+    return False
+
 def open_browser(url):
     """Open a URL in the default browser without any console output."""
     # Determine the right command based on the OS
