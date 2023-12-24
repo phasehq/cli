@@ -1,6 +1,7 @@
 import sys
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import render_table, get_default_user_id, sanitize_value
+from rich.console import Console
 
 def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
     """
@@ -16,6 +17,7 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
     """
     # Initialize the Phase class
     phase = Phase()
+    console = Console()
     
     # Parse the .env file
     secrets = []
@@ -49,4 +51,4 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
             print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
 
     except ValueError as e:
-        print(e)
+        console.log(f"Error: {e}")

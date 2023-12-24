@@ -3,6 +3,7 @@ import getpass
 from phase_cli.utils.phase_io import Phase
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
+from rich.console import Console
 
 def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None):
     """
@@ -18,6 +19,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     # Initialize the Phase class
     phase = Phase()
+    console = Console()
 
     # If the key is not passed as an argument, prompt user for input
     if key is None:
@@ -33,7 +35,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
             print(f"🗝️  Secret with key '{key}' already exists. Use 'phase secrets update {key} {optional_flags}' to update it.")
             return
     except ValueError as e:
-        print(e)
+        console.log(f"Error: {e}")
         return
 
     # Generate a random value or get value from user
@@ -45,7 +47,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         try:
             value = generate_random_secret(random_type, random_length)
         except ValueError as e:
-            print(e)
+            console.log(f"Error: {e}")
             return
     else:
         # Check if input is being piped
@@ -67,4 +69,4 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
             print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
 
     except ValueError as e:
-        print(e)
+        console.log(f"Error: {e}")
