@@ -16,7 +16,7 @@ from nacl.bindings import (
 )
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.const import __ph_version__, pss_user_pattern, pss_service_pattern
-from phase_cli.utils.misc import phase_get_context, get_default_user_host
+from phase_cli.utils.misc import phase_get_context, get_default_user_host, normalize_tag, tag_matches
 from phase_cli.utils.keyring import get_credentials
 
 @dataclass
@@ -144,20 +144,20 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None):
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None) -> List[dict]:
         """
-        Get secrets from Phase KMS based on key and environment, with support for personal overrides.
+        Get secrets from Phase KMS based on key and environment, with support for personal overrides, optional tag matching, and decrypting comments.
 
         Args:
-            key (str, optional): The key for which to retrieve the secret value.
             env_name (str): The name (or partial name) of the desired environment.
+            keys (List[str], optional): The keys for which to retrieve the secret values.
             app_name (str, optional): The name of the desired application.
+            tag (str, optional): The tag to match against the secrets.
 
         Returns:
-            dict or list: A dictionary containing the decrypted key and value if key is provided,
-                        otherwise a list of dictionaries for all secrets in the environment.
+            List[dict]: A list of dictionaries for all secrets in the environment that match the criteria.
         """
-
+        
         user_response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
         if user_response.status_code != 200:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
@@ -179,22 +179,28 @@ class Phase:
 
         results = []
         for secret in secrets_data:
+            if tag and not tag_matches(secret.get("tags", []), tag):
+                continue
+
             secret_id = secret["id"]
             override = secret.get("override")
             use_override = override and override.get("secret") == secret_id and override.get("is_active")
 
-            # Always use the shared key, but use the overridden value when applicable and active
             key_to_decrypt = secret["key"]
             value_to_decrypt = override["value"] if use_override else secret["value"]
+            comment_to_decrypt = secret["comment"]
 
             decrypted_key = CryptoUtils.decrypt_asymmetric(key_to_decrypt, env_private_key, public_key)
             decrypted_value = CryptoUtils.decrypt_asymmetric(value_to_decrypt, env_private_key, public_key)
+            decrypted_comment = CryptoUtils.decrypt_asymmetric(comment_to_decrypt, env_private_key, public_key) if comment_to_decrypt else None
 
             if not keys or decrypted_key in keys:
                 result = {
                     "key": decrypted_key,
                     "value": decrypted_value,
-                    "overridden": use_override
+                    "overridden": use_override,
+                    "tags": secret.get("tags", []),
+                    "comment": decrypted_comment
                 }
                 results.append(result)
 
