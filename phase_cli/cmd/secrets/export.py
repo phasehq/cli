@@ -4,6 +4,7 @@ import json
 import csv
 import yaml
 from phase_cli.utils.phase_io import Phase
+import xml.sax.saxutils as saxutils
 from phase_cli.utils.const import cross_env_pattern, local_ref_pattern
 from rich.console import Console
 
@@ -138,7 +139,8 @@ def export_xml(secrets_dict):
     """Export secrets as XML."""
     xml_output = '<Secrets>\n'
     for key, value in secrets_dict.items():
-        xml_output += f'  <secret name="{key}">{value}</secret>\n'
+        escaped_value = saxutils.escape(value)
+        xml_output += f'  <secret name="{key}">{escaped_value}</secret>\n' # Handle escaping
     xml_output += '</Secrets>'
     print(xml_output)
 
@@ -151,14 +153,19 @@ def export_dotenv(secrets_dict):
 
 def export_hcl(secrets_dict):
     """Export secrets as HCL."""
+    print('variable {')
     for key, value in secrets_dict.items():
-        print(f'{key} = "{value}"')
+        escaped_value = value.replace('"', '\\"')  # Escape double quotes
+        print(f'  {key} = {{ default = "{escaped_value}" }}')
+    print('}')
 
 
 def export_ini(secrets_dict):
     """Export secrets as INI."""
+    print("[DEFAULT]")  # Add a default section header
     for key, value in secrets_dict.items():
-        print(f'{key} = {value}')
+        escaped_value = value.replace('%', '%%')  # Escape percent signs
+        print(f'{key} = {escaped_value}')
 
 
 def export_java_properties(secrets_dict):
