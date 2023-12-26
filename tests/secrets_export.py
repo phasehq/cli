@@ -71,15 +71,15 @@ def test_export_toml(capsys):
     captured = capsys.readouterr()
     assert toml.loads(captured.out) == secrets_dict
 
-# TODO: Validate HCL output
-# def test_export_hcl(capsys):
-#     export_hcl(secrets_dict)
-#     captured = capsys.readouterr()
-#     decoded = hcl2.loads(captured.out)
-#     expected_structure = {'variable': []}
-#     for key, value in secrets_dict.items():
-#         expected_structure['variable'].append({key: {'default': value}})
-#     assert decoded == expected_structure
+
+def test_export_hcl(capsys):
+    export_hcl(secrets_dict)
+    captured = capsys.readouterr()
+    decoded = hcl2.loads(captured.out)
+    expected_structure = {'variable': []}
+    for key, value in secrets_dict.items():
+        expected_structure['variable'].append({key: {'default': value}})
+    assert decoded == expected_structure
 
 
 def test_export_ini(capsys):
