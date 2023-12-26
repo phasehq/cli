@@ -71,7 +71,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
             export_ini(secrets_dict)
         elif format == 'java_properties':
             export_java_properties(secrets_dict)
-        else:  # Default to dotenv
+        else:
             export_dotenv(secrets_dict)
 
     except ValueError as e:
@@ -153,11 +153,11 @@ def export_dotenv(secrets_dict):
 
 def export_hcl(secrets_dict):
     """Export secrets as HCL."""
-    print('variable {')
     for key, value in secrets_dict.items():
         escaped_value = value.replace('"', '\\"')  # Escape double quotes
-        print(f'  {key} = {{ default = "{escaped_value}" }}')
-    print('}')
+        print(f'variable "{key}" {{')
+        print(f'  default = "{escaped_value}"')
+        print('}\n')
 
 
 def export_ini(secrets_dict):
