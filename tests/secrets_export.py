@@ -7,10 +7,12 @@ import toml
 from xml.etree import ElementTree as ET
 from configparser import ConfigParser
 import hcl2
+from unittest.mock import Mock, patch
 from phase_cli.cmd.secrets.export import (
-    export_json, export_csv, export_yaml, export_toml, export_xml, 
-    export_dotenv, export_hcl, export_ini, export_java_properties
+    export_json, export_csv, export_yaml, export_toml, export_xml,
+    export_dotenv, export_hcl, export_ini, export_java_properties, phase_secrets_env_export, resolve_references
 )
+
 
 secrets_dict = {
     'AWS_SECRET_ACCESS_KEY': 'aCRAMarEbFC3Q5c24pi7AVMIt6TaCfHeFZ4KCf/a',
@@ -26,6 +28,74 @@ secrets_dict = {
     'DB_PASSWORD': '6c37810ec6e74ec3228416d2844564fceb99ebd94b29f4334c244db011630b0e', 
     'DB_PORT': '5432'
 }
+
+
+secrets_dict_local_env = {
+    'POSTGRES_CONNECTION_STRING': 'postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}', 
+    'DB_HOST': 'mc-laren-prod-db.c9ufzjtplsaq.us-west-1.rds.amazonaws.com', 
+    'DB_USER': 'postgres', 
+    'DB_NAME': 'XP1_LM', 
+    'DB_PASSWORD': '6c37810ec6e74ec3228416d2844564fceb99ebd94b29f4334c244db011630b0e', 
+    'DB_PORT': '5432'
+}
+
+
+secrets_dict_cross_env = {
+    'POSTGRES_CONNECTION_STRING': 'postgresql://${production.DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}', 
+    'DB_HOST': 'mc-laren-prod-db.c9ufzjtplsaq.us-west-1.rds.amazonaws.com', 
+    'DB_USER': 'postgres', 
+    'DB_NAME': 'XP1_LM', 
+    'DB_PASSWORD': '6c37810ec6e74ec3228416d2844564fceb99ebd94b29f4334c244db011630b0e', 
+    'DB_PORT': '5432'
+}
+
+
+secrets_dict_cross_env_prod = {
+    'DB_USER': 'postgres_prod', 
+
+}
+
+
+def test_resolve_references_local_env():
+    # Test local env secret referencing
+    resolved_secrets = resolve_references(secrets_dict_local_env, Mock(), None, None)
+    expected_connection_string = 'postgresql://postgres:6c37810ec6e74ec3228416d2844564fceb99ebd94b29f4334c244db011630b0e@mc-laren-prod-db.c9ufzjtplsaq.us-west-1.rds.amazonaws.com:5432/XP1_LM'
+    assert resolved_secrets['POSTGRES_CONNECTION_STRING'] == expected_connection_string
+
+
+@patch('phase_cli.cmd.secrets.export.Phase')
+def test_resolve_references_cross_env(mock_phase):
+    # Mocking phase.get to return the appropriate secret for cross-environment reference
+    mock_phase_instance = mock_phase.return_value
+    mock_phase_instance.get.return_value = [{'key': 'DB_USER', 'value': 'postgres_prod'}]
+
+    resolved_secrets = resolve_references(secrets_dict_cross_env, mock_phase_instance, None, None)
+    expected_connection_string = 'postgresql://postgres_prod:6c37810ec6e74ec3228416d2844564fceb99ebd94b29f4334c244db011630b0e@mc-laren-prod-db.c9ufzjtplsaq.us-west-1.rds.amazonaws.com:5432/XP1_LM'
+    assert resolved_secrets['POSTGRES_CONNECTION_STRING'] == expected_connection_string
+
+
+@patch('phase_cli.cmd.secrets.export.Phase')
+def test_phase_secrets_env_export_specific_keys(mock_phase, capsys):
+    # Mocking phase.get to return all secrets
+    mock_phase_instance = mock_phase.return_value
+    all_secrets = [{'key': k, 'value': v} for k, v in secrets_dict.items()]
+    mock_phase_instance.get.return_value = all_secrets
+
+    # Call phase_secrets_env_export with specific keys
+    selected_keys = ['AWS_SECRET_ACCESS_KEY', 'AWS_ACCESS_KEY_ID']
+    phase_secrets_env_export(keys=selected_keys)
+
+    # Capture the output
+    captured = capsys.readouterr().out
+
+    # Process the output by splitting and removing double quotes
+    exported_secrets = {line.split('=')[0]: line.split('=')[1].strip('"') for line in captured.strip().split('\n')}
+
+    # Check if only the selected keys are present in the output
+    assert all(key in selected_keys for key in exported_secrets.keys())
+    # Check if the values match the original secrets
+    assert all(exported_secrets[key] == secrets_dict[key] for key in selected_keys)
+
 
 def test_export_json(capsys):
     export_json(secrets_dict)
