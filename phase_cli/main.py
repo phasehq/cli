@@ -67,6 +67,7 @@ class HelpfulParser(argparse.ArgumentParser):
 
 def main ():
     env_help = "Environment name eg. dev, staging, production"
+    tag_help = '🏷️: Comma-separated list of tags to filter the secrets. Tags are case-insensitive and support partial matching. For example, using --tags "prod,config" will include secrets tagged with "Production" or "ConfigData". Underscores in tags are treated as spaces, so "prod_data" matches "prod data".'
     console = Console()
 
     try:
@@ -88,7 +89,7 @@ def main ():
         run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run. Ex. phase run yarn dev')
         run_parser.add_argument('--env', type=str, help=env_help)
         run_parser.add_argument('--app', type=str, help='Name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        run_parser.add_argument('--tags', type=str, help='🏷️: Comma-separated list of tags to filter the secrets. Tags are case-insensitive and support partial matching. For example, using --tags "prod,config" will include secrets tagged with "Production" or "ConfigData". Underscores in tags are treated as spaces, so "prod_data" matches "prod data".')
+        run_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Secrets command
         secrets_parser = subparsers.add_parser('secrets', help='🗝️` Manage your secrets')
@@ -99,7 +100,7 @@ def main ():
         secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        secrets_list_parser.add_argument('--tags', type=str, help='🏷️: Comma-separated list of tags to filter the secrets. Tags are case-insensitive and support partial matching. For example, using --tags "prod,config" will include secrets tagged with "Production" or "ConfigData". Underscores in tags are treated as spaces, so "prod_data" matches "prod data".')
+        secrets_list_parser.add_argument('--tags', type=str, help=tag_help)
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
             "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
@@ -114,7 +115,7 @@ def main ():
         secrets_get_parser.add_argument('key', type=str, help='The key associated with the secret to fetch')
         secrets_get_parser.add_argument('--env', type=str, help=env_help)
         secrets_get_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        secrets_get_parser.add_argument('--tags', type=str, help='🏷️: Comma-separated list of tags to filter the secrets. Tags are case-insensitive and support partial matching. For example, using --tags "prod,config" will include secrets tagged with "Production" or "ConfigData". Underscores in tags are treated as spaces, so "prod_data" matches "prod data".')
+        secrets_get_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
@@ -188,7 +189,7 @@ def main ():
         secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
         secrets_export_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        secrets_export_parser.add_argument('--tags', type=str, help='🏷️: Comma-separated list of tags to filter the secrets. Tags are case-insensitive and support partial matching. For example, using --tags "prod,config" will include secrets tagged with "Production" or "ConfigData". Underscores in tags are treated as spaces, so "prod_data" matches "prod data".')
+        secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Users command
         users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
