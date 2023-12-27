@@ -48,11 +48,15 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
     phase = Phase()
 
     try:
-        secrets = phase.get(env_name=env_name, keys=keys, app_name=phase_app, tag=tags)
-        secrets_dict = {secret["key"]: secret["value"] for secret in secrets}
+        # Fetch all secrets
+        all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags)
+        all_secrets_dict = {secret["key"]: secret["value"] for secret in all_secrets}
 
         # Resolve references
-        secrets_dict = resolve_references(secrets_dict, phase, env_name, phase_app)
+        resolved_secrets = resolve_references(all_secrets_dict, phase, env_name, phase_app)
+
+        # Filter secrets if specific keys are requested
+        secrets_dict = {key: resolved_secrets[key] for key in (keys or resolved_secrets)}
 
         # Export based on selected format
         if format == 'json':
@@ -103,8 +107,11 @@ def resolve_references(secrets_dict, phase, env_name, phase_app):
         # Resolve local references
         local_ref_matches = re.findall(local_ref_pattern, value)
         for ref_key in local_ref_matches:
-            ref_value = secrets_dict.get(ref_key, "")
-            value = value.replace(f"${{{ref_key}}}", ref_value)
+            if ref_key in secrets_dict:
+                ref_value = secrets_dict[ref_key]
+                value = value.replace(f"${{{ref_key}}}", ref_value)
+            else:
+                print(f"# Warning: Local reference {ref_key} not found for key {key}.")
 
         secrets_dict[key] = value
 
