@@ -1,6 +1,4 @@
 from phase_cli.utils.phase_io import Phase
-from rich import print as rich_print
-from rich.json import JSON
 from rich.console import Console
 import json
 
@@ -29,9 +27,9 @@ def phase_secrets_get(key, env_name=None, phase_app=None, tags=None):
         if not isinstance(secret_data, dict):
             raise ValueError("Unexpected format: secret data is not a dictionary")
         
-        # Convert secret data to JSON and print with syntax highlighting
+        # Convert secret data to JSON and print
         json_data = json.dumps(secret_data, indent=4)
-        rich_print(JSON(json_data))
+        print(json_data)
 
     except ValueError as e:
         console.log(f"Error: {e}")
