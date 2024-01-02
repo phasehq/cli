@@ -63,7 +63,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         # Check the response status code
         if response.status_code == 200:
             # Call the phase_list_secrets function to list the secrets
-            phase_list_secrets(show=False, env_name=env_name)
+            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name)
         else:
             # Print an error message if the response status code indicates an error
             print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
