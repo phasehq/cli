@@ -19,10 +19,9 @@ from phase_cli.cmd.secrets.import_env import phase_secrets_env_import
 from phase_cli.cmd.secrets.delete import phase_secrets_delete
 from phase_cli.cmd.secrets.create import phase_secrets_create
 from phase_cli.cmd.secrets.update import phase_secrets_update
-
 from phase_cli.utils.const import __version__
 from phase_cli.utils.const import phaseASCii, description
-
+from rich.console import Console
 
 def print_phase_cli_version():
     print(f"Version: {__version__}")
@@ -68,6 +67,8 @@ class HelpfulParser(argparse.ArgumentParser):
 
 def main ():
     env_help = "Environment name eg. dev, staging, production"
+    tag_help = '🏷️: Comma-separated list of tags to filter the secrets. Tags are case-insensitive and support partial matching. For example, using --tags "prod,config" will include secrets tagged with "Production" or "ConfigData". Underscores in tags are treated as spaces, so "prod_data" matches "prod data".'
+    console = Console()
 
     try:
         parser = HelpfulParser(prog='phase-cli', formatter_class=RawTextHelpFormatter)
@@ -87,7 +88,8 @@ def main ():
         run_parser = subparsers.add_parser('run', help='🚀 Run and inject secrets to your app')
         run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run. Ex. phase run yarn dev')
         run_parser.add_argument('--env', type=str, help=env_help)
-        run_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        run_parser.add_argument('--app', type=str, help='Name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        run_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Secrets command
         secrets_parser = subparsers.add_parser('secrets', help='🗝️` Manage your secrets')
@@ -98,22 +100,22 @@ def main ():
         secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        secrets_list_parser.add_argument('--tags', type=str, help=tag_help)
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
             "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
+            "🏷️ : Indicates a tag is associated with a secret.\n"
+            "💬 : Indicates a comment is associated with a given secret.\n" 
             "🔏 : Indicates a personal secret, visible only to the user who set it."
+
         )
 
         # Secrets get command
-        secrets_get_parser = secrets_subparsers.add_parser('get', help='🔍 Get a specific secret by key')
+        secrets_get_parser = secrets_subparsers.add_parser('get', help='🔍 Fetch details about a secret in JSON')
         secrets_get_parser.add_argument('key', type=str, help='The key associated with the secret to fetch')
         secrets_get_parser.add_argument('--env', type=str, help=env_help)
         secrets_get_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        secrets_get_parser.epilog = (
-            "🔗 : Indicates that the secret value references another secret within the same environment.\n"
-            "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
-            "🔏 : Indicates a personal secret, visible only to the user who set it."
-        )
+        secrets_get_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
@@ -187,6 +189,8 @@ def main ():
         secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
         secrets_export_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        secrets_export_parser.add_argument('--format', type=str, default='dotenv', choices=['dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 'java_properties'], help='Specifies the export format. Supported formats: dotenv (default), json, csv, yaml, xml, toml, hcl, ini, java_properties.')
+        secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Users command
         users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
@@ -218,7 +222,7 @@ def main ():
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
-            phase_run_inject(command, env_name=args.env, phase_app=args.app)
+            phase_run_inject(command, env_name=args.env, phase_app=args.app, tags=args.tags)
         elif args.command == 'console':
             phase_open_web()
         elif args.command == 'update':
@@ -237,9 +241,9 @@ def main ():
                 sys.exit(1)
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
-                phase_list_secrets(args.show, env_name=args.env, phase_app=args.app)
+                phase_list_secrets(args.show, env_name=args.env, phase_app=args.app, tags=args.tags)
             elif args.secrets_command == 'get':
-                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app)  
+                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, tags=args.tags)  
             elif args.secrets_command == 'create':
                 phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
             elif args.secrets_command == 'delete':
@@ -247,7 +251,7 @@ def main ():
             elif args.secrets_command == 'import':
                 phase_secrets_env_import(args.env_file, env_name=args.env, phase_app=args.app)
             elif args.secrets_command == 'export':
-                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app)
+                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, tags=args.tags, format=args.format)
             elif args.secrets_command == 'update':
                 phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
             else:
@@ -264,7 +268,7 @@ def main ():
             traceback.print_exc()
         else:
             # When PHASE_DEBUG is set to False, print only the error message
-            print(str(e))
+            console.log(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':

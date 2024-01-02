@@ -1,6 +1,6 @@
 import os
 import re
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 __ph_version__ = "v1"
 
 description = "Securely manage and sync environment variables with Phase."
@@ -35,4 +35,5 @@ pss_user_pattern = re.compile(r"^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{
 pss_service_pattern = re.compile(r"^pss_service:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$")
 
 cross_env_pattern = re.compile(r"\$\{(.+?)\.(.+?)\}")
-local_ref_pattern = re.compile(r"\$\{(.+?)\}")
+local_ref_pattern = re.compile(r"\$\{([^.]+?)\}")
+

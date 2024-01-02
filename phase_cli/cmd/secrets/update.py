@@ -3,6 +3,7 @@ import getpass
 from phase_cli.utils.phase_io import Phase
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
+from rich.console import Console
 
 def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, random_length=None):
     """
@@ -17,6 +18,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     """
     # Initialize the Phase class
     phase = Phase()
+    console = Console()
     
     # Convert the key to uppercase
     key = key.upper()
@@ -29,7 +31,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
             print(f"🔍 No secret found for key: {key}")
             return
     except ValueError as e:
-        print(e)
+        console.log(f"Error: {e}")
         return
 
     # Generate a random value or get value from user
@@ -41,7 +43,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
         try:
             new_value = generate_random_secret(random_type, random_length)
         except ValueError as e:
-            print(e)
+            console.log(f"Error: {e}")
             return
     else:
         # Check if input is being piped
@@ -57,6 +59,6 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
             print("Successfully updated the secret.")
         else:
             print(f"Error: Failed to update secret. HTTP Status Code: {response.status_code}")
-        phase_list_secrets(show=False, env_name=env_name)
+        phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name)
     except ValueError:
         print(f"⚠️  Error occurred while updating the secret.")

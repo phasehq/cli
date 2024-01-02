@@ -2,6 +2,9 @@ import os
 import platform
 import subprocess
 import json
+from rich.table import Table
+from rich.console import Console
+from rich import box
 from urllib.parse import urlparse
 from typing import Union, List
 from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
@@ -62,65 +65,64 @@ def censor_secret(secret, max_length):
     return censored
 
 
-def render_table(data, show=False, min_key_width=20):
+# Tokenizing function
+def tokenize(value):
+    delimiters = [':', '@', '/', ' ']
+    tokens = [value]
+    for delimiter in delimiters:
+        new_tokens = []
+        for token in tokens:
+            new_tokens.extend(token.split(delimiter))
+        tokens = new_tokens
+    return tokens
+
+
+def render_table(data, show=False):
     """
-    Render a table of key-value pairs with icons for cross-environment and local references,
-    and an emoji for personal secrets.
+    Render a table of key-value pairs with Rich library, using adjusted column widths.
+    Key column is adjusted based on content length, with more width allocated to the value column.
 
     Args:
-        data: List of dictionaries containing keys, values, and overridden status
-        show: Whether to show the values or censor them
-        min_key_width: Minimum width for the "Key" column
+        data: List of dictionaries containing keys, values, overridden status, tags, and comments.
+        show: Whether to show the values or censor them.
     """
 
-    # Calculate column widths
-    longest_key_length = max([len(item.get("key", "")) for item in data], default=0)
-    min_key_width = max(longest_key_length + 3, min_key_width)
+    console = Console()
+    table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
+
+    # Calculate the max length of the key column
+    max_key_length = max([len(item.get("key", "")) + 4 + 2 * bool(item.get("tags")) + 2 * bool(item.get("comment")) for item in data], default=20)
+    key_width = min(max_key_length, 40)  # Limiting max width to 40 for better readability
+
     terminal_width = get_terminal_width()
-    value_width = terminal_width - min_key_width - 4  # Accounting for spaces and pipe
+    value_width = max(terminal_width - key_width - 4, 20)  # -4 for separator and padding
 
-    # Print table headers
-    print(f'{"KEY 🗝️":<{min_key_width}} | {"VALUE ✨":<{value_width}}')
-    print('-' * (min_key_width + value_width + 3))  # +3 for spaces and pipe
+    table.add_column("KEY 🗝️", width=key_width, no_wrap=True)
+    table.add_column("VALUE ✨", width=value_width, no_wrap=False)
 
-    # Tokenizing function
-    def tokenize(value):
-        delimiters = [':', '@', '/', ' ']
-        tokens = [value]
-        for delimiter in delimiters:
-            new_tokens = []
-            for token in tokens:
-                new_tokens.extend(token.split(delimiter))
-            tokens = new_tokens
-        return tokens
-
-    # Print each row
     for item in data:
         key = item.get("key")
         value = item.get("value")
-        overridden = item.get("overridden", False)
+        tags = " 🏷️" if item.get("tags") else ""
+        comment = " 💬" if item.get("comment") else ""
 
-        # Tokenize value and check each token for references
-        tokens = tokenize(value)
-        cross_env_detected = any(cross_env_pattern.match(token) for token in tokens)
-        local_ref_detected = any(local_ref_pattern.match(token) for token in tokens if not cross_env_pattern.match(token))
+        # Append emojis for tags and comments
+        key += f"{tags}{comment}{' ' * 4}"  # Ensure 4 spaces after the key and emojis
 
         # Set icon based on detected references
-        icon = ''
-        if cross_env_detected:
-            icon += '⛓️ '
-        if local_ref_detected:
-            icon += '🔗 '
+        icon = '⛓️ ' if any(cross_env_pattern.match(token) for token in tokenize(value)) else ''
+        icon += '🔗 ' if any(local_ref_pattern.match(token) for token in tokenize(value)) else ''
 
         # Display personal secret indicator
-        personal_indicator = '🔏 ' if overridden else ''
+        personal_indicator = '🔏 ' if item.get("overridden", False) else ''
 
-        # Censor value if not showing
-        censored_value = censor_secret(value, value_width - len(icon) - len(personal_indicator))
+        # Censor value if not showing, calculate max length based on value column width
+        censored_value_max_length = value_width - len(icon) - len(personal_indicator)
+        censored_value = censor_secret(value, censored_value_max_length) if not show else value
 
-        # Print row with personal secret indicator and other icons
-        displayed_value = icon + personal_indicator + (value if show else censored_value)
-        print(f'{key:<{min_key_width}} | {displayed_value:<{value_width}}')
+        table.add_row(key, f"{icon}{personal_indicator}{censored_value}")
+
+    console.print(table)
 
 
 def validate_url(url):
@@ -263,6 +265,37 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     except StopIteration:
         raise ValueError("🔍 Application or environment not found.")
 
+
+def normalize_tag(tag):
+    """
+    Normalize a tag by replacing underscores with spaces.
+
+    Args:
+        tag (str): The tag to normalize.
+
+    Returns:
+        str: The normalized tag.
+    """
+    return tag.replace('_', ' ').lower()
+
+
+def tag_matches(secret_tags, user_tag):
+    """
+    Check if the user-provided tag partially matches any of the secret tags.
+
+    Args:
+        secret_tags (list): The list of tags associated with a secret.
+        user_tag (str): The user-provided tag to match.
+
+    Returns:
+        bool: True if there's a partial match, False otherwise.
+    """
+    normalized_user_tag = normalize_tag(user_tag)
+    for tag in secret_tags:
+        normalized_secret_tag = normalize_tag(tag)
+        if normalized_user_tag in normalized_secret_tag:
+            return True
+    return False
 
 def open_browser(url):
     """Open a URL in the default browser without any console output."""

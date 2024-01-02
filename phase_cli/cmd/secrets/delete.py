@@ -1,5 +1,6 @@
 from phase_cli.utils.phase_io import Phase
 from phase_cli.cmd.secrets.list import phase_list_secrets
+from rich.console import Console
 
 # Deletes encrypted secrets based on key value pairs
 def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
@@ -13,6 +14,7 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
     """
     # Initialize the Phase class
     phase = Phase()
+    console = Console()
 
     # If keys_to_delete is empty, request user input
     if not keys_to_delete:
@@ -35,4 +37,4 @@ def phase_secrets_delete(keys_to_delete=[], env_name=None, phase_app=None):
         phase_list_secrets(show=False, env_name=env_name)
     
     except ValueError as e:
-        print(e)
+        console.log(f"Error: {e}")
