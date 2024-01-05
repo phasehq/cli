@@ -34,7 +34,7 @@ jobs:
     needs: [pytest]
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-20.04, windows-latest, macos-latest]
         python-version: [3.11]
     steps:
       - uses: actions/checkout@v2
@@ -44,6 +44,9 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+      - name: Print GLIBC version
+        if: matrix.os == 'ubuntu-20.04'
+        run: ldd --version
 
       # Set LC_ALL based on the runner OS for Linux and macOS
       - name: Set LC_ALL for Linux and macOS
@@ -68,14 +71,14 @@ jobs:
           name: phase-version
           path: ./PHASE_CLI_VERSION.txt
 
-      # Build DEB and RPM packages for Linux
+        # Build DEB and RPM packages for Linux
       - run: |
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
           fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
           fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
         shell: bash
 
       # Upload DEB and RPM packages
@@ -83,12 +86,12 @@ jobs:
         with:
           name: phase-deb
           path: "*.deb"
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
       - uses: actions/upload-artifact@v2
         with:
           name: phase-rpm
           path: "*.rpm"
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
 
       # Upload binary
       - uses: actions/upload-artifact@v2
