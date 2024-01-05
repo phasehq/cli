@@ -71,7 +71,8 @@ jobs:
           name: phase-version
           path: ./PHASE_CLI_VERSION.txt
 
-      # Build DEB and RPM packages for Linux
+        # Build DEB and RPM packages for Linux
+        if: matrix.os == 'ubuntu-20.04'
       - run: |
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
