@@ -34,7 +34,7 @@ jobs:
     needs: [pytest]
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-latest]
         python-version: [3.11]
     steps:
       - uses: actions/checkout@v2
@@ -43,6 +43,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
+      - name: Print GLIBC version
+        if: matrix.os == 'ubuntu-22.04'
+        run: ldd --version
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
 
       # Set LC_ALL based on the runner OS for Linux and macOS
