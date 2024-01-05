@@ -72,14 +72,13 @@ jobs:
           path: ./PHASE_CLI_VERSION.txt
 
         # Build DEB and RPM packages for Linux
-        if: matrix.os == 'ubuntu-20.04'
       - run: |
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
           fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
           fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
         shell: bash
 
       # Upload DEB and RPM packages
@@ -87,12 +86,12 @@ jobs:
         with:
           name: phase-deb
           path: "*.deb"
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
       - uses: actions/upload-artifact@v2
         with:
           name: phase-rpm
           path: "*.rpm"
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
 
       # Upload binary
       - uses: actions/upload-artifact@v2
