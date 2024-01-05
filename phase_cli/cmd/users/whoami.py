@@ -26,9 +26,9 @@ def phase_users_whoami():
             return
 
         # Print the default user details
-        print(f"✉️` Email: {default_user['email']}")
+        print(f"✉️\u200A Email: {default_user['email']}")
         print(f"🙋 User ID: {default_user['id']}")
-        print(f"☁️` Host: {default_user['host']}")
+        print(f"☁️\u200A Host: {default_user['host']}")
 
     except FileNotFoundError:
         print(f"Config file not found at {CONFIG_FILE}.")
