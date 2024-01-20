@@ -1,6 +1,6 @@
 import os
 import re
-__version__ = "1.11.1"
+__version__ = "1.11.2"
 __ph_version__ = "v1"
 
 description = "Securely manage and sync environment variables with Phase."
