@@ -197,7 +197,7 @@ def phase_auth(mode="webauth"):
             public_key, private_key = CryptoUtils.random_key_pair()
 
             # Fetch local username and hostname. To be used as title for personal access token
-            username = os.getlogin()
+            username = getpass.getuser()
             hostname = platform.node()
             personal_access_token_name = f"{username}@{hostname}"
 
