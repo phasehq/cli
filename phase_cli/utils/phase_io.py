@@ -6,6 +6,7 @@ from phase_cli.utils.network import (
     fetch_phase_user,
     fetch_app_key,
     fetch_wrapped_key_share,
+    fetch_phase_secret,
     fetch_phase_secrets,
     create_phase_secrets,
     update_phase_secrets,
@@ -144,7 +145,48 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None) -> List[dict]:
+    def get(self, env_name: str, key: str, app_name: str = None):
+        """
+        Fetch a specific secret from the Phase service and return it.
+        """
+        user_data = self.init()
+        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+
+        environment_key = self._find_matching_environment_key(user_data, env_id)
+        if environment_key is None:
+            raise ValueError(f"No environment found with id: {env_id}")
+
+        wrapped_salt = environment_key.get("wrapped_salt")
+        decrypted_salt = self.decrypt(wrapped_salt)
+        key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
+
+        secret_response = fetch_phase_secret(self._token_type, self._app_secret.app_token, env_id, self._api_host, key_digest)
+        if secret_response.status_code != 200:
+            raise ValueError(f"Request failed with status code {secret_response.status_code}: {secret_response.text}")
+
+        secret_data = secret_response.json()
+        if isinstance(secret_data, list) and secret_data:
+            secret_data = secret_data[0]
+
+        wrapped_seed = environment_key.get("wrapped_seed")
+        decrypted_seed = self.decrypt(wrapped_seed)
+        key_pair = CryptoUtils.env_keypair(decrypted_seed)
+        env_private_key = key_pair['privateKey']
+
+        decrypted_key = CryptoUtils.decrypt_asymmetric(secret_data["key"], env_private_key, public_key)
+        decrypted_value = CryptoUtils.decrypt_asymmetric(secret_data["value"], env_private_key, public_key)
+        decrypted_comment = CryptoUtils.decrypt_asymmetric(secret_data.get("comment", ""), env_private_key, public_key) if secret_data.get("comment") else None
+
+        return {
+            "key": decrypted_key,
+            "value": decrypted_value,
+            "tags": secret_data.get("tags", []),
+            "comment": decrypted_comment,
+            "overridden": secret_data.get("override", False)
+        }
+
+
+    def get_all(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None) -> List[dict]:
         """
         Get secrets from Phase KMS based on key and environment, with support for personal overrides, optional tag matching, and decrypting comments.
 
