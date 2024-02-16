@@ -179,21 +179,58 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
     return wrapped_key_share
 
 
-def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str) -> requests.Response:
+def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, path: str = '') -> requests.Response:
     """
-    Fetch secrets from Phase KMS.
+    Fetch secrets from Phase KMS with an optional path parameter.
 
     Args:
+        token_type (str): The type of the token.
         app_token (str): The token for the application.
         id (str): The environment ID.
+        host (str): The host URL.
+        path (str): Optional. A specific path to fetch secrets from.
 
     Returns:
         requests.Response: The HTTP response from the Phase KMS.
     """
 
     headers = {**construct_http_headers(token_type, app_token), "Environment": id}
-    
-    URL =  f"{host}/service/secrets/"
+    if path:
+        headers["Path"] = path
+
+    URL = f"{host}/service/secrets/"
+
+    try:
+        response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        return response
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+
+
+def fetch_phase_secret(token_type: str, app_token: str, id: str, host: str, key_digest: str, path: str = '') -> requests.Response:
+    """
+    Fetch a single secret from Phase KMS based on key digest, with an optional path parameter.
+
+    Args:
+        token_type (str): The type of the token.
+        app_token (str): The token for the application.
+        id (str): The environment ID.
+        host (str): The host URL.
+        key_digest (str): The digest of the key to fetch.
+        path (str, optional): A specific path to fetch secrets from.
+
+    Returns:
+        dict: The single secret fetched from the Phase KMS, or an error message.
+    """
+
+    headers = {**construct_http_headers(token_type, app_token), "Environment": id, "KeyDigest": key_digest}
+    if path:
+        headers["Path"] = path
+
+    URL = f"{host}/service/secrets/"
 
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
