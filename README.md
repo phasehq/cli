@@ -26,7 +26,7 @@ Options:
                show program's version number and exit
 
 Commands:
-  
+
     auth             💻 Authenticate with Phase
     init             🔗 Link your project with your Phase app
     run              🚀 Run and inject secrets to your app
@@ -115,13 +115,37 @@ phase run go run
 phase run npm start
 ```
 
-Development:
+## Development:
+
+### Make sure virtualenv is installed
 
 ```bash
-cd /root of this git repo
+pip3 install virtualenv
 
+```
+
+### Create a virtualenv:
+
+```bash
+virtualenv phase-cli
+```
+
+### Switch to the virtualenv:
+
+```bash
+source phase-cli/bin/activate
+```
+
+### Install dependencies:
+
+```bash
+ pip3 install -r requirements.txt
+```
+
+```
 export PYTHONPATH="$PWD"
+```
 
+```bash
 ./phase_cli/main.py
-
 ```
