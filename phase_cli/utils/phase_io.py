@@ -1,6 +1,6 @@
 import requests
 from typing import Tuple
-from typing import List
+from typing import List, Dict
 from dataclasses import dataclass
 from phase_cli.utils.network import (
     fetch_phase_user,
@@ -100,14 +100,16 @@ class Phase:
         return response.json()
 
 
-    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str) -> requests.Response:
+    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str, path: str = '/') -> requests.Response:
         """
-        Create secrets in Phase KMS.
-        
+        Create secrets in Phase KMS with support for specifying a path.
+
         Args:
             key_value_pairs (List[Tuple[str, str]]): List of tuples where each tuple contains a key and a value.
             env_name (str): The name (or partial name) of the desired environment.
-                
+            app_name (str): The name of the application context.
+            path (str, optional): The path under which to store the secrets. Defaults to the root path '/'.
+
         Returns:
             requests.Response: The HTTP response from the Phase KMS.
         """
@@ -117,7 +119,7 @@ class Phase:
 
         user_data = user_response.json()
         app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
-        
+
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
             raise ValueError(f"No environment found with id: {env_id}")
@@ -130,32 +132,35 @@ class Phase:
             encrypted_key = CryptoUtils.encrypt_asymmetric(key, public_key)
             encrypted_value = CryptoUtils.encrypt_asymmetric(value, public_key)
             key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
-            
+
             secret = {
                 "key": encrypted_key,
                 "keyDigest": key_digest,
                 "value": encrypted_value,
-                "folderId": None,
-                "tags": [],
-                "comment": ""
+                "path": path,
+                # "tags": [], # TODO: Implement tags and comments creation
+                # "comment": ""
             }
             secrets.append(secret)
 
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None) -> List[dict]:
+
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None, path: str = '/') -> List[Dict]:
         """
-        Get secrets from Phase KMS based on key and environment, with support for personal overrides, optional tag matching, and decrypting comments.
+        Get secrets from Phase KMS based on key and environment, with support for personal overrides,
+        optional tag matching, decrypting comments, and now including path support and key digest optimization.
 
         Args:
             env_name (str): The name (or partial name) of the desired environment.
             keys (List[str], optional): The keys for which to retrieve the secret values.
             app_name (str, optional): The name of the desired application.
             tag (str, optional): The tag to match against the secrets.
+            path (str, optional): The path under which to fetch secrets, default is root.
 
         Returns:
-            List[dict]: A list of dictionaries for all secrets in the environment that match the criteria.
+            List[Dict]: A list of dictionaries for all secrets in the environment that match the criteria, including their paths.
         """
         
         user_response = fetch_phase_user(self._token_type, self._app_secret.app_token, self._api_host)
@@ -167,14 +172,21 @@ class Phase:
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
-            raise ValueError(f"No environment found with id: {env_id}")
+            raise ValueError("No environment found with id: {}".format(env_id))
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
-        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host)
+        if keys and len(keys) == 1:
+            wrapped_salt = environment_key.get("wrapped_salt")
+            decrypted_salt = self.decrypt(wrapped_salt)
+            key_digest = CryptoUtils.blake2b_digest(keys[0], decrypted_salt)
+            secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, key_digest=key_digest, path=path)
+        else:
+            secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, path=path)
+
         secrets_data = secrets_response.json()
 
         results = []
@@ -194,28 +206,31 @@ class Phase:
             decrypted_value = CryptoUtils.decrypt_asymmetric(value_to_decrypt, env_private_key, public_key)
             decrypted_comment = CryptoUtils.decrypt_asymmetric(comment_to_decrypt, env_private_key, public_key) if comment_to_decrypt else None
 
+            result = {
+                "key": decrypted_key,
+                "value": decrypted_value,
+                "overridden": use_override,
+                "tags": secret.get("tags", []),
+                "comment": decrypted_comment,
+                "path": secret.get("path", "/")  # Include the path in the result
+            }
+
             if not keys or decrypted_key in keys:
-                result = {
-                    "key": decrypted_key,
-                    "value": decrypted_value,
-                    "overridden": use_override,
-                    "tags": secret.get("tags", []),
-                    "comment": decrypted_comment
-                }
                 results.append(result)
 
         return results
 
 
-    def update(self, env_name: str, key: str, value: str, app_name: str = None) -> str:
+    def update(self, env_name: str, key: str, value: str, app_name: str = None, path: str = None) -> str:
         """
-        Update a secret in Phase KMS based on key and environment.
+        Update a secret in Phase KMS based on key and environment, with optional path support.
         
         Args:
             env_name (str): The name (or partial name) of the desired environment.
             key (str): The key for which to update the secret value.
             value (str): The new value for the secret.
             app_name (str, optional): The name of the desired application.
+            path (str, optional): The new path for the secret, if updating its location.
                 
         Returns:
             str: A message indicating the outcome of the update operation.
@@ -250,22 +265,26 @@ class Phase:
         if not matching_secret:
             return f"Key '{key}' doesn't exist."
 
-        encrypted_key = CryptoUtils.encrypt_asymmetric(key, public_key)
-        encrypted_value = CryptoUtils.encrypt_asymmetric(value, public_key)
+        encrypted_key = CryptoUtils.encrypt_asymmetric(key, public_key, env_private_key)
+        encrypted_value = CryptoUtils.encrypt_asymmetric(value, public_key, env_private_key)
         
         wrapped_salt = environment_key.get("wrapped_salt")
         decrypted_salt = self.decrypt(wrapped_salt)
         key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
 
+        # Initialize the payload with mandatory fields
         secret_update_payload = {
             "id": matching_secret["id"],
             "key": encrypted_key,
             "keyDigest": key_digest,
             "value": encrypted_value,
-            "folderId": None,
-            "tags": [],
-            "comment": ""
+            #"tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
+            #"comment": matching_secret.get("comment", "")
         }
+
+        # Conditionally add the path to the payload if provided
+        if path is not None:
+            secret_update_payload["path"] = path
 
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
@@ -275,14 +294,15 @@ class Phase:
             return f"Error: Failed to update secret. HTTP Status Code: {response.status_code}"
 
 
-    def delete(self, env_name: str, keys_to_delete: List[str], app_name: str = None) -> List[str]:
+    def delete(self, env_name: str, keys_to_delete: List[str], app_name: str = None, path: str = None) -> List[str]:
         """
-        Delete secrets in Phase KMS based on keys and environment.
+        Delete secrets in Phase KMS based on keys and environment, with optional path support.
         
         Args:
             env_name (str): The name (or partial name) of the desired environment.
             keys_to_delete (List[str]): The keys for which to delete the secrets.
             app_name (str, optional): The name of the desired application.
+            path (str, optional): The path within which to delete the secrets. If specified, only deletes secrets within this path.
                 
         Returns:
             List[str]: A list of keys that were not found and could not be deleted.
@@ -306,12 +326,14 @@ class Phase:
 
         secret_ids_to_delete = []
         keys_not_found = []
-        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host)
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, path=path)
         secrets_data = secrets_response.json()
             
         for key in keys_to_delete:
             found = False
             for secret in secrets_data:
+                if path is not None and secret.get("path", "/") != path:
+                    continue  # Skip secrets not in the specified path
                 decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
                 if decrypted_key == key:
                     secret_ids_to_delete.append(secret["id"])
@@ -320,7 +342,8 @@ class Phase:
             if not found:
                 keys_not_found.append(key)
 
-        delete_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secret_ids_to_delete, self._api_host)
+        if secret_ids_to_delete:
+            delete_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secret_ids_to_delete, self._api_host)
             
         return keys_not_found
     
