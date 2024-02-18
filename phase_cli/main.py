@@ -100,6 +100,7 @@ def main ():
         secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        secrets_list_parser.add_argument('--path', type=str, help="The path in which you want to list secrets. Default is '/'")
         secrets_list_parser.add_argument('--tags', type=str, help=tag_help)
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
@@ -131,7 +132,7 @@ def main ():
         )
         secrets_create_parser.add_argument('--env', type=str, help=env_help)
         secrets_create_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-
+        secrets_create_parser.add_argument('--path', type=str, help="The path in which you want to create a secret. You can create a directory by simply specifying a path like so: --path /folder/SECRET Default is '/'")
         # Adding the --random argument
         random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
         secrets_create_parser.add_argument('--random', 
@@ -241,11 +242,11 @@ def main ():
                 sys.exit(1)
         elif args.command == 'secrets':
             if args.secrets_command == 'list':
-                phase_list_secrets(args.show, env_name=args.env, phase_app=args.app, tags=args.tags)
+                phase_list_secrets(args.show, env_name=args.env, phase_app=args.app, path=args.path, tags=args.tags)
             elif args.secrets_command == 'get':
                 phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, tags=args.tags)  
             elif args.secrets_command == 'create':
-                phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
+                phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, path=args.path, random_type=args.random, random_length=args.length)
             elif args.secrets_command == 'delete':
                 phase_secrets_delete(args.keys, env_name=args.env, phase_app=args.app)  
             elif args.secrets_command == 'import':
