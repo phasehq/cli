@@ -2,15 +2,16 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import render_table
 from rich.console import Console
 
-def phase_list_secrets(show=False, env_name=None, phase_app=None, tags=None):
+def phase_list_secrets(show=False, env_name=None, phase_app=None, tags=None, path='/'):
     """
-    Lists the secrets fetched from Phase for the specified environment, optionally filtered by tags.
+    Lists the secrets fetched from Phase for the specified environment, optionally filtered by tags and path.
 
     Args:
         show (bool, optional): Whether to show the decrypted secrets. Defaults to False.
         env_name (str, optional): The name of the environment from which secrets are fetched. Defaults to None.
         phase_app (str, optional): The name of the Phase application. Defaults to None.
         tags (str, optional): The tag or comma-separated list of tags to filter the secrets. Defaults to None.
+        path (str, optional): The path under which to list the secrets. Defaults to the root path '/'.
 
     Raises:
         ValueError: If the returned secrets data from Phase is not in the expected list format.
@@ -20,14 +21,16 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None, tags=None):
     console = Console()
 
     try:
-        secrets_data = phase.get(env_name=env_name, app_name=phase_app, tag=tags)
+        secrets_data = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
         
         # Check that secrets_data is a list of dictionaries
         if not isinstance(secrets_data, list):
             raise ValueError("Unexpected format: secrets data is not a list")
 
         # Render the table
-        render_table(secrets_data, show=show)
+        #render_table(secrets_data, show=show, path=path)  # Ensure render_table is adapted to handle path if necessary
+        # TODO: add paths to render table 
+        render_table(secrets_data, show=show)  # Ensure render_table is adapted to handle path if necessary
 
         if not show:
             print("🥽 To uncover the secrets, use: phase secrets list --show")
