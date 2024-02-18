@@ -8,6 +8,8 @@ from phase_cli.utils.const import cross_env_pattern, local_ref_pattern
 from rich.console import Console
 from rich.spinner import Spinner
 
+console = Console()
+
 def phase_run_inject(command, env_name=None, phase_app=None, tags=None):
     """
     Executes a shell command with environment variables set to the secrets 
@@ -20,7 +22,6 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None):
         tags (str, optional): Comma-separated list of tags to filter secrets. Defaults to None.
     """
     phase = Phase()
-    console = Console()
     status = console.status(Spinner("dots", text="Fetching secrets..."), spinner="dots")
 
     try:
@@ -70,13 +71,31 @@ def resolve_secret(value, secrets_dict, phase, env_name, phase_app):
         str: Resolved secret value.
     """
     cross_env_matches = re.findall(cross_env_pattern, value)
+    checked_environments = {}  # To track checked environments
+
     for ref_env, ref_key in cross_env_matches:
+        if ref_env in checked_environments:
+            # Skip processing if we already know the environment doesn't exist
+            continue
+
         try:
-            ref_secret = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)[0]
-            value = value.replace(f"${{{ref_env}.{ref_key}}}", ref_secret['value'])
-        except ValueError as e:
-            print(f"⚠️  Warning: Issue with {ref_env} for key '{ref_key}'. Reference not found. Ignoring...")
-            value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
+            ref_secret = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)
+            if ref_secret:
+                value = value.replace(f"${{{ref_env}.{ref_key}}}", ref_secret[0]['value'])
+            else:
+                # Log a warning only if the environment exists but the secret doesn't
+                console.log(f"⚠️  Warning: Secret '{ref_key}' not found in environment '{ref_env}'. Ignoring...")
+                value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
+        except Exception as e:
+            if "environment does not exist" in str(e) or "do not have access" in str(e):
+                # Log this warning only once per environment
+                if ref_env not in checked_environments:
+                    console.log(f"⚠️  Warning: Environment '{ref_env}' does not exist or is inaccessible.")
+                    checked_environments[ref_env] = True
+                value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
+            else:
+                console.log(f"⚠️  Warning: Error accessing secret '{ref_key}' in environment '{ref_env}': {e}. Ignoring...")
+                value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
 
     local_ref_matches = re.findall(local_ref_pattern, value)
     for ref_key in local_ref_matches:
@@ -84,6 +103,6 @@ def resolve_secret(value, secrets_dict, phase, env_name, phase_app):
             ref_value = secrets_dict[ref_key]
             value = value.replace(f"${{{ref_key}}}", ref_value)
         else:
-            print(f"⚠️  Warning: Local reference '{ref_key}' not found. Ignoring...")
+            console.log(f"⚠️  Warning: Local reference '{ref_key}' not found. Ignoring...")
 
     return value

@@ -1,6 +1,8 @@
 import os
 import platform
 import subprocess
+import webbrowser
+import getpass
 import json
 from rich.table import Table
 from rich.console import Console
@@ -298,18 +300,26 @@ def tag_matches(secret_tags, user_tag):
     return False
 
 def open_browser(url):
-    """Open a URL in the default browser without any console output."""
-    # Determine the right command based on the OS
-    if platform.system() == "Windows":
-        cmd = ['start', url]
-    elif platform.system() == "Darwin":
-        cmd = ['open', url]
-    else:  # Assume Linux
-        cmd = ['xdg-open', url]
+    """Open a URL in the default browser, with fallbacks and error handling."""
+    try:
+        # Try to open the URL in a web browser
+        webbrowser.open(url, new=2)
+    except webbrowser.Error:
+        try:
+            # Determine the right command based on the OS
+            if platform.system() == "Windows":
+                cmd = ['start', url]
+            elif platform.system() == "Darwin":
+                cmd = ['open', url]
+            else:  # Assume Linux or other Unix-like OS
+                cmd = ['xdg-open', url]
 
-    # Suppress output by redirecting to devnull
-    with open(os.devnull, 'w') as fnull:
-        subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
+            # Suppress output by redirecting to devnull
+            with open(os.devnull, 'w') as fnull:
+                subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
+        except Exception as e:
+            # If all methods fail, instruct the user to open the URL manually
+            print(f"Unable to automatically open the Phase Console in your default web browser")
 
 
 def get_user_agent():
@@ -347,7 +357,7 @@ def get_user_agent():
 
     # Get username and hostname
     try:
-        username = os.getlogin()
+        username = getpass.getuser()
         hostname = platform.node()
         user_host_string = f"{username}@{hostname}"
         details.append(user_host_string)
