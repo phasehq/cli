@@ -100,7 +100,7 @@ def main ():
         secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        secrets_list_parser.add_argument('--path', type=str, help="The path in which you want to list secrets. Default is '/'")
+        secrets_list_parser.add_argument('--path', type=str, default='/', help="The path in which you want to list secrets. Default is '/'")
         secrets_list_parser.add_argument('--tags', type=str, help=tag_help)
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
@@ -117,6 +117,7 @@ def main ():
         secrets_get_parser.add_argument('--env', type=str, help=env_help)
         secrets_get_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
         secrets_get_parser.add_argument('--tags', type=str, help=tag_help)
+        secrets_get_parser.add_argument('--path', type=str, default='/', required=False, help="The path from which to fetch the secret from. Default is '/'")
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
@@ -132,7 +133,7 @@ def main ():
         )
         secrets_create_parser.add_argument('--env', type=str, help=env_help)
         secrets_create_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        secrets_create_parser.add_argument('--path', type=str, help="The path in which you want to create a secret. You can create a directory by simply specifying a path like so: --path /folder/SECRET Default is '/'")
+        secrets_create_parser.add_argument('--path', type=str, default='/', help="The path in which you want to create a secret. You can create a directory by simply specifying a path like so: --path /folder/SECRET. Default is '/'")
         # Adding the --random argument
         random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
         secrets_create_parser.add_argument('--random', 
@@ -163,21 +164,36 @@ def main ():
         # Adding the --random argument
         random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
         secrets_update_parser.add_argument('--random', 
-                                        type=str, 
-                                        choices=random_types, 
-                                        help='🎲 Specify the type of random value to generate. Available types: ' + ', '.join(random_types) + '. Example usage: --random hex')
+                                            type=str, 
+                                            choices=random_types, 
+                                            help='🎲 Specify the type of random value to generate. Available types: ' + ', '.join(random_types) + '. Example usage: --random hex')
 
         # Adding the --length argument
         secrets_update_parser.add_argument('--length', 
-                                        type=int, 
-                                        default=32, 
-                                        help='🔢 Specify the length of the random value. Applicable for types other than key128 and key256. Default is 32. Example usage: --length 16')
+                                            type=int, 
+                                            default=32, 
+                                            help='🔢 Specify the length of the random value. Applicable for types other than key128 and key256. Default is 32. Example usage: --length 16')
+
+        # Adding the --path and --updated-path arguments for path management
+        secrets_update_parser.add_argument('--path', 
+                                            type=str, 
+                                            default='/', 
+                                            help='The current path of the secret to update. Defaults to the root path \'/\'. Example usage: --path "/folder/subfolder"')
+        secrets_update_parser.add_argument('--updated-path', 
+                                            type=str, 
+                                            help='The new path for the secret, if changing its location. If not provided, the secret\'s path is not updated. Example usage: --updated-path "/folder/subfolder"')
 
         # Secrets delete command
-        secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️` Delete a secret')
+        secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️ Delete a secret')
         secrets_delete_parser.add_argument('keys', nargs='*', help='Keys to be deleted')
         secrets_delete_parser.add_argument('--env', type=str, help=env_help)
         secrets_delete_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+
+        # Adding the --path argument
+        secrets_delete_parser.add_argument('--path', 
+                                            type=str, 
+                                            default='/', 
+                                            help='The path within which to delete the secrets. If specified, only deletes secrets within this path. Defaults to the root path \'/\'. Example usage: --path "/myfolder/subfolder"')
 
         # Secrets import command
         secrets_import_parser = secrets_subparsers.add_parser('import', help='📩 Import secrets from a .env file')
@@ -244,7 +260,7 @@ def main ():
             if args.secrets_command == 'list':
                 phase_list_secrets(args.show, env_name=args.env, phase_app=args.app, path=args.path, tags=args.tags)
             elif args.secrets_command == 'get':
-                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, tags=args.tags)  
+                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, path=args.path, tags=args.tags)  
             elif args.secrets_command == 'create':
                 phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, path=args.path, random_type=args.random, random_length=args.length)
             elif args.secrets_command == 'delete':
@@ -254,7 +270,7 @@ def main ():
             elif args.secrets_command == 'export':
                 phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, tags=args.tags, format=args.format)
             elif args.secrets_command == 'update':
-                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, random_type=args.random, random_length=args.length)
+                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
                 parser.print_help()
