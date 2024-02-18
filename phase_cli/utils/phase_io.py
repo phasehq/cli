@@ -138,8 +138,8 @@ class Phase:
                 "keyDigest": key_digest,
                 "value": encrypted_value,
                 "path": path,
-                # "tags": [], # TODO: Implement tags and comments creation
-                # "comment": ""
+                "tags": [], # TODO: Implement tags and comments creation
+                "comment": ""
             }
             secrets.append(secret)
 
