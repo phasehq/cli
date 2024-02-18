@@ -10,7 +10,7 @@ from rich.spinner import Spinner
 
 console = Console()
 
-def phase_run_inject(command, env_name=None, phase_app=None, tags=None):
+def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: str = '/'):
     """
     Executes a shell command with environment variables set to the secrets 
     fetched from Phase for the specified environment, resolving references as needed.
@@ -28,7 +28,7 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None):
         status.start()
 
         # Fetch all secrets without filtering by tags
-        all_secrets = phase.get(env_name=env_name, app_name=phase_app)
+        all_secrets = phase.get(env_name=env_name, app_name=phase_app, path=path)
         secrets_dict = {secret["key"]: secret["value"] for secret in all_secrets}
 
         # Resolve references in all secrets
