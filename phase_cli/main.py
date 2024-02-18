@@ -89,6 +89,7 @@ def main ():
         run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run. Ex. phase run yarn dev')
         run_parser.add_argument('--env', type=str, help=env_help)
         run_parser.add_argument('--app', type=str, help='Name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        run_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your application. Default is '/'")
         run_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Secrets command
@@ -239,7 +240,7 @@ def main ():
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
-            phase_run_inject(command, env_name=args.env, phase_app=args.app, tags=args.tags)
+            phase_run_inject(command, env_name=args.env, phase_app=args.app, path=args.path, tags=args.tags)
         elif args.command == 'console':
             phase_open_web()
         elif args.command == 'update':
