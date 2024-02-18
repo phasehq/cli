@@ -10,7 +10,7 @@ from rich.console import Console
 
 console = Console()
 
-def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv'):
+def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv', path: str = '/'):
     """
     Exports secrets from the specified environment with support for multiple export formats. 
     This function fetches secrets from Phase, resolves any cross-environment or local secret references, and then outputs them in the chosen format.
@@ -49,7 +49,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
 
     try:
         # Fetch all secrets
-        all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags)
+        all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
         all_secrets_dict = {secret["key"]: secret["value"] for secret in all_secrets}
 
         # Resolve references
