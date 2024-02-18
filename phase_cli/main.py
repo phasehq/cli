@@ -201,12 +201,14 @@ def main ():
         secrets_import_parser.add_argument('env_file', type=str, help='The .env file to import')
         secrets_import_parser.add_argument('--env', type=str, help=env_help)
         secrets_import_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        secrets_import_parser.add_argument('--path', type=str, default='/', help="The path to which you want to import secret(s). Default is '/'")
 
         # Secrets export command
         secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets in a dotenv format')
         secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
         secrets_export_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        secrets_export_parser.add_argument('--path', type=str, default='/', help="The path from which you want to export secret(s). Default is '/'")
         secrets_export_parser.add_argument('--format', type=str, default='dotenv', choices=['dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 'java_properties'], help='Specifies the export format. Supported formats: dotenv (default), json, csv, yaml, xml, toml, hcl, ini, java_properties.')
         secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
 
@@ -265,11 +267,11 @@ def main ():
             elif args.secrets_command == 'create':
                 phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, path=args.path, random_type=args.random, random_length=args.length)
             elif args.secrets_command == 'delete':
-                phase_secrets_delete(args.keys, env_name=args.env, phase_app=args.app)  
+                phase_secrets_delete(args.keys, env_name=args.env, path=args.path, phase_app=args.app)  
             elif args.secrets_command == 'import':
-                phase_secrets_env_import(args.env_file, env_name=args.env, phase_app=args.app)
+                phase_secrets_env_import(args.env_file, env_name=args.env, path=args.path, phase_app=args.app)
             elif args.secrets_command == 'export':
-                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, tags=args.tags, format=args.format)
+                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, path=args.path, tags=args.tags, format=args.format)
             elif args.secrets_command == 'update':
                 phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length)
             else:
