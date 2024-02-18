@@ -221,16 +221,17 @@ class Phase:
         return results
 
 
-    def update(self, env_name: str, key: str, value: str, app_name: str = None, path: str = None) -> str:
+    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '/', destination_path: str = None) -> str:
         """
-        Update a secret in Phase KMS based on key and environment, with optional path support.
+        Update a secret in Phase KMS based on key and environment, with support for source and destination paths.
         
         Args:
             env_name (str): The name (or partial name) of the desired environment.
             key (str): The key for which to update the secret value.
             value (str): The new value for the secret.
             app_name (str, optional): The name of the desired application.
-            path (str, optional): The new path for the secret, if updating its location.
+            source_path (str, optional): The current path of the secret. Defaults to root path '/'.
+            destination_path (str, optional): The new path for the secret, if changing its location. If not provided, the path is not updated.
                 
         Returns:
             str: A message indicating the outcome of the update operation.
@@ -247,7 +248,8 @@ class Phase:
         if environment_key is None:
             raise ValueError(f"No environment found with id: {env_id}")
 
-        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host)
+        # Fetch secrets from the specified source path
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, path=source_path)
         secrets_data = secrets_response.json()
 
         wrapped_seed = environment_key.get("wrapped_seed")
@@ -255,36 +257,29 @@ class Phase:
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
-        matching_secret = None
-        for secret in secrets_data:
-            decrypted_key = CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key)
-            if decrypted_key == key:
-                matching_secret = secret
-                break
-
+        matching_secret = next((secret for secret in secrets_data if CryptoUtils.decrypt_asymmetric(secret["key"], env_private_key, public_key) == key), None)
         if not matching_secret:
-            return f"Key '{key}' doesn't exist."
+            return f"Key '{key}' doesn't exist in path '{source_path}'."
 
-        encrypted_key = CryptoUtils.encrypt_asymmetric(key, public_key, env_private_key)
-        encrypted_value = CryptoUtils.encrypt_asymmetric(value, public_key, env_private_key)
+        encrypted_key = CryptoUtils.encrypt_asymmetric(key, public_key)
+        encrypted_value = CryptoUtils.encrypt_asymmetric(value, public_key)
         
         wrapped_salt = environment_key.get("wrapped_salt")
         decrypted_salt = self.decrypt(wrapped_salt)
         key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
 
-        # Initialize the payload with mandatory fields
         secret_update_payload = {
             "id": matching_secret["id"],
             "key": encrypted_key,
             "keyDigest": key_digest,
             "value": encrypted_value,
-            #"tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
-            #"comment": matching_secret.get("comment", "")
+            "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
+            "comment": matching_secret.get("comment", "")
         }
 
-        # Conditionally add the path to the payload if provided
-        if path is not None:
-            secret_update_payload["path"] = path
+        # Update the path in the payload if a destination path is provided
+        if destination_path:
+            secret_update_payload["path"] = destination_path
 
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
