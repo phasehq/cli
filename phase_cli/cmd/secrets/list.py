@@ -30,9 +30,9 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None, tags=None, pat
         # Render the table
         render_tree_with_tables(data=secrets_data, show=show, console=console)
 
+        print ("🔬 To view a secret, use: phase secrets get <key>")
         if not show:
-            print("🥽 To uncover the secrets, use: phase secrets list --show")
-            print ("🔬 To view a secret, use: phase secrets get <key>\n")
+            print("🥽 To uncover the secrets, use: phase secrets list --show\n")
 
     except ValueError as e:
         console.log(f"Error: {e}")
