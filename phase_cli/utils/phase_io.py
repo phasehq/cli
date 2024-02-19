@@ -178,13 +178,15 @@ class Phase:
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
+        # If secret(s) are being fetched on '/' path then don't pass any path to fetch_phase_secrets
+        params = {"path": path} if path != '/' else {}
         if keys and len(keys) == 1:
             wrapped_salt = environment_key.get("wrapped_salt")
             decrypted_salt = self.decrypt(wrapped_salt)
             key_digest = CryptoUtils.blake2b_digest(keys[0], decrypted_salt)
-            secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, key_digest=key_digest, path=path)
-        else:
-            secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, path=path)
+            params["key_digest"] = key_digest
+
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, **params)
 
         secrets_data = secrets_response.json()
 
