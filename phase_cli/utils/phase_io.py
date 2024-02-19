@@ -118,7 +118,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
@@ -167,7 +167,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
@@ -213,7 +213,9 @@ class Phase:
                 "overridden": use_override,
                 "tags": secret.get("tags", []),
                 "comment": decrypted_comment,
-                "path": secret.get("path", "/")  # Include the path in the result
+                "path": secret.get("path", "/"),
+                "application": app_name,
+                "environment": env_name 
             }
 
             if not keys or decrypted_key in keys:
@@ -243,7 +245,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
@@ -309,7 +311,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_id, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
