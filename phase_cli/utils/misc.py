@@ -5,8 +5,10 @@ import webbrowser
 import getpass
 import json
 from rich.table import Table
+from rich.tree import Tree
 from rich.console import Console
 from rich import box
+from rich.box import ROUNDED
 from urllib.parse import urlparse
 from typing import Union, List
 from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
@@ -79,52 +81,58 @@ def tokenize(value):
     return tokens
 
 
-def render_table(data, show=False):
+def render_tree_with_tables(data, show, console):
     """
-    Render a table of key-value pairs with Rich library, using adjusted column widths.
-    Key column is adjusted based on content length, with more width allocated to the value column.
+    Organize secrets by path and render a table for each path within a tree structure,
+    including personal secret indicators, cross-environment, and local environment secret references.
+    Utilizes censoring for secret values based on the 'show' parameter.
 
     Args:
-        data: List of dictionaries containing keys, values, overridden status, tags, and comments.
+        data: List of dictionaries containing keys, values, paths, overridden status, tags, and comments.
         show: Whether to show the values or censor them.
+        console: Instance of rich.console.Console for rendering.
     """
+    root_tree = Tree("📁 Secrets")
 
-    console = Console()
-    table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
-
-    # Calculate the max length of the key column
-    max_key_length = max([len(item.get("key", "")) + 4 + 2 * bool(item.get("tags")) + 2 * bool(item.get("comment")) for item in data], default=20)
-    key_width = min(max_key_length, 40)  # Limiting max width to 40 for better readability
-
-    terminal_width = get_terminal_width()
-    value_width = max(terminal_width - key_width - 4, 20)  # -4 for separator and padding
-
-    table.add_column("KEY 🗝️", width=key_width, no_wrap=True)
-    table.add_column("VALUE ✨", width=value_width, no_wrap=False)
-
+   # Organize secrets by path
+    paths = {}
     for item in data:
-        key = item.get("key")
-        value = item.get("value")
-        tags = " 🏷️" if item.get("tags") else ""
-        comment = " 💬" if item.get("comment") else ""
+        path = item.get("path", "/")
+        if path not in paths:
+            paths[path] = []
+        paths[path].append(item)
 
-        # Append emojis for tags and comments
-        key += f"{tags}{comment}{' ' * 4}"  # Ensure 4 spaces after the key and emojis
+    for path, secrets in sorted(paths.items()):
+        path_node = root_tree.add(f"📁 {path}")
+        table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
 
-        # Set icon based on detected references
-        icon = '⛓️ ' if any(cross_env_pattern.match(token) for token in tokenize(value)) else ''
-        icon += '🔗 ' if any(local_ref_pattern.match(token) for token in tokenize(value)) else ''
+        max_key_length = max([len(item.get("key", "")) + 4 + 2 * bool(item.get("tags")) + 2 * bool(item.get("comment")) for item in secrets], default=20)
+        key_width = min(max_key_length, 40)
+        value_width = max(get_terminal_width() - key_width - 4, 20)
 
-        # Display personal secret indicator
-        personal_indicator = '🔏 ' if item.get("overridden", False) else ''
+        table.add_column("KEY 🗝️", width=key_width, no_wrap=True)
+        table.add_column("VALUE ✨", width=value_width, overflow="fold")
 
-        # Censor value if not showing, calculate max length based on value column width
-        censored_value_max_length = value_width - len(icon) - len(personal_indicator)
-        censored_value = censor_secret(value, censored_value_max_length) if not show else value
+        for secret in secrets:
+            key = secret.get("key")
+            value = secret.get("value", "")
+            tags = " 🏷️" if secret.get("tags") else ""
+            comment = " 💬" if secret.get("comment") else ""
+            key_display = f"{key}{tags}{comment}"
 
-        table.add_row(key, f"{icon}{personal_indicator}{censored_value}")
+            icon = '⛓️ ' if cross_env_pattern.search(value) else ''
+            icon += '🔗 ' if local_ref_pattern.search(value) else ''
 
-    console.print(table)
+            personal_indicator = '🔏 ' if secret.get("overridden", False) else ''
+
+            censored_value = censor_secret(value, value_width - len(icon) - len(personal_indicator)) if not show else value
+            value_display = f"{icon}{personal_indicator}{censored_value}"
+
+            table.add_row(key_display, value_display)
+
+        path_node.add(table)
+
+    console.print(root_tree)
 
 
 def validate_url(url):
