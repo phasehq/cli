@@ -84,17 +84,25 @@ def tokenize(value):
 def render_tree_with_tables(data, show, console):
     """
     Organize secrets by path and render a table for each path within a tree structure,
-    including personal secret indicators, cross-environment, and local environment secret references.
+    including application name, environment name, personal secret indicators,
+    cross-environment, and local environment secret references.
     Utilizes censoring for secret values based on the 'show' parameter.
 
     Args:
-        data: List of dictionaries containing keys, values, paths, overridden status, tags, and comments.
+        data: List of dictionaries containing keys, values, paths, overridden status, tags, comments, application, and environment.
         show: Whether to show the values or censor them.
         console: Instance of rich.console.Console for rendering.
     """
-    root_tree = Tree("📁 Secrets")
+    if not data:
+        console.print("No secrets to display.")
+        return
 
-   # Organize secrets by path
+    # Extract application and environment names from the first secret
+    application_name = data[0]['application']
+    environment_name = data[0]['environment']
+    root_tree = Tree(f"🔮 Secrets for Application: [bold cyan]{application_name}[/], Environment: [bold green]{environment_name}[/]")
+
+    # Organize secrets by path
     paths = {}
     for item in data:
         path = item.get("path", "/")
@@ -102,37 +110,58 @@ def render_tree_with_tables(data, show, console):
             paths[path] = []
         paths[path].append(item)
 
+    # Set a reasonable minimum width for the KEY column
+    min_key_width = 15
+
     for path, secrets in sorted(paths.items()):
-        path_node = root_tree.add(f"📁 {path}")
+        # Display the path and the number of secrets it contains
+        path_node = root_tree.add(f"📁 Path: {path} - [bold magenta]{len(secrets)} Secrets[/]")
         table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
 
-        max_key_length = max([len(item.get("key", "")) + 4 + 2 * bool(item.get("tags")) + 2 * bool(item.get("comment")) for item in secrets], default=20)
-        key_width = min(max_key_length, 40)
-        value_width = max(get_terminal_width() - key_width - 4, 20)
+        # Calculate dynamic widths based on the secrets of the current path
+        max_key_length = max([len(secret.get("key", "")) for secret in secrets], default=min_key_width)
+        key_width = max(min_key_width, min(max_key_length + 4, 40))
+        value_width = max(console.width - key_width - 4, 20)
 
         table.add_column("KEY 🗝️", width=key_width, no_wrap=True)
         table.add_column("VALUE ✨", width=value_width, overflow="fold")
 
         for secret in secrets:
-            key = secret.get("key")
-            value = secret.get("value", "")
-            tags = " 🏷️" if secret.get("tags") else ""
-            comment = " 💬" if secret.get("comment") else ""
-            key_display = f"{key}{tags}{comment}"
-
-            icon = '⛓️ ' if cross_env_pattern.search(value) else ''
-            icon += '🔗 ' if local_ref_pattern.search(value) else ''
-
-            personal_indicator = '🔏 ' if secret.get("overridden", False) else ''
-
-            censored_value = censor_secret(value, value_width - len(icon) - len(personal_indicator)) if not show else value
-            value_display = f"{icon}{personal_indicator}{censored_value}"
-
+            key_display, value_display = format_secret_row(secret, value_width, show)
             table.add_row(key_display, value_display)
 
         path_node.add(table)
 
     console.print(root_tree)
+
+
+def format_secret_row(secret, value_width, show):
+    """
+    Format the row for a secret to be displayed in the table.
+
+    Args:
+        secret: The secret data dictionary.
+        value_width: The calculated width for the value column.
+        show: Whether to show the values or censor them.
+
+    Returns:
+        A tuple containing the formatted key and value strings.
+    """
+    key = secret.get("key")
+    value = secret.get("value", "")
+    tags = " 🏷️" if secret.get("tags") else ""
+    comment = " 💬" if secret.get("comment") else ""
+    key_display = f"{key}{tags}{comment}"
+
+    icon = '⛓️ ' if cross_env_pattern.search(value) else ''
+    icon += '🔗 ' if local_ref_pattern.search(value) else ''
+
+    personal_indicator = '🔏 ' if secret.get("overridden", False) else ''
+
+    censored_value = censor_secret(value, value_width - len(icon) - len(personal_indicator)) if not show else value
+    value_display = f"{icon}{personal_indicator}{censored_value}"
+
+    return key_display, value_display
 
 
 def validate_url(url):
@@ -221,7 +250,7 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
 
 def phase_get_context(user_data, app_name=None, env_name=None):
     """
-    Get the context (ID and publicKey) for a specified application and environment or the default application and environment.
+    Get the context (ID, name, and publicKey) for a specified application and environment or the default application and environment.
 
     Parameters:
     - user_data (dict): The user data from the API response.
@@ -229,7 +258,7 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     - env_name (str, optional): The name (or partial name) of the desired environment.
 
     Returns:
-    - tuple: A tuple containing the application's ID, environment's ID, and publicKey.
+    - tuple: A tuple containing the application's name, application's ID, environment's name, environment's ID, and publicKey.
 
     Raises:
     - ValueError: If no matching application or environment is found.
@@ -270,8 +299,8 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         if not environment:
             raise ValueError(f"⚠️  Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
 
-        return application["id"], environment["environment"]["id"], environment["identity_key"]
-    
+        # Return application name, application ID, environment name, environment ID, and public key
+        return (application["name"], application["id"], environment["environment"]["name"], environment["environment"]["id"], environment["identity_key"])
     except StopIteration:
         raise ValueError("🔍 Application or environment not found.")
 
