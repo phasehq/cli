@@ -26,6 +26,8 @@ phaseASCii = f"""
              @@@   
 """
 
+SECRET_REF_REGEX = re.compile(r'\$\{([^}]+)\}')
+
 # Define paths to Phase configs
 PHASE_ENV_CONFIG = '.phase.json' # Holds project and environment contexts in users repo, unique to each application.
 
