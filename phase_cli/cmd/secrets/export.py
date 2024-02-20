@@ -5,7 +5,7 @@ import csv
 import yaml
 from phase_cli.utils.phase_io import Phase
 import xml.sax.saxutils as saxutils
-from phase_cli.utils.const import cross_env_pattern, local_ref_pattern
+from phase_cli.utils.misc import resolve_all_secrets
 from rich.console import Console
 
 console = Console()
@@ -52,11 +52,15 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
         all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
         all_secrets_dict = {secret["key"]: secret["value"] for secret in all_secrets}
 
-        # Resolve references
-        resolved_secrets = resolve_references(all_secrets_dict, phase, env_name, phase_app)
+        # Resolve references in all secrets using the centralized function
+        for key, value in all_secrets_dict.items():
+            all_secrets_dict[key] = resolve_all_secrets(value, env_name, phase, env_name, phase_app)
 
         # Filter secrets if specific keys are requested
-        secrets_dict = {key: resolved_secrets[key] for key in (keys or resolved_secrets)}
+        if keys:
+            secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
+        else:
+            secrets_dict = all_secrets_dict
 
         # Export based on selected format
         if format == 'json':
@@ -80,44 +84,6 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
 
     except ValueError as e:
         console.log(f"Error: {e}")
-
-def resolve_references(secrets_dict, phase, env_name, phase_app):
-    """
-    Resolve references in secret values.
-    """
-    for key, value in secrets_dict.items():
-        # Track found references to avoid duplicate warnings
-        found_references = set()
-
-        # Resolve cross-environment references
-        cross_env_matches = re.findall(cross_env_pattern, value)
-        for ref_env, ref_key in cross_env_matches:
-            full_ref = f"{ref_env}.{ref_key}"
-            found_references.add(full_ref)
-
-            try:
-                ref_secrets = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)
-                if ref_secrets:
-                    ref_secret = ref_secrets[0]
-                    value = value.replace(f"${{{full_ref}}}", ref_secret['value'])
-                else:
-                    print(f"# Warning: Secret '{ref_key}' not found in environment '{ref_env}' for key '{key}'.")
-            except ValueError as e:
-                print(f"# Error: Issue with fetching secret '{ref_key}' from environment '{ref_env}' for key '{key}'. {e}")
-
-        # Resolve local references
-        local_ref_matches = re.findall(local_ref_pattern, value)
-        for ref_key in local_ref_matches:
-            if ref_key not in found_references:
-                if ref_key in secrets_dict:
-                    ref_value = secrets_dict[ref_key]
-                    value = value.replace(f"${{{ref_key}}}", ref_value)
-                else:
-                    print(f"# Warning: Local reference '{ref_key}' not found for key '{key}'.")
-
-        secrets_dict[key] = value
-
-    return secrets_dict
 
 
 def export_json(secrets_dict):
