@@ -43,6 +43,10 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     # Generate a random value or get value from user
     if random_type:
+        # Check if length is specified for key128 or key256
+        if random_type in ['key128', 'key256'] and random_length != 32:
+            print("⚠️\u200A Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
+
         try:
             value = generate_random_secret(random_type, random_length)
         except ValueError as e:

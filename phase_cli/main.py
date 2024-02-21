@@ -93,7 +93,7 @@ def main ():
         run_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Secrets command
-        secrets_parser = subparsers.add_parser('secrets', help='🗝️` Manage your secrets')
+        secrets_parser = subparsers.add_parser('secrets', help='🗝️\u200A Manage your secrets')
         secrets_subparsers = secrets_parser.add_subparsers(dest='secrets_command', required=True)
 
         # Secrets list command
@@ -185,7 +185,7 @@ def main ():
                                             help='The new path for the secret, if changing its location. If not provided, the secret\'s path is not updated. Example usage: --updated-path "/folder/subfolder"')
 
         # Secrets delete command
-        secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️ Delete a secret')
+        secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️\u200A Delete a secret')
         secrets_delete_parser.add_argument('keys', nargs='*', help='Keys to be deleted')
         secrets_delete_parser.add_argument('--env', type=str, help=env_help)
         secrets_delete_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
@@ -227,7 +227,7 @@ def main ():
         keyring_parser = users_subparsers.add_parser('keyring', help='🔐 Display information about the Phase keyring')
 
         # Web command
-        web_parser = subparsers.add_parser('console', help='🖥️` Open the Phase Console in your browser')
+        web_parser = subparsers.add_parser('console', help='🖥️\u200A Open the Phase Console in your browser')
 
         # Check if the operating system is Linux before adding the update command
         if sys.platform == "linux":
