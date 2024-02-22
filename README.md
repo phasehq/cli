@@ -2,7 +2,7 @@
 
 ```
 λ phase
-Securely manage and sync environment variables with Phase.
+Securely manage application secrets and environment variables with Phase.
 
                      @@@
               @@@@@@@@@@

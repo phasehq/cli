@@ -3,7 +3,7 @@ import re
 __version__ = "1.12.0"
 __ph_version__ = "v1"
 
-description = "Securely manage and sync environment variables with Phase."
+description = "Securely manage application secrets and environment variables with Phase."
 
 phaseASCii = f"""
                      @@@             
