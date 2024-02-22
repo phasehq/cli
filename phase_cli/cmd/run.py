@@ -3,7 +3,7 @@ import os
 import subprocess
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import tag_matches, normalize_tag
-from phase_cli.utils.misc import resolve_all_secrets
+from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
 from rich.spinner import Spinner
 

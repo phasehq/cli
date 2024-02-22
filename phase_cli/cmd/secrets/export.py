@@ -5,7 +5,7 @@ import csv
 import yaml
 from phase_cli.utils.phase_io import Phase
 import xml.sax.saxutils as saxutils
-from phase_cli.utils.misc import resolve_all_secrets
+from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
 
 console = Console()
