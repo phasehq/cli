@@ -238,7 +238,7 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
     config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
     
     if not os.path.exists(config_file_path):
-        raise ValueError("No config found in '~/.phase/secrets/config.json'. Please login with phase auth")
+        raise ValueError("Please login with phase auth or supply a PHASE_SERVICE_TOKEN as an environment variable")
     
     with open(config_file_path, 'r') as f:
         config_data = json.load(f)
