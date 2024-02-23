@@ -28,17 +28,24 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
 
         # Fetch all secrets without filtering by tags
         all_secrets = phase.get(env_name=env_name, app_name=phase_app, path=path)
-        secrets_dict = {secret["key"]: secret["value"] for secret in all_secrets}
+        
+        # Initialize an empty dictionary for the resolved secrets
+        secrets_dict = {}
 
-        # Resolve references in all secrets
-        for key, value in secrets_dict.items():
-            secrets_dict[key] = resolve_all_secrets(value, env_name, phase, env_name, phase_app)
+        # Attempt to resolve references in all secrets, logging warnings for any errors
+        for secret in all_secrets:
+            try:
+                current_env_name = secret.get('environment', env_name)
+                resolved_value = resolve_all_secrets(value=secret["value"], current_env_name=current_env_name, phase=phase)
+                secrets_dict[secret["key"]] = resolved_value
+            except ValueError as e:
+                console.log(f"Warning: {e}")
 
         # Normalize and filter secrets by tags if tags are provided
         if tags:
             user_tags = [normalize_tag(tag) for tag in tags.split(',')]
             tagged_secrets = [secret for secret in all_secrets if any(tag_matches(secret.get("tags", []), user_tag) for user_tag in user_tags)]
-            secrets_dict = {secret["key"]: secrets_dict[secret["key"]] for secret in tagged_secrets}
+            secrets_dict = {secret["key"]: secrets_dict.get(secret["key"], "") for secret in tagged_secrets}
 
         new_env = os.environ.copy()
         new_env.update(secrets_dict)
