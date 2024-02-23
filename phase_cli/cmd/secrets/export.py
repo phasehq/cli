@@ -10,6 +10,9 @@ from rich.console import Console
 
 console = Console()
 
+# Create a console object for logging warnings and errors to stderr
+error_console = Console(stderr=True)
+
 def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv', path: str = '/'):
     """
     Exports secrets from the specified environment with support for multiple export formats. 
@@ -50,11 +53,25 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
     try:
         # Fetch all secrets
         all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
-        all_secrets_dict = {secret["key"]: secret["value"] for secret in all_secrets}
+        resolved_secrets = []
 
-        # Resolve references in all secrets using the centralized function
-        for key, value in all_secrets_dict.items():
-            all_secrets_dict[key] = resolve_all_secrets(value, env_name, phase, env_name, phase_app)
+        for secret in all_secrets:
+            try:
+                # Ensure we use the correct environment name for each secret
+                current_env_name = secret['environment']
+
+                # Attempt to resolve secret references in the value
+                resolved_value = resolve_all_secrets(value=secret["value"], current_env_name=current_env_name, phase=phase)
+                resolved_secrets.append({
+                    **secret,
+                    "value": resolved_value  # Replace original value with resolved value
+                })
+            except ValueError as e:
+                # Print warning to stderr via the error_console
+                error_console.log(f"Warning: {e}")
+
+        # Create a dictionary with keys and resolved values
+        all_secrets_dict = {secret["key"]: secret["value"] for secret in resolved_secrets}
 
         # Filter secrets if specific keys are requested
         if keys:
