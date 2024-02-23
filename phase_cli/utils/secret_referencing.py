@@ -1,96 +1,125 @@
+import re
+from typing import Dict, List
 from phase_cli.utils.const import SECRET_REF_REGEX
 
+"""
+    Secret Referencing Syntax:
 
-def resolve_secret_reference(ref, current_env_name, phase, env_name=None, phase_app=None):
+    This documentation explains the syntax used for referencing secrets within the configuration. 
+    Secrets can be referenced both locally (within the same environment) and across different environments, 
+    with or without specifying a path.
+
+    Syntax Patterns:
+
+    1. Local Reference (Root Path):
+        Syntax: `${KEY}`
+        - Environment: Same as the current environment.
+        - Path: Root path (`/`).
+        - Secret Key: `KEY`
+        - Description: References a secret named `KEY` in the root path of the current environment.
+
+    2. Cross-Environment Reference (Root Path):
+        Syntax: `${staging.DEBUG}`
+        - Environment: Different environment (e.g., `dev`).
+        - Path: Root path (`/`) of the specified environment.
+        - Secret Key: `DEBUG`
+        - Description: References a secret named `DEBUG` in the root path of the `staging` environment.
+
+    3. Cross-Environment Reference (Specific Path):
+        Syntax: `${prod./frontend/SECRET_KEY}`
+        - Environment: Different environment (e.g., `prod`).
+        - Path: Specifies a path within the environment (`/frontend/`).
+        - Secret Key: `SECRET_KEY`
+        - Description: References a secret named `SECRET_KEY` located at `/frontend/` in the `prod` environment.
+
+    4. Local Reference (Specified Path):
+        Syntax: `${/backend/payments/STRIPE_KEY}`
+        - Environment: Same as the current environment.
+        - Path: Specifies a path within the environment (`/backend/payments/`).
+        - Secret Key: `STRIPE_KEY`
+        - Description: References a secret named `STRIPE_KEY` located at `/backend/payments/` in the current environment.
+
+    Note:
+    The syntax allows for flexible secret management, enabling both straightforward local references and more complex cross-environment references.
+"""
+
+def resolve_secret_reference(ref: str, current_env_name: str, phase: 'Phase') -> str:
     """
-    Parses and resolves a secret reference within the given or current environment and path. This function 
-    supports resolving both local and cross-environment secret references, including those that specify a path.
-
+    Resolves a single secret reference to its actual value by fetching it from the specified environment.
+    
+    The function supports both local and cross-environment secret references, allowing for flexible secret management.
+    Local references are identified by the absence of a dot '.' in the reference string, implying the current environment.
+    Cross-environment references include an environment name, separated by a dot from the rest of the path.
+    
     Args:
-        ref (str): The secret reference to be resolved. It can be in the form of 'KEY', 'env.KEY', or 'env./path/to/KEY'.
-        current_env_name (str): The current environment name, used when the reference does not specify an environment.
-        phase (Phase): An instance of the Phase class, used to fetch the secret value.
-        env_name (str, optional): The environment name from which to fetch the secret. If not provided, the environment
-                                  part of the `ref` or `current_env_name` is used.
-        phase_app (str, optional): The Phase application name. Defaults to None. Currently not used but can be
-                                   implemented for application-specific secret fetching logic.
-
+        ref (str): The secret reference string, which could be a local or cross-environment reference.
+        current_env_name (str): The current environment name, used for resolving local references.
+        phase ('Phase'): An instance of the Phase class to fetch secrets.
+        
     Returns:
         str: The resolved secret value.
-
-    Design Decisions:
-    - **Default Path Handling:** Initially, the path defaults to root ('/') if not explicitly specified in the reference.
-      This design choice simplifies handling cases where secrets are stored at the root level.
-
-    - **Environment and Path Parsing:** The function splits the reference into the environment and the rest (path and key),
-      allowing for flexible reference formats. This design supports both local references (without environment) and
-      cross-environment references (with environment and optional path).
-
-    - **Path Formatting:** Ensures the path starts and ends with a slash ('/'), standardizing the path format for consistent
-      fetching. This adjustment is crucial for accurately constructing the API request, regardless of how the reference
-      was formatted by the user.
-
-    - **Error Handling:** If the secret cannot be fetched (not found or other errors), the function raises a ValueError
-      with detailed information. This explicit error handling aids in troubleshooting and ensures that unresolved references
-      are quickly identified and corrected.
-
-    - **Support for Local and Cross-Environment References:** By accommodating references that include environment names
-      and paths, the function provides flexibility in referencing secrets across different environments and paths, enhancing
-      the tool's usability in complex setups.
-    """
-    # Initial path defaults to root if not specified in the reference
-    path = '/'
-    
-    # Split reference into environment and the rest (which includes path and key)
-    if '.' in ref:
-        env_name, rest = ref.split('.', 1)
         
-        # Extract path and key name from the rest
-        path_key_split = rest.rsplit('/', 1)
-        if len(path_key_split) == 2:
-            path, key_name = path_key_split
-            # Adjust path to ensure it starts and ends with a slash
-            if not path.startswith('/'):
-                path = '/' + path
-            if not path.endswith('/'):
-                path += '/'
-        else:
-            # No path specified, use root, key is the remaining part
-            key_name = rest
+    Raises:
+        ValueError: If the current environment name is not provided, or the secret is not found.
+    """
+        
+    # Parse the reference to identify environment, path, and secret key.
+    if "." in ref:
+        # For cross-environment references, split by the first dot to get environment and the rest.
+        parts = ref.split(".", 1)
+        env_name, rest = parts[0], parts[1]
     else:
-        # Local reference: use the current environment, check for path
+        # For local references, use the current environment.
         env_name = current_env_name
-        if '/' in ref:
-            path, key_name = ref.rsplit('/', 1)
-            path += '/'  # Ensure path ends with a slash
-        else:
-            # No path specified, key is the reference itself
-            key_name = ref
+        rest = ref
 
-    # Fetch and return the secret value using the corrected path and environment
-    secret = phase.get(env_name=env_name, app_name=phase_app, path=path, keys=[key_name])
-    if secret:
-        return secret[0]['value']
+    # Determine the path and key name from the rest of the reference.
+    last_slash_index = rest.rfind("/")
+    if last_slash_index != -1:
+        path = rest[:last_slash_index]
+        key_name = rest[last_slash_index + 1:]
     else:
-        raise ValueError(f"Secret '{key_name}' not found in environment '{env_name}', path '{path}'.")
+        path = "/"
+        key_name = rest
+
+    # Attempt to fetch the secret from the specified environment and path.
+    secrets = phase.get(env_name=env_name, keys=[key_name], path=path)
+    for secret in secrets:
+        if secret["key"] == key_name:
+            # Return the secret value if found.
+            return secret["value"]
+    
+    # Raise an error if the secret is not found.
+    raise ValueError(f"Secret {key_name} not found in {env_name} environment at path {path}.")
 
 
-def resolve_all_secrets(value, current_env_name, phase, env_name=None, phase_app=None):
+def resolve_all_secrets(value: str, current_env_name: str, phase: 'Phase') -> str:
     """
-    Resolve all secret references in a given value.
-
+    Resolves all secret references within a given string to their actual values.
+    
+    This function is particularly useful for processing configuration strings or entire files that
+    may contain multiple secret references. It iterates through each reference found in the input string,
+    resolves it using `resolve_secret_reference`, and replaces the reference with the resolved value.
+    
     Args:
-        value (str): The string containing secret references.
-        current_env_name (str): The current environment name.
-        phase (Phase): An instance of the Phase class.
-        env_name (str, optional): The environment name. Defaults to None, meaning use current_env_name.
-        phase_app (str, optional): The Phase application name. Defaults to None.
-
+        value (str): The input string containing one or more secret references.
+        current_env_name (str): The current environment name for resolving local references.
+        phase ('Phase'): An instance of the Phase class to fetch secrets.
+        
     Returns:
-        str: The string with all secret references resolved.
+        str: The input string with all secret references resolved to their actual values.
+        
+    Raises:
+        ValueError: If the current environment name is not provided.
     """
-    matches = SECRET_REF_REGEX.findall(value)
-    for ref in matches:
-        resolved_value = resolve_secret_reference(ref, current_env_name, phase, env_name, phase_app)
-        value = value.replace(f"${{{ref}}}", resolved_value)
-    return value
+    
+    # Find all secret references in the input string.
+    refs = SECRET_REF_REGEX.findall(value)
+    resolved_value = value
+
+    # Resolve each found reference and replace it in the input string.
+    for ref in refs:
+        resolved_secret_value = resolve_secret_reference(ref, current_env_name, phase)
+        resolved_value = resolved_value.replace(f"${{{ref}}}", resolved_secret_value)
+    
+    return resolved_value
