@@ -87,6 +87,7 @@ def resolve_secret_reference(ref: str, current_env_name: str, phase: 'Phase') ->
     try:
         secrets = phase.get(env_name=env_name, keys=[key_name], path=path)
     except EnvironmentNotFoundException:
+        # Fallback to the current env if the named env cannot be resolved
         secrets = phase.get(env_name=current_env_name, keys=[key_name], path=path)
 
     
@@ -95,7 +96,7 @@ def resolve_secret_reference(ref: str, current_env_name: str, phase: 'Phase') ->
             # Return the secret value if found.
             return secret["value"]
     
-    # Return the secrety value as is if no reference could be resolved
+    # Return the secret value as is if no reference could be resolved
     return ref
     
     
