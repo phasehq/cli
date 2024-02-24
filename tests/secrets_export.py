@@ -31,9 +31,8 @@ secrets_dict = {
 
 @patch('phase_cli.cmd.secrets.export.Phase')
 def test_phase_secrets_env_export_specific_keys(mock_phase, capsys):
-    # Mocking phase.get to return all secrets
     mock_phase_instance = mock_phase.return_value
-    all_secrets = [{'key': k, 'value': v} for k, v in secrets_dict.items()]
+    all_secrets = [{'key': k, 'value': v, 'environment': 'development'} for k, v in secrets_dict.items()]
     mock_phase_instance.get.return_value = all_secrets
 
     # Call phase_secrets_env_export with specific keys
