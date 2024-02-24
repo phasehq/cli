@@ -1,5 +1,6 @@
 import re
 from typing import Dict, List
+from phase_cli.exceptions import EnvironmentNotFoundException
 from phase_cli.utils.const import SECRET_REF_REGEX
 
 """
@@ -83,14 +84,21 @@ def resolve_secret_reference(ref: str, current_env_name: str, phase: 'Phase') ->
         key_name = rest
 
     # Attempt to fetch the secret from the specified environment and path.
-    secrets = phase.get(env_name=env_name, keys=[key_name], path=path)
+    try:
+        secrets = phase.get(env_name=env_name, keys=[key_name], path=path)
+    except EnvironmentNotFoundException:
+        secrets = phase.get(env_name=current_env_name, keys=[key_name], path=path)
+
+    
     for secret in secrets:
         if secret["key"] == key_name:
             # Return the secret value if found.
             return secret["value"]
     
-    # Raise an error if the secret is not found.
-    raise ValueError(f"Secret {key_name} not found in {env_name} environment at path {path}.")
+    # Return the secrety value as is if no reference could be resolved
+    return ref
+    
+    
 
 
 def resolve_all_secrets(value: str, current_env_name: str, phase: 'Phase') -> str:
