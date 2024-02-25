@@ -1,27 +1,32 @@
 import os
 import re
-__version__ = "1.11.3"
+__version__ = "1.12.0"
 __ph_version__ = "v1"
 
-description = "Securely manage and sync environment variables with Phase."
+description = "Securely manage application secrets and environment variables with Phase."
 
 phaseASCii = f"""
-         ⢠⠔⠋⣳⣖⠚⣲⢖⠙⠳⡄                          
-        ⡴⠉⢀⡼⠃⢘⣞⠁⠙⡆ ⠘⡆                         
-      ⢀⡜⠁⢠⠞ ⢠⠞⠸⡆ ⠹⡄ ⠹⡄                        
-     ⢀⠞ ⢠⠏ ⣠⠏  ⢳  ⢳  ⢧                        
-    ⢠⠎ ⣠⠏ ⣰⠃   ⠈⣇ ⠘⡇ ⠘⡆                       
-   ⢠⠏ ⣰⠇ ⣰⠃     ⢺⡀ ⢹  ⢽                       
-  ⢠⠏ ⣰⠃ ⣰⠃       ⣇ ⠈⣇ ⠘⡇                      
- ⢠⠏ ⢰⠃ ⣰⠃        ⢸⡀ ⢹⡀ ⢹                      
-⢠⠏ ⢰⠃ ⣰⠃          ⣇ ⠈⣇ ⠈⡇                     
-⠛⠒⠚⠛⠒⠓⠚⠒⠒⠓⠒⠓⠚⠒⠓⠚⠒⠓⢻⡒⠒⢻⡒⠒⢻⡒⠒⠒⠒⠒⠒⠒⠒⠒⠒⣲⠒⠒⣲⠒⠒⡲    
-                   ⢧  ⢧ ⠈⣇        ⢠⠇ ⣰⠃ ⣰⠃    
-                   ⠘⡆ ⠘⡆ ⠸⡄      ⣠⠇ ⣰⠃ ⣴⠃     
-                    ⠹⡄ ⠹⡄ ⠹⡄    ⡴⠃⢀⡼⠁⢀⡼⠁      
-                     ⠙⣆ ⠙⣆ ⠹⣄ ⣠⠎⠁⣠⠞ ⡤⠏        
-                      ⠈⠳⢤⣈⣳⣤⣼⣹⢥⣰⣋⡥⡴⠊⠁         
+                     @@@             
+              @@@@@@@@@@     
+          @@@@@@@@@@@@@@@@
+       P@@@@@&@@@?&@@&@@@@@P
+     P@@@@#        @&@    @P@@@
+    &@@@#         *@&      #@@@&
+   &@@@5          &@?       5@@@&
+  Y@@@#          ^@@         #@@@J
+  #@@@7          B@5         7@@@#
+  #@@@?         .@@.         ?@@@#
+  @@@@&         5@G          &@@@7
+   #@@@B        @@^         #@@@B
+    B@@@@      .@#        7@@@@B
+     @@@@@@    &.@       P@@@@@7
+       @@@@@@@@@@@@@@@@@@@@@
+          @@@@@@@@@@@@@@@
+             @@@@@@@@
+             @@@   
 """
+
+SECRET_REF_REGEX = re.compile(r'\$\{([^}]+)\}')
 
 # Define paths to Phase configs
 PHASE_ENV_CONFIG = '.phase.json' # Holds project and environment contexts in users repo, unique to each application.

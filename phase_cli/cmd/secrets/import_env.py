@@ -1,9 +1,9 @@
 import sys
 from phase_cli.utils.phase_io import Phase
-from phase_cli.utils.misc import render_table, get_default_user_id, sanitize_value
+from phase_cli.utils.misc import get_default_user_id, sanitize_value
 from rich.console import Console
 
-def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
+def phase_secrets_env_import(env_file, env_name=None, phase_app=None, path: str = '/'):
     """
     Imports existing environment variables and secrets from a user's .env file.
 
@@ -37,7 +37,7 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None):
     
     try:
         # Encrypt and send secrets to the backend using the `create` method
-        response = phase.create(key_value_pairs=secrets, env_name=env_name, app_name=phase_app)
+        response = phase.create(key_value_pairs=secrets, env_name=env_name, app_name=phase_app, path=path)
         
         # Check the response status code
         if response.status_code == 200:

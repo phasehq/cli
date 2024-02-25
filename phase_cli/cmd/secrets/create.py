@@ -4,10 +4,12 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
+from typing import List, Tuple
+import requests
 
-def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None):
+def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None, path='/'):
     """
-    Creates a new secret, encrypts it, and sync it with the Phase.
+    Creates a new secret, encrypts it, and sync it with the Phase, with support for specifying a path.
 
     Args:
         key (str, optional): The key of the new secret. Defaults to None.
@@ -15,6 +17,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         phase_app (str, optional): The name of the Phase application. Defaults to None.
         random_type (str, optional): The type of random secret to generate (e.g., 'hex', 'alphanumeric'). Defaults to None.
         random_length (int, optional): The length of the random secret. Defaults to 32.
+        path (str, optional): The path under which to store the secrets. Defaults to the root path '/'.
     """
 
     # Initialize the Phase class
@@ -28,11 +31,11 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     # Check if the secret already exists
     try:
-        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app)
+        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, path=path)
         secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
         if secret_data:
-            optional_flags = f"--env {env_name} --app {phase_app}" if env_name or phase_app else ""
-            print(f"🗝️  Secret with key '{key}' already exists. Use 'phase secrets update {key} {optional_flags}' to update it.")
+            # Updated to include path in the optional flags message
+            print(f"🗝️  Secret with key '{key}' already exists at path '{path}'. Use 'phase secrets update' to change it's value.")
             return
     except ValueError as e:
         console.log(f"Error: {e}")
@@ -57,13 +60,13 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
             value = sys.stdin.read().strip()
 
     try:
-        # Encrypt and send secret to the backend using the `create` method
-        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app)
+        # Encrypt and send secret to the backend using the `create` method with path support
+        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, path=path)
 
         # Check the response status code
         if response.status_code == 200:
             # Call the phase_list_secrets function to list the secrets
-            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name)
+            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=path)
         else:
             # Print an error message if the response status code indicates an error
             print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")

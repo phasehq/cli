@@ -1,16 +1,15 @@
 import sys
 import os
-import re
 import subprocess
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import tag_matches, normalize_tag
-from phase_cli.utils.const import cross_env_pattern, local_ref_pattern
+from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
 from rich.spinner import Spinner
 
 console = Console()
 
-def phase_run_inject(command, env_name=None, phase_app=None, tags=None):
+def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: str = '/'):
     """
     Executes a shell command with environment variables set to the secrets 
     fetched from Phase for the specified environment, resolving references as needed.
@@ -28,20 +27,25 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None):
         status.start()
 
         # Fetch all secrets without filtering by tags
-        all_secrets = phase.get(env_name=env_name, app_name=phase_app)
-        secrets_dict = {secret["key"]: secret["value"] for secret in all_secrets}
+        all_secrets = phase.get(env_name=env_name, app_name=phase_app, path=path)
+        
+        # Initialize an empty dictionary for the resolved secrets
+        secrets_dict = {}
 
-        # Resolve references in all secrets
-        for key, value in secrets_dict.items():
-            value = resolve_secret(value, secrets_dict, phase, env_name, phase_app)
-            secrets_dict[key] = value
+        # Attempt to resolve references in all secrets, logging warnings for any errors
+        for secret in all_secrets:
+            try:
+                current_env_name = secret.get('environment', env_name)
+                resolved_value = resolve_all_secrets(value=secret["value"], current_env_name=current_env_name, phase=phase)
+                secrets_dict[secret["key"]] = resolved_value
+            except ValueError as e:
+                console.log(f"Warning: {e}")
 
         # Normalize and filter secrets by tags if tags are provided
         if tags:
             user_tags = [normalize_tag(tag) for tag in tags.split(',')]
             tagged_secrets = [secret for secret in all_secrets if any(tag_matches(secret.get("tags", []), user_tag) for user_tag in user_tags)]
-            secrets_dict = {secret["key"]: secrets_dict[secret["key"]] for secret in tagged_secrets}
-
+            secrets_dict = {secret["key"]: secrets_dict.get(secret["key"], "") for secret in tagged_secrets}
 
         new_env = os.environ.copy()
         new_env.update(secrets_dict)
@@ -55,54 +59,3 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None):
         sys.exit(1)
     finally:
         status.stop()
-
-def resolve_secret(value, secrets_dict, phase, env_name, phase_app):
-    """
-    Resolve references in a secret value.
-
-    Args:
-        value (str): The secret value to resolve.
-        secrets_dict (dict): Dictionary of already fetched secrets.
-        phase (Phase): Phase instance.
-        env_name (str): Environment name.
-        phase_app (str): Phase application name.
-
-    Returns:
-        str: Resolved secret value.
-    """
-    cross_env_matches = re.findall(cross_env_pattern, value)
-    checked_environments = {}  # To track checked environments
-
-    for ref_env, ref_key in cross_env_matches:
-        if ref_env in checked_environments:
-            # Skip processing if we already know the environment doesn't exist
-            continue
-
-        try:
-            ref_secret = phase.get(env_name=ref_env, keys=[ref_key], app_name=phase_app)
-            if ref_secret:
-                value = value.replace(f"${{{ref_env}.{ref_key}}}", ref_secret[0]['value'])
-            else:
-                # Log a warning only if the environment exists but the secret doesn't
-                console.log(f"⚠️  Warning: Secret '{ref_key}' not found in environment '{ref_env}'. Ignoring...")
-                value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
-        except Exception as e:
-            if "environment does not exist" in str(e) or "do not have access" in str(e):
-                # Log this warning only once per environment
-                if ref_env not in checked_environments:
-                    console.log(f"⚠️  Warning: Environment '{ref_env}' does not exist or is inaccessible.")
-                    checked_environments[ref_env] = True
-                value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
-            else:
-                console.log(f"⚠️  Warning: Error accessing secret '{ref_key}' in environment '{ref_env}': {e}. Ignoring...")
-                value = value.replace(f"${{{ref_env}.{ref_key}}}", "")
-
-    local_ref_matches = re.findall(local_ref_pattern, value)
-    for ref_key in local_ref_matches:
-        if ref_key in secrets_dict:
-            ref_value = secrets_dict[ref_key]
-            value = value.replace(f"${{{ref_key}}}", ref_value)
-        else:
-            console.log(f"⚠️  Warning: Local reference '{ref_key}' not found. Ignoring...")
-
-    return value

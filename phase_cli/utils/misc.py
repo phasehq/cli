@@ -4,12 +4,16 @@ import subprocess
 import webbrowser
 import getpass
 import json
+from phase_cli.exceptions import EnvironmentNotFoundException
 from rich.table import Table
+from rich.tree import Tree
 from rich.console import Console
 from rich import box
+from rich.box import ROUNDED
 from urllib.parse import urlparse
 from typing import Union, List
 from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
+
 
 def get_terminal_width():
     """
@@ -79,52 +83,87 @@ def tokenize(value):
     return tokens
 
 
-def render_table(data, show=False):
+def render_tree_with_tables(data, show, console):
     """
-    Render a table of key-value pairs with Rich library, using adjusted column widths.
-    Key column is adjusted based on content length, with more width allocated to the value column.
+    Organize secrets by path and render a table for each path within a tree structure,
+    including application name, environment name, personal secret indicators,
+    cross-environment, and local environment secret references.
+    Utilizes censoring for secret values based on the 'show' parameter.
 
     Args:
-        data: List of dictionaries containing keys, values, overridden status, tags, and comments.
+        data: List of dictionaries containing keys, values, paths, overridden status, tags, comments, application, and environment.
         show: Whether to show the values or censor them.
+        console: Instance of rich.console.Console for rendering.
     """
+    if not data:
+        console.print("No secrets to display.")
+        return
 
-    console = Console()
-    table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
+    # Extract application and environment names from the first secret
+    application_name = data[0]['application']
+    environment_name = data[0]['environment']
+    root_tree = Tree(f"🔮 Secrets for Application: [bold cyan]{application_name}[/], Environment: [bold green]{environment_name}[/]")
 
-    # Calculate the max length of the key column
-    max_key_length = max([len(item.get("key", "")) + 4 + 2 * bool(item.get("tags")) + 2 * bool(item.get("comment")) for item in data], default=20)
-    key_width = min(max_key_length, 40)  # Limiting max width to 40 for better readability
-
-    terminal_width = get_terminal_width()
-    value_width = max(terminal_width - key_width - 4, 20)  # -4 for separator and padding
-
-    table.add_column("KEY 🗝️", width=key_width, no_wrap=True)
-    table.add_column("VALUE ✨", width=value_width, no_wrap=False)
-
+    # Organize secrets by path
+    paths = {}
     for item in data:
-        key = item.get("key")
-        value = item.get("value")
-        tags = " 🏷️" if item.get("tags") else ""
-        comment = " 💬" if item.get("comment") else ""
+        path = item.get("path", "/")
+        if path not in paths:
+            paths[path] = []
+        paths[path].append(item)
 
-        # Append emojis for tags and comments
-        key += f"{tags}{comment}{' ' * 4}"  # Ensure 4 spaces after the key and emojis
+    # Set a reasonable minimum width for the KEY column
+    min_key_width = 15
 
-        # Set icon based on detected references
-        icon = '⛓️ ' if any(cross_env_pattern.match(token) for token in tokenize(value)) else ''
-        icon += '🔗 ' if any(local_ref_pattern.match(token) for token in tokenize(value)) else ''
+    for path, secrets in sorted(paths.items()):
+        # Display the path and the number of secrets it contains
+        path_node = root_tree.add(f"📁 Path: {path} - [bold magenta]{len(secrets)} Secrets[/]")
+        table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
 
-        # Display personal secret indicator
-        personal_indicator = '🔏 ' if item.get("overridden", False) else ''
+        # Calculate dynamic widths based on the secrets of the current path
+        max_key_length = max([len(secret.get("key", "")) for secret in secrets], default=min_key_width)
+        key_width = max(min_key_width, min(max_key_length + 6, 40))
+        value_width = max(console.width - key_width - 4, 20)
 
-        # Censor value if not showing, calculate max length based on value column width
-        censored_value_max_length = value_width - len(icon) - len(personal_indicator)
-        censored_value = censor_secret(value, censored_value_max_length) if not show else value
+        table.add_column("KEY 🗝️", width=key_width, no_wrap=True)
+        table.add_column("VALUE ✨", width=value_width, overflow="fold")
 
-        table.add_row(key, f"{icon}{personal_indicator}{censored_value}")
+        for secret in secrets:
+            key_display, value_display = format_secret_row(secret, value_width, show)
+            table.add_row(key_display, value_display)
 
-    console.print(table)
+        path_node.add(table)
+
+    console.print(root_tree)
+
+
+def format_secret_row(secret, value_width, show):
+    """
+    Format the row for a secret to be displayed in the table.
+
+    Args:
+        secret: The secret data dictionary.
+        value_width: The calculated width for the value column.
+        show: Whether to show the values or censor them.
+
+    Returns:
+        A tuple containing the formatted key and value strings.
+    """
+    key = secret.get("key")
+    value = secret.get("value", "")
+    tags = " 🏷️" if secret.get("tags") else ""
+    comment = " 💬" if secret.get("comment") else ""
+    key_display = f"{key}{tags}{comment}"
+
+    icon = '⛓️  ' if cross_env_pattern.search(value) else ''
+    icon += '🔗 ' if local_ref_pattern.search(value) else ''
+
+    personal_indicator = '🔏 ' if secret.get("overridden", False) else ''
+
+    censored_value = censor_secret(value, value_width - len(icon) - len(personal_indicator)) if not show else value
+    value_display = f"{icon}{personal_indicator}{censored_value}"
+
+    return key_display, value_display
 
 
 def validate_url(url):
@@ -200,7 +239,7 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
     config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
     
     if not os.path.exists(config_file_path):
-        raise ValueError("No config found in '~/.phase/secrets/config.json'. Please login with phase auth")
+        raise ValueError("Please login with phase auth or supply a PHASE_SERVICE_TOKEN as an environment variable")
     
     with open(config_file_path, 'r') as f:
         config_data = json.load(f)
@@ -213,7 +252,7 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
 
 def phase_get_context(user_data, app_name=None, env_name=None):
     """
-    Get the context (ID and publicKey) for a specified application and environment or the default application and environment.
+    Get the context (ID, name, and publicKey) for a specified application and environment or the default application and environment.
 
     Parameters:
     - user_data (dict): The user data from the API response.
@@ -221,7 +260,7 @@ def phase_get_context(user_data, app_name=None, env_name=None):
     - env_name (str, optional): The name (or partial name) of the desired environment.
 
     Returns:
-    - tuple: A tuple containing the application's ID, environment's ID, and publicKey.
+    - tuple: A tuple containing the application's name, application's ID, environment's name, environment's ID, and publicKey.
 
     Raises:
     - ValueError: If no matching application or environment is found.
@@ -260,10 +299,10 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         environment = next((env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()), None)
 
         if not environment:
-            raise ValueError(f"⚠️\u200A Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
+            raise EnvironmentNotFoundException(env_name)
 
-        return application["id"], environment["environment"]["id"], environment["identity_key"]
-    
+        # Return application name, application ID, environment name, environment ID, and public key
+        return (application["name"], application["id"], environment["environment"]["name"], environment["environment"]["id"], environment["identity_key"])
     except StopIteration:
         raise ValueError("🔍 Application or environment not found.")
 
