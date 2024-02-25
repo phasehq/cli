@@ -4,6 +4,7 @@ import subprocess
 import webbrowser
 import getpass
 import json
+from phase_cli.exceptions import EnvironmentNotFoundException
 from rich.table import Table
 from rich.tree import Tree
 from rich.console import Console
@@ -298,7 +299,7 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         environment = next((env for env in application["environment_keys"] if env_name.lower() in env["environment"]["name"].lower()), None)
 
         if not environment:
-            raise ValueError(f"⚠️\u200A Warning: The environment '{env_name}' either does not exist or you do not have access to it.")
+            raise EnvironmentNotFoundException(env_name)
 
         # Return application name, application ID, environment name, environment ID, and public key
         return (application["name"], application["id"], environment["environment"]["name"], environment["environment"]["id"], environment["identity_key"])
