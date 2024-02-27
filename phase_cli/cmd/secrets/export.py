@@ -53,6 +53,15 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
     try:
         # Fetch all secrets
         all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
+        # Organize all secrets into a dictionary for easier lookup.
+        secrets_dict = {}
+        for secret in all_secrets:
+            env_name = secret['environment']
+            key = secret['key']
+            if env_name not in secrets_dict:
+                secrets_dict[env_name] = {}
+            secrets_dict[env_name][key] = secret['value']
+
         resolved_secrets = []
 
         for secret in all_secrets:
@@ -62,7 +71,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
                 current_application_name = secret['application']
 
                 # Attempt to resolve secret references in the value
-                resolved_value = resolve_all_secrets(value=secret["value"], current_application_name=current_application_name, current_env_name=current_env_name, phase=phase)
+                resolved_value = resolve_all_secrets(value=secret["value"], all_secrets=all_secrets, phase=phase, current_application_name=current_application_name, current_env_name=current_env_name)
                 resolved_secrets.append({
                     **secret,
                     "value": resolved_value  # Replace original value with resolved value
@@ -76,29 +85,28 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
 
         # Filter secrets if specific keys are requested
         if keys:
-            secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
+            filtered_secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
         else:
-            secrets_dict = all_secrets_dict
+            filtered_secrets_dict = all_secrets_dict
 
-        # Export based on selected format
         if format == 'json':
-            export_json(secrets_dict)
+            export_json(filtered_secrets_dict)
         elif format == 'csv':
-            export_csv(secrets_dict)
+            export_csv(filtered_secrets_dict)
         elif format == 'yaml':
-            export_yaml(secrets_dict)
+            export_yaml(filtered_secrets_dict)
         elif format == 'xml':
-            export_xml(secrets_dict)
+            export_xml(filtered_secrets_dict)
         elif format == 'toml':
-            export_toml(secrets_dict)
+            export_toml(filtered_secrets_dict)
         elif format == 'hcl':
-            export_hcl(secrets_dict)
+            export_hcl(filtered_secrets_dict)
         elif format == 'ini':
-            export_ini(secrets_dict)
+            export_ini(filtered_secrets_dict)
         elif format == 'java_properties':
-            export_java_properties(secrets_dict)
+            export_java_properties(filtered_secrets_dict)
         else:
-            export_dotenv(secrets_dict)
+            export_dotenv(filtered_secrets_dict)
 
     except ValueError as e:
         console.log(f"Error: {e}")
