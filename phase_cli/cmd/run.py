@@ -58,6 +58,8 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
         new_env = os.environ.copy()
         new_env.update(filtered_secrets_dict)
 
+        status.stop()
+        
         subprocess.run(command, shell=True, env=new_env)
 
     except ValueError as e:
