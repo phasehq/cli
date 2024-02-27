@@ -7,8 +7,6 @@ from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
 from rich.spinner import Spinner
 
-console = Console()
-
 def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: str = '/'):
     """
     Executes a shell command with environment variables set to the secrets 
@@ -21,6 +19,7 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
         tags (str, optional): Comma-separated list of tags to filter secrets. Defaults to None.
     """
     phase = Phase()
+    console = Console()
     status = console.status(Spinner("dots", text="Fetching secrets..."), spinner="dots")
 
     try:
@@ -55,11 +54,19 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
         else:
             filtered_secrets_dict = resolved_secrets_dict
 
+        # Count and get environment from the secrets for the message
+        secret_count = len(filtered_secrets_dict)
+        environments = set(secret.get('environment') for secret in all_secrets if secret['key'] in filtered_secrets_dict)
+        environment_message = ', '.join(environments)
+
         new_env = os.environ.copy()
         new_env.update(filtered_secrets_dict)
 
+        # Stop the fetching secrets spinner
         status.stop()
-        
+
+        # Print the message with the number of secrets injected
+        console.log(f"🚀 Injected [bold magenta]{secret_count} secrets from the [bold green]{environment_message} environment.\n")
         subprocess.run(command, shell=True, env=new_env)
 
     except ValueError as e:
