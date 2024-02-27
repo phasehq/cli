@@ -26,32 +26,37 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
     try:
         status.start()
 
-        # Fetch all secrets without filtering by tags
+        # Fetch all secrets
         all_secrets = phase.get(env_name=env_name, app_name=phase_app, path=path)
         
-        # Initialize an empty dictionary for the resolved secrets
+        # Organize all secrets into a dictionary for easier lookup
         secrets_dict = {}
-
-        # Attempt to resolve references in all secrets, logging warnings for any errors
         for secret in all_secrets:
-            try:
-                current_env_name = secret.get('environment')
-                current_app_name = secret.get('application')
-                resolved_value = resolve_all_secrets(value=secret["value"], current_application_name=current_app_name, current_env_name=current_env_name, phase=phase)
-                secrets_dict[secret["key"]] = resolved_value
-            except ValueError as e:
-                console.log(f"Warning: {e}")
+            env_name = secret['environment']
+            secret_path = secret['path']
+            key = secret['key']
+            if env_name not in secrets_dict:
+                secrets_dict[env_name] = {}
+            if secret_path not in secrets_dict[env_name]:
+                secrets_dict[env_name][secret_path] = {}
+            secrets_dict[env_name][secret_path][key] = secret['value']
+
+        # Resolve all secret references
+        resolved_secrets_dict = {}
+        for secret in all_secrets:
+            # Attempt to resolve secret references in the value
+            resolved_value = resolve_all_secrets(secret["value"], all_secrets, phase, secret.get('application'), secret.get('environment'))
+            resolved_secrets_dict[secret["key"]] = resolved_value
 
         # Normalize and filter secrets by tags if tags are provided
         if tags:
             user_tags = [normalize_tag(tag) for tag in tags.split(',')]
-            tagged_secrets = [secret for secret in all_secrets if any(tag_matches(secret.get("tags", []), user_tag) for user_tag in user_tags)]
-            secrets_dict = {secret["key"]: secrets_dict.get(secret["key"], "") for secret in tagged_secrets}
+            filtered_secrets_dict = {key: value for key, value in resolved_secrets_dict.items() if any(tag_matches(all_secrets[key].get("tags", []), user_tag) for user_tag in user_tags)}
+        else:
+            filtered_secrets_dict = resolved_secrets_dict
 
         new_env = os.environ.copy()
-        new_env.update(secrets_dict)
-
-        status.stop()
+        new_env.update(filtered_secrets_dict)
 
         subprocess.run(command, shell=True, env=new_env)
 
