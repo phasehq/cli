@@ -59,9 +59,10 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
             try:
                 # Ensure we use the correct environment name for each secret
                 current_env_name = secret['environment']
+                current_application_name = secret['application']
 
                 # Attempt to resolve secret references in the value
-                resolved_value = resolve_all_secrets(value=secret["value"], current_env_name=current_env_name, phase=phase)
+                resolved_value = resolve_all_secrets(value=secret["value"], current_application_name=current_application_name, current_env_name=current_env_name, phase=phase)
                 resolved_secrets.append({
                     **secret,
                     "value": resolved_value  # Replace original value with resolved value
