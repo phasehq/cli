@@ -35,8 +35,9 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
         # Attempt to resolve references in all secrets, logging warnings for any errors
         for secret in all_secrets:
             try:
-                current_env_name = secret.get('environment', env_name)
-                resolved_value = resolve_all_secrets(value=secret["value"], current_env_name=current_env_name, phase=phase)
+                current_env_name = secret.get('environment')
+                current_app_name = secret.get('application')
+                resolved_value = resolve_all_secrets(value=secret["value"], current_application_name=current_app_name, current_env_name=current_env_name, phase=phase)
                 secrets_dict[secret["key"]] = resolved_value
             except ValueError as e:
                 console.log(f"Warning: {e}")
