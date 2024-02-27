@@ -1,7 +1,7 @@
 import re
 from typing import Dict, List
-from phase_cli.exceptions import EnvironmentNotFoundException
-from phase_cli.utils.const import SECRET_REF_REGEX
+from exceptions import EnvironmentNotFoundException
+from utils.const import SECRET_REF_REGEX
 
 """
     Secret Referencing Syntax:
@@ -44,7 +44,8 @@ from phase_cli.utils.const import SECRET_REF_REGEX
     The syntax allows for flexible secret management, enabling both straightforward local references and more complex cross-environment references.
 """
 
-def resolve_secret_reference(ref: str, current_env_name: str, phase: 'Phase') -> str:
+
+def resolve_secret_reference(ref: str, current_application_name: str, current_env_name: str, phase: 'Phase') -> str:
     """
     Resolves a single secret reference to its actual value by fetching it from the specified environment.
     
@@ -85,10 +86,10 @@ def resolve_secret_reference(ref: str, current_env_name: str, phase: 'Phase') ->
 
     # Attempt to fetch the secret from the specified environment and path.
     try:
-        secrets = phase.get(env_name=env_name, keys=[key_name], path=path)
+        secrets = phase.get(env_name=env_name, app_name=current_application_name, keys=[key_name], path=path)
     except EnvironmentNotFoundException:
         # Fallback to the current env if the named env cannot be resolved
-        secrets = phase.get(env_name=current_env_name, keys=[key_name], path=path)
+        secrets = phase.get(env_name=current_env_name, app_name=current_application_name, keys=[key_name], path=path)
 
     
     for secret in secrets:
@@ -100,9 +101,7 @@ def resolve_secret_reference(ref: str, current_env_name: str, phase: 'Phase') ->
     return ref
     
     
-
-
-def resolve_all_secrets(value: str, current_env_name: str, phase: 'Phase') -> str:
+def resolve_all_secrets(value: str, current_application_name: str, current_env_name: str, phase: 'Phase') -> str:
     """
     Resolves all secret references within a given string to their actual values.
     
@@ -128,7 +127,7 @@ def resolve_all_secrets(value: str, current_env_name: str, phase: 'Phase') -> st
 
     # Resolve each found reference and replace it in the input string.
     for ref in refs:
-        resolved_secret_value = resolve_secret_reference(ref, current_env_name, phase)
+        resolved_secret_value = resolve_secret_reference(ref=ref, current_application_name=current_application_name, current_env_name=current_env_name, phase=phase)
         resolved_value = resolved_value.replace(f"${{{ref}}}", resolved_secret_value)
     
     return resolved_value
