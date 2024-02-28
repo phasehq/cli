@@ -52,9 +52,8 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
     try:
         # Progress bar setup
         with Progress(
+            SpinnerColumn(),
             *Progress.get_default_columns(),
-            TextColumn("[bold green]{task.description}", justify="right"),
-            BarColumn(bar_width=None),
             console=console,
             transient=True,
         ) as progress:
