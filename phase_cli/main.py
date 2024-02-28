@@ -4,7 +4,8 @@ import sys
 import traceback
 import argparse
 from argparse import RawTextHelpFormatter
-from phase_cli.cmd.open_console import phase_open_web
+from phase_cli.cmd.open_console import phase_open_console
+from phase_cli.cmd.open_docs import phase_open_docs
 from phase_cli.cmd.update import phase_cli_update
 from phase_cli.cmd.users.whoami import phase_users_whoami
 from phase_cli.cmd.users.keyring import show_keyring_info
@@ -204,7 +205,7 @@ def main ():
         secrets_import_parser.add_argument('--path', type=str, default='/', help="The path to which you want to import secret(s). Default is '/'")
 
         # Secrets export command
-        secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets in a dotenv format')
+        secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets in a specific format')
         secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
         secrets_export_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
@@ -225,8 +226,11 @@ def main ():
 
         # Users keyring command
         keyring_parser = users_subparsers.add_parser('keyring', help='🔐 Display information about the Phase keyring')
+        
+        # Open the Phase Docs
+        docs_parser = subparsers.add_parser('docs', help='📖 Open the Phase CLI Docs in your browser')
 
-        # Web command
+        # Open the Phase Console
         web_parser = subparsers.add_parser('console', help='🖥️\u200A Open the Phase Console in your browser')
 
         # Check if the operating system is Linux before adding the update command
@@ -244,7 +248,9 @@ def main ():
             command = ' '.join(args.command_to_run)
             phase_run_inject(command, env_name=args.env, phase_app=args.app, path=args.path, tags=args.tags)
         elif args.command == 'console':
-            phase_open_web()
+            phase_open_console()
+        elif args.command == 'docs':
+            phase_open_docs()
         elif args.command == 'update':
             phase_cli_update()
             sys.exit(0)
