@@ -7,11 +7,8 @@ from phase_cli.utils.phase_io import Phase
 import xml.sax.saxutils as saxutils
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
-console = Console()
-
-# Create a console object for logging warnings and errors to stderr
-error_console = Console(stderr=True)
 
 def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv', path: str = '/'):
     """
@@ -49,45 +46,68 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
 
     # Initialize
     phase = Phase()
+    # Create a console object for logging warnings and errors to stderr
+    console = Console(stderr=True)
 
     try:
-        # Fetch all secrets
-        all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
-        # Organize all secrets into a dictionary for easier lookup.
-        secrets_dict = {}
-        for secret in all_secrets:
-            env_name = secret['environment']
-            key = secret['key']
-            if env_name not in secrets_dict:
-                secrets_dict[env_name] = {}
-            secrets_dict[env_name][key] = secret['value']
+        # Progress bar setup
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold green]{task.description}", justify="right"),
+            BarColumn(bar_width=None),
+            console=console,
+            transient=True,
+        ) as progress:
+            task1 = progress.add_task("[bold green]Fetching secrets...", total=None)
 
-        resolved_secrets = []
+            # Fetch all secrets
+            all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
 
-        for secret in all_secrets:
-            try:
-                # Ensure we use the correct environment name for each secret
-                current_env_name = secret['environment']
-                current_application_name = secret['application']
+            # Organize all secrets into a dictionary for easier lookup.
+            secrets_dict = {}
+            for secret in all_secrets:
+                env_name = secret['environment']
+                key = secret['key']
+                if env_name not in secrets_dict:
+                    secrets_dict[env_name] = {}
+                secrets_dict[env_name][key] = secret['value']
 
-                # Attempt to resolve secret references in the value
-                resolved_value = resolve_all_secrets(value=secret["value"], all_secrets=all_secrets, phase=phase, current_application_name=current_application_name, current_env_name=current_env_name)
-                resolved_secrets.append({
-                    **secret,
-                    "value": resolved_value  # Replace original value with resolved value
-                })
-            except ValueError as e:
-                # Print warning to stderr via the error_console
-                error_console.log(f"Warning: {e}")
+            resolved_secrets = []
 
-        # Create a dictionary with keys and resolved values
-        all_secrets_dict = {secret["key"]: secret["value"] for secret in resolved_secrets}
+            for secret in all_secrets:
+                try:
+                    # Ensure we use the correct environment name for each secret
+                    current_env_name = secret['environment']
+                    current_application_name = secret['application']
 
-        # Filter secrets if specific keys are requested
-        if keys:
-            filtered_secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
-        else:
-            filtered_secrets_dict = all_secrets_dict
+                    # Attempt to resolve secret references in the value
+                    resolved_value = resolve_all_secrets(value=secret["value"], all_secrets=all_secrets, phase=phase, current_application_name=current_application_name, current_env_name=current_env_name)
+                    resolved_secrets.append({
+                        **secret,
+                        "value": resolved_value  # Replace original value with resolved value
+                    })
+                except ValueError as e:
+                    # Print warning to stderr via the error_console
+                    console.log(f"Warning: {e}")
+            
+            # Ensure the progress bar and messages don't get piped to a file
+            environments = {secret['environment'] for secret in all_secrets}
+            environment_message = ', '.join(environments)
+            secret_count = len(all_secrets)
+            
+            progress.update(task1, completed=100)  # Adjust completion as needed
+            
+            # Export success message
+            console.log(f" 🥡 Exported [bold magenta]{secret_count}[/] secrets from the [bold green]{environment_message}[/] environment.\n")
+
+            # Create a dictionary with keys and resolved values
+            all_secrets_dict = {secret["key"]: secret["value"] for secret in resolved_secrets}
+
+            # Filter secrets if specific keys are requested
+            if keys:
+                filtered_secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
+            else:
+                filtered_secrets_dict = all_secrets_dict
 
         if format == 'json':
             export_json(filtered_secrets_dict)
