@@ -205,7 +205,7 @@ def main ():
         secrets_import_parser.add_argument('--path', type=str, default='/', help="The path to which you want to import secret(s). Default is '/'")
 
         # Secrets export command
-        secrets_export_parser = secrets_subparsers.add_parser('export', default='dotenv', help='🥡 Export secrets in a specific format')
+        secrets_export_parser = secrets_subparsers.add_parser('export', help='🥡 Export secrets in a specific format')
         secrets_export_parser.add_argument('keys', nargs='*', help='List of keys separated by space', default=None)
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
         secrets_export_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
