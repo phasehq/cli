@@ -80,6 +80,11 @@ has_sudo_access() {
 }
 
 install_from_binary() {
+    if [ "$(uname -m)" != "x86_64" ]; then
+        echo "Unsupported architecture. This script only supports x86_64."
+        exit 1
+    fi
+    
     ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
     CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
     
