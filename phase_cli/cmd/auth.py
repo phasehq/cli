@@ -120,19 +120,7 @@ def phase_auth(mode="webauth"):
     Returns:
         None
     """
-
-    # Check if the user is already authenticated
-    config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
-    if os.path.exists(config_file_path):
-        with open(config_file_path, 'r') as f:
-            config_data = json.load(f)
-            default_user_id = config_data.get('default-user')
-            for user in config_data.get('phase-users', []):
-                if user.get('id') == default_user_id:
-                    print(f"🙋 You are currently logged in as: \033[1;34m{user.get('email')}\033[0m")
-                    print("To switch accounts: '\033[1mphase users logout --purge\033[0m && \033[1mphase auth\033[0m'")
-                    return
-                
+             
     server = None
     try:
         # Choose the authentication mode: webauth (default) or token-based.
@@ -236,8 +224,14 @@ def phase_auth(mode="webauth"):
             user_id = user_data["user_id"]
             offline_enabled = user_data["offline_enabled"]
             wrapped_key_share = None if not offline_enabled else user_data["wrapped_key_share"]
-            organization_id = user_data["organisation"]["id"]
-            organization_name = user_data["organisation"]["name"]
+
+            # Note: Phase Console v2.14.0 doesn't return organization context
+            if 'organisation' in user_data and user_data['organisation']:
+                organization_id = user_data["organisation"]["id"]
+                organization_name = user_data["organisation"]["name"]
+            else:
+                organization_id = None
+                organization_name = None
 
             # Save the credentials in the Phase keyring
             keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
