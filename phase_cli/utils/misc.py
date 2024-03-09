@@ -271,6 +271,7 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         with open(PHASE_ENV_CONFIG, 'r') as f:
             config_data = json.load(f)
         default_env_name = config_data.get("defaultEnv")
+        app_name_from_config = config_data.get("phaseApp")
         app_id = config_data.get("appId")
     except FileNotFoundError:
         default_env_name = "Development"
@@ -291,7 +292,7 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         elif app_id:
             application = next((app for app in user_data["apps"] if app["id"] == app_id), None)
             if not application:
-                raise ValueError(f"No application found with the ID '{app_id}'.")
+                raise ValueError(f"🔍 No application found with the name '{app_name_from_config}' and ID: '{app_id}'.")
         else:
             raise ValueError("🤔 No application context provided. Please run 'phase init' or pass the '--app' flag followed by your application name.")
 
