@@ -236,6 +236,8 @@ def phase_auth(mode="webauth"):
             user_id = user_data["user_id"]
             offline_enabled = user_data["offline_enabled"]
             wrapped_key_share = None if not offline_enabled else user_data["wrapped_key_share"]
+            organization_id = user_data["organisation"]["id"]
+            organization_name = user_data["organisation"]["name"]
 
             # Save the credentials in the Phase keyring
             keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
@@ -248,7 +250,10 @@ def phase_auth(mode="webauth"):
                         "email": user_email,
                         "host": PHASE_API_HOST,
                         "id": user_id,
+                        "organization_id": organization_id,
+                        "organization_name": organization_name,
                         "wrapped_key_share": wrapped_key_share
+
                     }
                 ]
             }
