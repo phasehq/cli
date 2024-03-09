@@ -20,7 +20,7 @@ def switch_user():
         return
 
     # Prepare user choices, including a visual separator as a title.
-    user_choices = [Separator("✉️\u200A Email - 🏢 Organization - 🌐 Phase Host")] + [
+    user_choices = [Separator("✉️\u200A Email - 🏢 Organization - ☁️\u200A Phase Host")] + [
         f"{user['email']}, {user.get('organization_name', 'N/A')}, {user['host']}"
         for user in config_data['phase-users']
     ]
@@ -45,7 +45,7 @@ def switch_user():
             if selected_user_id:
                 config_data['default-user'] = selected_user_id
                 save_config(config_data)
-                print(f"Switched to user: {selected}")
+                print(f"Switched to user 🙋: {selected}")
                 break
             else:
                 print("User switch failed.")
