@@ -20,10 +20,16 @@ def switch_user():
         return
 
     # Prepare user choices, including a visual separator as a title.
-    user_choices = [Separator("✉️\u200A Email, 🏢 Organization, ☁️\u200A Phase Host")] + [
-        f"{user['email']}, {user.get('organization_name', 'N/A')}, {user['host']}"
+    # Also, create a mapping for the partial UUID to the full UUID.
+    uuid_mapping = {}
+    user_choices = [Separator("✉️\u200A Email, 🏢 Organization, ☁️\u200A Phase Host, 🆔 User ID")] + [
+        f"{user['email']}, {user.get('organization_name', 'N/A')}, {user['host']}, {user['id'][:8]}"
         for user in config_data['phase-users']
     ]
+    
+    for user in config_data['phase-users']:
+        partial_uuid = user['id'][:8]
+        uuid_mapping[partial_uuid] = user['id']
 
     try:
         while True:
@@ -36,14 +42,13 @@ def switch_user():
             if selected is None:
                 break
 
+            # Extract the UUID part from the selection.
+            uuid_selected = selected.split(", ")[-1]
 
-            email_selected = selected.split(", ")[0]
-
-            # Identify and switch to the selected user by their email.
-            selected_user_id = next((user['id'] for user in config_data['phase-users'] if user['email'] == email_selected), None)
-
-            if selected_user_id:
-                config_data['default-user'] = selected_user_id
+            # Use the full UUID from the mapping to identify and switch to the selected user.
+            full_uuid = uuid_mapping.get(uuid_selected, None)
+            if full_uuid:
+                config_data['default-user'] = full_uuid
                 save_config(config_data)
                 print(f"Switched to user 🙋: {selected}")
                 break
