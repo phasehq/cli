@@ -20,7 +20,7 @@ def switch_user():
         return
 
     # Prepare user choices, including a visual separator as a title.
-    user_choices = [Separator("✉️\u200A Email - 🏢 Organization - ☁️\u200A Phase Host")] + [
+    user_choices = [Separator("✉️\u200A Email, 🏢 Organization, ☁️\u200A Phase Host")] + [
         f"{user['email']}, {user.get('organization_name', 'N/A')}, {user['host']}"
         for user in config_data['phase-users']
     ]
