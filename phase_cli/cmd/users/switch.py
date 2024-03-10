@@ -23,7 +23,7 @@ def switch_user():
     # Also, create a mapping for the partial UUID to the full UUID.
     uuid_mapping = {}
     user_choices = [Separator("🏢 Organization, ✉️\u200A Email, ☁️\u200A Phase Host, 🆔 User ID")] + [
-        f"{user.get('organization_name', 'N/A')}, {user['email']}, {user['host']}, {user['id'][:8]}"
+        f"{user.get('organization_name', 'N/A') if user.get('organization_name') else 'N/A'}, {user['email']}, {user['host']}, {user['id'][:8]}"
         for user in config_data['phase-users']
     ]
     
