@@ -120,19 +120,7 @@ def phase_auth(mode="webauth"):
     Returns:
         None
     """
-
-    # Check if the user is already authenticated
-    config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
-    if os.path.exists(config_file_path):
-        with open(config_file_path, 'r') as f:
-            config_data = json.load(f)
-            default_user_id = config_data.get('default-user')
-            for user in config_data.get('phase-users', []):
-                if user.get('id') == default_user_id:
-                    print(f"🙋 You are currently logged in as: \033[1;34m{user.get('email')}\033[0m")
-                    print("To switch accounts: '\033[1mphase users logout --purge\033[0m && \033[1mphase auth\033[0m'")
-                    return
-                
+             
     server = None
     try:
         # Choose the authentication mode: webauth (default) or token-based.
@@ -237,25 +225,39 @@ def phase_auth(mode="webauth"):
             offline_enabled = user_data["offline_enabled"]
             wrapped_key_share = None if not offline_enabled else user_data["wrapped_key_share"]
 
+            # Note: Phase Console <v2.14.0 doesn't return Organization name and id
+            organization_id = user_data["organisation"]["id"] if 'organisation' in user_data and user_data['organisation'] else None
+            organization_name = user_data["organisation"]["name"] if 'organisation' in user_data and user_data['organisation'] else None
+
             # Save the credentials in the Phase keyring
             keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
 
-            # Prepare the data to be saved in config.json
-            config_data = {
-                "default-user": user_id,
-                "phase-users": [
-                    {
-                        "email": user_email,
-                        "host": PHASE_API_HOST,
-                        "id": user_id,
-                        "wrapped_key_share": wrapped_key_share
-                    }
-                ]
-            }
+            # Load existing config or initialize a new one
+            config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
+            if os.path.exists(config_file_path):
+                with open(config_file_path, 'r') as f:
+                    config_data = json.load(f)
+            else:
+                config_data = {"default-user": None, "phase-users": []}
 
-            # Save the data in PHASE_SECRETS_DIR/config.json
+            # Update the config_data with the new user, ensuring no duplicates
+            existing_users = {user['id']: user for user in config_data["phase-users"]}
+            existing_users[user_id] = {
+                "email": user_email,
+                "host": PHASE_API_HOST,
+                "id": user_id,
+                "organization_id": organization_id,
+                "organization_name": organization_name,
+                "wrapped_key_share": wrapped_key_share
+            }
+            config_data["phase-users"] = list(existing_users.values())
+
+            # Set the latest user as the default user
+            config_data["default-user"] = user_id
+
+            # Save the updated configuration
             os.makedirs(PHASE_SECRETS_DIR, exist_ok=True)
-            with open(os.path.join(PHASE_SECRETS_DIR, 'config.json'), 'w') as f:
+            with open(config_file_path, 'w') as f:
                 json.dump(config_data, f, indent=4)
 
             print("\033[1;32m✅ Authentication successful. Credentials saved in the Phase keyring.\033[0m")

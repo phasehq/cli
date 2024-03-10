@@ -8,6 +8,7 @@ from phase_cli.cmd.open_console import phase_open_console
 from phase_cli.cmd.open_docs import phase_open_docs
 from phase_cli.cmd.update import phase_cli_update
 from phase_cli.cmd.users.whoami import phase_users_whoami
+from phase_cli.cmd.users.switch import switch_user
 from phase_cli.cmd.users.keyring import show_keyring_info
 from phase_cli.cmd.users.logout import phase_cli_logout
 from phase_cli.cmd.run import phase_run_inject
@@ -220,6 +221,9 @@ def main ():
         # Users whoami command
         whoami_parser = users_subparsers.add_parser('whoami', help='🙋 See details of the current user')
 
+        # Users switch command - new addition
+        switch_parser = users_subparsers.add_parser('switch', help='🪄\u200A Switch between Phase users, orgs and hosts')
+
         # Users logout command
         logout_parser = users_subparsers.add_parser('logout', help='🏃 Logout from phase-cli')
         logout_parser.add_argument('--purge', action='store_true', help='Purge all local data')
@@ -257,6 +261,8 @@ def main ():
         elif args.command == 'users':
             if args.users_command == 'whoami':
                 phase_users_whoami()
+            elif args.users_command == 'switch':
+                switch_user()
             elif args.users_command == 'logout':
                 phase_cli_logout(args.purge)
             elif args.users_command == 'keyring':
