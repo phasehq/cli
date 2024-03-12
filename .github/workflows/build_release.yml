@@ -155,7 +155,7 @@ jobs:
           FROM python:3.11
           WORKDIR /src
           COPY . .
-          RUN pwd && ls && pip install -r requirements.txt && \
+          RUN pip install -r /src/requirements.txt && \
               pip install pyinstaller && \
               pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
           EOF
