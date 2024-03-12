@@ -150,13 +150,25 @@ jobs:
 
       - name: Build Docker Image for ARM
         run: |
-          docker buildx create --use
-          docker buildx build --platform linux/arm64 --load -f Dockerfile.arm -t arm-build .
+          docker buildx create --name mybuilder --use
+          docker buildx build --platform linux/arm64 -f Dockerfile.arm -t arm-build . --load
 
-      - uses: actions/upload-artifact@v2
+      - name: Create Volume for Artifacts
+        run: docker volume create phase-artifacts
+
+      - name: Run Container to Extract Artifacts
+        run: |
+          docker run --rm --volume phase-artifacts:/artifacts arm-build cp -r /path/to/dist/phase /artifacts
+
+      - name: Copy Artifacts from Volume to Runner Filesystem
+        run: |
+          docker run --rm --volume phase-artifacts:/artifacts --volume "${PWD}:/runner" alpine cp -r /artifacts /runner
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v2
         with:
           name: phase-cli-binary
-          path: ./dist/phase*
+          path: ./phase/*
 
   Build_and_push_docker:
     name: Build & Release - Docker
