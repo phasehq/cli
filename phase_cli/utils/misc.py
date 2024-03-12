@@ -125,8 +125,8 @@ def render_tree_with_tables(data, show, console):
         key_width = max(min_key_width, min(max_key_length + 6, 40))
         value_width = max(console.width - key_width - 4, 20)
 
-        table.add_column("KEY 🗝️", width=key_width, no_wrap=True)
-        table.add_column("VALUE ✨", width=value_width, overflow="fold")
+        table.add_column("KEY", width=key_width, no_wrap=True)
+        table.add_column("VALUE", width=value_width, overflow="fold")
 
         for secret in secrets:
             key_display, value_display = format_secret_row(secret, value_width, show)
