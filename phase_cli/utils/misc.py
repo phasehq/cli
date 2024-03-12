@@ -249,6 +249,37 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
     else:
         return config_data.get("default-user")
 
+def get_default_user_token() -> str:
+    """
+    Fetch the default user's personal access token from the config file in PHASE_SECRETS_DIR.
+
+    Returns:
+    - str: The default user's personal access token.
+
+    Raises:
+    - ValueError: If the config file is not found, the default user's ID is missing, or the token is not set.
+    """
+    config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
+    
+    if not os.path.exists(config_file_path):
+        raise ValueError("Config file not found. Please login with phase auth or supply a PHASE_SERVICE_TOKEN as an environment variable.")
+    
+    with open(config_file_path, 'r') as f:
+        config_data = json.load(f)
+
+    default_user_id = config_data.get("default-user")
+    if not default_user_id:
+        raise ValueError("Default user ID is missing in the config file.")
+
+    for user in config_data.get("phase-users", []):
+        if user['id'] == default_user_id:
+            token = user.get("token")
+            if not token:
+                raise ValueError(f"Token for the default user (ID: {default_user_id}) is not found in the config file.")
+            return token
+
+    raise ValueError("Default user not found in the config file.")
+
 
 def phase_get_context(user_data, app_name=None, env_name=None):
     """
