@@ -249,6 +249,7 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
     else:
         return config_data.get("default-user")
 
+
 def get_default_user_token() -> str:
     """
     Fetch the default user's personal access token from the config file in PHASE_SECRETS_DIR.
@@ -372,30 +373,27 @@ def tag_matches(secret_tags, user_tag):
 
 
 def open_browser(url):
-    """Open a URL in the default browser, avoiding console-based browsers."""
+    """Open a URL in the default browser, with fallbacks and error handling."""
     try:
-        # Check for the default browser and avoid known console-based browsers
-        browser_name = webbrowser.get().basename
-        console_browsers = ['w3m', 'links', 'lynx', 'elinks']
-        
-        if any(console_browser in browser_name for console_browser in console_browsers):
-            print("Default browser is console-based (e.g., w3m, links, lynx, elinks), which is not supported.")
-            return
-        
-        # Attempt to open the URL in a web browser
+        # Try to open the URL in a web browser
         webbrowser.open(url, new=2)
-    except webbrowser.Error as e:
-        print(f"Error opening URL in web browser: {e}")
-        # Determine the right command based on the OS, fallback to system-specific methods
-        os_name = os.name
-        if os_name == 'nt':  # Windows
-            cmd = ['start', url]
-        elif os_name == 'posix':  # macOS, Linux, and Unix-like OS
-            cmd = ['xdg-open', url]
-        
-        # Execute the command, suppressing output
-        with open(os.devnull, 'w') as fnull:
-            subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
+    except webbrowser.Error:
+        try:
+            # Determine the right command based on the OS
+            if platform.system() == "Windows":
+                cmd = ['start', url]
+            elif platform.system() == "Darwin":
+                cmd = ['open', url]
+            else:  # Assume Linux or other Unix-like OS
+                cmd = ['xdg-open', url]
+
+            # Suppress output by redirecting to devnull
+            with open(os.devnull, 'w') as fnull:
+                subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
+        except Exception as e:
+            # If all methods fail, instruct the user to open the URL manually
+            print(f"Unable to automatically open the Phase Console in your default web browser")
+
 
 def get_user_agent():
     """
