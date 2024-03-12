@@ -234,7 +234,8 @@ def phase_auth(mode="webauth"):
                 keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
                 token_saved_in_keyring = True
             except Exception as e:
-                print(f"Failed to save token in keyring: {e}")
+                if os.getenv("PHASE_DEBUG") == "True":
+                    print(f"Failed to save token in keyring: {e}")
                 token_saved_in_keyring = False
 
             # Load existing config or initialize a new one
