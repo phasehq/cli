@@ -148,19 +148,10 @@ jobs:
       - name: Create Buildx Instance
         uses: docker/setup-buildx-action@v1
 
-      - name: Run PyInstaller in Python container with Buildx
+      - name: Build Docker Image for ARM
         run: |
           docker buildx create --use
-          docker buildx build --platform linux/arm64 --load - <<EOF
-          FROM python:3.11
-          WORKDIR /src
-          COPY . .
-          RUN ls -l
-          RUN pwd
-          RUN pip install -r requirements.txt && \
-              pip install pyinstaller && \
-              pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
-          EOF
+          docker buildx build --platform linux/arm64 --load -f Dockerfile.arm -t arm-build .
 
       - uses: actions/upload-artifact@v2
         with:
