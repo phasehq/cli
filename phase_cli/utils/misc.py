@@ -373,24 +373,29 @@ def tag_matches(secret_tags, user_tag):
 def open_browser(url):
     """Open a URL in the default browser, with fallbacks and error handling."""
     try:
+        # Check if the default browser is likely to be 'w3m' or other text-based browsers
+        browser = webbrowser.get()
+        if 'w3m' in str(browser).lower():
+            raise webbrowser.Error("Default browser is text-based (e.g., w3m), which is not supported by this script.")
+        
         # Try to open the URL in a web browser
         webbrowser.open(url, new=2)
-    except webbrowser.Error:
+    except webbrowser.Error as e:
+        print(f"Error opening URL in web browser: {e}")
         try:
-            # Determine the right command based on the OS
-            if platform.system() == "Windows":
+            # Determine the right command based on the OS, fallback to system-specific methods
+            os_name = os.name
+            if os_name == 'nt':  # Windows
                 cmd = ['start', url]
-            elif platform.system() == "Darwin":
-                cmd = ['open', url]
-            else:  # Assume Linux or other Unix-like OS
+            elif os_name == 'posix':  # macOS, Linux, and Unix-like OS
                 cmd = ['xdg-open', url]
-
-            # Suppress output by redirecting to devnull
+            
+            # Execute the command, suppressing output
             with open(os.devnull, 'w') as fnull:
                 subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
-        except Exception as e:
-            # If all methods fail, instruct the user to open the URL manually
-            print(f"Unable to automatically open the Phase Console in your default web browser")
+        except Exception as ex:
+            print(f"Unable to automatically open the URL in your default web browser. Please open it manually: {url}")
+            print(f"Error: {ex}")
 
 
 def get_user_agent():
