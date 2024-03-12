@@ -371,31 +371,23 @@ def tag_matches(secret_tags, user_tag):
     return False
 
 def open_browser(url):
-    """Open a URL in the default browser, with fallbacks and error handling."""
+    """Open a URL in a web browser, preferring GUI browsers over console-based ones."""
     try:
-        # Check if the default browser is likely to be 'w3m' or other text-based browsers
+        # Specify browser preference: GUI over text-based. Utilize the webbrowser module's capabilities.
+        # Attempt to get a browser that is not text-based, defaulting to the system's preference.
         browser = webbrowser.get()
-        if 'w3m' in str(browser).lower():
-            raise webbrowser.Error("Default browser is text-based (e.g., w3m), which is not supported by this script.")
         
-        # Try to open the URL in a web browser
-        webbrowser.open(url, new=2)
-    except webbrowser.Error as e:
-        print(f"Error opening URL in web browser: {e}")
-        try:
-            # Determine the right command based on the OS, fallback to system-specific methods
-            os_name = os.name
-            if os_name == 'nt':  # Windows
-                cmd = ['start', url]
-            elif os_name == 'posix':  # macOS, Linux, and Unix-like OS
-                cmd = ['xdg-open', url]
-            
-            # Execute the command, suppressing output
-            with open(os.devnull, 'w') as fnull:
-                subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
-        except Exception as ex:
-            print(f"Unable to automatically open the URL in your default web browser. Please open it manually: {url}")
-            print(f"Error: {ex}")
+        # Check if the browser is text-based; 'w3m' is a common text-based browser.
+        # You can extend this list with other known text-based browsers as needed.
+        if any(text_browser in str(browser).lower() for text_browser in ['w3m', 'links', 'lynx', 'elinks']):
+            raise Error("Default browser is text-based (e.g., w3m), which is not preferred.")
+        
+        # Attempt to open the URL in the chosen browser
+        success = browser.open(url, new=2)
+        if not success:
+            raise Error(f"Failed to open URL: {url}")
+    except Error as e:
+        print(f"Error: {e}")
 
 
 def get_user_agent():
