@@ -230,7 +230,13 @@ def phase_auth(mode="webauth"):
             organization_name = user_data["organisation"]["name"] if 'organisation' in user_data and user_data['organisation'] else None
 
             # Save the credentials in the Phase keyring
-            keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
+            try:
+                keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
+                token_saved_in_keyring = True
+            except Exception as e:
+                if os.getenv("PHASE_DEBUG") == "True":
+                    print(f"Failed to save token in keyring: {e}")
+                token_saved_in_keyring = False
 
             # Load existing config or initialize a new one
             config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
@@ -242,7 +248,7 @@ def phase_auth(mode="webauth"):
 
             # Update the config_data with the new user, ensuring no duplicates
             existing_users = {user['id']: user for user in config_data["phase-users"]}
-            existing_users[user_id] = {
+            user_data = {
                 "email": user_email,
                 "host": PHASE_API_HOST,
                 "id": user_id,
@@ -250,6 +256,10 @@ def phase_auth(mode="webauth"):
                 "organization_name": organization_name,
                 "wrapped_key_share": wrapped_key_share
             }
+            # If saving to keyring failed, save the token in the config_data
+            if not token_saved_in_keyring:
+                user_data["token"] = personal_access_token
+            existing_users[user_id] = user_data
             config_data["phase-users"] = list(existing_users.values())
 
             # Set the latest user as the default user
@@ -260,7 +270,10 @@ def phase_auth(mode="webauth"):
             with open(config_file_path, 'w') as f:
                 json.dump(config_data, f, indent=4)
 
-            print("\033[1;32m✅ Authentication successful. Credentials saved in the Phase keyring.\033[0m")
+            if token_saved_in_keyring:
+                print("\033[1;32m✅ Authentication successful.\033[0m")
+            else:
+                print("\033[1;32m✅ Authentication successful.\033[0m")
             print("\033[1;36m🎉 Welcome to Phase CLI!\033[0m\n")
             print_phase_links()
 

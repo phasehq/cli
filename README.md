@@ -144,7 +144,7 @@ source phase-cli/bin/activate
 ### Install dependencies:
 
 ```bash
- pip3 install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 ```
@@ -152,5 +152,5 @@ export PYTHONPATH="$PWD"
 ```
 
 ```bash
-./phase_cli/main.py
+python3 phase_cli/main.py
 ```
