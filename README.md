@@ -152,5 +152,5 @@ export PYTHONPATH="$PWD"
 ```
 
 ```bash
-./phase_cli/main.py
+python3 phase_cli/main.py
 ```
