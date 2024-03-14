@@ -21,16 +21,16 @@ check_required_tools() {
             echo "Installing $TOOL..."
             case $OS in
                 ubuntu|debian)
-                    apt-get update && apt-get install -y $TOOL
+                    sudo apt-get update && sudo apt-get install -y $TOOL
                     ;;
                 fedora|rhel|centos)
-                    yum install -y $TOOL
+                    sudo yum install -y $TOOL
                     ;;
                 alpine)
-                    apk add $TOOL
+                    sudo apk add $TOOL
                     ;;
                 arch)
-                    pacman -Sy --noconfirm $TOOL
+                    sudo pacman -Sy --noconfirm $TOOL
                     ;;
             esac
         fi
