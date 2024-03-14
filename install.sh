@@ -21,16 +21,16 @@ check_required_tools() {
             echo "Installing $TOOL..."
             case $OS in
                 ubuntu|debian)
-                    apt-get update && apt-get install -y $TOOL
+                    sudo apt-get update && sudo apt-get install -y $TOOL
                     ;;
                 fedora|rhel|centos)
-                    yum install -y $TOOL
+                    sudo yum install -y $TOOL
                     ;;
                 alpine)
-                    apk add $TOOL
+                    sudo apk add $TOOL
                     ;;
                 arch)
-                    pacman -Sy --noconfirm $TOOL
+                    sudo pacman -Sy --noconfirm $TOOL
                     ;;
             esac
         fi
@@ -80,17 +80,25 @@ has_sudo_access() {
 }
 
 install_from_binary() {
-    if [ "$(uname -m)" != "x86_64" ]; then
-        echo "Unsupported architecture. This script only supports x86_64."
-        exit 1
-    fi
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64)
+            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
+            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+            ;;
+        aarch64)
+            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
+            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.sha256"
+            ;;
+        *)
+            echo "Unsupported architecture: $ARCH. This script supports x86_64 and arm64."
+            exit 1
+            ;;
+    esac
+
+    wget_download $ZIP_URL $TMPDIR/phase_cli_${ARCH}_$VERSION.zip
     
-    ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
-    CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
-    
-    wget_download $ZIP_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.zip
-    
-    unzip $TMPDIR/phase_cli_linux_amd64_$VERSION.zip -d $TMPDIR
+    unzip $TMPDIR/phase_cli_${ARCH}_$VERSION.zip -d $TMPDIR
     
     BINARY_PATH="$TMPDIR/Linux-binary/phase/phase"
     INTERNAL_DIR_PATH="$TMPDIR/Linux-binary/phase/_internal"
@@ -108,6 +116,13 @@ install_from_binary() {
 }
 
 install_package() {
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+        install_from_binary
+        echo "phase-cli version $VERSION successfully installed"
+        return
+    fi
+
     case $OS in
         ubuntu|debian)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
