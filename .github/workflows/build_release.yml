@@ -99,6 +99,24 @@ jobs:
           name: ${{ runner.os }}-binary
           path: dist/phase*
 
+  build_arm:
+    name: Build CLI for ARM64
+    runs-on: self-hosted
+    needs: [pytest]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.11
+      - run: pip install -r requirements.txt
+      - run: pip install pyinstaller
+      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+      - uses: actions/upload-artifact@v2
+        with:
+          name: Linux-binary-arm64
+          path: dist/phase*
+
   build_apk:
     name: Build CLI (alpine-latest, 3.11)
     runs-on: ubuntu-latest
@@ -195,7 +213,7 @@ jobs:
 
   attach-assets:
     name: Package assets
-    needs: [build, build_apk]
+    needs: [build, build_apk, build_arm]
     runs-on: ubuntu-latest
 
     steps:
@@ -251,6 +269,17 @@ jobs:
           # For Alpine package
           mv phase-apk/*.apk phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk.sha256
+      # Process assets for ARM64
+      - name: Process ARM64 assets
+        run: |
+          mkdir -p phase_cli_release_$VERSION/Linux-binary-arm64/phase/
+          mv Linux-binary-arm64/phase/* phase_cli_release_$VERSION/Linux-binary/phase/
+
+          # Adjust the ZIPNAME and paths for ARM64 binary
+          ZIPNAME="phase_cli_linux_arm64_$VERSION.zip"
+          zip -r "$ZIPNAME" phase_cli_release_$VERSION/Linux-binary/phase/ phase_cli_release_$VERSION/Linux-binary/phase/_internal
+          mv "$ZIPNAME" phase_cli_release_$VERSION/
+          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_linux_arm64_$VERSION.sha256
 
       # # Debug: List the content of the current directory and subdirectories
       # - name: Debug - List contents after processing
