@@ -102,22 +102,18 @@ jobs:
   build_arm:
     name: Build CLI for ARM64
     runs-on: self-hosted
+    container:
+      image: python:3.11.0-bullseye
     needs: [pytest]
     steps:
       - uses: actions/checkout@v2
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev wget
-      - name: Download Python 3.11
-        run: wget https://www.python.org/ftp/python/3.11.0/Python-3.11.0.tgz
-      - name: Extract Python
-        run: tar -xf Python-3.11.0.tgz
-      - name: Compile Python 3.11
-        run: cd Python-3.11.0 && ./configure --enable-optimizations && make -j 8 && sudo make altinstall
-      - name: Check Python version
-        run: python3.11 --version
-      - run: pip install -r requirements.txt
-      - run: pip install pyinstaller
-      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+      - name: Setup Environment
+        run: |
+          python --version
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build with PyInstaller
+        run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
       - uses: actions/upload-artifact@v2
         with:
           name: Linux-binary-arm64
