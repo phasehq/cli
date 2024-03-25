@@ -4,7 +4,7 @@ cffi==1.15.1
 requests==2.31.0
 PyNaCl==1.5.0
 pytest==7.3.1
-pytest-mock==3.2.0
+pytest-mock==3.14.0
 rich==13.5.2
 pyyaml==6.0.1
 toml==0.10.2
