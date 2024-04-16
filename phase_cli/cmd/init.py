@@ -24,28 +24,38 @@ def phase_init():
 
         # Handle cases where the user cancels the selection or no valid selection is made
         if selected_app is None or selected_app == 'Exit':
-           # print("Operation cancelled by user.")
             sys.exit(0)
 
-        # Extract selected app's name and UUID from the selection
         app_id = selected_app.split(" (")[1].rstrip(")")
         selected_app_name = selected_app.split(" (")[0]
-
         selected_app_details = next(app for app in data['apps'] if app['id'] == app_id)
-        
-        # Find the 'Development' environment
-        dev_env = next((env for env in selected_app_details['environment_keys']
-                        if env['environment']['name'] == 'Development'), None)
-        
-        if not dev_env:
-            raise ValueError("No 'Development' environment found.")
 
-        # Save the selected app's details to .phase.json
+        # Define a custom sort order
+        env_sort_order = {"DEV": 1, "STAGING": 2, "PROD": 3}
+
+        # Stage 2: Choose environment, sorted by predefined order
+        env_choices = sorted(
+            selected_app_details['environment_keys'],
+            key=lambda env: env_sort_order.get(env['environment']['env_type'], 4)
+        )
+        env_choices = [f"{env['environment']['name']}" for env in env_choices]
+        env_choices.append('Exit')
+
+        selected_env = questionary.select("Choose a Default Environment:", choices=env_choices).ask()
+
+        if selected_env is None or selected_env == 'Exit':
+            sys.exit(0)
+
+        env_id = selected_env.split(" (")[1].rstrip(")")
+        selected_env_name = selected_env.split(" (")[0]
+
+        # Save the selected app's and environment's details to .phase.json
         phase_env = {
             "version": "1",
             "phaseApp": selected_app_name,
             "appId": selected_app_details['id'],
-            "defaultEnv": dev_env['environment']['name'],
+            "defaultEnv": selected_env_name,
+            "envId": env_id
         }
 
         # Create .phase.json
