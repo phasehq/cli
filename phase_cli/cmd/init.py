@@ -53,7 +53,7 @@ def phase_init():
 
         # Save the selected app's and environment's details to .phase.json
         phase_env = {
-            "version": "1",
+            "version": "2",
             "phaseApp": selected_app_name,
             "appId": selected_app_details['id'],
             "defaultEnv": selected_env_name,
