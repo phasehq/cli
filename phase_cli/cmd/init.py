@@ -30,7 +30,7 @@ def phase_init():
         selected_app_name = selected_app.split(" (")[0]
         selected_app_details = next(app for app in data['apps'] if app['id'] == app_id)
 
-        # Define a custom sort order
+        # Environment list sort order
         env_sort_order = {"DEV": 1, "STAGING": 2, "PROD": 3}
 
         # Stage 2: Choose environment, sorted by predefined order
@@ -38,16 +38,18 @@ def phase_init():
             selected_app_details['environment_keys'],
             key=lambda env: env_sort_order.get(env['environment']['env_type'], 4)
         )
-        env_choices = [f"{env['environment']['name']}" for env in env_choices]
-        env_choices.append('Exit')
+        
+        # Map environment names to their IDs, but only showing names in the choices
+        env_choice_map = {env['environment']['name']: env['id'] for env in env_choices}
+        env_choices_display = list(env_choice_map.keys()) + ['Exit']
 
-        selected_env = questionary.select("Choose a Default Environment:", choices=env_choices).ask()
+        selected_env = questionary.select("Choose a Default Environment:", choices=env_choices_display).ask()
 
         if selected_env is None or selected_env == 'Exit':
             sys.exit(0)
 
-        env_id = selected_env.split(" (")[1].rstrip(")")
-        selected_env_name = selected_env.split(" (")[0]
+        env_id = env_choice_map[selected_env]
+        selected_env_name = selected_env
 
         # Save the selected app's and environment's details to .phase.json
         phase_env = {
@@ -72,4 +74,3 @@ def phase_init():
         # Handle other exceptions if needed
         print(e)
         sys.exit(1)
-
