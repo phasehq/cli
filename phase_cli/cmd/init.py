@@ -38,9 +38,9 @@ def phase_init():
             selected_app_details['environment_keys'],
             key=lambda env: env_sort_order.get(env['environment']['env_type'], 4)
         )
-        
+
         # Map environment names to their IDs, but only showing names in the choices
-        env_choice_map = {env['environment']['name']: env['id'] for env in env_choices}
+        env_choice_map = {env['environment']['name']: env['environment']['id'] for env in env_choices}
         env_choices_display = list(env_choice_map.keys()) + ['Exit']
 
         selected_env = questionary.select("Choose a Default Environment:", choices=env_choices_display).ask()
