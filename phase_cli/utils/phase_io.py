@@ -223,7 +223,7 @@ class Phase:
         return results
 
 
-    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '/', destination_path: str = None) -> str:
+    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '', destination_path: str = None) -> str:
         """
         Update a secret in Phase KMS based on key and environment, with support for source and destination paths.
         
@@ -276,12 +276,9 @@ class Phase:
             "keyDigest": key_digest,
             "value": encrypted_value,
             "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
-            "comment": matching_secret.get("comment", "")
+            "comment": matching_secret.get("comment", ""),
+            "path": destination_path if destination_path is not None else matching_secret["path"]
         }
-
-        # Update the path in the payload if a destination path is provided
-        if destination_path:
-            secret_update_payload["path"] = destination_path
 
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
