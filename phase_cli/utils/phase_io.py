@@ -146,7 +146,7 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None, path: str = '/') -> List[Dict]:
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None, path: str = '') -> List[Dict]:
         """
         Get secrets from Phase KMS based on key and environment, with support for personal overrides,
         optional tag matching, decrypting comments, and now including path support and key digest optimization.
@@ -178,8 +178,7 @@ class Phase:
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
-        # If secret(s) are being fetched on '/' path then don't pass any path to fetch_phase_secrets
-        params = {"path": path} if path != '/' else {}
+        params = {"path": path}
         if keys and len(keys) == 1:
             wrapped_salt = environment_key.get("wrapped_salt")
             decrypted_salt = self.decrypt(wrapped_salt)
