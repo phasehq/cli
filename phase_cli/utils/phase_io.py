@@ -191,14 +191,17 @@ class Phase:
 
         results = []
         for secret in secrets_data:
+            # Check if a tag filter is applied and if the secret has the correct tags.
             if tag and not tag_matches(secret.get("tags", []), tag):
                 continue
 
             secret_id = secret["id"]
             override = secret.get("override")
-            use_override = override and override.get("secret") == secret_id and override.get("is_active")
+            # Check if the override exists and is active.
+            use_override = override and override.get("is_active")
 
             key_to_decrypt = secret["key"]
+            # Select the correct value based on override status.
             value_to_decrypt = override["value"] if use_override else secret["value"]
             comment_to_decrypt = secret["comment"]
 
@@ -217,6 +220,7 @@ class Phase:
                 "environment": env_name 
             }
 
+            # Only add the secret to results if the requested keys are not specified or the decrypted key is one of the requested keys.
             if not keys or decrypted_key in keys:
                 results.append(result)
 
