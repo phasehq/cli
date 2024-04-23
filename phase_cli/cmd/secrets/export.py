@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 
-def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv', path: str = '/'):
+def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv', path: str = ''):
     """
     Exports secrets from the specified environment with support for multiple export formats. 
     This function fetches secrets from Phase, resolves any cross-environment or local secret references, and then outputs them in the chosen format.
