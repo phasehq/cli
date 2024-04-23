@@ -66,7 +66,7 @@ def censor_secret(secret, max_length):
 
     # Check for column width and truncate if necessary
     if len(censored) > max_length:
-        return censored[:max_length - 3]
+        return censored[:max_length - 6]
     
     return censored
 
@@ -248,6 +248,18 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
         return [user['id'] for user in config_data.get('phase-users', [])]
     else:
         return config_data.get("default-user")
+
+
+def get_default_user_org(config_file_path):
+    """Extracts the organization name of the default user from a JSON config file."""
+    if os.path.exists(config_file_path):
+        with open(config_file_path, 'r') as file:
+            config = json.load(file)
+            default_user_id = config.get("default-user")
+            for user in config.get("phase-users", []):
+                if user["id"] == default_user_id:
+                    return user["organization_name"]
+    raise ValueError("Configuration file missing or default user not found.")
 
 
 def get_default_user_token() -> str:
