@@ -66,7 +66,7 @@ def censor_secret(secret, max_length):
 
     # Check for column width and truncate if necessary
     if len(censored) > max_length:
-        return censored[:max_length - 3]
+        return censored[:max_length - 6]
     
     return censored
 
