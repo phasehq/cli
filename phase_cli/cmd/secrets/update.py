@@ -5,7 +5,7 @@ from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
 
-def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, random_length=None, source_path='/', destination_path=None):
+def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, random_length=None, source_path='', destination_path=None):
     """
     Updates a secret with a new value or a randomly generated value, with optional source and destination path support.
 
