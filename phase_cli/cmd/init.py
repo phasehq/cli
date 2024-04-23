@@ -3,7 +3,6 @@ import sys
 import json
 import questionary
 from phase_cli.utils.phase_io import Phase
-
 from phase_cli.utils.const import PHASE_ENV_CONFIG
 
 # Initializes a .phase.json in the root of the dir of where the command is run
@@ -16,49 +15,49 @@ def phase_init():
 
     try:
         data = phase.init()
-    except ValueError as err:
-        print(err)
-        return
 
-    try:
-        # Present a list of apps to the user and let them choose one
-        app_choices = [app['name'] for app in data['apps']]
-        app_choices.append('Exit')  # Add Exit option at the end
+        # Create dropdown choices including app name and UUID in brackets
+        app_choices = [f"{app['name']} ({app['id']})" for app in data['apps']]
+        app_choices.append('Exit')
 
-        selected_app_name = questionary.select(
-            'Select an App:',
-            choices=app_choices
-        ).ask()
+        selected_app = questionary.select("Select an App:", choices=app_choices).ask()
 
-        # Check if the user selected the "Exit" option
-        if selected_app_name == 'Exit':
+        # Handle cases where the user cancels the selection or no valid selection is made
+        if selected_app is None or selected_app == 'Exit':
             sys.exit(0)
 
-        # Find the selected app's details
-        selected_app_details = next(
-            (app for app in data['apps'] if app['name'] == selected_app_name),
-            None
+        app_id = selected_app.split(" (")[1].rstrip(")")
+        selected_app_name = selected_app.split(" (")[0]
+        selected_app_details = next(app for app in data['apps'] if app['id'] == app_id)
+
+        # Environment list sort order
+        env_sort_order = {"DEV": 1, "STAGING": 2, "PROD": 3}
+
+        # Stage 2: Choose environment, sorted by predefined order
+        env_choices = sorted(
+            selected_app_details['environment_keys'],
+            key=lambda env: env_sort_order.get(env['environment']['env_type'], 4)
         )
 
-        # Check if selected_app_details is None (no matching app found)
-        if selected_app_details is None:
-            sys.exit(1)
+        # Map environment names to their IDs, but only showing names in the choices
+        env_choice_map = {env['environment']['name']: env['environment']['id'] for env in env_choices}
+        env_choices_display = list(env_choice_map.keys()) + ['Exit']
 
-        # Extract the default environment ID for the environment named "Development"
-        default_env = next(
-            (env_key for env_key in selected_app_details['environment_keys'] if env_key['environment']['name'] == 'Development'),
-            None
-        )
+        selected_env = questionary.select("Choose a Default Environment:", choices=env_choices_display).ask()
 
-        if not default_env:
-            raise ValueError("No 'Development' environment found.")
+        if selected_env is None or selected_env == 'Exit':
+            sys.exit(0)
 
-        # Save the selected app’s environment details to the .phase.json file
+        env_id = env_choice_map[selected_env]
+        selected_env_name = selected_env
+
+        # Save the selected app's and environment's details to .phase.json
         phase_env = {
-            "version": "1",
+            "version": "2",
             "phaseApp": selected_app_name,
-            "appId": selected_app_details['id'],  # Save the app id
-            "defaultEnv": default_env['environment']['name'],
+            "appId": selected_app_details['id'],
+            "defaultEnv": selected_env_name,
+            "envId": env_id
         }
 
         # Create .phase.json
@@ -75,4 +74,3 @@ def phase_init():
         # Handle other exceptions if needed
         print(e)
         sys.exit(1)
-
