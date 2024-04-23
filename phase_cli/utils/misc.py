@@ -250,6 +250,18 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
         return config_data.get("default-user")
 
 
+def get_default_user_org(config_file_path):
+    """Extracts the organization name of the default user from a JSON config file."""
+    if os.path.exists(config_file_path):
+        with open(config_file_path, 'r') as file:
+            config = json.load(file)
+            default_user_id = config.get("default-user")
+            for user in config.get("phase-users", []):
+                if user["id"] == default_user_id:
+                    return user["organization_name"]
+    raise ValueError("Configuration file missing or default user not found.")
+
+
 def get_default_user_token() -> str:
     """
     Fetch the default user's personal access token from the config file in PHASE_SECRETS_DIR.
