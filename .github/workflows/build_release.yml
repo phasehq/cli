@@ -274,8 +274,6 @@ jobs:
       # Process assets for ARM64
       - name: Process ARM64 assets
         run: |
-          ls -l
-          pwd
           mkdir -p phase_cli_release_$VERSION/Linux-binary/phase/
           mv Linux-binary-arm64/phase/* phase_cli_release_$VERSION/Linux-binary/phase/
 
@@ -284,10 +282,8 @@ jobs:
           zip -r "$ZIPNAME" phase_cli_release_$VERSION/Linux-binary/phase/ phase_cli_release_$VERSION/Linux-binary/phase/_internal
           mv "$ZIPNAME" phase_cli_release_$VERSION/
           sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_linux_arm64_$VERSION.sha256
-
-      # # Debug: List the content of the current directory and subdirectories
-      # - name: Debug - List contents after processing
-      #   run: ls -alR
+          # Cleanup the ARM64 binary folder
+          rm -rf Linux-binary
 
       # Upload the entire release directory as a single artifact
       - uses: actions/upload-artifact@v2
