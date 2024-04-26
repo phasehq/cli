@@ -274,7 +274,9 @@ jobs:
       # Process assets for ARM64
       - name: Process ARM64 assets
         run: |
-          mkdir -p phase_cli_release_$VERSION/Linux-binary-arm64/phase/
+          ls -l
+          pwd
+          mkdir -p phase_cli_release_$VERSION/Linux-binary/phase/
           mv Linux-binary-arm64/phase/* phase_cli_release_$VERSION/Linux-binary/phase/
 
           # Adjust the ZIPNAME and paths for ARM64 binary
