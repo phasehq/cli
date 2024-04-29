@@ -4,12 +4,10 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
-from typing import List, Tuple
-import requests
 
 def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None, path='/'):
     """
-    Creates a new secret, encrypts it, and sync it with the Phase, with support for specifying a path.
+    Creates a new secret, encrypts it, and syncs it with the Phase, with support for specifying a path.
 
     Args:
         key (str, optional): The key of the new secret. Defaults to None.
@@ -26,8 +24,10 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     # If the key is not passed as an argument, prompt user for input
     if key is None:
-        key = input("🗝️  Please enter the key: ")
-    key = key.upper()
+        key = input("🗝️\u200A Please enter the key: ")
+
+        # Replace spaces in the key with underscores
+        key = key.replace(' ', '_').upper()
 
     # Check if the secret already exists
     try:
@@ -60,7 +60,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
             value = sys.stdin.read().strip()
 
     try:
-        # Encrypt and send secret to the backend using the `create` method with path support
+        # Encrypt and POST secret to the backend using phase create
         response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, path=path)
 
         # Check the response status code
