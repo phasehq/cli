@@ -29,18 +29,6 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         # Replace spaces in the key with underscores
         key = key.replace(' ', '_').upper()
 
-    # Check if the secret already exists
-    try:
-        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, path=path)
-        secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
-        if secret_data:
-            # Updated to include path in the optional flags message
-            print(f"🗝️  Secret with key '{key}' already exists at path '{path}'. Use 'phase secrets update' to change it's value.")
-            return
-    except ValueError as e:
-        console.log(f"Error: {e}")
-        return
-
     # Generate a random value or get value from user
     if random_type:
         # Check if length is specified for key128 or key256
