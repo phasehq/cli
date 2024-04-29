@@ -25,17 +25,6 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     # Convert the key to uppercase
     key = key.upper()
 
-    # Check if the secret exists in the specified source path
-    try:
-        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, path=source_path)
-        secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
-        if not secret_data:
-            print(f"🔍 No secret found for key: {key} in path: {source_path}")
-            return
-    except ValueError as e:
-        console.log(f"Error: {e}")
-        return
-
     # Generate a random value or get value from user
     if random_type:
         # Check if length is specified for key128 or key256
@@ -61,6 +50,6 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
             # Optionally, list secrets after update to confirm the change
             phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=destination_path or source_path)
         else:
-            print(f"Error: Failed to update secret. {response}")
+            print(f"Error: 🗿 Failed to update secret. {response}")
     except ValueError as e:
         console.log(f"⚠️  Error occurred while updating the secret: {e}")
