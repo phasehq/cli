@@ -28,7 +28,7 @@ def handle_request_errors(response: requests.Response) -> None:
         return
     
     if response.status_code != 200:
-        error_message = f"🗿 Request failed with status code {response.status_code}"
+        error_message = f"🗿 Request failed with status code {response.status_code} {response.text}"
         if PHASE_DEBUG:
             error_message += f": {response.text}"
         raise Exception(error_message)
