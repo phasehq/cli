@@ -22,8 +22,12 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     phase = Phase()
     console = Console()
     
-    # Convert the key to uppercase
-    key = key.upper()
+    # If the key is not passed as an argument, prompt user for input
+    if key is None:
+        key = input("🗝️\u200A Please enter the key: ")
+
+        # Replace spaces in the key with underscores
+        key = key.replace(' ', '_').upper()
 
     # Generate a random value or get value from user
     if random_type:
@@ -46,7 +50,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     try:
         response = phase.update(env_name=env_name, key=key, value=new_value, app_name=phase_app, source_path=source_path, destination_path=destination_path)
         if response == "Success":
-            print("Successfully updated the secret.")
+            print("✅ Successfully updated the secret.")
             # Optionally, list secrets after update to confirm the change
             phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=destination_path or source_path)
         else:
