@@ -1,7 +1,7 @@
 import os
 import re
 
-__version__ = "1.17.3"
+__version__ = "1.17.4"
 __ph_version__ = "v1"
 
 description = "Securely manage application secrets and environment variables with Phase."
