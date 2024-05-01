@@ -158,7 +158,8 @@ def main ():
         )
         secrets_update_parser.add_argument(
             'key', 
-            type=str, 
+            type=str,
+            nargs='?',
             help='The key associated with the secret to update. If the new value is not provided as an argument, it will be read from stdin.'
         )
         secrets_update_parser.add_argument('--env', type=str, help=env_help)
