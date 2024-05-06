@@ -96,7 +96,7 @@ jobs:
       # Upload binary
       - uses: actions/upload-artifact@v2
         with:
-          name: ${{ runner.os }}-binary
+          name: ${{ runner.os }}-${{ (matrix.os == 'macos-14' && 'arm64') || (matrix.os == 'macos-13' && 'amd64') }}-binary
           path: dist/phase*
 
   build_arm:
