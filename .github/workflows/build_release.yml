@@ -121,7 +121,7 @@ jobs:
 
   build_apk:
     name: Build CLI (alpine-latest, 3.11)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     needs: [pytest]
     container:
       image: python:3.11-alpine
@@ -161,7 +161,7 @@ jobs:
     name: Build & Release - Docker
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [build, build_apk]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
 
@@ -192,7 +192,7 @@ jobs:
   Pull_and_test_docker_image:
     name: Test - CLI - Docker
     needs: Build_and_push_docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - name: Download phase-version artifact
         uses: actions/download-artifact@v2
@@ -216,7 +216,7 @@ jobs:
   attach-assets:
     name: Package assets
     needs: [build, build_apk, build_arm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     steps:
       # Download all the artifacts from the build jobs
