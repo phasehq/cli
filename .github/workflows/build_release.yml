@@ -267,11 +267,17 @@ jobs:
           mv "$ZIPNAME" phase_cli_release_$VERSION/
           sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.sha256
 
-          # For MacOS
+          # For MacOS Intel build
           ZIPNAME="phase_cli_macos_amd64_$VERSION.zip"
-          zip -r "$ZIPNAME" macOS-binary/phase/ macOS-binary/phase/_internal
+          zip -r "$ZIPNAME" macOS-amd64-binary/phase/ macOS-binary/phase/_internal
           mv "$ZIPNAME" phase_cli_release_$VERSION/
           sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION.sha256
+
+          # For MacOS Apple silicon build 
+          ZIPNAME="phase_cli_macos_arm64_$VERSION.zip"
+          zip -r "$ZIPNAME" macOS-arm64-binary/phase/ macOS-binary/phase/_internal
+          mv "$ZIPNAME" phase_cli_release_$VERSION/
+          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_macos_arm64_$VERSION.sha256
 
           # For Alpine build
           ZIPNAME="phase_cli_alpine_linux_amd64_$VERSION.zip"
