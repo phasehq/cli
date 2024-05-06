@@ -13,7 +13,7 @@ permissions:
 jobs:
   pytest:
     name: Run Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     strategy:
       matrix:
         python-version: [3.11]
@@ -34,7 +34,12 @@ jobs:
     needs: [pytest]
     strategy:
       matrix:
-        os: [ubuntu-20.04, windows-latest, macos-latest]
+        # ubuntu-20.04 - context: https://github.com/phasehq/cli/issues/94
+        # macos-13 darwin-amd64 builds (intel)
+        # macos-14 darwin-arm64 builds (apple silicon)
+        # context: https://github.com/actions/runner-images?tab=readme-ov-file#available-images
+
+        os: [ubuntu-20.04, windows-2022, macos-13, macos-14]
         python-version: [3.11]
     steps:
       - uses: actions/checkout@v2
@@ -93,10 +98,21 @@ jobs:
           path: "*.rpm"
         if: matrix.os == 'ubuntu-20.04'
 
-      # Upload binary
-      - uses: actions/upload-artifact@v2
+      - name: Set artifact name
+        run: |
+          if [[ "${{ matrix.os }}" == "macos-14" ]]; then
+            echo "ARTIFACT_NAME=${{ runner.os }}-arm64-binary" >> $GITHUB_ENV
+          elif [[ "${{ matrix.os }}" == "macos-13" ]]; then
+            echo "ARTIFACT_NAME=${{ runner.os }}-amd64-binary" >> $GITHUB_ENV
+          else
+            echo "ARTIFACT_NAME=${{ runner.os }}-binary" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v2
         with:
-          name: ${{ runner.os }}-binary
+          name: ${{ env.ARTIFACT_NAME }}
           path: dist/phase*
 
   build_arm:
@@ -121,7 +137,7 @@ jobs:
 
   build_apk:
     name: Build CLI (alpine-latest, 3.11)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     needs: [pytest]
     container:
       image: python:3.11-alpine
@@ -161,7 +177,7 @@ jobs:
     name: Build & Release - Docker
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [build, build_apk]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
 
@@ -192,7 +208,7 @@ jobs:
   Pull_and_test_docker_image:
     name: Test - CLI - Docker
     needs: Build_and_push_docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - name: Download phase-version artifact
         uses: actions/download-artifact@v2
@@ -216,7 +232,7 @@ jobs:
   attach-assets:
     name: Package assets
     needs: [build, build_apk, build_arm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     steps:
       # Download all the artifacts from the build jobs
@@ -256,11 +272,17 @@ jobs:
           mv "$ZIPNAME" phase_cli_release_$VERSION/
           sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_windows_amd64_$VERSION.sha256
 
-          # For MacOS
+          # For MacOS Intel build
           ZIPNAME="phase_cli_macos_amd64_$VERSION.zip"
-          zip -r "$ZIPNAME" macOS-binary/phase/ macOS-binary/phase/_internal
+          zip -r "$ZIPNAME" macOS-amd64-binary/phase/ macOS-binary/phase/_internal
           mv "$ZIPNAME" phase_cli_release_$VERSION/
           sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_macos_amd64_$VERSION.sha256
+
+          # For MacOS Apple silicon build 
+          ZIPNAME="phase_cli_macos_arm64_$VERSION.zip"
+          zip -r "$ZIPNAME" macOS-arm64-binary/phase/ macOS-binary/phase/_internal
+          mv "$ZIPNAME" phase_cli_release_$VERSION/
+          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_macos_arm64_$VERSION.sha256
 
           # For Alpine build
           ZIPNAME="phase_cli_alpine_linux_amd64_$VERSION.zip"
