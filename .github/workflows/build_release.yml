@@ -93,10 +93,21 @@ jobs:
           path: "*.rpm"
         if: matrix.os == 'ubuntu-20.04'
 
-      # Upload binary
-      - uses: actions/upload-artifact@v2
+      - name: Set artifact name
+        run: |
+          if [[ "${{ matrix.os }}" == "macos-14" ]]; then
+            echo "ARTIFACT_NAME=${{ runner.os }}-arm64-binary" >> $GITHUB_ENV
+          elif [[ "${{ matrix.os }}" == "macos-13" ]]; then
+            echo "ARTIFACT_NAME=${{ runner.os }}-amd64-binary" >> $GITHUB_ENV
+          else
+            echo "ARTIFACT_NAME=${{ runner.os }}-binary" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v2
         with:
-          name: ${{ runner.os }}-${{ (matrix.os == 'macos-14' && 'arm64') || (matrix.os == 'macos-13' && 'amd64') }}-binary
+          name: ${{ env.ARTIFACT_NAME }}
           path: dist/phase*
 
   build_arm:
