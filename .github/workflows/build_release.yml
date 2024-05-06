@@ -34,6 +34,11 @@ jobs:
     needs: [pytest]
     strategy:
       matrix:
+        # ubuntu-20.04 - context: https://github.com/phasehq/cli/issues/94
+        # macos-13 darwin-amd64 builds (intel)
+        # macos-14 darwin-arm64 builds (apple silicon)
+        # context: https://github.com/actions/runner-images?tab=readme-ov-file#available-images
+
         os: [ubuntu-20.04, windows-2022, macos-13, macos-14]
         python-version: [3.11]
     steps:
