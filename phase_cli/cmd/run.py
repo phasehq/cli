@@ -31,7 +31,7 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
                 task1 = progress.add_task("[bold green]Fetching secrets...", total=None)        
 
                 # Fetch all secrets
-                all_secrets = phase.get(env_name=env_name, app_name=phase_app, path=path)
+                all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
                 
                 # Organize all secrets into a dictionary for easier lookup
                 secrets_dict = {}
@@ -52,20 +52,13 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
                     resolved_value = resolve_all_secrets(secret["value"], all_secrets, phase, secret.get('application'), secret.get('environment'))
                     resolved_secrets_dict[secret["key"]] = resolved_value
 
-                # Normalize and filter secrets by tags if tags are provided
-                if tags:
-                    user_tags = [normalize_tag(tag) for tag in tags.split(',')]
-                    filtered_secrets_dict = {key: value for key, value in resolved_secrets_dict.items() if any(secret['key'] == key and any(tag_matches(secret.get("tags", []), user_tag) for user_tag in user_tags) for secret in all_secrets)}
-                else:
-                    filtered_secrets_dict = resolved_secrets_dict
-
                 # Count and get environment from the secrets for the message
-                secret_count = len(filtered_secrets_dict)
-                environments = set(secret.get('environment') for secret in all_secrets if secret['key'] in filtered_secrets_dict)
+                secret_count = len(resolved_secrets_dict)
+                environments = set(secret.get('environment') for secret in all_secrets if secret['key'] in resolved_secrets_dict)
                 environment_message = ', '.join(environments)
 
                 new_env = os.environ.copy()
-                new_env.update(filtered_secrets_dict)
+                new_env.update(resolved_secrets_dict)
 
                 # Stop the fetching secrets spinner
                 progress.stop()
