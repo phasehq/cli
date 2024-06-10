@@ -55,7 +55,7 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
                 # Normalize and filter secrets by tags if tags are provided
                 if tags:
                     user_tags = [normalize_tag(tag) for tag in tags.split(',')]
-                    filtered_secrets_dict = {key: value for key, value in resolved_secrets_dict.items() if any(tag_matches(all_secrets[key].get("tags", []), user_tag) for user_tag in user_tags)}
+                    filtered_secrets_dict = {key: value for key, value in resolved_secrets_dict.items() if any(secret['key'] == key and any(tag_matches(secret.get("tags", []), user_tag) for user_tag in user_tags) for secret in all_secrets)}
                 else:
                     filtered_secrets_dict = resolved_secrets_dict
 
