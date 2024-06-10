@@ -6,7 +6,6 @@ import subprocess
 import os
 import sys
 
-# Import the function you are testing
 from phase_cli.cmd.run import phase_run_inject
 
 class TestPhaseRunInject(unittest.TestCase):
