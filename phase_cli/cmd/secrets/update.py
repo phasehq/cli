@@ -5,7 +5,7 @@ from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
 
-def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, random_length=None, source_path='/', destination_path=None):
+def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, random_length=None, source_path='', destination_path=None):
     """
     Updates a secret with a new value or a randomly generated value, with optional source and destination path support.
 
@@ -22,19 +22,12 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     phase = Phase()
     console = Console()
     
-    # Convert the key to uppercase
-    key = key.upper()
+    # If the key is not passed as an argument, prompt user for input
+    if key is None:
+        key = input("🗝️\u200A Please enter the key: ")
 
-    # Check if the secret exists in the specified source path
-    try:
-        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, path=source_path)
-        secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
-        if not secret_data:
-            print(f"🔍 No secret found for key: {key} in path: {source_path}")
-            return
-    except ValueError as e:
-        console.log(f"Error: {e}")
-        return
+        # Replace spaces in the key with underscores
+        key = key.replace(' ', '_').upper()
 
     # Generate a random value or get value from user
     if random_type:
@@ -57,10 +50,10 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     try:
         response = phase.update(env_name=env_name, key=key, value=new_value, app_name=phase_app, source_path=source_path, destination_path=destination_path)
         if response == "Success":
-            print("Successfully updated the secret.")
+            print("✅ Successfully updated the secret.")
             # Optionally, list secrets after update to confirm the change
             phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=destination_path or source_path)
         else:
-            print(f"Error: Failed to update secret. {response}")
+            print(f"Error: 🗿 Failed to update secret. {response}")
     except ValueError as e:
         console.log(f"⚠️  Error occurred while updating the secret: {e}")

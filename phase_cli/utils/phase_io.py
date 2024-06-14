@@ -146,7 +146,7 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None, path: str = '/') -> List[Dict]:
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None, path: str = '') -> List[Dict]:
         """
         Get secrets from Phase KMS based on key and environment, with support for personal overrides,
         optional tag matching, decrypting comments, and now including path support and key digest optimization.
@@ -178,8 +178,7 @@ class Phase:
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
-        # If secret(s) are being fetched on '/' path then don't pass any path to fetch_phase_secrets
-        params = {"path": path} if path != '/' else {}
+        params = {"path": path}
         if keys and len(keys) == 1:
             wrapped_salt = environment_key.get("wrapped_salt")
             decrypted_salt = self.decrypt(wrapped_salt)
@@ -192,14 +191,17 @@ class Phase:
 
         results = []
         for secret in secrets_data:
+            # Check if a tag filter is applied and if the secret has the correct tags.
             if tag and not tag_matches(secret.get("tags", []), tag):
                 continue
 
             secret_id = secret["id"]
             override = secret.get("override")
-            use_override = override and override.get("secret") == secret_id and override.get("is_active")
+            # Check if the override exists and is active.
+            use_override = override and override.get("is_active")
 
             key_to_decrypt = secret["key"]
+            # Select the correct value based on override status.
             value_to_decrypt = override["value"] if use_override else secret["value"]
             comment_to_decrypt = secret["comment"]
 
@@ -218,13 +220,14 @@ class Phase:
                 "environment": env_name 
             }
 
+            # Only add the secret to results if the requested keys are not specified or the decrypted key is one of the requested keys.
             if not keys or decrypted_key in keys:
                 results.append(result)
 
         return results
 
 
-    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '/', destination_path: str = None) -> str:
+    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '', destination_path: str = None) -> str:
         """
         Update a secret in Phase KMS based on key and environment, with support for source and destination paths.
         
@@ -277,12 +280,9 @@ class Phase:
             "keyDigest": key_digest,
             "value": encrypted_value,
             "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
-            "comment": matching_secret.get("comment", "")
+            "comment": matching_secret.get("comment", ""),
+            "path": destination_path if destination_path is not None else matching_secret["path"]
         }
-
-        # Update the path in the payload if a destination path is provided
-        if destination_path:
-            secret_update_payload["path"] = destination_path
 
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
