@@ -7,13 +7,10 @@ from phase_cli.utils.phase_io import Phase
 import xml.sax.saxutils as saxutils
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
-console = Console()
 
-# Create a console object for logging warnings and errors to stderr
-error_console = Console(stderr=True)
-
-def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv', path: str = '/'):
+def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None, format='dotenv', path: str = ''):
     """
     Exports secrets from the specified environment with support for multiple export formats. 
     This function fetches secrets from Phase, resolves any cross-environment or local secret references, and then outputs them in the chosen format.
@@ -49,55 +46,68 @@ def phase_secrets_env_export(env_name=None, phase_app=None, keys=None, tags=None
 
     # Initialize
     phase = Phase()
+    # Create a console object for logging warnings and errors to stderr
+    console = Console(stderr=True)
 
     try:
         # Fetch all secrets
         all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
+
+        # Organize all secrets into a dictionary for easier lookup.
+        secrets_dict = {}
+        for secret in all_secrets:
+            env_name = secret['environment']
+            key = secret['key']
+            if env_name not in secrets_dict:
+                secrets_dict[env_name] = {}
+            secrets_dict[env_name][key] = secret['value']
+
         resolved_secrets = []
 
         for secret in all_secrets:
             try:
                 # Ensure we use the correct environment name for each secret
                 current_env_name = secret['environment']
+                current_application_name = secret['application']
 
                 # Attempt to resolve secret references in the value
-                resolved_value = resolve_all_secrets(value=secret["value"], current_env_name=current_env_name, phase=phase)
+                resolved_value = resolve_all_secrets(value=secret["value"], all_secrets=all_secrets, phase=phase, current_application_name=current_application_name, current_env_name=current_env_name)
                 resolved_secrets.append({
                     **secret,
                     "value": resolved_value  # Replace original value with resolved value
                 })
             except ValueError as e:
                 # Print warning to stderr via the error_console
-                error_console.log(f"Warning: {e}")
+                console.log(f"Warning: {e}")
 
         # Create a dictionary with keys and resolved values
         all_secrets_dict = {secret["key"]: secret["value"] for secret in resolved_secrets}
 
         # Filter secrets if specific keys are requested
         if keys:
-            secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
+            filtered_secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
         else:
-            secrets_dict = all_secrets_dict
+            filtered_secrets_dict = all_secrets_dict
 
-        # Export based on selected format
+        # Export based on the specified format
         if format == 'json':
-            export_json(secrets_dict)
+            export_json(filtered_secrets_dict)
         elif format == 'csv':
-            export_csv(secrets_dict)
+            export_csv(filtered_secrets_dict)
         elif format == 'yaml':
-            export_yaml(secrets_dict)
+            export_yaml(filtered_secrets_dict)
         elif format == 'xml':
-            export_xml(secrets_dict)
+            export_xml(filtered_secrets_dict)
         elif format == 'toml':
-            export_toml(secrets_dict)
+            export_toml(filtered_secrets_dict)
         elif format == 'hcl':
-            export_hcl(secrets_dict)
+            export_hcl(filtered_secrets_dict)
         elif format == 'ini':
-            export_ini(secrets_dict)
+            export_ini(filtered_secrets_dict)
         elif format == 'java_properties':
-            export_java_properties(secrets_dict)
+            export_java_properties(filtered_secrets_dict)
         else:
-            export_dotenv(secrets_dict)
+            export_dotenv(filtered_secrets_dict)
 
     except ValueError as e:
         console.log(f"Error: {e}")

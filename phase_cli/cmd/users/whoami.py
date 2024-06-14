@@ -28,6 +28,7 @@ def phase_users_whoami():
         # Print the default user details
         print(f"✉️\u200A Email: {default_user['email']}")
         print(f"🙋 User ID: {default_user['id']}")
+        print(f"🏢 Organization: {default_user['organization_name']}")
         print(f"☁️\u200A Host: {default_user['host']}")
 
     except FileNotFoundError:

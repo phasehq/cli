@@ -46,6 +46,7 @@ Commands:
     users whoami     🙋 See details of the current user
     users logout     🏃 Logout from phase-cli
     users keyring    🔐 Display information about the Phase keyring
+    docs             📖 Open the Phase CLI Docs in your browser
     console          🖥️ Open the Phase Console in your browser
     update           🆙 Update the Phase CLI to the latest version
 ```
@@ -143,7 +144,7 @@ source phase-cli/bin/activate
 ### Install dependencies:
 
 ```bash
- pip3 install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 ```
@@ -151,5 +152,5 @@ export PYTHONPATH="$PWD"
 ```
 
 ```bash
-./phase_cli/main.py
+python3 phase_cli/main.py
 ```

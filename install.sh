@@ -21,16 +21,16 @@ check_required_tools() {
             echo "Installing $TOOL..."
             case $OS in
                 ubuntu|debian)
-                    apt-get update && apt-get install -y $TOOL
+                    sudo apt-get update && sudo apt-get install -y $TOOL
                     ;;
                 fedora|rhel|centos)
-                    yum install -y $TOOL
+                    sudo yum install -y $TOOL
                     ;;
                 alpine)
-                    apk add $TOOL
+                    sudo apk add $TOOL
                     ;;
                 arch)
-                    pacman -Sy --noconfirm $TOOL
+                    sudo pacman -Sy --noconfirm $TOOL
                     ;;
             esac
         fi
@@ -60,12 +60,9 @@ verify_checksum() {
         local expected_checksum=$(echo "$line" | awk '{print $1}')
         local target_file=$(echo "$line" | awk '{print $2}')
 
-        # Check if the target file exists
         if [[ -e "$target_file" ]]; then
-            # Compute the checksum
             local computed_checksum=$(sha256sum "$target_file" | awk '{print $1}')
             
-            # Verify the checksum
             if [[ "$expected_checksum" != "$computed_checksum" ]]; then
                 echo "Checksum verification failed for $target_file!"
                 exit 1
@@ -83,36 +80,49 @@ has_sudo_access() {
 }
 
 install_from_binary() {
-    if [ "$(uname -m)" == "x86_64" ]; then
-        ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
-        CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
-        
-        wget_download $ZIP_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.zip
-        
-        unzip $TMPDIR/phase_cli_linux_amd64_$VERSION.zip -d $TMPDIR
-        
-        # Correct the paths after unzipping
-        BINARY_PATH="$TMPDIR/Linux-binary/phase/phase"
-        INTERNAL_DIR_PATH="$TMPDIR/Linux-binary/phase/_internal"
-        
-        verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
-        
-        chmod +x $BINARY_PATH
-        
-        if ! has_sudo_access; then
-            echo "Moving items to /usr/local/bin. Please enter your sudo password or run as root."
-        fi
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64)
+            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
+            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+            ;;
+        aarch64)
+            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
+            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.sha256"
+            ;;
+        *)
+            echo "Unsupported architecture: $ARCH. This script supports x86_64 and arm64."
+            exit 1
+            ;;
+    esac
 
-        # Move the binary and the _internal directory to /usr/local/bin
-        sudo mv $BINARY_PATH /usr/local/bin/phase
-        sudo mv $INTERNAL_DIR_PATH /usr/local/bin/_internal
-    else
-        echo "Unsupported OS type and architecture."
-        exit 1
+    wget_download $ZIP_URL $TMPDIR/phase_cli_${ARCH}_$VERSION.zip
+    
+    unzip $TMPDIR/phase_cli_${ARCH}_$VERSION.zip -d $TMPDIR
+    
+    BINARY_PATH="$TMPDIR/Linux-binary/phase/phase"
+    INTERNAL_DIR_PATH="$TMPDIR/Linux-binary/phase/_internal"
+    
+    verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
+    
+    chmod +x $BINARY_PATH
+    
+    if ! has_sudo_access; then
+        echo "Moving items to /usr/local/bin. Please enter your sudo password or run as root."
     fi
+
+    sudo mv $BINARY_PATH /usr/local/bin/phase
+    sudo mv $INTERNAL_DIR_PATH /usr/local/bin/_internal
 }
 
 install_package() {
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+        install_from_binary
+        echo "phase-cli version $VERSION successfully installed"
+        return
+    fi
+
     case $OS in
         ubuntu|debian)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
@@ -145,15 +155,25 @@ install_package() {
 main() {
     detect_os
     check_required_tools
-
-    VERSION=$(get_latest_version)
     TMPDIR=$(mktemp -d)
-    
-    if [[ "$1" == "--binary" ]]; then
-        install_from_binary
-    else
-        install_package
-    fi
+
+    # Default to the latest version unless a specific version is requested
+    VERSION=$(get_latest_version)
+
+    # Parse command-line arguments
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --version)
+                VERSION="$2"
+                shift 2
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    install_package
 }
 
 main "$@"
