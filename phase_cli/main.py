@@ -103,7 +103,7 @@ def main ():
         secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
-        secrets_list_parser.add_argument('--path', type=str, default='/', help="The path in which you want to list secrets. Default is '/'")
+        secrets_list_parser.add_argument('--path', type=str, help="The path in which you want to list secrets.")
         secrets_list_parser.add_argument('--tags', type=str, help=tag_help)
         secrets_list_parser.epilog = (
             "🔗 : Indicates that the secret value references another secret within the same environment.\n"
@@ -158,7 +158,8 @@ def main ():
         )
         secrets_update_parser.add_argument(
             'key', 
-            type=str, 
+            type=str,
+            nargs='?',
             help='The key associated with the secret to update. If the new value is not provided as an argument, it will be read from stdin.'
         )
         secrets_update_parser.add_argument('--env', type=str, help=env_help)

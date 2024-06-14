@@ -4,12 +4,10 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
-from typing import List, Tuple
-import requests
 
 def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None, path='/'):
     """
-    Creates a new secret, encrypts it, and sync it with the Phase, with support for specifying a path.
+    Creates a new secret, encrypts it, and syncs it with the Phase, with support for specifying a path.
 
     Args:
         key (str, optional): The key of the new secret. Defaults to None.
@@ -26,20 +24,10 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     # If the key is not passed as an argument, prompt user for input
     if key is None:
-        key = input("🗝️  Please enter the key: ")
-    key = key.upper()
+        key = input("🗝️\u200A Please enter the key: ")
 
-    # Check if the secret already exists
-    try:
-        secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, path=path)
-        secret_data = next((secret for secret in secrets_data if secret["key"] == key), None)
-        if secret_data:
-            # Updated to include path in the optional flags message
-            print(f"🗝️  Secret with key '{key}' already exists at path '{path}'. Use 'phase secrets update' to change it's value.")
-            return
-    except ValueError as e:
-        console.log(f"Error: {e}")
-        return
+        # Replace spaces in the key with underscores
+        key = key.replace(' ', '_').upper()
 
     # Generate a random value or get value from user
     if random_type:
@@ -60,7 +48,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
             value = sys.stdin.read().strip()
 
     try:
-        # Encrypt and send secret to the backend using the `create` method with path support
+        # Encrypt and POST secret to the backend using phase create
         response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, path=path)
 
         # Check the response status code
