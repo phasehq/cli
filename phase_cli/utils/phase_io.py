@@ -100,15 +100,16 @@ class Phase:
         return response.json()
 
 
-    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str, path: str = '/') -> requests.Response:
+    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str, path: str = '/', override_value: str = None) -> requests.Response:
         """
-        Create secrets in Phase KMS with support for specifying a path.
+        Create secrets in Phase KMS with support for specifying a path and overrides.
 
         Args:
             key_value_pairs (List[Tuple[str, str]]): List of tuples where each tuple contains a key and a value.
             env_name (str): The name (or partial name) of the desired environment.
             app_name (str): The name of the application context.
             path (str, optional): The path under which to store the secrets. Defaults to the root path '/'.
+            override_value (str, optional): The overridden value for the secret. Defaults to None.
 
         Returns:
             requests.Response: The HTTP response from the Phase KMS.
@@ -138,9 +139,17 @@ class Phase:
                 "keyDigest": key_digest,
                 "value": encrypted_value,
                 "path": path,
-                "tags": [], # TODO: Implement tags and comments creation
+                "tags": [],  # TODO: Implement tags and comments creation
                 "comment": ""
             }
+
+            if override_value:
+                encrypted_override_value = CryptoUtils.encrypt_asymmetric(override_value, public_key)
+                secret["override"] = {
+                    "value": encrypted_override_value,
+                    "isActive": True
+                }
+
             secrets.append(secret)
 
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
