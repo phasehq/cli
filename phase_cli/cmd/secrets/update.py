@@ -47,11 +47,11 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
             return
     elif not override:
         if sys.stdin.isatty():
-            new_value = getpass.getpass(f"Please enter the new value for {key} (hidden): ")
+            new_value = getpass.getpass(f"✨ Please enter the new value for {key} (hidden): ")
         else:
             new_value = sys.stdin.read().strip()
     else:
-        new_value = getpass.getpass(f"✨ Please enter the new overridden value for {key} (hidden): ")
+        new_value = getpass.getpass(f"✨ Please enter the new 🔏 override value for {key} (hidden): ")
 
     # Update the secret with optional source and destination path support
     try:

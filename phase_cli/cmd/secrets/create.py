@@ -52,7 +52,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     # If override is enabled, get the overridden value from the user
     if override:
-        override_value = getpass.getpass("✨ Please enter the 🔏 overridden value (hidden): ")
+        override_value = getpass.getpass("✨ Please enter the 🔏 override value (hidden): ")
     else:
         override_value = None
 
