@@ -193,6 +193,16 @@ def main ():
                                             type=str, 
                                             help='The new path for the secret, if changing its location. If not provided, the secret\'s path is not updated. Example usage: --updated-path "/folder/subfolder"')
 
+        # Adding the --override argument for personal secret override
+        secrets_update_parser.add_argument('--override', 
+                                            action='store_true', 
+                                            help='🔏 Update the personal override value.')
+
+        # Adding the --toggle-override argument to toggle the override state
+        secrets_update_parser.add_argument('--toggle-override', 
+                                            action='store_true', 
+                                            help='🔄 Toggle the override state between active and inactive.')
+
         # Secrets delete command
         secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️\u200A Delete a secret')
         secrets_delete_parser.add_argument('keys', nargs='*', help='Keys to be deleted')
@@ -292,7 +302,7 @@ def main ():
             elif args.secrets_command == 'export':
                 phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, path=args.path, tags=args.tags, format=args.format)
             elif args.secrets_command == 'update':
-                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length)
+                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length, override=args.override, toggle_override=args.toggle_override)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
                 parser.print_help()
