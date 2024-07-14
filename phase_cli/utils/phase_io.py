@@ -289,7 +289,7 @@ class Phase:
             "id": matching_secret["id"],
             "key": encrypted_key,
             "keyDigest": key_digest,
-            "value": encrypted_value,
+            "value": encrypted_value if not override else matching_secret["value"],
             "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
             "comment": matching_secret.get("comment", ""),
             "path": destination_path if destination_path is not None else matching_secret["path"]
@@ -314,7 +314,6 @@ class Phase:
             return "Success"
         else:
             return f"Error: Failed to update secret. HTTP Status Code: {response.status_code}"
-
 
 
     def delete(self, env_name: str, keys_to_delete: List[str], app_name: str = None, path: str = None) -> List[str]:
