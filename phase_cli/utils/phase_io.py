@@ -268,7 +268,6 @@ class Phase:
         # Fetch secrets from the specified source path
         secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, path=source_path)
         secrets_data = secrets_response.json()
-        print("secrets_data", secrets_data)
 
         wrapped_seed = environment_key.get("wrapped_seed")
         decrypted_seed = self.decrypt(wrapped_seed)
@@ -309,7 +308,6 @@ class Phase:
                     "isActive": toggle_override  # Activate override if it's being toggled for the first time
                 }
 
-        print("secret_update_payload", secret_update_payload)
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
         if response.status_code == 200:
