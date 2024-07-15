@@ -18,6 +18,7 @@ from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.const import __ph_version__, pss_user_pattern, pss_service_pattern
 from phase_cli.utils.misc import phase_get_context, get_default_user_host, normalize_tag, tag_matches
 from phase_cli.utils.keyring import get_credentials
+from phase_cli.exceptions import OverrideNotFoundException
 
 @dataclass
 class AppSecret:
@@ -286,7 +287,10 @@ class Phase:
         key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
 
         # Determine secret value to be updated -  only update shared value if not overriding or toggling
-        payload_value = matching_secret["value"] if (override or toggle_override) else encrypted_value
+        if not override and not toggle_override:
+            payload_value = encrypted_value
+        else:
+            payload_value = matching_secret["value"]
 
         secret_update_payload = {
             "id": matching_secret["id"],
@@ -298,18 +302,19 @@ class Phase:
             "path": destination_path if destination_path is not None else matching_secret["path"]
         }
 
-        if override or toggle_override:
-            if "override" in matching_secret and matching_secret["override"] is not None:
-                current_override_state = matching_secret["override"].get("is_active", False)
-                secret_update_payload["override"] = {
-                    "value": encrypted_value if value is not None else matching_secret["override"]["value"],
-                    "isActive": not current_override_state if toggle_override else current_override_state
-                }
-            else:
-                secret_update_payload["override"] = {
-                    "value": encrypted_value if value is not None else CryptoUtils.encrypt_asymmetric("", public_key),
-                    "isActive": toggle_override  # Activate override if it's being toggled for the first time
-                }
+        if toggle_override:
+            if "override" not in matching_secret or matching_secret["override"] is None:
+                raise OverrideNotFoundException(key)
+            current_override_state = matching_secret["override"].get("is_active", False)
+            secret_update_payload["override"] = {
+                "value": matching_secret["override"]["value"],
+                "isActive": not current_override_state
+            }
+        elif override:
+            secret_update_payload["override"] = {
+                "value": encrypted_value if value is not None else matching_secret["override"]["value"],
+                "isActive": matching_secret["override"].get("is_active", True)
+            }
 
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
