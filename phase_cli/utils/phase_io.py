@@ -285,11 +285,14 @@ class Phase:
         decrypted_salt = self.decrypt(wrapped_salt)
         key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
 
+        # Determine secret value to be updated -  only update shared value if not overriding or toggling
+        payload_value = matching_secret["value"] if (override or toggle_override) else encrypted_value
+
         secret_update_payload = {
             "id": matching_secret["id"],
             "key": encrypted_key,
             "keyDigest": key_digest,
-            "value": matching_secret["value"],  # Retain the existing shared value
+            "value": payload_value,
             "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
             "comment": matching_secret.get("comment", ""),
             "path": destination_path if destination_path is not None else matching_secret["path"]
