@@ -302,39 +302,39 @@ class Phase:
             "path": destination_path if destination_path is not None else matching_secret["path"]
         }
 
-    if toggle_override:
-        # Check if the secret has an existing override. If not, raise a custom exception.
-        # This prevents toggling an override on a secret that doesn't have one.
-        if "override" not in matching_secret or matching_secret["override"] is None:
-            raise OverrideNotFoundException(key)
-        
-        # Retrieve the current override state. If the override is not active, it defaults to False.
-        current_override_state = matching_secret["override"].get("is_active", False)
-        
-        # Prepare the payload to update the override status. The value of the override remains unchanged,
-        # but the isActive status is toggled.
-        secret_update_payload["override"] = {
-            "value": matching_secret["override"]["value"],
-            "isActive": not current_override_state  # Toggle the current state.
-        }
-    elif override:
-        # If the override flag is set, check if there is an existing override.
-        if matching_secret["override"] is None:
-            # If no override exists, create a new override entry.
-            # The value for the override is the encrypted value provided by the user,
-            # and the override is activated by default.
+        if toggle_override:
+            # Check if the secret has an existing override. If not, raise a custom exception.
+            # This prevents toggling an override on a secret that doesn't have one.
+            if "override" not in matching_secret or matching_secret["override"] is None:
+                raise OverrideNotFoundException(key)
+            
+            # Retrieve the current override state. If the override is not active, it defaults to False.
+            current_override_state = matching_secret["override"].get("is_active", False)
+            
+            # Prepare the payload to update the override status. The value of the override remains unchanged,
+            # but the isActive status is toggled.
             secret_update_payload["override"] = {
-                "value": encrypted_value,
-                "isActive": True
+                "value": matching_secret["override"]["value"],
+                "isActive": not current_override_state  # Toggle the current state.
             }
-        else:
-            # If an override already exists, update its value.
-            # If a new value is provided, use it; otherwise, retain the existing override value.
-            # The isActive status of the override is also retained from the existing override.
-            secret_update_payload["override"] = {
-                "value": encrypted_value if value is not None else matching_secret["override"]["value"],
-                "isActive": matching_secret["override"].get("is_active", True)
-            }
+        elif override:
+            # If the override flag is set, check if there is an existing override.
+            if matching_secret["override"] is None:
+                # If no override exists, create a new override entry.
+                # The value for the override is the encrypted value provided by the user,
+                # and the override is activated by default.
+                secret_update_payload["override"] = {
+                    "value": encrypted_value,
+                    "isActive": True
+                }
+            else:
+                # If an override already exists, update its value.
+                # If a new value is provided, use it; otherwise, retain the existing override value.
+                # The isActive status of the override is also retained from the existing override.
+                secret_update_payload["override"] = {
+                    "value": encrypted_value if value is not None else matching_secret["override"]["value"],
+                    "isActive": matching_secret["override"].get("is_active", True)
+                }
 
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 
