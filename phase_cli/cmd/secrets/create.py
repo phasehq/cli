@@ -27,8 +27,8 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
     if key is None:
         key = input("🗝️\u200A Please enter the key: ")
 
-        # Replace spaces in the key with underscores
-        key = key.replace(' ', '_').upper()
+    # Replace spaces in the key with underscores
+    key = key.replace(' ', '_').upper()
 
     # Generate a random value or get value from user, unless override is enabled
     if override:
