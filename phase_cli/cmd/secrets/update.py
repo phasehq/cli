@@ -28,8 +28,8 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     if key is None:
         key = input("🗝️\u200A Please enter the key: ")
 
-        # Replace spaces in the key with underscores
-        key = key.replace(' ', '_').upper()
+    # Replace spaces in the key with underscores
+    key = key.replace(' ', '_').upper()
 
     # Check if toggle_override is provided, if so, do not prompt for a new value
     if toggle_override:
