@@ -100,15 +100,16 @@ class Phase:
         return response.json()
 
 
-    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str, path: str = '/') -> requests.Response:
+    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str, path: str = '/', override_value: str = None) -> requests.Response:
         """
-        Create secrets in Phase KMS with support for specifying a path.
+        Create secrets in Phase KMS with support for specifying a path and overrides.
 
         Args:
             key_value_pairs (List[Tuple[str, str]]): List of tuples where each tuple contains a key and a value.
             env_name (str): The name (or partial name) of the desired environment.
             app_name (str): The name of the application context.
             path (str, optional): The path under which to store the secrets. Defaults to the root path '/'.
+            override_value (str, optional): The overridden value for the secret. Defaults to None.
 
         Returns:
             requests.Response: The HTTP response from the Phase KMS.
@@ -138,9 +139,17 @@ class Phase:
                 "keyDigest": key_digest,
                 "value": encrypted_value,
                 "path": path,
-                "tags": [], # TODO: Implement tags and comments creation
+                "tags": [],  # TODO: Implement tags and comments creation
                 "comment": ""
             }
+
+            if override_value:
+                encrypted_override_value = CryptoUtils.encrypt_asymmetric(override_value, public_key)
+                secret["override"] = {
+                    "value": encrypted_override_value,
+                    "isActive": True
+                }
+
             secrets.append(secret)
 
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
@@ -227,17 +236,19 @@ class Phase:
         return results
 
 
-    def update(self, env_name: str, key: str, value: str, app_name: str = None, source_path: str = '', destination_path: str = None) -> str:
+    def update(self, env_name: str, key: str, value: str = None, app_name: str = None, source_path: str = '', destination_path: str = None, override: bool = False, toggle_override: bool = False) -> str:
         """
         Update a secret in Phase KMS based on key and environment, with support for source and destination paths.
         
         Args:
             env_name (str): The name (or partial name) of the desired environment.
             key (str): The key for which to update the secret value.
-            value (str): The new value for the secret.
+            value (str, optional): The new value for the secret. Defaults to None.
             app_name (str, optional): The name of the desired application.
             source_path (str, optional): The current path of the secret. Defaults to root path '/'.
             destination_path (str, optional): The new path for the secret, if changing its location. If not provided, the path is not updated.
+            override (bool, optional): Whether to update an overridden secret value. Defaults to False.
+            toggle_override (bool, optional): Whether to toggle the override state between active and inactive. Defaults to False.
                 
         Returns:
             str: A message indicating the outcome of the update operation.
@@ -268,8 +279,8 @@ class Phase:
             return f"Key '{key}' doesn't exist in path '{source_path}'."
 
         encrypted_key = CryptoUtils.encrypt_asymmetric(key, public_key)
-        encrypted_value = CryptoUtils.encrypt_asymmetric(value, public_key)
-        
+        encrypted_value = CryptoUtils.encrypt_asymmetric(value or "", public_key)
+
         wrapped_salt = environment_key.get("wrapped_salt")
         decrypted_salt = self.decrypt(wrapped_salt)
         key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
@@ -278,11 +289,24 @@ class Phase:
             "id": matching_secret["id"],
             "key": encrypted_key,
             "keyDigest": key_digest,
-            "value": encrypted_value,
+            "value": encrypted_value if not override else matching_secret["value"],
             "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
             "comment": matching_secret.get("comment", ""),
             "path": destination_path if destination_path is not None else matching_secret["path"]
         }
+
+        if override or toggle_override:
+            if "override" in matching_secret and matching_secret["override"] is not None:
+                current_override_state = matching_secret["override"].get("is_active", False)
+                secret_update_payload["override"] = {
+                    "value": encrypted_value if value is not None else matching_secret["override"]["value"],
+                    "isActive": not current_override_state if toggle_override else current_override_state
+                }
+            else:
+                secret_update_payload["override"] = {
+                    "value": encrypted_value if value is not None else CryptoUtils.encrypt_asymmetric("", public_key),
+                    "isActive": toggle_override  # Activate override if it's being toggled for the first time
+                }
 
         response = update_phase_secrets(self._token_type, self._app_secret.app_token, env_id, [secret_update_payload], self._api_host)
 

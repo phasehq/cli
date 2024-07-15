@@ -5,9 +5,9 @@ from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
 
-def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None, path='/'):
+def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None, path='/', override=False):
     """
-    Creates a new secret, encrypts it, and syncs it with the Phase, with support for specifying a path.
+    Creates a new secret, encrypts it, and syncs it with the Phase, with support for specifying a path and overrides.
 
     Args:
         key (str, optional): The key of the new secret. Defaults to None.
@@ -16,6 +16,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         random_type (str, optional): The type of random secret to generate (e.g., 'hex', 'alphanumeric'). Defaults to None.
         random_length (int, optional): The length of the random secret. Defaults to 32.
         path (str, optional): The path under which to store the secrets. Defaults to the root path '/'.
+        override (bool, optional): Whether to create an overridden secret. Defaults to False.
     """
 
     # Initialize the Phase class
@@ -29,8 +30,10 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         # Replace spaces in the key with underscores
         key = key.replace(' ', '_').upper()
 
-    # Generate a random value or get value from user
-    if random_type:
+    # Generate a random value or get value from user, unless override is enabled
+    if override:
+        value = ""
+    elif random_type:
         # Check if length is specified for key128 or key256
         if random_type in ['key128', 'key256'] and random_length != 32:
             print("⚠️\u200A Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
@@ -47,9 +50,15 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
         else:
             value = sys.stdin.read().strip()
 
+    # If override is enabled, get the overridden value from the user
+    if override:
+        override_value = getpass.getpass("✨ Please enter the 🔏 override value (hidden): ")
+    else:
+        override_value = None
+
     try:
         # Encrypt and POST secret to the backend using phase create
-        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, path=path)
+        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, path=path, override_value=override_value)
 
         # Check the response status code
         if response.status_code == 200:

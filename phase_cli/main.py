@@ -137,6 +137,7 @@ def main ():
         secrets_create_parser.add_argument('--env', type=str, help=env_help)
         secrets_create_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
         secrets_create_parser.add_argument('--path', type=str, default='/', help="The path in which you want to create a secret. You can create a directory by simply specifying a path like so: --path /folder/SECRET. Default is '/'")
+        
         # Adding the --random argument
         random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
         secrets_create_parser.add_argument('--random', 
@@ -149,6 +150,11 @@ def main ():
                                         type=int, 
                                         default=32, 
                                         help='🔢 Specify the length of the random value. Applicable for types other than key128 and key256. Default is 32. Example usage: --length 16')
+
+        # Adding the --override argument
+        secrets_create_parser.add_argument('--override', 
+                                        action='store_true', 
+                                        help='🔏 Specify if the secret is a personal override. Default is False.')
 
         # Secrets update command
         secrets_update_parser = secrets_subparsers.add_parser(
@@ -186,6 +192,16 @@ def main ():
         secrets_update_parser.add_argument('--updated-path', 
                                             type=str, 
                                             help='The new path for the secret, if changing its location. If not provided, the secret\'s path is not updated. Example usage: --updated-path "/folder/subfolder"')
+
+        # Adding the --override argument for personal secret override
+        secrets_update_parser.add_argument('--override', 
+                                            action='store_true', 
+                                            help='🔏 Update the personal override value.')
+
+        # Adding the --toggle-override argument to toggle the override state
+        secrets_update_parser.add_argument('--toggle-override', 
+                                            action='store_true', 
+                                            help='🔄 Toggle the override state between active and inactive.')
 
         # Secrets delete command
         secrets_delete_parser = secrets_subparsers.add_parser('delete', help='🗑️\u200A Delete a secret')
@@ -278,7 +294,7 @@ def main ():
             elif args.secrets_command == 'get':
                 phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, path=args.path, tags=args.tags)  
             elif args.secrets_command == 'create':
-                phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, path=args.path, random_type=args.random, random_length=args.length)
+                phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, path=args.path, random_type=args.random, random_length=args.length, override=args.override)
             elif args.secrets_command == 'delete':
                 phase_secrets_delete(args.keys, env_name=args.env, path=args.path, phase_app=args.app)  
             elif args.secrets_command == 'import':
@@ -286,7 +302,7 @@ def main ():
             elif args.secrets_command == 'export':
                 phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, path=args.path, tags=args.tags, format=args.format)
             elif args.secrets_command == 'update':
-                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length)
+                phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length, override=args.override, toggle_override=args.toggle_override)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
                 parser.print_help()
