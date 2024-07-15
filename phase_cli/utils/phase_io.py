@@ -289,7 +289,7 @@ class Phase:
             "id": matching_secret["id"],
             "key": encrypted_key,
             "keyDigest": key_digest,
-            "value": encrypted_value if not override else matching_secret["value"],
+            "value": matching_secret["value"],  # Retain the existing shared value
             "tags": matching_secret.get("tags", []), # TODO: Implement tags and comments updates
             "comment": matching_secret.get("comment", ""),
             "path": destination_path if destination_path is not None else matching_secret["path"]
