@@ -69,6 +69,7 @@ def split_path_and_key(ref: str) -> tuple:
 
     return path, key_name
 
+
 def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[str, str]]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
     """
     Resolves a single secret reference to its actual value by fetching it from the specified environment.
@@ -85,7 +86,7 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
         current_env_name (str): The current environment name, used for resolving local references.
         
     Returns:
-        str: The resolved secret value.
+        str: The resolved secret value or the original reference if not resolved.
     """
     env_name = current_env_name
     path = "/"  # Default root path
@@ -106,11 +107,11 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
             if path in secrets_dict[env_name] and key_name in secrets_dict[env_name][path]:
                 return secrets_dict[env_name][path][key_name]
             
-            # If not found, try to find the secret in the root path
-            if '/' in secrets_dict[env_name] and key_name in secrets_dict[env_name]['/']:
+            # For local references, try to find the secret in the root path only if the original path was root
+            if env_name == current_env_name and path == "/" and '/' in secrets_dict[env_name] and key_name in secrets_dict[env_name]['/']:
                 return secrets_dict[env_name]['/'][key_name]
 
-        # Handle fallback for cross-environment or missing secrets
+        # If the secret is not found in secrets_dict, try to fetch it from Phase
         fetched_secrets = phase.get(env_name=env_name, app_name=current_application_name, keys=[key_name], path=path)
         for secret in fetched_secrets:
             if secret["key"] == key_name:
@@ -120,6 +121,7 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
 
     # Return the reference as is if not resolved
     return f"${{{ref}}}"
+
 
 def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
     """
