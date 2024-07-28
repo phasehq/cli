@@ -21,7 +21,7 @@ from phase_cli.utils.const import SECRET_REF_REGEX
 
     2. Cross-Environment Reference (Root Path):
         Syntax: `${staging.DEBUG}`
-        - Environment: Different environment (e.g., `dev`).
+        - Environment: Different environment (e.g., `staging`).
         - Path: Root path (`/`) of the specified environment.
         - Secret Key: `DEBUG`
         - Description: References a secret named `DEBUG` in the root path of the `staging` environment.
@@ -45,6 +45,31 @@ from phase_cli.utils.const import SECRET_REF_REGEX
 """
 
 
+def split_path_and_key(ref: str) -> tuple:
+    """
+    Splits a reference string into path and key components.
+
+    Args:
+        ref (str): The reference string to split.
+
+    Returns:
+        tuple: A tuple containing the path and key.
+    """
+    last_slash_index = ref.rfind("/")
+    if last_slash_index != -1:
+        path = ref[:last_slash_index]
+        key_name = ref[last_slash_index + 1:]
+    else:
+        path = "/"
+        key_name = ref
+
+    # Ensure path starts with a slash
+    if not path.startswith("/"):
+        path = "/" + path
+
+    return path, key_name
+
+
 def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[str, str]]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
     """
     Resolves a single secret reference to its actual value by fetching it from the specified environment.
@@ -55,50 +80,42 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
     
     Args:
         ref (str): The secret reference string, which could be a local or cross-environment reference.
-        current_env_name (str): The current environment name, used for resolving local references.
+        secrets_dict (Dict[str, Dict[str, Dict[str, str]]]): A dictionary containing known secrets.
         phase ('Phase'): An instance of the Phase class to fetch secrets.
+        current_application_name (str): The name of the current application.
+        current_env_name (str): The current environment name, used for resolving local references.
         
     Returns:
-        str: The resolved secret value.
-        
-    Raises:
-        ValueError: If the current environment name is not provided, or the secret is not found.
+        str: The resolved secret value or the original reference if not resolved.
     """
-    
     env_name = current_env_name
-    path = "/" # Default root path
+    path = "/"  # Default root path
     key_name = ref
 
     # Parse the reference to identify environment, path, and secret key.
-    if "." in ref:  # Cross-environment references, split by the first dot to get environment and the rest.
+    if "." in ref:  # Cross-environment references
         parts = ref.split(".", 1)
         env_name, rest = parts[0], parts[1]
-        last_slash_index = rest.rfind("/")
-        if last_slash_index != -1:
-            path = rest[:last_slash_index]
-            key_name = rest[last_slash_index + 1:]
-        else:
-            key_name = rest
-    elif "/" in ref:  # Local reference with specified path
-        last_slash_index = ref.rfind("/")
-        path = ref[:last_slash_index]
-        key_name = ref[last_slash_index + 1:]
-
-    # Adjust for leading slash in path if not present
-    if not path.startswith("/"):
-        path = "/" + path
+        path, key_name = split_path_and_key(rest)
+    else:  # Local reference
+        path, key_name = split_path_and_key(ref)
 
     try:
         # Lookup with environment, path, and key
-        if env_name in secrets_dict and path in secrets_dict[env_name] and key_name in secrets_dict[env_name][path]:
-            return secrets_dict[env_name][path][key_name]
-        else:
-            # Handle fallback for cross-environment or missing secrets
-            if env_name != current_env_name:
-                fetched_secrets = phase.get(env_name=env_name, app_name=current_application_name, keys=[key_name], path=path)
-                for secret in fetched_secrets:
-                    if secret["key"] == key_name:
-                        return secret["value"]
+        if env_name in secrets_dict:
+            # Try to find the secret in the exact path
+            if path in secrets_dict[env_name] and key_name in secrets_dict[env_name][path]:
+                return secrets_dict[env_name][path][key_name]
+            
+            # For local references, try to find the secret in the root path only if the original path was root
+            if env_name == current_env_name and path == "/" and '/' in secrets_dict[env_name] and key_name in secrets_dict[env_name]['/']:
+                return secrets_dict[env_name]['/'][key_name]
+
+        # If the secret is not found in secrets_dict, try to fetch it from Phase
+        fetched_secrets = phase.get(env_name=env_name, app_name=current_application_name, keys=[key_name], path=path)
+        for secret in fetched_secrets:
+            if secret["key"] == key_name:
+                return secret["value"]
     except EnvironmentNotFoundException:
         pass
 
@@ -116,14 +133,13 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
     
     Args:
         value (str): The input string containing one or more secret references.
-        current_env_name (str): The current environment name for resolving local references.
+        all_secrets (List[Dict[str, str]]): A list of all known secrets.
         phase ('Phase'): An instance of the Phase class to fetch secrets.
+        current_application_name (str): The name of the current application.
+        current_env_name (str): The current environment name for resolving local references.
         
     Returns:
         str: The input string with all secret references resolved to their actual values.
-        
-    Raises:
-        ValueError: If the current environment name is not provided.
     """
 
     secrets_dict = {}
