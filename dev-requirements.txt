@@ -8,4 +8,4 @@ pytest-mock==3.14.0
 rich==13.5.2
 pyyaml==6.0.1
 toml==0.10.2
-python-hcl2==4.3.2
+python-hcl2==4.3.5
