@@ -85,10 +85,12 @@ install_from_binary() {
         x86_64)
             ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
             CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+            EXTRACT_DIR="Linux-binary/phase"
             ;;
         aarch64)
             ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
             CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.sha256"
+            EXTRACT_DIR="phase_cli_release_$VERSION/Linux-binary/phase"
             ;;
         *)
             echo "Unsupported architecture: $ARCH. This script supports x86_64 and arm64."
@@ -96,23 +98,21 @@ install_from_binary() {
             ;;
     esac
 
-    wget_download $ZIP_URL $TMPDIR/phase_cli_${ARCH}_$VERSION.zip
-    
-    unzip $TMPDIR/phase_cli_${ARCH}_$VERSION.zip -d $TMPDIR
-    
-    BINARY_PATH="$TMPDIR/Linux-binary/phase/phase"
-    INTERNAL_DIR_PATH="$TMPDIR/Linux-binary/phase/_internal"
-    
+    wget_download "$ZIP_URL" "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip"
+    unzip "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip" -d "$TMPDIR"
+
+    BINARY_PATH="$TMPDIR/$EXTRACT_DIR/phase"
+    INTERNAL_DIR_PATH="$TMPDIR/$EXTRACT_DIR/_internal"
+
     verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
-    
-    chmod +x $BINARY_PATH
-    
+    chmod +x "$BINARY_PATH"
+
     if ! has_sudo_access; then
         echo "Moving items to /usr/local/bin. Please enter your sudo password or run as root."
     fi
 
-    sudo mv $BINARY_PATH /usr/local/bin/phase
-    sudo mv $INTERNAL_DIR_PATH /usr/local/bin/_internal
+    sudo mv "$BINARY_PATH" /usr/local/bin/phase
+    sudo mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
 }
 
 install_package() {
