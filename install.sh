@@ -53,16 +53,22 @@ verify_checksum() {
     local file="$1"
     local checksum_url="$2"
     local checksum_file="$TMPDIR/checksum.sha256"
-
+    
     wget_download "$checksum_url" "$checksum_file"
+    
+    while IFS= read -r line; do
+        local expected_checksum=$(echo "$line" | awk '{print $1}')
+        local target_file=$(echo "$line" | awk '{print $2}')
 
-    local expected_checksum=$(cat "$checksum_file" | awk '{print $1}')
-    local computed_checksum=$(sha256sum "$file" | awk '{print $1}')
-
-    if [[ "$expected_checksum" != "$computed_checksum" ]]; then
-        echo "Checksum verification failed for $file!"
-        exit 1
-    fi
+        if [[ -e "$target_file" ]]; then
+            local computed_checksum=$(sha256sum "$target_file" | awk '{print $1}')
+            
+            if [[ "$expected_checksum" != "$computed_checksum" ]]; then
+                echo "Checksum verification failed for $target_file!"
+                exit 1
+            fi
+        fi
+    done < "$checksum_file"
 }
 
 has_sudo_access() {
@@ -79,10 +85,12 @@ install_from_binary() {
         x86_64)
             ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
             CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+            EXTRACT_DIR="Linux-binary/phase"
             ;;
         aarch64)
             ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
             CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.sha256"
+            EXTRACT_DIR="phase_cli_release_$VERSION/Linux-binary/phase"
             ;;
         *)
             echo "Unsupported architecture: $ARCH. This script supports x86_64 and arm64."
@@ -90,28 +98,13 @@ install_from_binary() {
             ;;
     esac
 
-    ZIP_FILE="$TMPDIR/phase_cli_${ARCH}_$VERSION.zip"
-    wget_download $ZIP_URL $ZIP_FILE
+    wget_download "$ZIP_URL" "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip"
+    unzip "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip" -d "$TMPDIR"
 
-    verify_checksum "$ZIP_FILE" "$CHECKSUM_URL"
+    BINARY_PATH="$TMPDIR/$EXTRACT_DIR/phase"
+    INTERNAL_DIR_PATH="$TMPDIR/$EXTRACT_DIR/_internal"
 
-    unzip -o $ZIP_FILE -d $TMPDIR
-
-    if [ "$ARCH" = "aarch64" ]; then
-        BINARY_PATH="$TMPDIR/phase_cli_linux_arm64_$VERSION/phase_cli_release_$VERSION/Linux-binary/phase/phase"
-        INTERNAL_DIR_PATH="$TMPDIR/phase_cli_linux_arm64_$VERSION/phase_cli_release_$VERSION/Linux-binary/phase/*internal"
-    else
-        BINARY_PATH=$(find $TMPDIR -name "phase" -type f)
-        INTERNAL_DIR_PATH=$(find $TMPDIR -name "_internal" -type d)
-    fi
-
-    if [ ! -f "$BINARY_PATH" ] || [ ! -d "$INTERNAL_DIR_PATH" ]; then
-        echo "Failed to find 'phase' binary or '*internal' directory in the extracted contents."
-        echo "BINARY_PATH: $BINARY_PATH"
-        echo "INTERNAL_DIR_PATH: $INTERNAL_DIR_PATH"
-        exit 1
-    fi
-
+    verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
     chmod +x "$BINARY_PATH"
 
     if ! has_sudo_access; then
