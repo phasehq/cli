@@ -90,15 +90,13 @@ jobs:
         shell: bash
         run: ls -al
 
-      # Set the version environment variable with the correct value
+      # Set the version environment variable
       - name: Set VERSION
-        run: |
-          PHASE_CLI_VERSION=$(cat phase-version/PHASE_CLI_VERSION.txt)
-          echo "PHASE_CLI_VERSION=$PHASE_CLI_VERSION" >> $GITHUB_ENV
-      - name: Debug PHASE_CLI_VERSION
-        run: |
-          echo "PHASE_CLI_VERSION is: $PHASE_CLI_VERSION"
         shell: bash
+        run: |
+          PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)
+          echo "PHASE_CLI_VERSION is: $PHASE_CLI_VERSION"
+          echo "PHASE_CLI_VERSION=$PHASE_CLI_VERSION" >> $GITHUB_ENV
 
       # Build DEB and RPM packages for Linux
       - run: |
