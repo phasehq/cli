@@ -90,7 +90,8 @@ jobs:
           PHASE_CLI_VERSION=$(cat phase-version/PHASE_CLI_VERSION.txt)
           echo "PHASE_CLI_VERSION=$PHASE_CLI_VERSION" >> $GITHUB_ENV
       - name: Debug PHASE_CLI_VERSION
-        run: echo "PHASE_CLI_VERSION is: $PHASE_CLI_VERSION"
+        run: |
+          echo "PHASE_CLI_VERSION is: $PHASE_CLI_VERSION"
         shell: bash
 
       # Build DEB and RPM packages for Linux
