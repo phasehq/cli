@@ -83,19 +83,23 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: phase-version
-          
-      # Set the version environment variable
+
+      # Set the version environment variable with the correct value
       - name: Set VERSION
-        run: echo "PHASE_CLI_VERSION=$(cat phase-version/PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
+        run: |
+          PHASE_CLI_VERSION=$(cat phase-version/PHASE_CLI_VERSION.txt)
+          echo "PHASE_CLI_VERSION=$PHASE_CLI_VERSION" >> $GITHUB_ENV
+      - name: Debug PHASE_CLI_VERSION
+        run: echo "PHASE_CLI_VERSION is: $PHASE_CLI_VERSION"
         shell: bash
 
-        # Build DEB and RPM packages for Linux
+      # Build DEB and RPM packages for Linux
       - run: |
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
-          fpm -s dir -t deb -n phase -v ${{ env.PHASE_CLI_VERSION }} dist/phase/=usr/bin/
-          fpm -s dir -t rpm -n phase -v ${{ env.PHASE_CLI_VERSION }} dist/phase/=usr/bin/
+          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
+          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
         if: matrix.os == 'ubuntu-20.04'
         shell: bash
 
