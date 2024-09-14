@@ -89,14 +89,13 @@ jobs:
         run: echo "PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
         shell: bash
 
-      
         # Build DEB and RPM packages for Linux
       - run: |
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
-          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
-          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
+          fpm -s dir -t deb -n phase -v ${{ env.PHASE_CLI_VERSION }} dist/phase/=usr/bin/
+          fpm -s dir -t rpm -n phase -v ${{ env.PHASE_CLI_VERSION }} dist/phase/=usr/bin/
         if: matrix.os == 'ubuntu-20.04'
         shell: bash
 
