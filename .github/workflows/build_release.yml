@@ -80,7 +80,7 @@ jobs:
         shell: pwsh
 
       # Download the version file
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v4
         with:
           name: phase-version
           
@@ -196,7 +196,7 @@ jobs:
       - uses: actions/checkout@v2
 
       - name: Download phase-version artifact
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: phase-version
           path: phase-version
@@ -204,7 +204,7 @@ jobs:
       - name: Set VERSION from file
         run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
       - name: Download phase-alpine-build artifact
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: phase-alpine-build
           path: dist
@@ -225,7 +225,7 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - name: Download phase-version artifact
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: phase-version
           path: phase-version
@@ -251,7 +251,7 @@ jobs:
     steps:
       # Download all the artifacts from the build jobs
       - name: Download all artifacts
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
 
       # # Debug: List the content of the current directory
       # - name: Debug - List contents of artifacts directory
