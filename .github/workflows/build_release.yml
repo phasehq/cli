@@ -86,7 +86,7 @@ jobs:
           
       # Set the version environment variable
       - name: Set VERSION
-        run: echo "PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
+        run: echo "PHASE_CLI_VERSION=$(cat phase-version/PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
         shell: bash
 
         # Build DEB and RPM packages for Linux
