@@ -28,6 +28,20 @@ jobs:
         run: echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
       - run: pytest tests/*.py
 
+  extract_version:
+    name: Extract Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Extract version
+        run: |
+          echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)" >> $GITHUB_ENV
+          echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-version
+          path: ./PHASE_CLI_VERSION.txt
+
   build:
     name: Build CLI
     runs-on: ${{ matrix.os }}
@@ -65,17 +79,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
 
-      # Extract version
-      - run: echo "PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)" >> $GITHUB_ENV
-        shell: bash
-      - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
-
-      # Upload version
-      - uses: actions/upload-artifact@v4
+      # Download the version file
+      - uses: actions/download-artifact@v2
         with:
           name: phase-version
-          path: ./PHASE_CLI_VERSION.txt
+          
+      # Set the version environment variable
+      - name: Set VERSION
+        run: echo "PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)" >> $GITHUB_ENV
+        shell: bash
 
+      
         # Build DEB and RPM packages for Linux
       - run: |
           sudo apt-get update
