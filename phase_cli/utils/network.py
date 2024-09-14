@@ -124,7 +124,7 @@ def fetch_app_key(token_type: str, app_token, host) -> str:
 
     URL =  f"{host}/service/secrets/tokens/"
 
-    response = requests.get(URL, headers=headers)
+    response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
 
     if response.status_code != 200:
         raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
@@ -164,7 +164,7 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
 
     URL = f"{host}/service/secrets/tokens/"
 
-    response = requests.get(URL, headers=headers)
+    response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
 
     if response.status_code != 200:
         raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
