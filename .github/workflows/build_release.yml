@@ -84,6 +84,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: phase-version
+      
+      # DEBUG
+      - name: List files after downloading artifact
+        shell: bash
+        run: ls -al
 
       # Set the version environment variable with the correct value
       - name: Set VERSION
