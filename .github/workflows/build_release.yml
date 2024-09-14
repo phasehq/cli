@@ -71,7 +71,7 @@ jobs:
       - run: echo "${{ env.PHASE_CLI_VERSION }}" > ./PHASE_CLI_VERSION.txt
 
       # Upload version
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: phase-version
           path: ./PHASE_CLI_VERSION.txt
@@ -87,12 +87,12 @@ jobs:
         shell: bash
 
       # Upload DEB and RPM packages
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: phase-deb
           path: "*.deb"
         if: matrix.os == 'ubuntu-20.04'
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: phase-rpm
           path: "*.rpm"
@@ -110,7 +110,7 @@ jobs:
         shell: bash
 
       - name: Upload binary
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: dist/phase*
@@ -130,7 +130,7 @@ jobs:
           pip install pyinstaller
       - name: Build with PyInstaller
         run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
           path: dist/phase*
@@ -164,11 +164,11 @@ jobs:
           sudo -u builder abuild checksum
           sudo -u builder abuild -r
         shell: sh
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: phase-apk
           path: /home/builder/packages/builder/x86_64/*.apk
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: phase-alpine-build
           path: ./dist/phase
@@ -308,7 +308,7 @@ jobs:
           rm -rf Linux-binary
 
       # Upload the entire release directory as a single artifact
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: phase-cli-release
           path: ./phase_cli_release_*/
