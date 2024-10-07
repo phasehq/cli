@@ -38,7 +38,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
     elif random_type:
         # Check if length is specified for key128 or key256
         if random_type in ['key128', 'key256'] and random_length != 32:
-            print("⚠️  Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
+            console.log("⚠️  Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
 
         try:
             new_value = generate_random_secret(random_type, random_length)
@@ -66,7 +66,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
             toggle_override=toggle_override
         )
         if response == "Success":
-            print("✅ Successfully updated the secret.")
+            console.log("✅ Successfully updated the secret.")
             
             # Optionally, list secrets after update to confirm the change
             phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=destination_path or source_path)
