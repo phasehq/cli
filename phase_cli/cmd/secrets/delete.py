@@ -22,9 +22,6 @@ def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None,
         keys_to_delete_input = input("Please enter the keys to delete (separate multiple keys with a space): ")
         keys_to_delete = keys_to_delete_input.split()
 
-    # Convert each key to uppercase
-    keys_to_delete = [key.upper() for key in keys_to_delete]
-
     try:
         # Delete keys within the specified path and get the list of keys not found
         keys_not_found = phase.delete(env_name=env_name, keys_to_delete=keys_to_delete, app_name=phase_app, path=path)

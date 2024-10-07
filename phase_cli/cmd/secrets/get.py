@@ -17,7 +17,7 @@ def phase_secrets_get(key, env_name=None, phase_app=None, tags=None, path='/'):
     console = Console()
     
     try:
-        key = key.upper()
+        
         secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, tag=tags, path=path)
         
         # Find the specific secret for the given key within the provided path
