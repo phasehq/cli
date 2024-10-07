@@ -19,14 +19,24 @@ if not VERIFY_SSL:
 def handle_request_errors(response: requests.Response) -> None:
     """
     Check the HTTP status code of a response and print the error if the status code is not 200.
-
+    
     Args:
         response (requests.Response): The HTTP response to check.
     """
+    # Handle access control / token revocation expiry related errors
     if response.status_code == 403:
-        print("🚫 Not authorized. Token expired or revoked.")
+        try:
+            # Check if the API response contains an error
+            error_data = response.json()
+            if 'error' in error_data:
+                print(f"🚫 Not authorized. {error_data['error']}")
+            else:
+                print("🚫 Not authorized. Token expired or revoked.")
+        except json.JSONDecodeError:
+            print("🚫 Not authorized. Token expired or revoked.")
         return
-
+    
+    # Handle generic API errors
     if response.status_code != 200:
         try:
             error_details = json.loads(response.text).get('error', 'Unknown error')
