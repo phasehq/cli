@@ -67,9 +67,10 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
         )
         if response == "Success":
             print("✅ Successfully updated the secret.")
+            
             # Optionally, list secrets after update to confirm the change
             phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=destination_path or source_path)
         else:
-            print(f"Error: 🗿 Failed to update secret. {response}")
+            console.log(f"{response}")
     except ValueError as e:
         console.log(f"⚠️  Error occurred while updating the secret: {e}")
