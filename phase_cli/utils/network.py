@@ -31,9 +31,9 @@ def handle_request_errors(response: requests.Response) -> None:
             if 'error' in error_data:
                 print(f"🚫 Not authorized. {error_data['error']}")
             else:
-                print("🚫 Not authorized. Token expired or revoked.")
+                print("🚫 Not authorized.")
         except json.JSONDecodeError:
-            print("🚫 Not authorized. Token expired or revoked.")
+            print("🚫 Not authorized.")
         return
     
     # Handle generic API errors
