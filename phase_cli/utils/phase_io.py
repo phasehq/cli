@@ -393,8 +393,9 @@ class Phase:
                 keys_not_found.append(key)
 
         if secret_ids_to_delete:
-            delete_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secret_ids_to_delete, self._api_host)
-            
+            delete_response = delete_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secret_ids_to_delete, self._api_host)
+            if delete_response.status_code != 200:
+                raise ValueError(f"Failed to delete secrets. Status code: {delete_response.status_code}")
         return keys_not_found
     
 

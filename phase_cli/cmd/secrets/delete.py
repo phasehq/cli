@@ -30,9 +30,9 @@ def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None,
         keys_not_found = phase.delete(env_name=env_name, keys_to_delete=keys_to_delete, app_name=phase_app, path=path)
 
         if keys_not_found:
-            console.print(f"⚠️  Warning: The following keys were not found: {', '.join(keys_not_found)}")
+            console.log(f"⚠️  Warning: The following keys were not found: {', '.join(keys_not_found)}")
         else:
-            console.print("Successfully deleted the secrets.")
+            console.log("✅ Successfully deleted the secrets.")
 
         # Optionally, list remaining secrets to confirm deletion
         phase_list_secrets(show=False, env_name=env_name, phase_app=phase_app, path=path)
