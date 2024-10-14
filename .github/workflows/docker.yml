@@ -14,22 +14,22 @@ jobs:
     # if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-20.04
     steps:
-      - uses: actions/checkout@v2
+      # - uses: actions/checkout@v2
 
-      - name: Download phase-version artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: phase-version
-          path: phase-version
+      # - name: Download phase-version artifact
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: phase-version
+      #     path: phase-version
 
-      - name: Set VERSION from file
-        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
+      # - name: Set VERSION from file
+      #   run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
-      - name: Download phase-alpine-build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: phase-alpine-build
-          path: dist
+      # - name: Download phase-alpine-build artifact
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: phase-alpine-build
+      #     path: dist
 
       - run: docker build -t phase-cli:${{ env.VERSION }} .
 
