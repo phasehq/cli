@@ -86,7 +86,7 @@ jobs:
   Build_and_push_docker:
     name: Build & Release - Docker
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [build, build_apk]
+    needs: [build]
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
@@ -141,7 +141,7 @@ jobs:
 
   attach-assets:
     name: Package assets
-    needs: [build, build_apk, build_arm]
+    needs: [build]
     runs-on: ubuntu-20.04
 
     steps:
