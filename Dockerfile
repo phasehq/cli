@@ -8,14 +8,7 @@ COPY phase_cli ./phase_cli
 COPY setup.py requirements.txt LICENSE README.md ./
 
 # Install build dependencies and the CLI
-RUN apk add --no-cache --virtual .build-deps \
-    gcc \
-    musl-dev \
-    libffi-dev \
-    openssl-dev \
-    rust \
-    cargo && \
-    pip install --no-cache-dir --upgrade pip && \
+RUN apk add --no-cache --virtual .build-deps gcc musl-dev libffi-dev openssl-dev && \
     pip install --no-cache-dir . && \
     apk del .build-deps
 
