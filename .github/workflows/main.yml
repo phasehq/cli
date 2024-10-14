@@ -16,13 +16,13 @@ jobs:
     with:
       python_version: '3.11'
 
-  extract_version:
+  version:
     uses: ./.github/workflows/version.yml
 
   build:
     name: Build CLI
     runs-on: ${{ matrix.os }}
-    needs: [pytest, extract_version]
+    needs: [pytest, version]
     strategy:
       matrix:
         # ubuntu-20.04 - context: https://github.com/phasehq/cli/issues/94
@@ -118,7 +118,7 @@ jobs:
     runs-on: self-hosted
     container:
       image: python:3.11.0-bullseye
-    needs: [pytest, extract_version]
+    needs: [pytest, version]
     steps:
       - uses: actions/checkout@v2
       - name: Setup Environment
@@ -136,7 +136,7 @@ jobs:
   build_apk:
     name: Build CLI (alpine-latest, 3.11)
     runs-on: ubuntu-20.04
-    needs: [pytest, extract_version]
+    needs: [pytest, version]
     container:
       image: python:3.11-alpine
     steps:
