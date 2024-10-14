@@ -25,11 +25,11 @@ jobs:
         run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
       # - run: docker build -t phase-cli:${{ env.VERSION }} .
-      - run: docker build -t phase-cli:testbuild .
 
       - name: Push to Docker Hub
         run: |
           echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+          docker build -t phasehq/cli:testbuild .
           docker push phasehq/cli:testbuild
 # docker tag phase-cli:${{ env.VERSION }} phasehq/cli:${{ env.VERSION }}
 # docker push phasehq/cli:${{ env.VERSION }}
