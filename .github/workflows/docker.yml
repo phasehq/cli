@@ -61,20 +61,22 @@ jobs:
       - name: Pull versioned image
         run: docker pull phasehq/cli:${{ env.VERSION }}
 
-      - name: Test versioned image help
-        run: docker run phasehq/cli:${{ env.VERSION }} phase -h
-        continue-on-error: true
-
       - name: Test versioned image version
-        run: docker run phasehq/cli:${{ env.VERSION }} phase -v
+        run: |
+          RETURNED_VERSION=$(docker run phasehq/cli:${{ env.VERSION }} phase -v | awk '{print $2}')
+          if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
+            echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
+            exit 1
+          fi
 
       # Pull and test the latest Docker image
       - name: Pull latest image
         run: docker pull phasehq/cli:latest
 
-      - name: Test latest image help
-        run: docker run phasehq/cli:latest phase -h
-        continue-on-error: true
-
       - name: Test latest image version
-        run: docker run phasehq/cli:latest phase -v
+        run: |
+          RETURNED_VERSION=$(docker run phasehq/cli:latest phase -v | awk '{print $2}')
+          if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
+            echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
+            exit 1
+          fi
