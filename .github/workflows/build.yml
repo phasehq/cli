@@ -1,0 +1,102 @@
+name: Build CLI
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build CLI
+    runs-on: ${{ matrix.os }}
+    needs: [pytest, version]
+    strategy:
+      matrix:
+        # ubuntu-20.04 - context: https://github.com/phasehq/cli/issues/94
+        # macos-13 darwin-amd64 builds (intel)
+        # macos-14 darwin-arm64 builds (apple silicon)
+        # context: https://github.com/actions/runner-images?tab=readme-ov-file#available-images
+
+        os: [ubuntu-20.04, windows-2022, macos-13, macos-14]
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+        with:
+          python-version: ${{ inputs.python_version }}
+      - run: pip install -r requirements.txt
+      - run: pip install pyinstaller
+      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+      - name: Print GLIBC version
+        if: matrix.os == 'ubuntu-20.04'
+        run: ldd --version
+
+      # Set LC_ALL based on the runner OS for Linux and macOS
+      - name: Set LC_ALL for Linux and macOS
+        run: export LC_ALL=C.UTF-8
+        if: runner.os != 'Windows'
+        shell: bash
+
+      # Set LC_ALL for Windows
+      - name: Set LC_ALL for Windows
+        run: echo "LC_ALL=C.UTF-8" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+        if: runner.os == 'Windows'
+        shell: pwsh
+
+      # Download the version file
+      - uses: actions/download-artifact@v4
+        with:
+          name: phase-version
+      
+      # DEBUG
+      - name: List files after downloading artifact
+        shell: bash
+        run: ls -al
+
+      # Set the version environment variable
+      - name: Set VERSION
+        shell: bash
+        run: |
+          PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)
+          echo "PHASE_CLI_VERSION is: $PHASE_CLI_VERSION"
+          echo "PHASE_CLI_VERSION=$PHASE_CLI_VERSION" >> $GITHUB_ENV
+
+      # Build DEB and RPM packages for Linux
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby-dev rubygems build-essential 
+          sudo gem install --no-document fpm
+          fpm -s dir -t deb -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
+          fpm -s dir -t rpm -n phase -v $PHASE_CLI_VERSION dist/phase/=usr/bin/
+        if: matrix.os == 'ubuntu-20.04'
+        shell: bash
+
+      # Upload DEB and RPM packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-deb
+          path: "*.deb"
+        if: matrix.os == 'ubuntu-20.04'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-rpm
+          path: "*.rpm"
+        if: matrix.os == 'ubuntu-20.04'
+
+      - name: Set artifact name
+        run: |
+          if [[ "${{ matrix.os }}" == "macos-14" ]]; then
+            echo "ARTIFACT_NAME=${{ runner.os }}-arm64-binary" >> $GITHUB_ENV
+          elif [[ "${{ matrix.os }}" == "macos-13" ]]; then
+            echo "ARTIFACT_NAME=${{ runner.os }}-amd64-binary" >> $GITHUB_ENV
+          else
+            echo "ARTIFACT_NAME=${{ runner.os }}-binary" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/phase*
