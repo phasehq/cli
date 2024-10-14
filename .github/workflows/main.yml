@@ -26,7 +26,7 @@ jobs:
       python_version: '3.11'
 
   docker:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [build]
     uses: ./.github/workflows/docker.yml
     secrets:
