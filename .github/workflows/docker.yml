@@ -63,7 +63,7 @@ jobs:
 
       - name: Test versioned image version
         run: |
-          RETURNED_VERSION=$(docker run phasehq/cli:${{ env.VERSION }} phase -v | awk '{print $2}')
+          RETURNED_VERSION=$(docker run phasehq/cli:${{ env.VERSION }} --version | awk '{print $2}')
           if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
             echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
             exit 1
@@ -75,7 +75,7 @@ jobs:
 
       - name: Test latest image version
         run: |
-          RETURNED_VERSION=$(docker run phasehq/cli:latest phase -v | awk '{print $2}')
+          RETURNED_VERSION=$(docker run phasehq/cli:latest --version | awk '{print $2}')
           if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
             echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
             exit 1
