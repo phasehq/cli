@@ -20,7 +20,7 @@ jobs:
     uses: ./.github/workflows/version.yml
 
   build:
-    needs: [pytest, extract_version]
+    needs: [pytest, version]
     uses: ./.github/workflows/build.yml
     with:
       python_version: '3.11'
