@@ -11,7 +11,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  test:
+  pytest:
     uses: ./.github/workflows/pytest.yml
     with:
       python_version: '3.11'
