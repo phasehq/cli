@@ -17,19 +17,7 @@ jobs:
       python_version: '3.11'
 
   extract_version:
-    name: Extract Version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Extract version
-        run: |
-          PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)
-          echo "PHASE_CLI_VERSION=$PHASE_CLI_VERSION" >> $GITHUB_ENV
-          echo "$PHASE_CLI_VERSION" > ./PHASE_CLI_VERSION.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phase-version
-          path: ./PHASE_CLI_VERSION.txt
+    uses: ./.github/workflows/version.yml
 
   build:
     name: Build CLI

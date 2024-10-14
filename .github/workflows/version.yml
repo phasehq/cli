@@ -1,0 +1,27 @@
+name: Extract Version
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: "The extracted version"
+        value: ${{ jobs.extract_version.outputs.version }}
+
+jobs:
+  extract_version:
+    name: Extract Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Extract version
+        id: extract_version
+        run: |
+          PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)
+          echo "version=$PHASE_CLI_VERSION" >> $GITHUB_OUTPUT
+          echo "$PHASE_CLI_VERSION" > ./PHASE_CLI_VERSION.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-version
+          path: ./PHASE_CLI_VERSION.txt
