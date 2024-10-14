@@ -27,7 +27,7 @@ jobs:
 
   docker:
     # if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # needs: [build]
+    needs: [version]
     uses: ./.github/workflows/docker.yml
     secrets:
       DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
