@@ -63,11 +63,20 @@ jobs:
 
       - name: Test versioned image version
         run: |
-          RETURNED_VERSION=$(docker run phasehq/cli:${{ env.VERSION }} --version | awk '{print $2}')
+          echo "Testing versioned image: phasehq/cli:${{ env.VERSION }}"
+          FULL_OUTPUT=$(docker run --rm phasehq/cli:${{ env.VERSION }} --version)
+          echo "Full output: $FULL_OUTPUT"
+          RETURNED_VERSION=$(echo "$FULL_OUTPUT" | awk '{print $1}')
+          echo "Parsed version: $RETURNED_VERSION"
+          if [ -z "$RETURNED_VERSION" ]; then
+            echo "Error: Could not parse version from output"
+            exit 1
+          fi
           if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
             echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
             exit 1
           fi
+          echo "Version check passed for versioned image"
 
       # Pull and test the latest Docker image
       - name: Pull latest image
@@ -75,8 +84,17 @@ jobs:
 
       - name: Test latest image version
         run: |
-          RETURNED_VERSION=$(docker run phasehq/cli:latest --version | awk '{print $2}')
+          echo "Testing latest image: phasehq/cli:latest"
+          FULL_OUTPUT=$(docker run --rm phasehq/cli:latest --version)
+          echo "Full output: $FULL_OUTPUT"
+          RETURNED_VERSION=$(echo "$FULL_OUTPUT" | awk '{print $1}')
+          echo "Parsed version: $RETURNED_VERSION"
+          if [ -z "$RETURNED_VERSION" ]; then
+            echo "Error: Could not parse version from output"
+            exit 1
+          fi
           if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
             echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
             exit 1
           fi
+          echo "Version check passed for latest image"
