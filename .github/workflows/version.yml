@@ -1,26 +1,45 @@
-name: Extract Version
+name: Validate and set version
 
 on:
   workflow_call:
     outputs:
       version:
-        description: "The extracted version"
-        value: ${{ jobs.extract_version.outputs.version }}
+        description: "Validated Phase CLI version from const.py and APKBUILD"
+        value: ${{ jobs.validate_version.outputs.version }}
 
 jobs:
-  extract_version:
-    name: Extract Version
+  validate_version:
+    name: Validate and Extract Version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.extract_version.outputs.version }}
     steps:
       - uses: actions/checkout@v2
-      - name: Extract version
+
+      - name: Extract version from const.py
         id: extract_version
         run: |
           PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)
           echo "version=$PHASE_CLI_VERSION" >> $GITHUB_OUTPUT
           echo "$PHASE_CLI_VERSION" > ./PHASE_CLI_VERSION.txt
+
+      - name: Extract version from APKBUILD
+        id: extract_apkbuild_version
+        run: |
+          APKBUILD_VERSION=$(grep -oP '(?<=pkgver=)[^\s]*' APKBUILD)
+          echo "apkbuild_version=$APKBUILD_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        run: |
+          if [ "${{ steps.extract_version.outputs.version }}" != "${{ steps.extract_apkbuild_version.outputs.apkbuild_version }}" ]; then
+            echo "Version mismatch detected!"
+            echo "const.py version: ${{ steps.extract_version.outputs.version }}"
+            echo "APKBUILD version: ${{ steps.extract_apkbuild_version.outputs.apkbuild_version }}"
+            exit 1
+          else
+            echo "Versions match: ${{ steps.extract_version.outputs.version }}"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: phase-version
