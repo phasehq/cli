@@ -11,22 +11,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  pytest:
-    name: Run Tests
-    runs-on: ubuntu-20.04
-    strategy:
-      matrix:
-        python-version: [3.11]
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -r dev-requirements.txt
-      - run: pip install pytest
-      - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
-      - run: pytest tests/*.py
+  test:
+    uses: ./.github/workflows/pytest.yml
+    with:
+      python_version: '3.11'
 
   extract_version:
     name: Extract Version
