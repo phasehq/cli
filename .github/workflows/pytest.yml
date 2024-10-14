@@ -1,0 +1,18 @@
+name: Run Pytest
+
+on:
+  workflow_call:
+
+jobs:
+  pytest:
+    name: Run Tests
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+        with:
+          python-version: 3.11
+      - run: pip install -r dev-requirements.txt
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
+      - run: pytest tests/*.py
