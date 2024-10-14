@@ -30,7 +30,6 @@ jobs:
       - name: Push to Docker Hub
         run: |
           echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
-          docker tag phasehq/cli:testbuild
           docker push phasehq/cli:testbuild
 # docker tag phase-cli:${{ env.VERSION }} phasehq/cli:${{ env.VERSION }}
 # docker push phasehq/cli:${{ env.VERSION }}
