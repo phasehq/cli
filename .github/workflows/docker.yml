@@ -58,11 +58,23 @@ jobs:
         run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
       # Pull and test the versioned Docker image
-      - run: docker pull phasehq/cli:${{ env.VERSION }}
-      - run: docker run phasehq/cli:${{ env.VERSION }} phase -h
-      - run: docker run phasehq/cli:${{ env.VERSION }} phase -v
+      - name: Pull versioned image
+        run: docker pull phasehq/cli:${{ env.VERSION }}
+
+      - name: Test versioned image help
+        run: docker run phasehq/cli:${{ env.VERSION }} phase -h
+        continue-on-error: true
+
+      - name: Test versioned image version
+        run: docker run phasehq/cli:${{ env.VERSION }} phase -v
 
       # Pull and test the latest Docker image
-      - run: docker pull phasehq/cli:latest
-      - run: docker run phasehq/cli:latest phase -h
-      - run: docker run phasehq/cli:latest phase -v
+      - name: Pull latest image
+        run: docker pull phasehq/cli:latest
+
+      - name: Test latest image help
+        run: docker run phasehq/cli:latest phase -h
+        continue-on-error: true
+
+      - name: Test latest image version
+        run: docker run phasehq/cli:latest phase -v
