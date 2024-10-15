@@ -21,7 +21,7 @@ jobs:
         run: |
           PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)
           echo "version=$PHASE_CLI_VERSION" >> $GITHUB_OUTPUT
-          echo "$PHASE_CLI_VERSION" > ./PHASE_CLI_VERSION.txt
+          # echo "$PHASE_CLI_VERSION" > ./PHASE_CLI_VERSION.txt
 
       - name: Extract version from APKBUILD
         id: extract_apkbuild_version
@@ -40,7 +40,7 @@ jobs:
             echo "Versions match: ${{ steps.extract_version.outputs.version }}"
           fi
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phase-version
-          path: ./PHASE_CLI_VERSION.txt
+      # - uses: actions/upload-artifact@v4
+      #   with:
+      #     name: phase-version
+      #     path: ./PHASE_CLI_VERSION.txt
