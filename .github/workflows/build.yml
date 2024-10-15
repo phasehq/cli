@@ -20,8 +20,8 @@ jobs:
 
         os: [ubuntu-20.04, windows-2022, macos-13, macos-14]
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
       - run: pip install -r requirements.txt
@@ -106,7 +106,7 @@ jobs:
     container:
       image: python:3.11.0-bullseye
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Setup Environment
         run: |
           python --version
@@ -125,7 +125,7 @@ jobs:
     container:
       image: python:3.11-alpine
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - run: apk add --update --no-cache python3 python3-dev build-base
       - run: python3 -m ensurepip
       - run: pip3 install --no-cache --upgrade pip setuptools
