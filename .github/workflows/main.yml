@@ -49,27 +49,7 @@ jobs:
       PYPI_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
 
   process-assets:
-    name: Process and Package Assets
     needs: [build, version]
-    runs-on: ubuntu-20.04
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Process assets
-        run: |
-          python process_assets.py . phase-cli-release/ --version ${{ needs.version.outputs.version }}
-
-      - name: Upload processed assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: phase-cli-release
-          path: ./phase-cli-release/
+    uses: ./.github/workflows/process-assets.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
