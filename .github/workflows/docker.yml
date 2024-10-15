@@ -2,6 +2,10 @@ name: Docker Build, Push, and Test
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
     secrets:
       DOCKER_HUB_USERNAME:
         required: true
@@ -14,15 +18,6 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
-
-      - name: Download phase-version artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: phase-version
-          path: phase-version
-
-      - name: Set VERSION from file
-        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -40,7 +35,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            phasehq/cli:${{ env.VERSION }}
+            phasehq/cli:${{ inputs.version }}
             phasehq/cli:latest
 
   pull_test:
@@ -48,23 +43,13 @@ jobs:
     needs: build_push
     runs-on: ubuntu-20.04
     steps:
-      - name: Download phase-version artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: phase-version
-          path: phase-version
-
-      - name: Set VERSION from file
-        run: echo "VERSION=$(cat ./phase-version/PHASE_CLI_VERSION.txt | tr -d '\r')" >> $GITHUB_ENV
-
-      # Pull and test the versioned Docker image
       - name: Pull versioned image
-        run: docker pull phasehq/cli:${{ env.VERSION }}
+        run: docker pull phasehq/cli:${{ inputs.version }}
 
       - name: Test versioned image version
         run: |
-          echo "Testing versioned image: phasehq/cli:${{ env.VERSION }}"
-          FULL_OUTPUT=$(docker run --rm phasehq/cli:${{ env.VERSION }} --version)
+          echo "Testing versioned image: phasehq/cli:${{ inputs.version }}"
+          FULL_OUTPUT=$(docker run --rm phasehq/cli:${{ inputs.version }} --version)
           echo "Full output: $FULL_OUTPUT"
           RETURNED_VERSION=$(echo "$FULL_OUTPUT" | awk '{print $1}')
           echo "Parsed version: $RETURNED_VERSION"
@@ -72,13 +57,12 @@ jobs:
             echo "Error: Could not parse version from output"
             exit 1
           fi
-          if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
-            echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
+          if [ "$RETURNED_VERSION" != "${{ inputs.version }}" ]; then
+            echo "Version mismatch: Expected ${{ inputs.version }}, got $RETURNED_VERSION"
             exit 1
           fi
           echo "Version check passed for versioned image"
 
-      # Pull and test the latest Docker image
       - name: Pull latest image
         run: docker pull phasehq/cli:latest
 
@@ -93,8 +77,8 @@ jobs:
             echo "Error: Could not parse version from output"
             exit 1
           fi
-          if [ "$RETURNED_VERSION" != "${{ env.VERSION }}" ]; then
-            echo "Version mismatch: Expected ${{ env.VERSION }}, got $RETURNED_VERSION"
+          if [ "$RETURNED_VERSION" != "${{ inputs.version }}" ]; then
+            echo "Version mismatch: Expected ${{ inputs.version }}, got $RETURNED_VERSION"
             exit 1
           fi
           echo "Version check passed for latest image"
