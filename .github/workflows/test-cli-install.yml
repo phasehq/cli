@@ -11,20 +11,20 @@ jobs:
   test-cli-install:
     strategy:
       matrix:
-        distro: [ubuntu:latest, fedora:latest, alpine:latest, archlinux:latest]
+        distro: ['ubuntu-latest', 'fedora-latest', 'alpine-latest', 'archlinux-latest']
     runs-on: ubuntu-latest
     container:
-      image: ${{ matrix.distro }}
+      image: ${{ matrix.distro == 'ubuntu-latest' && 'ubuntu:latest' || matrix.distro == 'fedora-latest' && 'fedora:latest' || matrix.distro == 'alpine-latest' && 'alpine:latest' || matrix.distro == 'archlinux-latest' && 'archlinux:latest' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
 
       - name: Install dependencies (Alpine)
-        if: matrix.distro == 'alpine:latest'
+        if: matrix.distro == 'alpine-latest'
         run: apk add --no-cache bash
 
       - name: Install dependencies (Arch Linux)
-        if: matrix.distro == 'archlinux:latest'
+        if: matrix.distro == 'archlinux-latest'
         run: pacman -Sy --noconfirm bash
 
       - name: Run install script
