@@ -49,6 +49,17 @@ can_install_without_sudo() {
     return 1
 }
 
+prompt_sudo() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "This operation requires elevated privileges. Please enter your sudo password."
+        sudo -v
+        if [ $? -ne 0 ]; then
+            echo "Failed to obtain sudo privileges. Exiting."
+            exit 1
+        fi
+    fi
+}
+
 install_tool() {
     local TOOL=$1
     echo "Installing $TOOL..."
@@ -67,7 +78,8 @@ install_tool() {
                 pacman -Sy --noconfirm $TOOL
                 ;;
         esac
-    elif has_sudo_access; then
+    else
+        prompt_sudo
         case $OS in
             ubuntu|debian)
                 sudo apt-get update && sudo apt-get install -y $TOOL
@@ -82,9 +94,6 @@ install_tool() {
                 sudo pacman -Sy --noconfirm $TOOL
                 ;;
         esac
-    else
-        echo "Unable to install $TOOL. Please run this script with sudo or as root."
-        exit 1
     fi
 }
 
@@ -161,12 +170,10 @@ install_from_binary() {
     if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
         mv "$BINARY_PATH" /usr/local/bin/phase
         mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
-    elif has_sudo_access; then
+    else
+        prompt_sudo
         sudo mv "$BINARY_PATH" /usr/local/bin/phase
         sudo mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
-    else
-        echo "Unable to install. Please run this script with sudo or as root."
-        exit 1
     fi
 }
 
@@ -178,14 +185,8 @@ install_package() {
         return
     fi
 
-    local INSTALL_CMD
-    if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-        INSTALL_CMD=""
-    elif has_sudo_access; then
-        INSTALL_CMD="sudo "
-    else
-        echo "Unable to install. Please run this script with sudo or as root."
-        exit 1
+    if [ "$EUID" -ne 0 ] && ! can_install_without_sudo; then
+        prompt_sudo
     fi
 
     case $OS in
@@ -193,21 +194,34 @@ install_package() {
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
             wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
             verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.deb" "$PACKAGE_URL.sha256"
-            ${INSTALL_CMD}dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
+            if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
+                dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
+            else
+                sudo dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
+            fi
             ;;
 
         fedora|rhel|centos)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.rpm"
             wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
             verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.rpm" "$PACKAGE_URL.sha256"
-            ${INSTALL_CMD}rpm -U $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
+            if [ "$EUID" -eq 0 ]; then
+                rpm -Uvh $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
+            else
+                echo "Installing RPM package. This may require sudo privileges."
+                sudo rpm -Uvh $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
+            fi
             ;;
 
         alpine)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.apk"
             wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
             verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.apk" "$PACKAGE_URL.sha256"
-            ${INSTALL_CMD}apk add --allow-untrusted $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
+            if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
+                apk add --allow-untrusted $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
+            else
+                sudo apk add --allow-untrusted $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
+            fi
             ;;
 
         *)
