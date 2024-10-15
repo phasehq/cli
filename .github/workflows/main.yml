@@ -38,7 +38,7 @@ jobs:
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
   pypi:
-    # needs: [build]
+    if: github.event_name == 'release' && github.event.action == 'created'
     uses: ./.github/workflows/pypi.yml
     secrets:
       PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}
