@@ -151,7 +151,3 @@ jobs:
         with:
           name: phase-apk
           path: /home/builder/packages/builder/x86_64/*.apk
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phase-alpine-build
-          path: ./dist/phase
