@@ -102,12 +102,6 @@ jobs:
           mv "$ZIPNAME" phase_cli_release_$VERSION/
           sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_macos_arm64_$VERSION.sha256
 
-          # For Alpine build
-          ZIPNAME="phase_cli_alpine_linux_amd64_$VERSION.zip"
-          zip -r "$ZIPNAME" phase-alpine-build/phase phase-alpine-build/_internal
-          mv "$ZIPNAME" phase_cli_release_$VERSION/
-          sha256sum phase_cli_release_$VERSION/"$ZIPNAME" > phase_cli_release_$VERSION/phase_cli_alpine_linux_amd64_$VERSION.sha256
-              
           # For Alpine package
           mv phase-apk/*.apk phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk
           sha256sum phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk > phase_cli_release_$VERSION/phase_cli_linux_amd64_$VERSION.apk.sha256
