@@ -38,7 +38,7 @@ jobs:
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
   pypi:
-    needs: [build]
+    # needs: [build]
     uses: ./.github/workflows/pypi.yml
     secrets:
       PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}
