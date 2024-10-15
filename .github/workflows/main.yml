@@ -53,8 +53,6 @@ jobs:
     uses: ./.github/workflows/process-assets.yml
     with:
       version: ${{ needs.version.outputs.version }}
-    secrets:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   test-cli-install:
     needs: [version]
