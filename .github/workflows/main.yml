@@ -28,7 +28,7 @@ jobs:
       python_version: '3.11'
 
   docker:
-    # if: github.event_name == 'release' && github.event.action == 'created'
+    if: github.event_name == 'release' && github.event.action == 'created'
     needs: [version]
     uses: ./.github/workflows/docker.yml
     with:
