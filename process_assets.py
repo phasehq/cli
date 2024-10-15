@@ -47,7 +47,7 @@ def process_artifacts(input_dir, output_dir, version):
             continue
 
         # Generate SHA256 hash
-        hash_file = output_path.with_suffix('.sha256')
+        hash_file = output_path.with_name(f"{output_path.name}.sha256")
         hash_value = sha256sum(output_path)
         hash_file.write_text(f'{hash_value} {output_file}\n')
 
