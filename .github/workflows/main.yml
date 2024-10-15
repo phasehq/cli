@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+  release:
+    types: [created]
 
 permissions:
   contents: write
@@ -26,9 +28,11 @@ jobs:
       python_version: '3.11'
 
   docker:
-    # if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # if: github.event_name == 'release' && github.event.action == 'created'
     needs: [version]
     uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
     secrets:
       DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
