@@ -2,6 +2,8 @@ import os
 import argparse
 import hashlib
 import zipfile
+import shutil
+import glob
 from pathlib import Path
 
 def sha256sum(filename):
@@ -11,6 +13,10 @@ def sha256sum(filename):
             h.update(block)
     return h.hexdigest()
 
+def find_file(directory, pattern):
+    matches = list(Path(directory).rglob(pattern))
+    return matches[0] if matches else None
+
 def process_artifacts(input_dir, output_dir, version):
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -18,30 +24,37 @@ def process_artifacts(input_dir, output_dir, version):
 
     # Define expected files and their source locations here
     assets = [
-        ('phase_cli_linux_amd64_{version}.apk', 'phase-apk'),
-        ('phase_cli_linux_amd64_{version}.deb', 'phase-deb'),
-        ('phase_cli_linux_amd64_{version}.rpm', 'phase-rpm'),
-        ('phase_cli_linux_amd64_{version}.zip', 'Linux-binary'),
-        ('phase_cli_linux_arm64_{version}.zip', 'Linux-binary-arm64'),
-        ('phase_cli_macos_amd64_{version}.zip', 'macOS-amd64-binary'),
-        ('phase_cli_macos_arm64_{version}.zip', 'macOS-arm64-binary'),
-        ('phase_cli_windows_amd64_{version}.zip', 'Windows-binary'),
+        ('phase_cli_linux_amd64_{version}.apk', 'phase-apk', '*.apk'),
+        ('phase_cli_linux_amd64_{version}.deb', 'phase-deb', '*.deb'),
+        ('phase_cli_linux_amd64_{version}.rpm', 'phase-rpm', '*.rpm'),
+        ('phase_cli_linux_amd64_{version}.zip', 'Linux-binary', None),
+        ('phase_cli_linux_arm64_{version}.zip', 'Linux-binary-arm64', None),
+        ('phase_cli_macos_amd64_{version}.zip', 'macOS-amd64-binary', None),
+        ('phase_cli_macos_arm64_{version}.zip', 'macOS-arm64-binary', None),
+        ('phase_cli_windows_amd64_{version}.zip', 'Windows-binary', None),
     ]
 
-    for output_file, source_dir in assets:
+    for output_file, source_dir, file_pattern in assets:
         output_file = output_file.format(version=version)
         source_path = input_dir / source_dir
         output_path = output_dir / output_file
 
-        if source_path.is_dir():
-            # If it's a directory, zip it
+        if file_pattern:
+            # For APK, DEB, and RPM files
+            file_path = find_file(input_dir, file_pattern)
+            if file_path:
+                shutil.copy2(file_path, output_path)
+            else:
+                print(f"Warning: No file matching '{file_pattern}' found in {input_dir}")
+                continue
+        elif source_path.is_dir():
+            # For directories that need to be zipped
             with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file in source_path.rglob('*'):
                     if file.is_file():
-                        zipf.write(file, file.relative_to(source_path))
-        elif source_path.is_file():
-            # If it's a file, just copy it
-            source_path.rename(output_path)
+                        # Adjust the archive structure
+                        arcname = Path(source_dir) / file.relative_to(source_path)
+                        zipf.write(file, arcname)
         else:
             print(f"Warning: Source not found for {output_file}")
             continue
