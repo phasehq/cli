@@ -144,12 +144,12 @@ install_from_binary() {
     case $ARCH in
         x86_64)
             ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
-            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.sha256"
+            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip.sha256"
             EXTRACT_DIR="Linux-binary/phase"
             ;;
         aarch64)
             ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
-            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.sha256"
+            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip.sha256"
             EXTRACT_DIR="phase_cli_release_$VERSION/Linux-binary/phase"
             ;;
         *)
