@@ -54,8 +54,16 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  attach-to-release:
+    if: github.event_name == 'release' && github.event.action == 'created'
+    needs: [process-assets, version]
+    uses: ./.github/workflows/attach-to-release.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
   test-cli-install:
-    needs: [version]
+    needs: [version, attach-to-release]
+    if: github.event_name != 'release' || (github.event_name == 'release' && github.event.action == 'created')
     uses: ./.github/workflows/test-cli-install.yml
     with:
       version: ${{ needs.version.outputs.version }}
