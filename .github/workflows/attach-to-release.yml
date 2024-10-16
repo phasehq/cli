@@ -1,0 +1,26 @@
+name: Attach Assets to Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  attach-to-release:
+    name: Attach Assets to Release
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Download processed assets
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-cli-release
+          path: ./phase-cli-release
+
+      - name: Attach assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./phase-cli-release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
