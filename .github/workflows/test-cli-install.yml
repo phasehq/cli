@@ -17,7 +17,7 @@ jobs:
       image: ${{ matrix.distro == 'ubuntu-latest' && 'ubuntu:latest' || matrix.distro == 'fedora-latest' && 'fedora:latest' || matrix.distro == 'alpine-latest' && 'alpine:latest' || matrix.distro == 'archlinux-latest' && 'archlinux:latest' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install dependencies (Alpine)
         if: matrix.distro == 'alpine-latest'
