@@ -47,7 +47,7 @@ jobs:
 
   # Build, package and upload to pypi, install, run the cli and validate version
   pypi:
-    #if: github.event_name == 'release' && github.event.action == 'created'
+    if: github.event_name == 'release' && github.event.action == 'created'
     needs: [version]
     uses: ./.github/workflows/pypi.yml
     with:
