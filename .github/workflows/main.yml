@@ -13,14 +13,20 @@ permissions:
   pull-requests: write
 
 jobs:
+
+  # Run Tests
   pytest:
     uses: ./.github/workflows/pytest.yml
     with:
       python_version: '3.11'
 
+  # Fetch and validate version from source code
   version:
     uses: ./.github/workflows/version.yml
 
+  # Build and package the CLI using PyInstaller for Windows(amd64), Mac (Intel - amd64, Apple silicon arm64), Alpine linux (amd64), Linux (amd64, arm64) .deb, .rpm, binaries
+  
+  # TODO: Add arm64 support for windows, arm64 packages (deb, rpm, apk)
   build:
     needs: [pytest, version]
     uses: ./.github/workflows/build.yml
@@ -28,6 +34,7 @@ jobs:
       python_version: '3.11'
       version: ${{ needs.version.outputs.version }}
 
+  # Build docker image, push it to :latest and :<version> OS/Arch linux/amd64, linux/arm64, pull images, run the CLI and validate version
   docker:
     if: github.event_name == 'release' && github.event.action == 'created'
     needs: [version]
@@ -38,6 +45,7 @@ jobs:
       DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
+  # Build, package and upload to pypi, install, run the cli and validate version
   pypi:
     if: github.event_name == 'release' && github.event.action == 'created'
     needs: [version]
@@ -48,12 +56,14 @@ jobs:
       PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}
       PYPI_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
 
+  # Download packages, builds, binaries from build stage, rename, hash and zip the assets via the script
   process-assets:
     needs: [build, version]
     uses: ./.github/workflows/process-assets.yml
     with:
       version: ${{ needs.version.outputs.version }}
 
+  # Download packaged assets zip and attach them to a release as assets
   attach-to-release:
     if: github.event_name == 'release' && github.event.action == 'created'
     needs: [process-assets, version]
@@ -61,6 +71,7 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  # Install, run and validate CLI version. 
   test-cli-install:
     needs: [version, attach-to-release]
     if: github.event_name != 'release' || (github.event_name == 'release' && github.event.action == 'created')
