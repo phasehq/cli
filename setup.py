@@ -1,5 +1,6 @@
 import os
 from setuptools import setup, find_packages
+from phase_cli.utils.const import __version__
 
 # Read the contents of the README.md file
 with open('README.md', 'r') as f:
@@ -9,8 +10,8 @@ with open('README.md', 'r') as f:
 with open('requirements.txt') as f:
     requirements = f.read().splitlines()
 
-# Fetch version from environment variable or set to a default
-version = os.environ.get('PHASE_CLI_VERSION')
+# Set version
+version = __version__
 
 setup(
     name='phase-cli',
