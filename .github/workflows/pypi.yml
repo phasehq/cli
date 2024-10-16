@@ -48,7 +48,10 @@ jobs:
   pull_and_test:
     name: Pull and Test PyPI Package
     needs: build_and_deploy
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -60,7 +63,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install phase-cli
 
-      - name: Test installed package
+      - name: Test installed package (Linux/macOS)
+        if: runner.os != 'Windows'
         run: |
           installed_version=$(phase -v)
           echo "Installed version: $installed_version"
@@ -69,3 +73,15 @@ jobs:
             echo "Version mismatch!"
             exit 1
           fi
+
+      - name: Test installed package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installed_version = phase -v
+          echo "Installed version: $installed_version"
+          echo "Expected version: ${{ inputs.version }}"
+          if ($installed_version -ne "${{ inputs.version }}") {
+            echo "Version mismatch!"
+            exit 1
+          }
