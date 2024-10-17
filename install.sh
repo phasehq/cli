@@ -150,7 +150,7 @@ install_from_binary() {
         aarch64)
             ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
             CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip.sha256"
-            EXTRACT_DIR="phase_cli_release_$VERSION/Linux-binary/phase"
+            EXTRACT_DIR="Linux-binary-arm64/phase"
             ;;
         *)
             echo "Unsupported architecture: $ARCH. This script supports x86_64 and arm64."
