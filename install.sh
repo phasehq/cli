@@ -51,10 +51,15 @@ can_install_without_sudo() {
 
 prompt_sudo() {
     if [ "$EUID" -ne 0 ]; then
-        echo "This operation requires elevated privileges. Please enter your sudo password."
-        sudo -v
-        if [ $? -ne 0 ]; then
-            echo "Failed to obtain sudo privileges. Exiting."
+        if command -v sudo >/dev/null 2>&1; then
+            echo "This operation requires elevated privileges. Please enter your sudo password if prompted."
+            sudo -v
+            if [ $? -ne 0 ]; then
+                echo "Failed to obtain sudo privileges. Exiting."
+                exit 1
+            fi
+        else
+            echo "Error: This script must be run as root or with sudo privileges."
             exit 1
         fi
     fi
@@ -167,13 +172,18 @@ install_from_binary() {
     verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
     chmod +x "$BINARY_PATH"
 
-    if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
+    if [ "$EUID" -eq 0 ]; then
+        # Running as root, no need for sudo
         mv "$BINARY_PATH" /usr/local/bin/phase
         mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
-    else
-        prompt_sudo
+    elif command -v sudo >/dev/null 2>&1; then
+        # Not root, but sudo is available
+        echo "This operation requires elevated privileges. Please enter your sudo password if prompted."
         sudo mv "$BINARY_PATH" /usr/local/bin/phase
         sudo mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
+    else
+        echo "Error: This script must be run as root or with sudo privileges."
+        exit 1
     fi
 }
 
