@@ -175,7 +175,8 @@ def main ():
             help='The key associated with the secret to update. If the new value is not provided as an argument, it will be read from stdin.'
         )
         secrets_update_parser.add_argument('--env', type=str, help=env_help)
-        secrets_update_parser.add_argument('--app', type=str, help='The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.')
+        secrets_update_parser.add_argument('--app', type=str, help=app_help)
+        secrets_update_parser.add_argument('--app-id', type=str, help=app_id_help)
 
         # Handle the --random argument
         random_types = ['hex', 'alphanumeric', 'base64', 'base64url', 'key128', 'key256']
