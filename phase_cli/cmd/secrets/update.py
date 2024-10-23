@@ -70,7 +70,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, phase_app_id=None, 
             console.log("✅ Successfully updated the secret.")
             
             # Optionally, list secrets after update to confirm the change
-            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=destination_path or source_path)
+            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, phase_app_id=phase_app_id, path=destination_path or source_path)
         else:
             console.log(f"{response}")
     except ValueError as e:
