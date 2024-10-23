@@ -35,7 +35,7 @@ def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None,
             console.log("✅ Successfully deleted the secrets.")
 
         # Optionally, list remaining secrets to confirm deletion
-        phase_list_secrets(show=False, env_name=env_name, phase_app=phase_app, path=path)
+        phase_list_secrets(show=False, env_name=env_name, phase_app=phase_app, phase_app_id=phase_app_id, path=path)
     
     except ValueError as e:
         console.log(f"Error: {e}")
