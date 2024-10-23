@@ -294,32 +294,35 @@ def get_default_user_token() -> str:
     raise ValueError("Default user not found in the config file.")
 
 
-def phase_get_context(user_data, app_name=None, env_name=None):
+def phase_get_context(user_data, app_name=None, env_name=None, app_id=None):
     """
     Get the context (ID, name, and publicKey) for a specified application and environment or the default application and environment.
-
+    
     Parameters:
     - user_data (dict): The user data from the API response.
     - app_name (str, optional): The name (or partial name) of the desired application.
     - env_name (str, optional): The name (or partial name) of the desired environment.
-
+    - app_id (str, optional): The explicit application ID to use.
+    
     Returns:
     - tuple: A tuple containing the application's name, application's ID, environment's name, environment's ID, and publicKey.
-
+    
     Raises:
     - ValueError: If no matching application or environment is found.
     """
-    app_id = None
-    # 1. Get the default app_id and env_name from .phase.json if available
-    try:
-        with open(PHASE_ENV_CONFIG, 'r') as f:
-            config_data = json.load(f)
-        default_env_name = config_data.get("defaultEnv")
-        app_name_from_config = config_data.get("phaseApp")
-        app_id = config_data.get("appId")
-    except FileNotFoundError:
+    # 1. Get the default app_id and env_name from .phase.json if no explicit app_id provided
+    if not app_id:
+        try:
+            with open(PHASE_ENV_CONFIG, 'r') as f:
+                config_data = json.load(f)
+            default_env_name = config_data.get("defaultEnv")
+            app_name_from_config = config_data.get("phaseApp")
+            app_id = config_data.get("appId")
+        except FileNotFoundError:
+            default_env_name = "Development"
+            app_id = None
+    else:
         default_env_name = "Development"
-        app_id = None
 
     # 2. If env_name isn't explicitly provided, use the default
     env_name = env_name or default_env_name
@@ -336,7 +339,8 @@ def phase_get_context(user_data, app_name=None, env_name=None):
         elif app_id:
             application = next((app for app in user_data["apps"] if app["id"] == app_id), None)
             if not application:
-                raise ValueError(f"🔍 No application found with the name '{app_name_from_config}' and ID: '{app_id}'.")
+                app_name_display = app_name_from_config if not app_id else f"ID: '{app_id}'"
+                raise ValueError(f"🔍 No application found with {app_name_display}.")
         else:
             raise ValueError("🤔 No application context provided. Please run 'phase init' or pass the '--app' flag followed by your application name.")
 
