@@ -36,7 +36,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, phase_app_id=N
     elif random_type:
         # Check if length is specified for key128 or key256
         if random_type in ['key128', 'key256'] and random_length != 32:
-            print("⚠️\u200A Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
+            console.log("⚠️\u200A Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
 
         try:
             value = generate_random_secret(random_type, random_length)
@@ -66,7 +66,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, phase_app_id=N
             phase_list_secrets(show=False, phase_app=phase_app, phase_app_id=phase_app_id, env_name=env_name, path=path)
         else:
             # Print an error message if the response status code indicates an error
-            print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
+            console.log(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
 
     except ValueError as e:
         console.log(f"Error: {e}")

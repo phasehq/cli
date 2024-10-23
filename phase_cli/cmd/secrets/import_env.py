@@ -32,7 +32,7 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None, phase_app_
                 secrets.append((key.strip().upper(), sanitize_value(value.strip())))
     
     except FileNotFoundError:
-        print(f"Error: The file {env_file} was not found.")
+        console.log(f"Error: The file {env_file} was not found.")
         sys.exit(1)
     
     try:
@@ -41,14 +41,14 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None, phase_app_
         
         # Check the response status code
         if response.status_code == 200:
-            print(f"Successfully imported and encrypted {len(secrets)} secrets.")
+            console.log(f"✅ Successfully imported and encrypted {len(secrets)} secrets.")
             if env_name == None:
-                print("To view them please run: phase secrets list")
+                console.log("To view them please run: phase secrets list")
             else:
-                print(f"To view them please run: phase secrets list --env {env_name}")
+                console.log(f"To view them please run: phase secrets list --env {env_name}")
         else:
             # Print an error message if the response status code indicates an error
-            print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
+            console.log(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
 
     except ValueError as e:
         console.log(f"Error: {e}")
