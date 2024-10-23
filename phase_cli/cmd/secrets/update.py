@@ -5,7 +5,7 @@ from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
 
-def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, random_length=None, source_path='', destination_path=None, override=False, toggle_override=False):
+def phase_secrets_update(key, env_name=None, phase_app=None, phase_app_id=None, random_type=None, random_length=None, source_path='', destination_path=None, override=False, toggle_override=False):
     """
     Updates a secret with a new value or a randomly generated value, with optional source and destination path support.
 
@@ -59,7 +59,8 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
             env_name=env_name, 
             key=key, 
             value=new_value, 
-            app_name=phase_app, 
+            app_name=phase_app,
+            app_id=phase_app_id,
             source_path=source_path, 
             destination_path=destination_path, 
             override=override, 
@@ -69,7 +70,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, random_type=None, r
             console.log("✅ Successfully updated the secret.")
             
             # Optionally, list secrets after update to confirm the change
-            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=destination_path or source_path)
+            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, phase_app_id=phase_app_id, path=destination_path or source_path)
         else:
             console.log(f"{response}")
     except ValueError as e:

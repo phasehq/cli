@@ -101,14 +101,15 @@ class Phase:
         return response.json()
 
 
-    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str, path: str = '/', override_value: str = None) -> requests.Response:
+    def create(self, key_value_pairs: List[Tuple[str, str]], env_name: str, app_name: str = None, app_id: str = None, path: str = '/', override_value: str = None) -> requests.Response:
         """
         Create secrets in Phase KMS with support for specifying a path and overrides.
 
         Args:
             key_value_pairs (List[Tuple[str, str]]): List of tuples where each tuple contains a key and a value.
             env_name (str): The name (or partial name) of the desired environment.
-            app_name (str): The name of the application context.
+            app_name (str, optional): The name of the application context.
+            app_id (str, optional): The explicit application ID to use.
             path (str, optional): The path under which to store the secrets. Defaults to the root path '/'.
             override_value (str, optional): The overridden value for the secret. Defaults to None.
 
@@ -120,7 +121,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name, app_id=app_id)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
@@ -156,7 +157,7 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, tag: str = None, path: str = '') -> List[Dict]:
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, app_id: str = None, tag: str = None, path: str = '') -> List[Dict]:
         """
         Get secrets from Phase KMS based on key and environment, with support for personal overrides,
         optional tag matching, decrypting comments, and now including path support and key digest optimization.
@@ -165,6 +166,7 @@ class Phase:
             env_name (str): The name (or partial name) of the desired environment.
             keys (List[str], optional): The keys for which to retrieve the secret values.
             app_name (str, optional): The name of the desired application.
+            app_id (str, optional): The explicit application ID to use.
             tag (str, optional): The tag to match against the secrets.
             path (str, optional): The path under which to fetch secrets, default is root.
 
@@ -177,7 +179,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name, app_id=app_id)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
@@ -237,7 +239,7 @@ class Phase:
         return results
 
 
-    def update(self, env_name: str, key: str, value: str = None, app_name: str = None, source_path: str = '', destination_path: str = None, override: bool = False, toggle_override: bool = False) -> str:
+    def update(self, env_name: str, key: str, value: str = None, app_name: str = None, app_id: str = None, source_path: str = '', destination_path: str = None, override: bool = False, toggle_override: bool = False) -> str:
         """
         Update a secret in Phase KMS based on key and environment, with support for source and destination paths.
         
@@ -246,6 +248,7 @@ class Phase:
             key (str): The key for which to update the secret value.
             value (str, optional): The new value for the secret. Defaults to None.
             app_name (str, optional): The name of the desired application.
+            app_id (str, optional): The explicit application ID to use.
             source_path (str, optional): The current path of the secret. Defaults to root path '/'.
             destination_path (str, optional): The new path for the secret, if changing its location. If not provided, the path is not updated.
             override (bool, optional): Whether to update an overridden secret value. Defaults to False.
@@ -260,7 +263,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name, app_id=app_id)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:
@@ -344,7 +347,7 @@ class Phase:
             return f"Error: Failed to update secret. HTTP Status Code: {response.status_code}"
 
 
-    def delete(self, env_name: str, keys_to_delete: List[str], app_name: str = None, path: str = None) -> List[str]:
+    def delete(self, env_name: str, keys_to_delete: List[str], app_name: str = None, app_id: str = None, path: str = None) -> List[str]:
         """
         Delete secrets in Phase KMS based on keys and environment, with optional path support.
         
@@ -352,6 +355,7 @@ class Phase:
             env_name (str): The name (or partial name) of the desired environment.
             keys_to_delete (List[str]): The keys for which to delete the secrets.
             app_name (str, optional): The name of the desired application.
+            app_id (str, optional): The explicit application ID to use.
             path (str, optional): The path within which to delete the secrets. If specified, only deletes secrets within this path.
                 
         Returns:
@@ -363,7 +367,7 @@ class Phase:
             raise ValueError(f"Request failed with status code {user_response.status_code}: {user_response.text}")
 
         user_data = user_response.json()
-        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name)
+        app_name, app_id, env_name, env_id, public_key = phase_get_context(user_data, app_name=app_name, env_name=env_name, app_id=app_id)
 
         environment_key = self._find_matching_environment_key(user_data, env_id)
         if environment_key is None:

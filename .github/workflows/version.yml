@@ -39,8 +39,3 @@ jobs:
           else
             echo "Versions match: ${{ steps.extract_version.outputs.version }}"
           fi
-
-      # - uses: actions/upload-artifact@v4
-      #   with:
-      #     name: phase-version
-      #     path: ./PHASE_CLI_VERSION.txt

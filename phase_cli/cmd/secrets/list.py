@@ -2,7 +2,7 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import render_tree_with_tables
 from rich.console import Console
 
-def phase_list_secrets(show=False, env_name=None, phase_app=None, tags=None, path=''):
+def phase_list_secrets(show=False, env_name=None, phase_app=None, phase_app_id=None, tags=None, path=''):
     """
     Lists the secrets fetched from Phase for the specified environment, optionally filtered by tags and path.
 
@@ -21,7 +21,7 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None, tags=None, pat
     console = Console()
 
     try:
-        secrets_data = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
+        secrets_data = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path)
         
         # Check that secrets_data is a list of dictionaries
         if not isinstance(secrets_data, list):

@@ -36,10 +36,10 @@ class TestPhaseRunInject(unittest.TestCase):
 
         # Act phase: execute the function under test with a clean environment
         with patch.dict('os.environ', {}, clear=True):
-            phase_run_inject(command, env_name, phase_app)
+            phase_run_inject(command, env_name=env_name, phase_app=phase_app)
 
         # Assert phase: verify the behavior of the function
-        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, tag=None, path='/')
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/')
         mock_resolve_all_secrets.assert_called()
         mock_subprocess_run.assert_called_once_with(command, shell=True, env=unittest.mock.ANY)
         new_env = mock_subprocess_run.call_args[1]['env']
@@ -74,10 +74,10 @@ class TestPhaseRunInject(unittest.TestCase):
 
         # Act phase: execute the function under test with a clean environment
         with patch.dict('os.environ', {}, clear=True):
-            phase_run_inject(command, env_name, phase_app)
+            phase_run_inject(command, env_name=env_name, phase_app=phase_app)
 
         # Assert phase: verify the behavior of the function
-        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, tag=None, path='/')
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/')
         mock_resolve_all_secrets.assert_called()
         mock_subprocess_run.assert_called_once_with(command, shell=True, env=unittest.mock.ANY)
         new_env = mock_subprocess_run.call_args[1]['env']
@@ -104,8 +104,37 @@ class TestPhaseRunInject(unittest.TestCase):
 
         # Act and Assert phase: execute the function under test and expect a SystemExit exception
         with self.assertRaises(SystemExit):
-            phase_run_inject(command, env_name, phase_app)
+            phase_run_inject(command, env_name=env_name, phase_app=phase_app)
 
         # Verify that the error message was logged
         mock_console_instance.log.assert_called_with("Error: Some error occurred")
-        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, tag=None, path='/')
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/')
+
+    @patch('phase_cli.cmd.run.subprocess.run')
+    @patch('phase_cli.cmd.run.Console')
+    @patch('phase_cli.cmd.run.Progress')
+    @patch('phase_cli.cmd.run.resolve_all_secrets')
+    @patch('phase_cli.cmd.run.Phase')
+    def test_phase_run_inject_with_app_id(self, MockPhase, mock_resolve_all_secrets, MockProgress, MockConsole, mock_subprocess_run):
+        # Arrange phase: set up mock objects and their return values
+        mock_phase_instance = MockPhase.return_value
+        mock_console_instance = MockConsole.return_value
+        mock_progress_instance = MockProgress.return_value.__enter__.return_value
+
+        # Mock the return value of the get method
+        mock_phase_instance.get.return_value = [
+            {'key': 'SECRET_KEY', 'value': 'secret_value', 'environment': 'dev', 'path': '/', 'application': 'app'}
+        ]
+
+        mock_resolve_all_secrets.side_effect = lambda value, all_secrets, phase, app, env: value
+
+        command = 'echo "Hello World"'
+        env_name = 'dev'
+        app_id = 'test-app-id'
+
+        # Act phase: execute the function under test
+        with patch.dict('os.environ', {}, clear=True):
+            phase_run_inject(command, env_name=env_name, phase_app_id=app_id)
+
+        # Assert phase: verify app_id is used instead of app_name
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=None, app_id=app_id, tag=None, path='/')

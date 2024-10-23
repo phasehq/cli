@@ -7,7 +7,7 @@ from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
 
-def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: str = '/'):
+def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, tags=None, path: str = '/'):
     """
     Executes a shell command with environment variables set to the secrets 
     fetched from Phase for the specified environment, resolving references as needed.
@@ -31,7 +31,7 @@ def phase_run_inject(command, env_name=None, phase_app=None, tags=None, path: st
                 task1 = progress.add_task("[bold green]Fetching secrets...", total=None)        
 
                 # Fetch all secrets
-                all_secrets = phase.get(env_name=env_name, app_name=phase_app, tag=tags, path=path)
+                all_secrets = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path)
                 
                 # Organize all secrets into a dictionary for easier lookup
                 secrets_dict = {}
