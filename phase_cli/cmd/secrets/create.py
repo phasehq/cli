@@ -5,7 +5,7 @@ from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
 
-def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None, path='/', override=False):
+def phase_secrets_create(key=None, env_name=None, phase_app=None, phase_app_id=None, random_type=None, random_length=None, path='/', override=False):
     """
     Creates a new secret, encrypts it, and syncs it with the Phase, with support for specifying a path and overrides.
 
@@ -58,7 +58,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     try:
         # Encrypt and POST secret to the backend using phase create
-        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, path=path, override_value=override_value)
+        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, app_id=phase_app_id, path=path, override_value=override_value)
 
         # Check the response status code
         if response.status_code == 200:
