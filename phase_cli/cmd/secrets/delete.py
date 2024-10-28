@@ -3,7 +3,7 @@ from phase_cli.cmd.secrets.list import phase_list_secrets
 from rich.console import Console
 from typing import List
 
-def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None, phase_app: str = None, path: str = None):
+def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None, phase_app: str = None, phase_app_id: str = None, path: str = None):
     """
     Deletes encrypted secrets based on key values, with optional path support.
 
@@ -27,7 +27,7 @@ def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None,
 
     try:
         # Delete keys within the specified path and get the list of keys not found
-        keys_not_found = phase.delete(env_name=env_name, keys_to_delete=keys_to_delete, app_name=phase_app, path=path)
+        keys_not_found = phase.delete(env_name=env_name, keys_to_delete=keys_to_delete, app_name=phase_app, app_id=phase_app_id, path=path)
 
         if keys_not_found:
             console.log(f"⚠️  Warning: The following keys were not found: {', '.join(keys_not_found)}")
@@ -35,7 +35,7 @@ def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None,
             console.log("✅ Successfully deleted the secrets.")
 
         # Optionally, list remaining secrets to confirm deletion
-        phase_list_secrets(show=False, env_name=env_name, phase_app=phase_app, path=path)
+        phase_list_secrets(show=False, env_name=env_name, phase_app=phase_app, phase_app_id=phase_app_id, path=path)
     
     except ValueError as e:
         console.log(f"Error: {e}")

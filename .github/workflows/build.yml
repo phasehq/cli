@@ -46,24 +46,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
 
-      # # Download the version file
-      # - uses: actions/download-artifact@v4
-      #   with:
-      #     name: phase-version
-      
-      # # DEBUG
-      # - name: List files after downloading artifact
-      #   shell: bash
-      #   run: ls -al
-
-      # # Set the version environment variable
-      # - name: Set VERSION
-      #   shell: bash
-      #   run: |
-      #     PHASE_CLI_VERSION=$(cat PHASE_CLI_VERSION.txt)
-      #     echo "PHASE_CLI_VERSION is: $PHASE_CLI_VERSION"
-      #     echo "PHASE_CLI_VERSION=$PHASE_CLI_VERSION" >> $GITHUB_ENV
-
       # Build DEB and RPM packages for Linux
       - run: |
           sudo apt-get update

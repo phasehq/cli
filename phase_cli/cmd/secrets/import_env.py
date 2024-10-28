@@ -3,7 +3,7 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import get_default_user_id, sanitize_value
 from rich.console import Console
 
-def phase_secrets_env_import(env_file, env_name=None, phase_app=None, path: str = '/'):
+def phase_secrets_env_import(env_file, env_name=None, phase_app=None, phase_app_id=None, path: str = '/'):
     """
     Imports existing environment variables and secrets from a user's .env file.
 
@@ -32,23 +32,23 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None, path: str 
                 secrets.append((key.strip().upper(), sanitize_value(value.strip())))
     
     except FileNotFoundError:
-        print(f"Error: The file {env_file} was not found.")
+        console.log(f"Error: The file {env_file} was not found.")
         sys.exit(1)
     
     try:
         # Encrypt and send secrets to the backend using the `create` method
-        response = phase.create(key_value_pairs=secrets, env_name=env_name, app_name=phase_app, path=path)
+        response = phase.create(key_value_pairs=secrets, env_name=env_name, app_name=phase_app, app_id=phase_app_id, path=path)
         
         # Check the response status code
         if response.status_code == 200:
-            print(f"Successfully imported and encrypted {len(secrets)} secrets.")
+            console.log(f"✅ Successfully imported and encrypted {len(secrets)} secrets.")
             if env_name == None:
-                print("To view them please run: phase secrets list")
+                console.log("To view them please run: phase secrets list")
             else:
-                print(f"To view them please run: phase secrets list --env {env_name}")
+                console.log(f"To view them please run: phase secrets list --env {env_name}")
         else:
             # Print an error message if the response status code indicates an error
-            print(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
+            console.log(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
 
     except ValueError as e:
         console.log(f"Error: {e}")

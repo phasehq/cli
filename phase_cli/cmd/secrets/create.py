@@ -5,7 +5,7 @@ from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.utils.crypto import generate_random_secret
 from rich.console import Console
 
-def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=None, random_length=None, path='/', override=False):
+def phase_secrets_create(key=None, env_name=None, phase_app=None, phase_app_id=None, random_type=None, random_length=None, path='/', override=False):
     """
     Creates a new secret, encrypts it, and syncs it with the Phase, with support for specifying a path and overrides.
 
@@ -36,7 +36,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
     elif random_type:
         # Check if length is specified for key128 or key256
         if random_type in ['key128', 'key256'] and random_length != 32:
-            print("⚠️\u200A Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
+            console.log("⚠️\u200A Warning: The length argument is ignored for 'key128' and 'key256'. Using default lengths.")
 
         try:
             value = generate_random_secret(random_type, random_length)
@@ -58,15 +58,15 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, random_type=No
 
     try:
         # Encrypt and POST secret to the backend using phase create
-        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, path=path, override_value=override_value)
+        response = phase.create(key_value_pairs=[(key, value)], env_name=env_name, app_name=phase_app, app_id=phase_app_id, path=path, override_value=override_value)
 
         # Check the response status code
         if response.status_code == 200:
             # Call the phase_list_secrets function to list the secrets
-            phase_list_secrets(show=False, phase_app=phase_app, env_name=env_name, path=path)
+            phase_list_secrets(show=False, phase_app=phase_app, phase_app_id=phase_app_id, env_name=env_name, path=path)
         else:
             # Print an error message if the response status code indicates an error
-            print(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
+            console.log(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
 
     except ValueError as e:
         console.log(f"Error: {e}")
