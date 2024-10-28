@@ -87,7 +87,7 @@ def construct_http_headers(token_type: str, app_token: str) -> Dict[str, str]:
         Dict[str, str]: The common headers including User-Agent.
     """
     return {
-        "Authorization": f"Bearer {token_type.capitalize()} {app_token}",
+        "Authorization": f"Bearer {token_type} {app_token}",
         "User-Agent": get_user_agent()
     }
 
