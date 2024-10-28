@@ -64,11 +64,16 @@ class Phase:
             token_type = "service token" if "pss_service" in app_secret else "user token"
             raise ValueError(f"Invalid Phase {token_type}")
 
-        # Storing the token type as a string for easier access
-        self._token_type = "service" if self.is_service_token else "user"
-
+        # Store token segments
         pss_segments = app_secret.split(':')
         self._app_secret = AppSecret(*pss_segments)
+        
+        # If type service_token && version == 2; set token header as ServiceAccount
+        if self.is_service_token and self._app_secret.pes_version == "v2":
+            self._token_type = "ServiceAccount"
+        # Else decide between User token or legacy service token header 
+        else:
+            self._token_type = "Service" if self.is_service_token else "User"
 
 
     def _find_matching_environment_key(self, user_data, env_id):
