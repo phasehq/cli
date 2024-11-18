@@ -1,6 +1,7 @@
 import os
 import requests
 from phase_cli.utils.misc import get_user_agent
+from phase_cli.exceptions import AuthorizationError, APIError, SSLError
 from typing import List
 from typing import Dict
 import json
