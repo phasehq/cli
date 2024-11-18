@@ -59,7 +59,7 @@ def handle_connection_error(e: Exception) -> None:
     error_message = "🗿 Network error: Please check your internet connection."
     if PHASE_DEBUG:
         error_message += f" Detail: {str(e)}"
-    raise Exception(error_message)
+    raise ConnectionError(error_message)
 
 
 def handle_ssl_error(e: Exception) -> None:
@@ -72,7 +72,7 @@ def handle_ssl_error(e: Exception) -> None:
     error_message = "🗿 SSL error: The Phase Console is using an invalid/expired or a self-signed certificate."
     if PHASE_DEBUG:
         error_message += f" Detail: {str(e)}"
-    raise Exception(error_message)
+    raise SSLError(error_message)
 
 
 def construct_http_headers(token_type: str, app_token: str) -> Dict[str, str]:
