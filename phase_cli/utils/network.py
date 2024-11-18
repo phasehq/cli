@@ -56,7 +56,7 @@ def handle_connection_error(e: Exception) -> None:
     Args:
         e (Exception): The exception to handle.
     """
-    error_message = "🗿 Network error: Please check your internet connection."
+    error_message = "🗿 Network error: Please check your connection."
     if PHASE_DEBUG:
         error_message += f" Detail: {str(e)}"
     raise ConnectionError(error_message)
