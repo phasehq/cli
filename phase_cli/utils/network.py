@@ -111,10 +111,10 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 def fetch_app_key(token_type: str, app_token, host) -> str:
     """
@@ -220,11 +220,10 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
-
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 def create_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
     """
@@ -251,10 +250,10 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.post(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 
 def update_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
@@ -282,10 +281,10 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.put(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 
 def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, secret_ids: List[str], host: str) -> requests.Response:
@@ -313,7 +312,7 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
