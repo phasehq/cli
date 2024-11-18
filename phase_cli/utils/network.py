@@ -29,12 +29,11 @@ def handle_request_errors(response: requests.Response) -> None:
             # Check if the API response contains an error
             error_data = response.json()
             if 'error' in error_data:
-                print(f"🚫 Not authorized. {error_data['error']}")
+                raise AuthorizationError(f"🚫 Not authorized. {error_data['error']}")
             else:
-                print("🚫 Not authorized.")
+                raise AuthorizationError("🚫 Not authorized.")
         except json.JSONDecodeError:
-            print("🚫 Not authorized.")
-        return
+            raise AuthorizationError("🚫 Not authorized.")
     
     # Handle generic API errors
     if response.status_code != 200:
@@ -46,7 +45,7 @@ def handle_request_errors(response: requests.Response) -> None:
                 error_details += f" (Raw response: {response.text})"
         
         error_message = f"🗿 Request failed with status code {response.status_code}: {error_details}"
-        raise Exception(error_message)
+        raise APIError(error_message)
 
 
 def handle_connection_error(e: Exception) -> None:
