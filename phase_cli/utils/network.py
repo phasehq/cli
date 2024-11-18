@@ -69,7 +69,7 @@ def handle_ssl_error(e: Exception) -> None:
     Args:
         e (Exception): The exception to handle.
     """
-    error_message = "🗿 SSL error: The Phase Console is using an invalid/expired or a self-signed certificate."
+    error_message = "🗿 SSL error: The Phase Console is using an invalid/expired or a self-signed certificate. You may ignore this error by setting PHASE_VERIFY_SSL=False"
     if PHASE_DEBUG:
         error_message += f" Detail: {str(e)}"
     raise SSLError(error_message)
