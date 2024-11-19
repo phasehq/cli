@@ -1,6 +1,7 @@
 import os
 import requests
 from phase_cli.utils.misc import get_user_agent
+from phase_cli.exceptions import AuthorizationError, APIError, SSLError
 from typing import List
 from typing import Dict
 import json
@@ -29,12 +30,11 @@ def handle_request_errors(response: requests.Response) -> None:
             # Check if the API response contains an error
             error_data = response.json()
             if 'error' in error_data:
-                print(f"🚫 Not authorized. {error_data['error']}")
+                raise AuthorizationError(f"🚫 Not authorized. {error_data['error']}")
             else:
-                print("🚫 Not authorized.")
+                raise AuthorizationError("🚫 Not authorized.")
         except json.JSONDecodeError:
-            print("🚫 Not authorized.")
-        return
+            raise AuthorizationError("🚫 Not authorized.")
     
     # Handle generic API errors
     if response.status_code != 200:
@@ -46,7 +46,7 @@ def handle_request_errors(response: requests.Response) -> None:
                 error_details += f" (Raw response: {response.text})"
         
         error_message = f"🗿 Request failed with status code {response.status_code}: {error_details}"
-        raise Exception(error_message)
+        raise APIError(error_message)
 
 
 def handle_connection_error(e: Exception) -> None:
@@ -56,10 +56,10 @@ def handle_connection_error(e: Exception) -> None:
     Args:
         e (Exception): The exception to handle.
     """
-    error_message = "🗿 Network error: Please check your internet connection."
+    error_message = "🗿 Network error: Please check your connection."
     if PHASE_DEBUG:
         error_message += f" Detail: {str(e)}"
-    raise Exception(error_message)
+    raise ConnectionError(error_message)
 
 
 def handle_ssl_error(e: Exception) -> None:
@@ -69,10 +69,10 @@ def handle_ssl_error(e: Exception) -> None:
     Args:
         e (Exception): The exception to handle.
     """
-    error_message = "🗿 SSL error: The Phase Console is using an invalid/expired or a self-signed certificate."
+    error_message = "🗿 SSL error: The Phase Console is using an invalid/expired or a self-signed certificate. You may ignore this error by setting PHASE_VERIFY_SSL=False"
     if PHASE_DEBUG:
         error_message += f" Detail: {str(e)}"
-    raise Exception(error_message)
+    raise SSLError(error_message)
 
 
 def construct_http_headers(token_type: str, app_token: str) -> Dict[str, str]:
@@ -111,10 +111,10 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 def fetch_app_key(token_type: str, app_token, host) -> str:
     """
@@ -220,11 +220,10 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
-
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 def create_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
     """
@@ -251,10 +250,10 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.post(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 
 def update_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
@@ -282,10 +281,10 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.put(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
 
 
 def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, secret_ids: List[str], host: str) -> requests.Response:
@@ -313,7 +312,7 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         return response
-    except requests.exceptions.ConnectionError as e:
-        handle_connection_error(e)
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
