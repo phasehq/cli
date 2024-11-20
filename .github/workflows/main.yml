@@ -18,7 +18,7 @@ jobs:
   pytest:
     uses: ./.github/workflows/pytest.yml
     with:
-      python_version: '3.11'
+      python_version: '3.13'
 
   # Fetch and validate version from source code
   version:
@@ -31,7 +31,7 @@ jobs:
     needs: [pytest, version]
     uses: ./.github/workflows/build.yml
     with:
-      python_version: '3.11'
+      python_version: '3.13'
       version: ${{ needs.version.outputs.version }}
 
   # Build docker image, push it to :latest and :<version> OS/Arch linux/amd64, linux/arm64, pull images, run the CLI and validate version
