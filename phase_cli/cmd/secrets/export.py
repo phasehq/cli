@@ -16,7 +16,8 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
     This function fetches secrets from Phase, resolves any cross-environment or local secret references, and then outputs them in the chosen format.
 
     Supports several formats for exporting secrets:
-    - dotenv (.env): Key-value pairs in a simple text format.
+    - dotenv (.env): Key-value pairs in a simple text format with values wrapped in double quotes.
+    - KV: Simple key-value pairs. Upper case keys, raw values.
     - JSON: JavaScript Object Notation, useful for integration with various tools and languages.
     - CSV: Comma-Separated Values, a simple text format for tabular data.
     - YAML: Human-readable data serialization format, often used for configuration files.
