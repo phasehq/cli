@@ -7,7 +7,6 @@ from phase_cli.utils.phase_io import Phase
 import xml.sax.saxutils as saxutils
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 
 def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, keys=None, tags=None, format='dotenv', path: str = ''):
