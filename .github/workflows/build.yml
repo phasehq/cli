@@ -125,8 +125,6 @@ jobs:
       - run: |
           echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
           ls ./dist/phase
-          mkdir -p /home/builder/package
-          mkdir -p /home/builder/packages/builder/x86_64
           cp -r ./dist/phase/* /home/builder/package/
           cp ./APKBUILD /home/builder/package
           cd /home/builder/package
