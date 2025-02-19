@@ -108,7 +108,7 @@ jobs:
     name: Build Alpine
     runs-on: ubuntu-20.04
     container:
-      image: python:3.11-alpine
+      image: python:3.11-alpine3.19
     steps:
       - uses: actions/checkout@v4
       - run: apk add --update --no-cache python3 python3-dev build-base
