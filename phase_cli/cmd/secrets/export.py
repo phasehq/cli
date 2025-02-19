@@ -7,7 +7,6 @@ from phase_cli.utils.phase_io import Phase
 import xml.sax.saxutils as saxutils
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 
 def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, keys=None, tags=None, format='dotenv', path: str = ''):
@@ -16,7 +15,8 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
     This function fetches secrets from Phase, resolves any cross-environment or local secret references, and then outputs them in the chosen format.
 
     Supports several formats for exporting secrets:
-    - dotenv (.env): Key-value pairs in a simple text format.
+    - dotenv (.env): Key-value pairs in a simple text format with values wrapped in double quotes.
+    - KV: Simple key-value pairs. Upper case keys, raw values.
     - JSON: JavaScript Object Notation, useful for integration with various tools and languages.
     - CSV: Comma-Separated Values, a simple text format for tabular data.
     - YAML: Human-readable data serialization format, often used for configuration files.
@@ -37,7 +37,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
                               these tags will be fetched. Defaults to None.
         format (str, optional): The format for exporting the secrets. Supported formats include 
                                 'dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 
-                                and 'java_properties'. Defaults to 'dotenv'.
+                                'java_properties', and 'kv'. Defaults to 'dotenv'.
 
     Raises:
         ValueError: If any errors occur during the fetching of secrets or if the specified format 
@@ -106,6 +106,8 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
             export_ini(filtered_secrets_dict)
         elif format == 'java_properties':
             export_java_properties(filtered_secrets_dict)
+        elif format == 'kv':
+            export_kv(filtered_secrets_dict)
         else:
             export_dotenv(filtered_secrets_dict)
 
@@ -172,5 +174,11 @@ def export_ini(secrets_dict):
 
 def export_java_properties(secrets_dict):
     """Export secrets as Java properties file."""
+    for key, value in secrets_dict.items():
+        print(f'{key}={value}')
+
+
+def export_kv(secrets_dict):
+    """Export secrets as simple key-value pairs without quotes."""
     for key, value in secrets_dict.items():
         print(f'{key}={value}')

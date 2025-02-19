@@ -238,7 +238,9 @@ def main ():
         secrets_export_parser.add_argument('--app', type=str, help=app_help)
         secrets_export_parser.add_argument('--app-id', type=str, help=app_id_help)
         secrets_export_parser.add_argument('--path', type=str, default='/', help="The path from which you want to export secret(s). Default is '/'")
-        secrets_export_parser.add_argument('--format', type=str, default='dotenv', choices=['dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 'java_properties'], help='Specifies the export format. Supported formats: dotenv (default), json, csv, yaml, xml, toml, hcl, ini, java_properties.')
+        secrets_export_parser.add_argument('--format', type=str, default='dotenv', 
+            choices=['dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 'java_properties', 'kv'], 
+            help='Specifies the export format. Supported formats: dotenv (default), kv, json, csv, yaml, xml, toml, hcl, ini, java_properties.')
         secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Users command

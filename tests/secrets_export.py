@@ -10,7 +10,7 @@ import hcl2
 from unittest.mock import Mock, patch
 from phase_cli.cmd.secrets.export import (
     export_json, export_csv, export_yaml, export_toml, export_xml,
-    export_dotenv, export_hcl, export_ini, export_java_properties, phase_secrets_env_export,
+    export_dotenv, export_hcl, export_ini, export_java_properties, export_kv, phase_secrets_env_export,
 )
 
 secrets_dict = {
@@ -122,4 +122,37 @@ def test_export_java_properties(capsys):
     properties = dict(line.split('=', 1) for line in captured.out.strip().split('\n'))
     for key, value in properties.items():
         assert value == secrets_dict[key]
+
+
+def test_export_kv(capsys):
+    """Test the KV export format - simple key-value pairs without quotes."""
+    export_kv(secrets_dict)
+    captured = capsys.readouterr()
+    
+    # Process the output by splitting on newlines and then on '='
+    exported_secrets = dict(line.split('=', 1) for line in captured.out.strip().split('\n'))
+    
+    # Verify all keys and values match the original secrets
+    assert exported_secrets == secrets_dict
+
+
+@patch('phase_cli.cmd.secrets.export.Phase')
+def test_phase_secrets_env_export_kv_format(mock_phase, capsys):
+    """Test the KV format when using the main export function."""
+    mock_phase_instance = mock_phase.return_value
+    all_secrets = [{'key': k, 'value': v, 'environment': 'development', 'application': 'test-application-name', 'path': 'dummy/path'} 
+                  for k, v in secrets_dict.items()]
+    mock_phase_instance.get.return_value = all_secrets
+
+    # Call phase_secrets_env_export with kv format
+    phase_secrets_env_export(format='kv')
+
+    # Capture the output
+    captured = capsys.readouterr().out
+
+    # Process the output by splitting on newlines and then on '='
+    exported_secrets = dict(line.split('=', 1) for line in captured.strip().split('\n'))
+
+    # Verify the exported secrets match the original secrets
+    assert exported_secrets == secrets_dict
 
