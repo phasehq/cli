@@ -71,18 +71,6 @@ def censor_secret(secret, max_length):
     return censored
 
 
-# Tokenizing function
-def tokenize(value):
-    delimiters = [':', '@', '/', ' ']
-    tokens = [value]
-    for delimiter in delimiters:
-        new_tokens = []
-        for token in tokens:
-            new_tokens.extend(token.split(delimiter))
-        tokens = new_tokens
-    return tokens
-
-
 def render_tree_with_tables(data, show, console):
     """
     Organize secrets by path and render a table for each path within a tree structure,
