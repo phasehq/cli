@@ -50,6 +50,9 @@ def phase_init():
 
         env_id = env_choice_map[selected_env]
         selected_env_name = selected_env
+        
+        # Ask the user if they want this configuration to apply to subdirectories
+        apply_to_subdirs = questionary.confirm("🍱 Monorepo support: Would you like this configuration to apply to subdirectories?", default=False).ask()
 
         # Save the selected app's and environment's details to .phase.json
         phase_env = {
@@ -57,7 +60,8 @@ def phase_init():
             "phaseApp": selected_app_name,
             "appId": selected_app_details['id'],
             "defaultEnv": selected_env_name,
-            "envId": env_id
+            "envId": env_id,
+            "monorepoSupport": apply_to_subdirs
         }
 
         # Create .phase.json
