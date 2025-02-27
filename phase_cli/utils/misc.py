@@ -303,7 +303,6 @@ def phase_get_context(user_data, app_name=None, env_name=None, app_id=None):
         config_data = find_phase_config()
         if config_data:
             default_env_name = config_data.get("defaultEnv")
-            app_name_from_config = config_data.get("phaseApp")
             app_id = config_data.get("appId")
         else:
             default_env_name = "Development"
