@@ -1,7 +1,5 @@
 import os
-import json
-import webbrowser
-from phase_cli.utils.misc import get_default_user_host, get_default_user_org, open_browser
+from phase_cli.utils.misc import get_default_user_host, get_default_user_org, open_browser, find_phase_config
 from phase_cli.utils.const import PHASE_SECRETS_DIR
 
 def phase_open_console():
@@ -11,18 +9,16 @@ def phase_open_console():
         config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
         org_name = get_default_user_org(config_file_path)
         
-        phase_env_config_path = os.path.join(os.getcwd(), ".phase.json")
-        if os.path.exists(phase_env_config_path):
-            with open(phase_env_config_path, 'r') as file:
-                config = json.load(file)
-                app_id = config.get("appId")
-                version = int(config.get("version", "1"))  # Default to version 1 if not specified
-                
-                if version >= 2 and "envId" in config:
-                    env_id = config.get("envId")
-                    url = f"{url_base}/{org_name}/apps/{app_id}/environments/{env_id}"
-                else:
-                    url = f"{url_base}/{org_name}/apps/{app_id}"
+        config = find_phase_config()
+        if config:
+            app_id = config.get("appId")
+            version = int(config.get("version", "1"))  # Default to version 1 if not specified
+            
+            if version >= 2 and "envId" in config:
+                env_id = config.get("envId")
+                url = f"{url_base}/{org_name}/apps/{app_id}/environments/{env_id}"
+            else:
+                url = f"{url_base}/{org_name}/apps/{app_id}"
         else:
             url = url_base
         

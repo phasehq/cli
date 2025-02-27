@@ -71,18 +71,6 @@ def censor_secret(secret, max_length):
     return censored
 
 
-# Tokenizing function
-def tokenize(value):
-    delimiters = [':', '@', '/', ' ']
-    tokens = [value]
-    for delimiter in delimiters:
-        new_tokens = []
-        for token in tokens:
-            new_tokens.extend(token.split(delimiter))
-        tokens = new_tokens
-    return tokens
-
-
 def render_tree_with_tables(data, show, console):
     """
     Organize secrets by path and render a table for each path within a tree structure,
@@ -312,13 +300,11 @@ def phase_get_context(user_data, app_name=None, env_name=None, app_id=None):
     """
     # 1. Get the default app_id and env_name from .phase.json if no explicit app_id provided
     if not app_id and not app_name:
-        try:
-            with open(PHASE_ENV_CONFIG, 'r') as f:
-                config_data = json.load(f)
+        config_data = find_phase_config()
+        if config_data:
             default_env_name = config_data.get("defaultEnv")
-            app_name_from_config = config_data.get("phaseApp")
             app_id = config_data.get("appId")
-        except FileNotFoundError:
+        else:
             default_env_name = "Development"
             app_id = None
     else:
@@ -353,6 +339,54 @@ def phase_get_context(user_data, app_name=None, env_name=None, app_id=None):
         return (application["name"], application["id"], environment["environment"]["name"], environment["environment"]["id"], environment["identity_key"])
     except StopIteration:
         raise ValueError("🔍 Application or environment not found.")
+
+
+def find_phase_config(max_depth=8):
+    """
+    Search for a .phase.json file in the current directory and parent directories.
+    
+    Parameters:
+    - max_depth (int): Maximum number of parent directories to check. Can be overridden with PHASE_CONFIG_PARENT_DIR_SEARCH_DEPTH environment variable.
+    
+    Returns:
+    - dict or None: The contents of the .phase.json file if found, None otherwise.
+    """
+    # Check for environment variable override for search depth
+    try:
+        env_depth = os.environ.get('PHASE_CONFIG_PARENT_DIR_SEARCH_DEPTH')
+        if env_depth:
+            max_depth = int(env_depth)
+    except (ValueError, TypeError):
+        # If conversion fails, keep using the default max_depth
+        pass
+    
+    current_dir = os.getcwd()
+    original_dir = current_dir
+    
+    # Try up to max_depth parent directories
+    for _ in range(max_depth + 1):  # +1 to include current directory
+        config_path = os.path.join(current_dir, PHASE_ENV_CONFIG)
+        
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    config_data = json.load(f)
+                # Only use this config if monorepoSupport is true or we're in the original directory
+                if os.path.samefile(current_dir, original_dir) or config_data.get("monorepoSupport", False):
+                    return config_data
+            except (json.JSONDecodeError, FileNotFoundError, OSError):
+                pass
+        
+        # Move up to the parent directory
+        parent_dir = os.path.dirname(current_dir)
+        
+        # If we've reached the root directory, stop
+        if parent_dir == current_dir:
+            break
+            
+        current_dir = parent_dir
+    
+    return None
 
 
 def normalize_tag(tag):
