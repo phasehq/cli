@@ -14,7 +14,7 @@ with open('requirements.txt') as f:
 version = __version__
 
 setup(
-    name='phase-cli',
+    name='phase_cli',
     version=version,
     author='Phase',
     author_email='info@phase.dev',
