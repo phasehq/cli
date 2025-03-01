@@ -65,7 +65,10 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
 
                 # Print the message with the number of secrets injected
                 console.log(f"🚀 Injected [bold magenta]{secret_count}[/] secrets from the [bold green]{environment_message}[/] environment.\n")
-                subprocess.run(command, shell=True, env=new_env)
+                process = subprocess.run(command, shell=True, env=new_env)
+                
+                # Exit with the same code as the subprocess
+                sys.exit(process.returncode)
 
     except ValueError as e:
         console.log(f"Error: {e}")

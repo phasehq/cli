@@ -1,4 +1,5 @@
 import os
+import sys
 from phase_cli.utils.misc import get_default_user_host, get_default_user_org, open_browser, find_phase_config
 from phase_cli.utils.const import PHASE_SECRETS_DIR
 
@@ -25,3 +26,4 @@ def phase_open_console():
         open_browser(url)
     except Exception as e:
         print(f"Error opening Phase console: {e}")
+        sys.exit(1)

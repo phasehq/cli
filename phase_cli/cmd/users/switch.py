@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from questionary import select, Separator
 from phase_cli.utils.const import CONFIG_FILE
 
@@ -7,17 +8,25 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         print("No configuration found. Please run 'phase auth' to set up your configuration.")
         return None
-    with open(CONFIG_FILE, 'r') as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        print("Error reading the config file. The file may be corrupted or not in the expected format.")
+        sys.exit(1)
 
 def save_config(config_data):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config_data, f, indent=4)
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config_data, f, indent=4)
+    except Exception as e:
+        print(f"Error saving configuration: {e}")
+        sys.exit(1)
 
 def switch_user():
     config_data = load_config()
     if not config_data:
-        return
+        sys.exit(1)
 
     # Prepare user choices, including a visual separator as a title.
     # Also, create a mapping for the partial UUID to the full UUID.
@@ -54,6 +63,9 @@ def switch_user():
                 break
             else:
                 print("User switch failed.")
-                break
+                sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(0)
+    except Exception as e:
+        print(f"Error switching user: {e}")
+        sys.exit(1)

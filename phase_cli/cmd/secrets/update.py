@@ -44,7 +44,7 @@ def phase_secrets_update(key, env_name=None, phase_app=None, phase_app_id=None, 
             new_value = generate_random_secret(random_type, random_length)
         except ValueError as e:
             console.log(f"Error: {e}")
-            return
+            sys.exit(1)
     elif not override:
         if sys.stdin.isatty():
             new_value = getpass.getpass(f"✨ Please enter the new value for {key} (hidden): ")
@@ -75,3 +75,4 @@ def phase_secrets_update(key, env_name=None, phase_app=None, phase_app_id=None, 
             console.log(f"{response}")
     except ValueError as e:
         console.log(f"⚠️  Error occurred while updating the secret: {e}")
+        sys.exit(1)

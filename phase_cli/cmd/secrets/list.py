@@ -1,3 +1,4 @@
+import sys
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.misc import render_tree_with_tables
 from rich.console import Console
@@ -36,3 +37,4 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None, phase_app_id=N
 
     except ValueError as e:
         console.log(f"Error: {e}")
+        sys.exit(1)

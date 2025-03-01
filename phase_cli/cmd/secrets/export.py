@@ -113,6 +113,7 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
 
     except ValueError as e:
         console.log(f"Error: {e}")
+        sys.exit(1)
 
 
 def export_json(secrets_dict):

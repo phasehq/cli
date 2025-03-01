@@ -1,3 +1,4 @@
+import sys
 from phase_cli.utils.phase_io import Phase
 from rich.console import Console
 import json
@@ -26,7 +27,7 @@ def phase_secrets_get(key, env_name=None, phase_app=None, phase_app_id=None, tag
         # Check that secret_data was found and is a dictionary
         if not secret_data:
             console.log("🔍 Secret not found...")
-            return
+            sys.exit(1)
         if not isinstance(secret_data, dict):
             raise ValueError("Unexpected format: secret data is not a dictionary")
         
@@ -36,3 +37,4 @@ def phase_secrets_get(key, env_name=None, phase_app=None, phase_app_id=None, tag
 
     except ValueError as e:
         console.log(f"Error: {e}")
+        sys.exit(1)

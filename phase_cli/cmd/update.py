@@ -1,6 +1,7 @@
 import requests
 import subprocess
 import os
+import sys
 
 def phase_cli_update():
     # URL of the remote bash script
@@ -27,7 +28,10 @@ def phase_cli_update():
         print("Update completed successfully.")
     except requests.RequestException as e:
         print(f"Error fetching the update script: {e}")
+        sys.exit(1)
     except subprocess.CalledProcessError:
         print("Error executing the update script.")
+        sys.exit(1)
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
+        sys.exit(1)
