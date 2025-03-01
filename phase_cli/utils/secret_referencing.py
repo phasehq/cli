@@ -2,6 +2,7 @@ import re
 from typing import Dict, List
 from phase_cli.exceptions import EnvironmentNotFoundException
 from phase_cli.utils.const import SECRET_REF_REGEX
+from phase_cli.utils.phase_io import Phase
 
 """
     Secret Referencing Syntax:
