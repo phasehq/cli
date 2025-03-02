@@ -16,7 +16,9 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
         command (str): The shell command to be executed.
         env_name (str, optional): The environment name from which secrets are fetched. Defaults to None.
         phase_app (str, optional): The name of the Phase application. Defaults to None.
+        phase_app_id (str, optional): The ID of the Phase application. Defaults to None.
         tags (str, optional): Comma-separated list of tags to filter secrets. Defaults to None.
+        path (str, optional): Specific path under which to fetch secrets. Defaults to '/'.
     """
     phase = Phase()
     console = Console()
@@ -54,7 +56,12 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
 
                 # Count and get environment from the secrets for the message
                 secret_count = len(resolved_secrets_dict)
+                
+                # Extract application and environment names
+                applications = set(secret.get('application') for secret in all_secrets if secret['key'] in resolved_secrets_dict and secret.get('application'))
                 environments = set(secret.get('environment') for secret in all_secrets if secret['key'] in resolved_secrets_dict)
+                
+                application_message = ', '.join(applications)
                 environment_message = ', '.join(environments)
 
                 new_env = os.environ.copy()
@@ -64,7 +71,11 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
                 progress.stop()
 
                 # Print the message with the number of secrets injected
-                console.log(f"🚀 Injected [bold magenta]{secret_count}[/] secrets from the [bold green]{environment_message}[/] environment.\n")
+                if path and path != '/':
+                    console.log(f"🚀 Injected [bold magenta]{secret_count}[/] secrets from Application: [bold cyan]{application_message}[/], Environment: [bold green]{environment_message}[/], Path: [bold yellow]{path}[/]\n")
+                else:
+                    console.log(f"🚀 Injected [bold magenta]{secret_count}[/] secrets from Application: [bold cyan]{application_message}[/], Environment: [bold green]{environment_message}[/]\n")
+                
                 subprocess.run(command, shell=True, env=new_env)
 
     except ValueError as e:
