@@ -13,7 +13,8 @@ from rich.box import ROUNDED
 from urllib.parse import urlparse
 from typing import Union, List
 from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
-
+import platform
+import shutil
 
 def get_terminal_width():
     """
@@ -488,3 +489,70 @@ def get_user_agent():
 
     user_agent_str = ' '.join(details)
     return user_agent_str
+
+# Phase Shell
+
+def get_default_shell():
+    """
+    Determines the default shell to use based on the current platform and environment.
+    
+    Returns:
+        list: A list containing the shell command and any arguments to pass to it.
+    """
+    system = platform.system()
+    
+    if system == "Windows":
+        # On Windows, try to use PowerShell first, then cmd
+        if shutil.which("pwsh"):  # PowerShell Core (cross-platform)
+            return ["pwsh"]
+        elif shutil.which("powershell"):
+            return ["powershell"]
+        else:
+            return ["cmd"]
+    else:
+        # On Unix-like systems (Linux, macOS), use the SHELL environment variable
+        shell = os.environ.get("SHELL")
+        if shell and os.path.exists(shell):
+            return [shell]
+        
+        # Fall back to common shells in order of preference
+        for sh in ["/bin/zsh", "/bin/bash", "/bin/sh"]:
+            if os.path.exists(sh):
+                return [sh]
+    
+    return None  # No suitable shell found
+
+def get_shell_command(shell_type):
+    """
+    Get the command to launch the specified shell type.
+    
+    Args:
+        shell_type (str): The type of shell to launch (bash, zsh, fish, powershell, etc.)
+        
+    Returns:
+        list: A list containing the shell command and any arguments to pass to it.
+    """
+    shell_type = shell_type.lower()
+    
+    # Common shell mappings
+    shell_map = {
+        "bash": ["bash"],
+        "zsh": ["zsh"],
+        "fish": ["fish"],
+        "powershell": ["powershell"],
+        "pwsh": ["pwsh"],  # Cross-platform PowerShell Core
+        "cmd": ["cmd"],
+        "sh": ["sh"]
+    }
+    
+    if shell_type in shell_map:
+        shell_cmd = shell_map[shell_type]
+        
+        # Check if the shell executable exists
+        shell_path = shutil.which(shell_cmd[0])
+        if shell_path:
+            return shell_cmd
+        else:
+            return None
+    
+    return None  # Unsupported shell type
