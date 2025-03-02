@@ -64,7 +64,7 @@ def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, pat
                 application_message = ', '.join(applications)
                 environment_message = ', '.join(environments)
 
-                new_env = os.environ.copy()
+                new_env = {}
                 new_env.update(resolved_secrets_dict)
 
                 # Set a PHASE_ENV environment variable for shell scripts to detect
