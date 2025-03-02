@@ -103,7 +103,7 @@ def main ():
         shell_parser.add_argument('--env', type=str, help=env_help)
         shell_parser.add_argument('--app', type=str, help=app_help)
         shell_parser.add_argument('--app-id', type=str, help=app_id_help)
-        shell_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your shell. Default is '/'")
+        shell_parser.add_argument('--path', type=str, help="Specific path under which to fetch secrets from and inject into your shell. Default is 'blank' i.e. all secrets across all paths.")
         shell_parser.add_argument('--tags', type=str, help=tag_help)
         shell_parser.add_argument('--shell', type=str, help="Specify which shell to use (bash, zsh, sh, fish, powershell, etc). If not specified, will use the current shell or system default.")
 

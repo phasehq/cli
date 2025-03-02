@@ -7,7 +7,7 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from phase_cli.utils.misc import get_default_shell, get_shell_command
 
-def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, path: str = '/', shell_type=None):
+def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, path: str = '', shell_type=None):
     """
     Launches an interactive shell with environment variables set to the secrets 
     fetched from Phase for the specified environment, resolving references as needed.
