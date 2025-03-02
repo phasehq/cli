@@ -12,6 +12,7 @@ from phase_cli.cmd.users.switch import switch_user
 from phase_cli.cmd.users.keyring import show_keyring_info
 from phase_cli.cmd.users.logout import phase_cli_logout
 from phase_cli.cmd.run import phase_run_inject
+from phase_cli.cmd.shell import phase_shell
 from phase_cli.cmd.init import phase_init
 from phase_cli.cmd.auth import phase_auth
 from phase_cli.cmd.secrets.list import phase_list_secrets
@@ -96,6 +97,15 @@ def main ():
         run_parser.add_argument('--app-id', type=str, help=app_id_help)
         run_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your application. Default is '/'")
         run_parser.add_argument('--tags', type=str, help=tag_help)
+
+        # Shell command
+        shell_parser = subparsers.add_parser('shell', help='🐚 Launch a sub-shell with secrets as environment variables (BETA)')
+        shell_parser.add_argument('--env', type=str, help=env_help)
+        shell_parser.add_argument('--app', type=str, help=app_help)
+        shell_parser.add_argument('--app-id', type=str, help=app_id_help)
+        shell_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your shell. Default is '/'")
+        shell_parser.add_argument('--tags', type=str, help=tag_help)
+        shell_parser.add_argument('--shell', type=str, help="Specify which shell to use (bash, zsh, sh, fish, powershell, etc). If not specified, will use the current shell or system default.")
 
         # Secrets command
         secrets_parser = subparsers.add_parser('secrets', help='🗝️\u200A Manage your secrets')
@@ -280,6 +290,8 @@ def main ():
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
             phase_run_inject(command, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags)
+        elif args.command == 'shell':
+            phase_shell(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, shell_type=args.shell)
         elif args.command == 'console':
             phase_open_console()
         elif args.command == 'docs':
