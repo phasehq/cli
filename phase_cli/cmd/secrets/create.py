@@ -42,7 +42,7 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, phase_app_id=N
             value = generate_random_secret(random_type, random_length)
         except ValueError as e:
             console.log(f"Error: {e}")
-            return
+            sys.exit(1)
     else:
         # Check if input is being piped
         if sys.stdin.isatty():
@@ -67,6 +67,8 @@ def phase_secrets_create(key=None, env_name=None, phase_app=None, phase_app_id=N
         else:
             # Print an error message if the response status code indicates an error
             console.log(f"Error: Failed to create secret. HTTP Status Code: {response.status_code}")
+            sys.exit(1)
 
     except ValueError as e:
         console.log(f"Error: {e}")
+        sys.exit(1)
