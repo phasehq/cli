@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from phase_cli.utils.network import (
     fetch_phase_user,
     fetch_app_key,
-    fetch_wrapped_key_share,
     fetch_phase_secrets,
     create_phase_secrets,
     update_phase_secrets,
@@ -133,7 +132,7 @@ class Phase:
             raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_salt = environment_key.get("wrapped_salt")
-        decrypted_salt = self.decrypt(wrapped_salt)
+        decrypted_salt = self.decrypt(wrapped_salt, user_data)
 
         secrets = []
         for key, value in key_value_pairs:
@@ -191,14 +190,14 @@ class Phase:
             raise ValueError("No environment found with id: {}".format(env_id))
 
         wrapped_seed = environment_key.get("wrapped_seed")
-        decrypted_seed = self.decrypt(wrapped_seed)
+        decrypted_seed = self.decrypt(wrapped_seed, user_data)
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
         params = {"path": path}
         if keys and len(keys) == 1:
             wrapped_salt = environment_key.get("wrapped_salt")
-            decrypted_salt = self.decrypt(wrapped_salt)
+            decrypted_salt = self.decrypt(wrapped_salt, user_data)
             key_digest = CryptoUtils.blake2b_digest(keys[0], decrypted_salt)
             params["key_digest"] = key_digest
 
@@ -279,7 +278,7 @@ class Phase:
         secrets_data = secrets_response.json()
 
         wrapped_seed = environment_key.get("wrapped_seed")
-        decrypted_seed = self.decrypt(wrapped_seed)
+        decrypted_seed = self.decrypt(wrapped_seed, user_data)
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
@@ -291,7 +290,7 @@ class Phase:
         encrypted_value = CryptoUtils.encrypt_asymmetric(value or "", public_key)
 
         wrapped_salt = environment_key.get("wrapped_salt")
-        decrypted_salt = self.decrypt(wrapped_salt)
+        decrypted_salt = self.decrypt(wrapped_salt, user_data)
         key_digest = CryptoUtils.blake2b_digest(key, decrypted_salt)
 
         # Determine secret value to be updated -  only update shared value if not overriding or toggling
@@ -379,7 +378,7 @@ class Phase:
             raise ValueError(f"No environment found with id: {env_id}")
 
         wrapped_seed = environment_key.get("wrapped_seed")
-        decrypted_seed = self.decrypt(wrapped_seed)
+        decrypted_seed = self.decrypt(wrapped_seed, user_data)
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
@@ -408,38 +407,50 @@ class Phase:
         return keys_not_found
     
 
-    def decrypt(self, phase_ciphertext) -> str | None:
+    def decrypt(self, phase_ciphertext: str, wrapped_key_share_data: dict) -> str | None:
         """
         Decrypts a Phase ciphertext string.
-
+        
         Args:
             phase_ciphertext (str): The encrypted message to decrypt.
-
+            wrapped_key_share_data (dict): JSON response containing the wrapped key share data.
+        
         Returns:
             str: The decrypted plaintext as a string. Returns `None` if an error occurs.
-
+        
         Raises:
-            ValueError: If the ciphertext is not in the expected format (e.g. wrong prefix, wrong number of fields).
+            ValueError: If the ciphertext is not in the expected format or wrapped key share is missing.
         """
         try:
             [prefix, version, client_pub_key_hex, ct] = phase_ciphertext.split(':')
             if prefix != 'ph' or len(phase_ciphertext.split(':')) != 4:
                 raise ValueError('Ciphertext is invalid')
+            
             client_pub_key = bytes.fromhex(client_pub_key_hex)
-
-            wrapped_key_share = fetch_wrapped_key_share(
-                self._token_type, self._app_secret.app_token, self._api_host)
-            keyshare1 = CryptoUtils.decrypt_raw(bytes.fromhex(wrapped_key_share), bytes.fromhex(self._app_secret.keyshare1_unwrap_key)).decode("utf-8")
-
+            
+            wrapped_key_share = wrapped_key_share_data.get("wrapped_key_share")
+            if not wrapped_key_share:
+                raise ValueError("Wrapped key share not found in the response!")
+            
+            keyshare1 = CryptoUtils.decrypt_raw(
+                bytes.fromhex(wrapped_key_share),
+                bytes.fromhex(self._app_secret.keyshare1_unwrap_key)
+            ).decode("utf-8")
+            
             app_priv_key = CryptoUtils.reconstruct_secret(
-                [self._app_secret.keyshare0, keyshare1])
-
-            session_keys = crypto_kx_server_session_keys(bytes.fromhex(
-                self._app_secret.pss_user_public_key), bytes.fromhex(app_priv_key), client_pub_key)
-
+                [self._app_secret.keyshare0, keyshare1]
+            )
+            
+            session_keys = crypto_kx_server_session_keys(
+                bytes.fromhex(self._app_secret.pss_user_public_key),
+                bytes.fromhex(app_priv_key),
+                client_pub_key
+            )
+            
             plaintext = CryptoUtils.decrypt_b64(ct, session_keys[0].hex())
-
+            
             return plaintext
-
+            
         except ValueError as err:
             raise ValueError(f"Something went wrong: {err}")
+            
