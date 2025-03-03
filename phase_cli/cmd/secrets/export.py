@@ -85,6 +85,12 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
 
         # Filter secrets if specific keys are requested
         if keys:
+            # Check if any requested keys don't exist
+            missing_keys = [key for key in keys if key not in all_secrets_dict]
+            if missing_keys:
+                console.log(f"Error: 🥡 Failed to export. The following secret(s) do not exist: {', '.join(missing_keys)}")
+                sys.exit(1)
+                
             filtered_secrets_dict = {key: all_secrets_dict[key] for key in keys if key in all_secrets_dict}
         else:
             filtered_secrets_dict = all_secrets_dict
