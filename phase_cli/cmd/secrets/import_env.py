@@ -49,6 +49,8 @@ def phase_secrets_env_import(env_file, env_name=None, phase_app=None, phase_app_
         else:
             # Print an error message if the response status code indicates an error
             console.log(f"Error: Failed to import secrets. HTTP Status Code: {response.status_code}")
+            sys.exit(1)
 
     except ValueError as e:
         console.log(f"Error: {e}")
+        sys.exit(1)

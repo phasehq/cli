@@ -62,7 +62,7 @@ class HelpfulParser(argparse.ArgumentParser):
         print (description)
         print(phaseASCii)
         self.print_help()
-        sys.exit(2)
+        sys.exit(0)
 
     def add_subparsers(self, **kwargs):
         kwargs['title'] = 'Commands'

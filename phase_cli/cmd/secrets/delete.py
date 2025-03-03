@@ -1,3 +1,4 @@
+import sys
 from phase_cli.utils.phase_io import Phase
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from rich.console import Console
@@ -39,3 +40,4 @@ def phase_secrets_delete(keys_to_delete: List[str] = None, env_name: str = None,
     
     except ValueError as e:
         console.log(f"Error: {e}")
+        sys.exit(1)

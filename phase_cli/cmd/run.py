@@ -71,7 +71,7 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
                 progress.stop()
 
                 # Print the message with the number of secrets injected
-                if path and path != '':
+                if path and path != '/':
                     console.log(f"🚀 Injected [bold magenta]{secret_count}[/] secrets from Application: [bold cyan]{application_message}[/], Environment: [bold green]{environment_message}[/], Path: [bold yellow]{path}[/]\n")
                 else:
                     console.log(f"🚀 Injected [bold magenta]{secret_count}[/] secrets from Application: [bold cyan]{application_message}[/], Environment: [bold green]{environment_message}[/]\n")
