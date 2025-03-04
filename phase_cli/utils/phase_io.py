@@ -1,6 +1,6 @@
 import requests
 from typing import Tuple
-from typing import List, Dict
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from phase_cli.utils.network import (
     fetch_phase_user,
@@ -407,7 +407,7 @@ class Phase:
         return keys_not_found
     
 
-    def decrypt(self, phase_ciphertext: str, wrapped_key_share_data: dict) -> str | None:
+    def decrypt(self, phase_ciphertext: str, wrapped_key_share_data: dict) -> Optional[str]:
         """
         Decrypts a Phase ciphertext string.
         
