@@ -16,12 +16,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # ubuntu-20.04 - context: https://github.com/phasehq/cli/issues/94
+        # ubuntu-22.04 - context: https://github.com/phasehq/cli/issues/94
         # macos-13 darwin-amd64 builds (intel)
         # macos-14 darwin-arm64 builds (apple silicon)
         # context: https://github.com/actions/runner-images?tab=readme-ov-file#available-images
 
-        os: [ubuntu-20.04, windows-2022, macos-13, macos-14]
+        os: [ubuntu-22.04, windows-2022, macos-13, macos-14]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,7 +31,7 @@ jobs:
       - run: pip install pyinstaller
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
       - name: Print GLIBC version
-        if: matrix.os == 'ubuntu-20.04'
+        if: matrix.os == 'ubuntu-22.04'
         run: ldd --version
 
       # Set LC_ALL based on the runner OS for Linux and macOS
@@ -53,7 +53,7 @@ jobs:
           sudo gem install --no-document fpm
           fpm -s dir -t deb -n phase -v ${{ inputs.version }} dist/phase/=usr/bin/
           fpm -s dir -t rpm -n phase -v ${{ inputs.version }} dist/phase/=usr/bin/
-        if: matrix.os == 'ubuntu-20.04'
+        if: matrix.os == 'ubuntu-22.04'
         shell: bash
 
       # Upload DEB and RPM packages
@@ -61,12 +61,12 @@ jobs:
         with:
           name: phase-deb
           path: "*.deb"
-        if: matrix.os == 'ubuntu-20.04'
+        if: matrix.os == 'ubuntu-22.04'
       - uses: actions/upload-artifact@v4
         with:
           name: phase-rpm
           path: "*.rpm"
-        if: matrix.os == 'ubuntu-20.04'
+        if: matrix.os == 'ubuntu-22.04'
 
       - name: Set artifact name
         run: |
@@ -106,7 +106,7 @@ jobs:
 
   build_apk:
     name: Build Alpine
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     container:
       image: python:3.11-alpine3.19
     steps:
