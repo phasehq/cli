@@ -4,6 +4,7 @@ import yaml
 import csv
 import io
 import toml
+import sys
 from xml.etree import ElementTree as ET
 from configparser import ConfigParser
 import hcl2
@@ -156,3 +157,35 @@ def test_phase_secrets_env_export_kv_format(mock_phase, capsys):
     # Verify the exported secrets match the original secrets
     assert exported_secrets == secrets_dict
 
+
+@patch('phase_cli.cmd.secrets.export.Phase')
+@patch('phase_cli.cmd.secrets.export.sys.exit')
+def test_phase_secrets_env_export_error_handling(mock_exit, mock_phase):
+    # Arrange: Set up the mock Phase instance to raise a ValueError
+    mock_phase_instance = mock_phase.return_value
+    error_message = "API request failed"
+    mock_phase_instance.get.side_effect = ValueError(error_message)
+    
+    # Act: Call the function that should handle the error
+    phase_secrets_env_export()
+    
+    # Assert: Verify sys.exit was called with exit code 1
+    mock_exit.assert_called_once_with(1)
+
+
+@patch('phase_cli.cmd.secrets.export.Console')
+@patch('phase_cli.cmd.secrets.export.Phase')
+@patch('phase_cli.cmd.secrets.export.sys.exit')
+def test_phase_secrets_env_export_logs_error_message(mock_exit, mock_phase, mock_console):
+    # Arrange: Set up mocks
+    mock_phase_instance = mock_phase.return_value
+    mock_console_instance = mock_console.return_value
+    error_message = "API request failed"
+    mock_phase_instance.get.side_effect = ValueError(error_message)
+    
+    # Act: Call the function that should handle the error
+    phase_secrets_env_export()
+    
+    # Assert: Verify the error was logged and sys.exit was called
+    mock_console_instance.log.assert_called_once_with(f"Error: {error_message}")
+    mock_exit.assert_called_once_with(1)
