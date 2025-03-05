@@ -49,8 +49,8 @@ class CustomHelpFormatter(argparse.HelpFormatter):
             action.metavar = None
         parts = super(CustomHelpFormatter, self)._format_action(action)
         # remove the unnecessary line
-        if "{auth,init,run,secrets,users,console,update}" in parts:
-            parts = parts.replace("{auth,init,run,secrets,users,console,update}", "")
+        if "{auth,init,run,shell,secrets,users,docs,console,update}" in parts:
+            parts = parts.replace("{auth,init,run,shell,secrets,users,docs,console,update}", "")
         return parts
 
 class HelpfulParser(argparse.ArgumentParser):
