@@ -95,7 +95,7 @@ def main ():
         run_parser.add_argument('--env', type=str, help=env_help)
         run_parser.add_argument('--app', type=str, help=app_help)
         run_parser.add_argument('--app-id', type=str, help=app_id_help)
-        run_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your application. Default is '/'")
+        run_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your application. Default is '/'. Pass an empty string "" to fetch secrets from all paths.")
         run_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Shell command
@@ -103,7 +103,7 @@ def main ():
         shell_parser.add_argument('--env', type=str, help=env_help)
         shell_parser.add_argument('--app', type=str, help=app_help)
         shell_parser.add_argument('--app-id', type=str, help=app_id_help)
-        shell_parser.add_argument('--path', type=str, help="Specific path under which to fetch secrets from and inject into your shell. Default is 'blank' i.e. all secrets across all paths.")
+        shell_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your shell. Default is '/'. Pass an empty string \"\" to fetch secrets from all paths.")
         shell_parser.add_argument('--tags', type=str, help=tag_help)
         shell_parser.add_argument('--shell', type=str, help="Specify which shell to use (bash, zsh, sh, fish, powershell, etc). If not specified, will use the current shell or system default.")
 
@@ -135,7 +135,7 @@ def main ():
         secrets_get_parser.add_argument('--app', type=str, help=app_help)
         secrets_get_parser.add_argument('--app-id', type=str, help=app_id_help)
         secrets_get_parser.add_argument('--tags', type=str, help=tag_help)
-        secrets_get_parser.add_argument('--path', type=str, default='/', required=False, help="The path from which to fetch the secret from. Default is '/'")
+        secrets_get_parser.add_argument('--path', type=str, default='/', required=False, help="The path from which to fetch the secret from. Default is '/'. Pass an empty string \"\" to fetch secrets from all paths.")
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
@@ -247,7 +247,7 @@ def main ():
         secrets_export_parser.add_argument('--env', type=str, help=env_help)
         secrets_export_parser.add_argument('--app', type=str, help=app_help)
         secrets_export_parser.add_argument('--app-id', type=str, help=app_id_help)
-        secrets_export_parser.add_argument('--path', type=str, default='/', help="The path from which you want to export secret(s). Default is '/'")
+        secrets_export_parser.add_argument('--path', type=str, default='/', help="The path from which you want to export secret(s). Default is '/'. Pass an empty string \"\" to export secrets from all paths.")
         secrets_export_parser.add_argument('--format', type=str, default='dotenv', 
             choices=['dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 'java_properties', 'kv'], 
             help='Specifies the export format. Supported formats: dotenv (default), kv, json, csv, yaml, xml, toml, hcl, ini, java_properties.')
