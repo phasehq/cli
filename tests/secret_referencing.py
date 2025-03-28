@@ -28,7 +28,15 @@ secrets_dict = {
 # Mock Phase class
 class MockPhase:
     def get(self, env_name, app_name, keys, path):
-        if env_name == "prod" and path == "/frontend":
+        # Handle cross-application references
+        if app_name == "other_app" and env_name == "dev" and path == "/":
+            return [{"key": "API_KEY", "value": "other_app_api_key"}]
+        elif app_name == "other_app" and env_name == "prod" and path == "/config":
+            return [{"key": "DB_PASSWORD", "value": "other_app_db_password"}]
+        elif app_name == "backend_api" and env_name == "production" and path == "/frontend":
+            return [{"key": "SECRET_KEY", "value": "backend_api_secret_key"}]
+        # Handle regular environment references
+        elif env_name == "prod" and path == "/frontend":
             return [{"key": "SECRET_KEY", "value": "prod_secret_value"}]
         raise EnvironmentNotFoundException(env_name=env_name)
 
@@ -115,3 +123,44 @@ def test_resolve_invalid_reference_format(phase, current_application_name, curre
     ref = "invalid_format"
     resolved_value = resolve_secret_reference(ref, secrets_dict, phase, current_application_name, current_env_name)
     assert resolved_value == "${invalid_format}"
+
+# Cross Application: Basic root path reference
+def test_resolve_cross_application_root(phase, current_application_name, current_env_name):
+    ref = "other_app::dev.API_KEY"
+    resolved_value = resolve_secret_reference(ref, secrets_dict, phase, current_application_name, current_env_name)
+    assert resolved_value == "other_app_api_key"
+
+# Cross Application: Reference with specific path
+def test_resolve_cross_application_path(phase, current_application_name, current_env_name):
+    ref = "other_app::prod./config/DB_PASSWORD"
+    resolved_value = resolve_secret_reference(ref, secrets_dict, phase, current_application_name, current_env_name)
+    assert resolved_value == "other_app_db_password"
+
+# Cross Application: Missing key
+def test_resolve_cross_application_missing_key(phase, current_application_name, current_env_name):
+    ref = "other_app::dev.MISSING_KEY"
+    resolved_value = resolve_secret_reference(ref, secrets_dict, phase, current_application_name, current_env_name)
+    assert resolved_value == "${other_app::dev.MISSING_KEY}"
+
+# Cross Application: Missing environment
+def test_resolve_cross_application_missing_env(phase, current_application_name, current_env_name):
+    ref = "other_app::missing_env.API_KEY"
+    resolved_value = resolve_secret_reference(ref, secrets_dict, phase, current_application_name, current_env_name)
+    assert resolved_value == "${other_app::missing_env.API_KEY}"
+
+# Cross Application: Mixed references with cross-application
+def test_resolve_mixed_references_with_cross_app(phase, current_application_name, current_env_name):
+    value = "Local: ${KEY}, Cross Env: ${staging.DEBUG}, Cross App: ${other_app::dev.API_KEY}, Missing Cross App: ${other_app::dev.MISSING_KEY}"
+    all_secrets = [
+        {"environment": "current", "path": "/", "key": "KEY", "value": "value1"},
+        {"environment": "staging", "path": "/", "key": "DEBUG", "value": "staging_debug_value"}
+    ]
+    resolved_value = resolve_all_secrets(value, all_secrets, phase, current_application_name, current_env_name)
+    expected_value = "Local: value1, Cross Env: staging_debug_value, Cross App: other_app_api_key, Missing Cross App: ${other_app::dev.MISSING_KEY}"
+    assert resolved_value == expected_value
+
+# Cross Application: Complex example with frontend path
+def test_resolve_cross_app_frontend_example(phase, current_application_name, current_env_name):
+    ref = "backend_api::production./frontend/SECRET_KEY"
+    resolved_value = resolve_secret_reference(ref, secrets_dict, phase, current_application_name, current_env_name)
+    assert resolved_value == "backend_api_secret_key"
