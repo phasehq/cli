@@ -1,4 +1,3 @@
-import re
 from typing import Dict, List
 from phase_cli.exceptions import EnvironmentNotFoundException
 from phase_cli.utils.const import SECRET_REF_REGEX
@@ -8,8 +7,8 @@ from phase_cli.utils.phase_io import Phase
     Secret Referencing Syntax:
 
     This documentation explains the syntax used for referencing secrets within the configuration. 
-    Secrets can be referenced both locally (within the same environment) and across different environments, 
-    with or without specifying a path.
+    Secrets can be referenced locally (within the same environment), across different environments, 
+    and across different applications, with or without specifying a path.
 
     Syntax Patterns:
 
@@ -41,8 +40,16 @@ from phase_cli.utils.phase_io import Phase
         - Secret Key: `STRIPE_KEY`
         - Description: References a secret named `STRIPE_KEY` located at `/backend/payments/` in the current environment.
 
+    5. Cross-Application Reference:
+        Syntax: `${backend_api::production./frontend/SECRET_KEY}`
+        - Application: Different application (e.g., `backend_api`).
+        - Environment: Different environment (e.g., `production`).
+        - Path: Specifies a path within the environment (`/frontend/`).
+        - Secret Key: `SECRET_KEY`
+        - Description: References a secret named `SECRET_KEY` located at `/frontend/` in the `production` environment of the `backend_api` application.
+
     Note:
-    The syntax allows for flexible secret management, enabling both straightforward local references and more complex cross-environment references.
+    The syntax allows for flexible secret management, enabling local references, cross-environment references, and cross-application references.
 """
 
 
@@ -75,12 +82,13 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
     """
     Resolves a single secret reference to its actual value by fetching it from the specified environment.
     
-    The function supports both local and cross-environment secret references, allowing for flexible secret management.
+    The function supports local, cross-environment, and cross-application secret references, allowing for flexible secret management.
     Local references are identified by the absence of a dot '.' in the reference string, implying the current environment.
     Cross-environment references include an environment name, separated by a dot from the rest of the path.
+    Cross-application references use '::' to separate the application name from the rest of the reference.
     
     Args:
-        ref (str): The secret reference string, which could be a local or cross-environment reference.
+        ref (str): The secret reference string, which could be a local, cross-environment, or cross-application reference.
         secrets_dict (Dict[str, Dict[str, Dict[str, str]]]): A dictionary containing known secrets.
         phase ('Phase'): An instance of the Phase class to fetch secrets.
         current_application_name (str): The name of the current application.
@@ -89,10 +97,17 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
     Returns:
         str: The resolved secret value or the original reference if not resolved.
     """
+    original_ref = ref  # Store the original reference
+    app_name = current_application_name
     env_name = current_env_name
     path = "/"  # Default root path
     key_name = ref
 
+    # Check if this is a cross-application reference
+    if "::" in ref:
+        parts = ref.split("::", 1)
+        app_name, ref = parts[0], parts[1]
+        
     # Parse the reference to identify environment, path, and secret key.
     if "." in ref:  # Cross-environment references
         parts = ref.split(".", 1)
@@ -113,15 +128,15 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
                 return secrets_dict[env_name]['/'][key_name]
 
         # If the secret is not found in secrets_dict, try to fetch it from Phase
-        fetched_secrets = phase.get(env_name=env_name, app_name=current_application_name, keys=[key_name], path=path)
+        fetched_secrets = phase.get(env_name=env_name, app_name=app_name, keys=[key_name], path=path)
         for secret in fetched_secrets:
             if secret["key"] == key_name:
                 return secret["value"]
     except EnvironmentNotFoundException:
         pass
 
-    # Return the reference as is if not resolved
-    return f"${{{ref}}}"
+    # Return the original reference as is if not resolved
+    return f"${{{original_ref}}}"
 
 
 def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
