@@ -4,6 +4,7 @@ import json
 import questionary
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import PHASE_ENV_CONFIG
+from rich.console import Console
 
 # Initializes a .phase.json in the root of the dir of where the command is run
 def phase_init():
@@ -12,6 +13,8 @@ def phase_init():
     """
     # Initialize the Phase class
     phase = Phase()
+    # Create a console object for logging warnings and errors to stderr
+    console = Console(stderr=True)
 
     try:
         data = phase.init()
@@ -69,12 +72,12 @@ def phase_init():
             json.dump(phase_env, f, indent=2)
         os.chmod(PHASE_ENV_CONFIG, 0o600)
 
-        print("✅ Initialization completed successfully.")
+        console.print("✅ Initialization completed successfully.")
 
     except KeyboardInterrupt:
         # Handle the Ctrl+C event quietly
         sys.exit(0)
     except Exception as e:
         # Handle other exceptions if needed
-        print(e)
+        console.log(f"Error: {e}")
         sys.exit(1)
