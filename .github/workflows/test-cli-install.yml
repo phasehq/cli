@@ -38,6 +38,7 @@ jobs:
 
       - name: Check CLI version
         run: |
+          ldd --version
           installed_version=$(phase -v)
           expected_version=${{ inputs.version }}
           if [ "$installed_version" != "$expected_version" ]; then
