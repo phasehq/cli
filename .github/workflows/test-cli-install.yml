@@ -36,9 +36,12 @@ jobs:
           chmod +x ./install.sh
           ./install.sh
 
-      - name: Check CLI version
+      - name: Check LDD version
         run: |
           ldd --version
+
+      - name: Check CLI version
+        run: |
           installed_version=$(phase -v)
           expected_version=${{ inputs.version }}
           if [ "$installed_version" != "$expected_version" ]; then
