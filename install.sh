@@ -30,7 +30,7 @@ can_install_without_sudo() {
                 return 0
             fi
             ;;
-        fedora|rhel|centos)
+        fedora|rhel|centos|amzn)
             if rpm -q rpm >/dev/null 2>&1; then
                 return 0
             fi
@@ -73,8 +73,8 @@ install_tool() {
             ubuntu|debian)
                 apt-get update && apt-get install -y $TOOL
                 ;;
-            fedora|rhel|centos)
-                yum install -y $TOOL
+            fedora|rhel|centos|amzn)
+                dnf install -y $TOOL 2>/dev/null || yum install -y $TOOL
                 ;;
             alpine)
                 apk add $TOOL
@@ -89,8 +89,8 @@ install_tool() {
             ubuntu|debian)
                 sudo apt-get update && sudo apt-get install -y $TOOL
                 ;;
-            fedora|rhel|centos)
-                sudo yum install -y $TOOL
+            fedora|rhel|centos|amzn)
+                sudo dnf install -y $TOOL 2>/dev/null || sudo yum install -y $TOOL
                 ;;
             alpine)
                 sudo apk add $TOOL
@@ -211,7 +211,7 @@ install_package() {
             fi
             ;;
 
-        fedora|rhel|centos)
+        fedora|rhel|centos|amzn)
             PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.rpm"
             wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
             verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.rpm" "$PACKAGE_URL.sha256"
