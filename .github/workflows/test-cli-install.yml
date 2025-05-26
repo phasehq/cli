@@ -16,6 +16,10 @@ jobs:
     container:
       image: ${{ matrix.distro == 'ubuntu-latest' && 'ubuntu:latest' || matrix.distro == 'fedora-latest' && 'fedora:latest' || matrix.distro == 'alpine-latest' && 'alpine:latest' || matrix.distro == 'archlinux-latest' && 'archlinux:latest' || matrix.distro == 'amazonlinux-2023' && 'amazonlinux:2023' }}
     steps:
+      - name: Install dependencies (Amazon Linux 2023)
+        if: matrix.distro == 'amazonlinux-2023'
+        run: dnf install -y tar gzip
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -26,10 +30,6 @@ jobs:
       - name: Install dependencies (Arch Linux)
         if: matrix.distro == 'archlinux-latest'
         run: pacman -Sy --noconfirm bash
-
-      - name: Install dependencies (Amazon Linux 2023)
-        if: matrix.distro == 'amazonlinux-2023'
-        run: dnf update -y && dnf install -y bash
 
       - name: Run install script
         run: |
