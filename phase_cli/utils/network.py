@@ -17,6 +17,28 @@ if not VERIFY_SSL:
     requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
 
+def handle_response_errors(response: requests.Response) -> None:
+    """
+    Handle JSON decode errors from API responses.
+    
+    Args:
+        response (requests.Response): The HTTP response that failed to decode.
+    
+    Raises:
+        APIError: An error with details about the invalid response.
+    """
+    error_message = "🗿 Unexpected response received from the Phase API. Please set PHASE_DEBUG=True to see the error & response."
+    
+    if PHASE_DEBUG and response.text:
+        # Print the first 500 characters of the response if PHASE_DEBUG is enabled
+        truncated_text = response.text[:500]
+        if len(response.text) > 500:
+            truncated_text += "... [truncated]"
+        error_message += f"\nResponse preview: {truncated_text}"
+    
+    raise APIError(error_message)
+
+
 def handle_request_errors(response: requests.Response) -> None:
     """
     Check the HTTP status code of a response and print the error if the status code is not 200.
@@ -110,6 +132,10 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
+        try:
+            response.json()
+        except json.JSONDecodeError:
+            handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -144,8 +170,8 @@ def fetch_app_key(token_type: str, app_token, host) -> str:
 
     try:
         json_data = response.json()
-    except requests.exceptions.JSONDecodeError:
-        raise ValueError(f"Failed to decode JSON from response: {response.text}")
+    except json.JSONDecodeError:
+        handle_response_errors(response)
 
     wrapped_key_share = json_data.get("wrapped_key_share")
     if not wrapped_key_share:
@@ -184,8 +210,8 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
 
     try:
         json_data = response.json()
-    except requests.exceptions.JSONDecodeError:
-        raise ValueError(f"Failed to decode JSON from response: {response.text}")
+    except json.JSONDecodeError:
+        handle_response_errors(response)
 
     wrapped_key_share = json_data.get("wrapped_key_share")
     if not wrapped_key_share:
@@ -219,6 +245,10 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
+        try:
+            response.json()
+        except json.JSONDecodeError:
+            handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -249,6 +279,10 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
     try:
         response = requests.post(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
+        try:
+            response.json()
+        except json.JSONDecodeError:
+            handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -280,6 +314,10 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
     try:
         response = requests.put(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
+        try:
+            response.json()
+        except json.JSONDecodeError:
+            handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -311,6 +349,10 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
     try:
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
+        try:
+            response.json()
+        except json.JSONDecodeError:
+            handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)

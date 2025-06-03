@@ -14,7 +14,7 @@ from phase_cli.utils.misc import open_browser, validate_url, print_phase_links
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
-
+from rich.console import Console
 
 class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     """
@@ -120,7 +120,9 @@ def phase_auth(mode="webauth"):
     Returns:
         None
     """
-             
+    # Create a console object for logging warnings and errors to stderr
+    console = Console(stderr=True)
+
     server = None
     try:
         # Choose the authentication mode: webauth (default) or token-based.
@@ -132,25 +134,25 @@ def phase_auth(mode="webauth"):
             ).ask()
 
             if not phase_instance_type:
-                print("\nExiting phase...")
+                console.log("\nExiting phase...")
                 return
 
             if phase_instance_type == '🛠️  Self Hosted':
                 PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
                 if not PHASE_API_HOST:
-                    print("\nExiting phase...")
+                    console.log("\nExiting phase...")
                     return
             else:
                 PHASE_API_HOST = PHASE_CLOUD_API_HOST
 
             user_email = questionary.text("Please enter your email:").ask()
             if not user_email:
-                print("\nExiting phase...")
+                console.log("\nExiting phase...")
                 return
 
             personal_access_token = getpass.getpass("Please enter Phase user token (hidden): ")
             if not personal_access_token:
-                print("\nExiting phase...")
+                console.log("\nExiting phase...")
                 return
 
             # Authenticate using the provided token
@@ -176,7 +178,7 @@ def phase_auth(mode="webauth"):
                 return
             
             if not validate_url(PHASE_API_HOST):
-                print("Invalid URL. Please ensure you include the scheme (e.g., https) and domain. Keep in mind, path and port are optional.")
+                console.log("Invalid URL. Please ensure you include the scheme (e.g., https) and domain. Keep in mind, path and port are optional.")
                 return
 
             # Start an HTTP web server at a random port and spin up the keys.
@@ -194,7 +196,7 @@ def phase_auth(mode="webauth"):
             encoded_data = base64.b64encode(raw_data.encode()).decode()
 
             # Print the link in the console
-            print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth/{encoded_data}")
+            console.print(f"Please authenticate via the Phase Console: {PHASE_API_HOST}/webauth/{encoded_data}")
 
             # Open the URL silently
             open_browser(f"{PHASE_API_HOST}/webauth/{encoded_data}")
@@ -235,7 +237,7 @@ def phase_auth(mode="webauth"):
                 token_saved_in_keyring = True
             except Exception as e:
                 if os.getenv("PHASE_DEBUG") == "True":
-                    print(f"Failed to save token in keyring: {e}")
+                    console.log(f"Failed to save token in keyring: {e}")
                 token_saved_in_keyring = False
 
             # Load existing config or initialize a new one
@@ -278,11 +280,11 @@ def phase_auth(mode="webauth"):
             print_phase_links()
 
         else:
-            print("Failed to authenticate with the provided credentials.")
+            console.log("Failed to authenticate with the provided credentials.")
     except KeyboardInterrupt:
-        print("\nExiting phase...")
+        console.log("\nExiting phase...")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        console.log(f"An error occurred: {e}")
         sys.exit(1)
     finally:
         if server:
