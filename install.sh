@@ -189,7 +189,8 @@ install_from_binary() {
 
 install_package() {
     ARCH=$(uname -m)
-    if [ "$ARCH" = "aarch64" ]; then
+    # For non-Alpine ARM64 systems, fall back to binary installation
+    if [ "$ARCH" = "aarch64" ] && [ "$OS" != "alpine" ]; then
         install_from_binary
         echo "phase-cli version $VERSION successfully installed"
         return
