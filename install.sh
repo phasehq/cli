@@ -225,13 +225,25 @@ install_package() {
             ;;
 
         alpine)
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.apk"
-            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
-            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.apk" "$PACKAGE_URL.sha256"
+            case $ARCH in
+                x86_64)
+                    APK_ARCH="amd64"
+                    ;;
+                aarch64)
+                    APK_ARCH="arm64"
+                    ;;
+                *)
+                    echo "Unsupported architecture for Alpine: $ARCH"
+                    exit 1
+                    ;;
+            esac
+            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_${APK_ARCH}_$VERSION.apk"
+            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
+            verify_checksum "$TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk" "$PACKAGE_URL.sha256"
             if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-                apk add --allow-untrusted $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
+                apk add --allow-untrusted $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
             else
-                sudo apk add --allow-untrusted $TMPDIR/phase_cli_linux_amd64_$VERSION.apk
+                sudo apk add --allow-untrusted $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
             fi
             ;;
 
