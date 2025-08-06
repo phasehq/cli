@@ -43,7 +43,7 @@ jobs:
           echo "CLI version matches: $installed_version"
 
   test-cli-install-arm64:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04-arm
     container:
       image: python:3.11.0-bullseye
     steps:
