@@ -9,6 +9,9 @@ on:
       python_version:
         required: true
         type: string
+      alpine_version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -110,8 +113,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: ubuntu-22.04, arch: x86_64, alpine_version: "3.21" }
-          - { os: ubuntu-22.04-arm, arch: aarch64, alpine_version: "3.21" }
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
     steps:
       - uses: actions/checkout@v4
       - name: Build Alpine package
@@ -137,7 +140,7 @@ jobs:
             --env ABUILD_USER=builder \
             --env ARCH=${{ matrix.arch }} \
             --env OUTPUT_PACKAGE_NAME="$OUTPUT_PACKAGE_NAME" \
-            alpine:${{ matrix.alpine_version }} \
+            alpine:${{ inputs.alpine_version }} \
             /bin/sh -ec " \
               set -ex; \
               apk update; \
