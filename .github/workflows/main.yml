@@ -80,3 +80,5 @@ jobs:
     uses: ./.github/workflows/test-cli-install.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      python_version: '3.11'
+      alpine_version: '3.21'
