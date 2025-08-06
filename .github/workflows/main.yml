@@ -33,6 +33,7 @@ jobs:
     with:
       python_version: '3.11'
       version: ${{ needs.version.outputs.version }}
+      alpine_version: '3.21'
 
   # Build docker image, push it to :latest and :<version> OS/Arch linux/amd64, linux/arm64, pull images, run the CLI and validate version
   docker:
