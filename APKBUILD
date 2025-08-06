@@ -6,22 +6,15 @@ pkgdesc="Phase CLI"
 url="https://phase.dev"
 arch="all"
 license="GPL-3.0"
-depends=""
-makedepends="python3"
-install=""
-subpackages=""
-source="phase"
+depends="python3 py3-pip"
+makedepends="python3-dev py3-setuptools py3-pip build-base"
+options="!check"
 
-# Verify the source with sha256sums
-# You can generate it with 'sha256sum'
-sha256sums="SKIP"
+build() {
+    python3 setup.py build
+}
 
 package() {
-    cd "$startdir"
-    
-    # Install the executable
-    install -Dm755 phase "$pkgdir/usr/bin/phase"
-    
-    # Copy the _internal directory
-    cp -r _internal "$pkgdir/usr/bin/"
+    python3 setup.py install --prefix=/usr --root="$pkgdir" --skip-build
+    pip3 install --target="$pkgdir/usr/lib/python3.11/site-packages" -r requirements.txt
 }
