@@ -143,6 +143,8 @@ jobs:
       - name: Test installed package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          PYTHONIOENCODING: UTF-8
         run: |
           $installed_version = phase -v
           echo "Installed version: $installed_version"
