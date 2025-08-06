@@ -42,6 +42,46 @@ jobs:
           fi
           echo "CLI version matches: $installed_version"
 
+  test-alpine-apk-install:
+    name: Test Alpine APK Installation
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, arch: x86_64 }
+          - { runner: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test in Alpine container
+        run: |
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            alpine:3.21 \
+            /bin/sh -ec "
+              echo '=== Testing Alpine APK installation on ${{ matrix.arch }} ==='
+              apk add --no-cache bash
+              chmod +x ./install.sh
+              ./install.sh
+              
+              echo '=== Verifying installation ==='
+              which phase
+              
+              echo '=== Checking version ==='
+              installed_version=\$(phase -v)
+              expected_version='${{ inputs.version }}'
+              if [ \"\$installed_version\" != \"\$expected_version\" ]; then
+                echo \"Version mismatch: Expected \$expected_version, got \$installed_version\"
+                exit 1
+              fi
+              echo \"CLI version matches: \$installed_version\"
+              
+              echo '=== Testing basic functionality ==='
+              phase --help | head -10
+            "
+
   test-cli-install-arm64:
     runs-on: ubuntu-22.04-arm
     container:
