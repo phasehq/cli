@@ -6,6 +6,12 @@ on:
       version:
         required: true
         type: string
+      python_version:
+        required: true
+        type: string
+      alpine_version:
+        required: true
+        type: string
 
 jobs:
   test-cli-install:
@@ -47,9 +53,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - { runner: ubuntu-22.04, arch: x86_64 }
-          - { runner: ubuntu-22.04-arm, arch: aarch64 }
-    runs-on: ${{ matrix.runner }}
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -59,7 +65,7 @@ jobs:
           docker run --rm \
             -v "${PWD}":/workspace \
             -w /workspace \
-            alpine:3.21 \
+            alpine:${{ inputs.alpine_version }} \
             /bin/sh -ec "
               echo '=== Testing Alpine APK installation on ${{ matrix.arch }} ==='
               apk add --no-cache bash
