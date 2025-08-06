@@ -73,7 +73,8 @@ jobs:
 
   # Install, run and validate CLI version. 
   test-cli-install:
-    needs: [version, attach-to-release]
+    #needs: [version, attach-to-release]
+    needs: [version, process-assets]
     if: github.event_name != 'release' || (github.event_name == 'release' && github.event.action == 'created')
     uses: ./.github/workflows/test-cli-install.yml
     with:
