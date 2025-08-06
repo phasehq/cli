@@ -9,6 +9,9 @@ on:
       python_version:
         required: true
         type: string
+      alpine_version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -87,7 +90,7 @@ jobs:
 
   build_arm:
     name: Build Linux ARM64
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04-arm
     container:
       image: python:3.11.0-bullseye
     steps:
@@ -110,25 +113,37 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-22.04
-            arch: x86_64
-            artifact_name: phase-apk-x86_64
-          - os: ubuntu-22.04-arm
-            arch: aarch64
-            artifact_name: phase-apk-aarch64
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
     steps:
       - uses: actions/checkout@v4
       - name: Build Alpine package
         run: |
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            TARGET_ARCH="arm64"
+          elif [ "${{ matrix.arch }}" = "x86_64" ]; then
+            TARGET_ARCH="amd64"
+          fi
+
+          # CONTEXT: phase_cli_linux_<ARCH>_alpine_<VERSION> artifact will contain phase_cli_linux_<ARCH>_<VERSION>.apk
+          
+          OUTPUT_PACKAGE_NAME="phase_cli_linux_${TARGET_ARCH}_${{ inputs.version }}.apk"
+          ARTIFACT_NAME="phase_cli_linux_${TARGET_ARCH}_alpine_${{ inputs.version }}"
+
+          echo "OUTPUT_PACKAGE_NAME=$OUTPUT_PACKAGE_NAME" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+
           mkdir -p ./output
           docker run --rm \
             -v "${PWD}":/workspace \
             -w /workspace \
             --env ABUILD_USER=builder \
             --env ARCH=${{ matrix.arch }} \
-            alpine:3.19 \
+            --env OUTPUT_PACKAGE_NAME="$OUTPUT_PACKAGE_NAME" \
+            alpine:${{ inputs.alpine_version }} \
             /bin/sh -ec " \
               set -ex; \
+              apk update; \
               apk add --no-cache alpine-sdk python3 python3-dev py3-pip build-base git curl sudo doas; \
               adduser -D builder; \
               addgroup builder abuild; \
@@ -137,10 +152,11 @@ jobs:
               chown -R builder /workspace; \
               sudo -u builder /bin/sh -ec 'cd /workspace && export HOME=/home/builder && abuild-keygen -a -i -n'; \
               sudo -u builder /bin/sh -ec 'cd /workspace && abuild -r'; \
-              cp /home/builder/packages/\$ARCH/*.apk /workspace/output/ \
+              SOURCE_APK=\$(find /home/builder/packages/\$ARCH -name 'phase-*.apk' -print -quit); \
+              cp \"\$SOURCE_APK\" \"/workspace/output/\$OUTPUT_PACKAGE_NAME\" \
             "
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ./output/*.apk
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ./output/${{ env.OUTPUT_PACKAGE_NAME }}

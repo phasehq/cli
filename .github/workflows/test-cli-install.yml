@@ -6,6 +6,12 @@ on:
       version:
         required: true
         type: string
+      python_version:
+        required: true
+        type: string
+      alpine_version:
+        required: true
+        type: string
 
 jobs:
   test-cli-install:
@@ -42,8 +48,48 @@ jobs:
           fi
           echo "CLI version matches: $installed_version"
 
+  test-alpine-apk-install:
+    name: Test Alpine APK Installation
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test in Alpine container
+        run: |
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            alpine:${{ inputs.alpine_version }} \
+            /bin/sh -ec "
+              echo '=== Testing Alpine APK installation on ${{ matrix.arch }} ==='
+              apk add --no-cache bash
+              chmod +x ./install.sh
+              ./install.sh
+              
+              echo '=== Verifying installation ==='
+              which phase
+              
+              echo '=== Checking version ==='
+              installed_version=\$(phase -v)
+              expected_version='${{ inputs.version }}'
+              if [ \"\$installed_version\" != \"\$expected_version\" ]; then
+                echo \"Version mismatch: Expected \$expected_version, got \$installed_version\"
+                exit 1
+              fi
+              echo \"CLI version matches: \$installed_version\"
+              
+              echo '=== Testing basic functionality ==='
+              phase --help | head -10
+            "
+
   test-cli-install-arm64:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04-arm
     container:
       image: python:3.11.0-bullseye
     steps:
@@ -64,3 +110,47 @@ jobs:
             exit 1
           fi
           echo "CLI version matches: $installed_version"
+
+  test-pip-install:
+    name: Test PyPI (pip) Installation
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13, macos-14, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package from PyPI
+        run: |
+          python -m pip install --upgrade pip
+          pip install phase-cli==${{ inputs.version }}
+
+      - name: Test installed package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          installed_version=$(phase -v)
+          echo "Installed version: $installed_version"
+          echo "Expected version: ${{ inputs.version }}"
+          if [ "$installed_version" != "${{ inputs.version }}" ]; then
+            echo "Version mismatch!"
+            exit 1
+          fi
+          phase --help
+
+      - name: Test installed package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: UTF-8
+        run: |
+          $installed_version = phase -v
+          echo "Installed version: $installed_version"
+          echo "Expected version: ${{ inputs.version }}"
+          if ($installed_version -ne "${{ inputs.version }}") {
+            echo "Version mismatch!"
+            exit 1
+          }
+          phase --help
