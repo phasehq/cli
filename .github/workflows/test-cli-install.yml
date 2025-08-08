@@ -36,7 +36,7 @@ jobs:
       - name: Run install script
         run: |
           chmod +x ./install.sh
-          ./install.sh
+          ./install.sh --version '${{ inputs.version }}'
 
       - name: Check CLI version
         run: |
@@ -70,7 +70,7 @@ jobs:
               echo '=== Testing Alpine APK installation on ${{ matrix.arch }} ==='
               apk add --no-cache bash
               chmod +x ./install.sh
-              ./install.sh
+              ./install.sh --version '${{ inputs.version }}'
               
               echo '=== Verifying installation ==='
               which phase
@@ -99,7 +99,7 @@ jobs:
       - name: Run install script
         run: |
           chmod +x ./install.sh
-          ./install.sh
+          ./install.sh --version '${{ inputs.version }}'
 
       - name: Check CLI version
         run: |
