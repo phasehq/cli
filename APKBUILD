@@ -16,7 +16,13 @@ build() {
 }
 
 package() {
-    python3 setup.py install --prefix=/usr --root="$pkgdir" --skip-build    
+    python3 setup.py install --prefix=/usr --root="$pkgdir" --skip-build
     pyver=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')")
-    pip3 install --target="$pkgdir/usr/lib/$pyver/site-packages" -r requirements.txt
+    site_pkg_dir="$pkgdir/usr/lib/$pyver/site-packages"
+    vendor_dir="$site_pkg_dir/phase_cli/vendor"
+    mkdir -p "$vendor_dir"
+    # Install runtime deps into the private vendor dir to avoid conflicts with other packages
+    pip3 install --no-cache-dir --target="$vendor_dir" -r requirements.txt
+    # Tell Python about that directory
+    echo "phase_cli/vendor" > "$site_pkg_dir/phase_cli_vendor.pth"
 }
