@@ -1,9 +1,7 @@
-import os
 import argparse
 import hashlib
 import zipfile
 import shutil
-import glob
 from pathlib import Path
 
 def sha256sum(filename):
@@ -23,8 +21,11 @@ def process_artifacts(input_dir, output_dir, version):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Define expected files and their source locations here
+    # Format: (output_file, source_dir, file_pattern)
+    # If file_pattern is None, the source_dir is a directory and will be zipped
     assets = [
-        ('phase_cli_linux_amd64_{version}.apk', 'phase-apk', '*.apk'),
+        ('phase_cli_linux_amd64_{version}.apk', 'phase_cli_linux_amd64_alpine_{version}', '*.apk'),
+        ('phase_cli_linux_arm64_{version}.apk', 'phase_cli_linux_arm64_alpine_{version}', '*.apk'),
         ('phase_cli_linux_amd64_{version}.deb', 'phase-deb', '*.deb'),
         ('phase_cli_linux_amd64_{version}.rpm', 'phase-rpm', '*.rpm'),
         ('phase_cli_linux_amd64_{version}.zip', 'Linux-binary', None),
@@ -36,12 +37,13 @@ def process_artifacts(input_dir, output_dir, version):
 
     for output_file, source_dir, file_pattern in assets:
         output_file = output_file.format(version=version)
+        source_dir = source_dir.format(version=version)
         source_path = input_dir / source_dir
         output_path = output_dir / output_file
 
         if file_pattern:
             # For APK, DEB, and RPM files
-            file_path = find_file(input_dir, file_pattern)
+            file_path = find_file(source_path, file_pattern)
             if file_path:
                 shutil.copy2(file_path, output_path)
             else:
