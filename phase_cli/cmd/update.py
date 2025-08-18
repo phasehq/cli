@@ -3,6 +3,7 @@ import subprocess
 import os
 import sys
 from rich.console import Console
+from phase_cli.utils.misc import clean_subprocess_env
 
 def phase_cli_update():
     # URL of the remote bash script
@@ -22,9 +23,7 @@ def phase_cli_update():
         os.chmod("temp_install.sh", 0o755)
 
         # Execute the script with clean environment to avoid library conflicts
-        clean_env = os.environ.copy()
-        # Remove any LD_LIBRARY_PATH that might point to bundled libraries
-        clean_env.pop('LD_LIBRARY_PATH', None)
+        clean_env = clean_subprocess_env()
         
         # Use subprocess.run instead of subprocess.call for better error handling
         result = subprocess.run(["./temp_install.sh"], env=clean_env, capture_output=True, text=True)
