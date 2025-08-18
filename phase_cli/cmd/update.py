@@ -19,8 +19,11 @@ def phase_cli_update():
         # Make the script executable
         os.chmod("temp_install.sh", 0o755)
 
-        # Execute the script
-        subprocess.call(["./temp_install.sh"])
+        # Execute the script with clean environment to avoid library conflicts
+        clean_env = os.environ.copy()
+        # Remove any LD_LIBRARY_PATH that might point to bundled libraries
+        clean_env.pop('LD_LIBRARY_PATH', None)
+        subprocess.call(["./temp_install.sh"], env=clean_env)
 
         # Remove the temporary file after execution
         os.remove("temp_install.sh")
