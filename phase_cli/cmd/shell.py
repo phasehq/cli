@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.secret_referencing import resolve_all_secrets
-from phase_cli.utils.misc import get_default_shell, get_shell_command
+from phase_cli.utils.misc import get_default_shell, get_shell_command, clean_subprocess_env
 
 def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, path: str = '/', shell_type=None):
     """
@@ -64,23 +64,22 @@ def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, pat
                 application_message = ', '.join(applications)
                 environment_message = ', '.join(environments)
 
-                # Start with the current process environment so we don't break the user's shell (PATH, TERM, etc.)
-                new_env = os.environ.copy()
+                secrets_env = clean_subprocess_env()
 
                 # Overlay resolved secrets (cast to str and ignore Nones)
                 for k, v in resolved_secrets_dict.items():
                     if v is None:
                         continue
-                    new_env[str(k)] = str(v)
+                    secrets_env[str(k)] = str(v)
 
                 # Set a PHASE_* environment variable for shell scripts to detect
-                new_env['PHASE_SHELL'] = 'true'
+                secrets_env['PHASE_SHELL'] = 'true'
                 if env_name:
-                    new_env['PHASE_ENV'] = env_name
+                    secrets_env['PHASE_ENV'] = env_name
 
                 # Ensure TERM is present for proper line-editing/rendering in shells like zsh
-                if not new_env.get('TERM'):
-                    new_env['TERM'] = 'xterm-256color'
+                if not secrets_env.get('TERM'):
+                    secrets_env['TERM'] = 'xterm-256color'
                 
                 # Determine which shell to launch
                 if shell_type:
@@ -107,7 +106,7 @@ def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, pat
                 
                 # Launch the interactive shell
                 try:
-                    subprocess.run(shell_cmd, env=new_env, shell=False)
+                    subprocess.run(shell_cmd, env=secrets_env, shell=False)
                     console.log(f"\n[bold red]🐚 Shell session ended.[/] Phase secrets are no longer available.")
                 except Exception as e:
                     console.log(f"[bold red]Error launching shell:[/] {e}")
