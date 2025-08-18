@@ -65,6 +65,8 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
                 environment_message = ', '.join(environments)
 
                 new_env = os.environ.copy()
+                # Remove PyInstaller library paths to avoid conflicts with user applications
+                new_env.pop('LD_LIBRARY_PATH', None)
                 new_env.update(resolved_secrets_dict)
 
                 # Stop the fetching secrets spinner
