@@ -438,8 +438,11 @@ def open_browser(url):
                 cmd = ['xdg-open', url]
 
             # Suppress output by redirecting to devnull
+            # Use clean environment to avoid library conflicts with bundled libraries
+            clean_env = os.environ.copy()
+            clean_env.pop('LD_LIBRARY_PATH', None)
             with open(os.devnull, 'w') as fnull:
-                subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
+                subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True, env=clean_env)
         except Exception as e:
             # If all methods fail, instruct the user to open the URL manually
             print(f"Unable to automatically open the Phase Console in your default web browser")
