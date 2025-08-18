@@ -120,7 +120,7 @@ phase run npm start
 ### Create a virtualenv:
 
 ```bash
-python3 -m venv venv
+python -m venv venv
 ```
 
 ### Switch to the virtualenv:
