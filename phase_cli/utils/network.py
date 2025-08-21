@@ -132,10 +132,12 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
-        try:
-            response.json()
-        except json.JSONDecodeError:
-            handle_response_errors(response)
+        # Only try to parse JSON if response has content
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -245,10 +247,12 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
         handle_request_errors(response)
-        try:
-            response.json()
-        except json.JSONDecodeError:
-            handle_response_errors(response)
+        # Only try to parse JSON if response has content
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -279,10 +283,12 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
     try:
         response = requests.post(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
-        try:
-            response.json()
-        except json.JSONDecodeError:
-            handle_response_errors(response)
+        # Only try to parse JSON if response has content
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -314,10 +320,12 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
     try:
         response = requests.put(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
-        try:
-            response.json()
-        except json.JSONDecodeError:
-            handle_response_errors(response)
+        # Only try to parse JSON if response has content
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
@@ -349,10 +357,12 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
     try:
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
-        try:
-            response.json()
-        except json.JSONDecodeError:
-            handle_response_errors(response)
+        # Only try to parse JSON if response has content
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
         return response
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
