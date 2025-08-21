@@ -62,7 +62,7 @@ Commands:
 You can install Phase-CLI using curl:
 
 ```bash
-curl -fsSL https://get.phase.dev | bash
+curl -fsSL https://pkg.phase.dev/install.sh | bash
 ```
 
 ## Usage

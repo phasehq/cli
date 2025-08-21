@@ -38,14 +38,14 @@ def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, pat
                 # Organize all secrets into a dictionary for easier lookup
                 secrets_dict = {}
                 for secret in all_secrets:
-                    env_name = secret['environment']
+                    secret_env_name = secret['environment']
                     secret_path = secret['path']
                     key = secret['key']
-                    if env_name not in secrets_dict:
-                        secrets_dict[env_name] = {}
-                    if secret_path not in secrets_dict[env_name]:
-                        secrets_dict[env_name][secret_path] = {}
-                    secrets_dict[env_name][secret_path][key] = secret['value']
+                    if secret_env_name not in secrets_dict:
+                        secrets_dict[secret_env_name] = {}
+                    if secret_path not in secrets_dict[secret_env_name]:
+                        secrets_dict[secret_env_name][secret_path] = {}
+                    secrets_dict[secret_env_name][secret_path][key] = secret['value']
 
                 # Resolve all secret references
                 resolved_secrets_dict = {}
@@ -64,13 +64,23 @@ def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, pat
                 application_message = ', '.join(applications)
                 environment_message = ', '.join(environments)
 
-                new_env = {}
-                new_env.update(resolved_secrets_dict)
+                # Start with the current process environment so we don't break the user's shell (PATH, TERM, etc.)
+                new_env = os.environ.copy()
 
-                # Set a PHASE_ENV environment variable for shell scripts to detect
+                # Overlay resolved secrets (cast to str and ignore Nones)
+                for k, v in resolved_secrets_dict.items():
+                    if v is None:
+                        continue
+                    new_env[str(k)] = str(v)
+
+                # Set a PHASE_* environment variable for shell scripts to detect
                 new_env['PHASE_SHELL'] = 'true'
                 if env_name:
                     new_env['PHASE_ENV'] = env_name
+
+                # Ensure TERM is present for proper line-editing/rendering in shells like zsh
+                if not new_env.get('TERM'):
+                    new_env['TERM'] = 'xterm-256color'
                 
                 # Determine which shell to launch
                 if shell_type:
