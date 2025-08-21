@@ -428,6 +428,11 @@ def clean_subprocess_env():
     
     PyInstaller bundles its own copies of system libraries which can interfere with 
     subprocess execution when spawned from a PyInstaller-built application.
+
+    TODO: Considering filtering for: 
+        '_MEIPASS',            # PyInstaller temporary directory
+        '_MEIPASS2',           # PyInstaller temporary directory (alternative)
+        'PYTHONPATH',          # Python module search path (can contain bundled modules)
     
     Returns:
         dict: A copy of os.environ with PyInstaller library paths removed.
