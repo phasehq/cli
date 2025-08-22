@@ -74,8 +74,10 @@ def phase_shell(env_name=None, phase_app=None, phase_app_id=None, tags=None, pat
 
                 # Set a PHASE_* environment variable for shell scripts to detect
                 secrets_env['PHASE_SHELL'] = 'true'
-                if env_name:
-                    secrets_env['PHASE_ENV'] = env_name
+                if environments:
+                    secrets_env['PHASE_ENV'] = list(environments)[0]
+                if applications:
+                    secrets_env['PHASE_APP'] = list(applications)[0]
 
                 # Ensure TERM is present for proper line-editing/rendering in shells like zsh
                 if not secrets_env.get('TERM'):
