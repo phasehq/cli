@@ -1,11 +1,10 @@
 import sys
-import os
 import subprocess
 from phase_cli.utils.phase_io import Phase
-from phase_cli.utils.misc import tag_matches, normalize_tag
+from phase_cli.utils.misc import clean_subprocess_env
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
+from rich.progress import Progress, SpinnerColumn
 
 def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, tags=None, path: str = '/'):
     """
@@ -64,8 +63,8 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
                 application_message = ', '.join(applications)
                 environment_message = ', '.join(environments)
 
-                new_env = os.environ.copy()
-                new_env.update(resolved_secrets_dict)
+                secrets_env = clean_subprocess_env()
+                secrets_env.update(resolved_secrets_dict)
 
                 # Stop the fetching secrets spinner
                 progress.stop()
@@ -77,7 +76,7 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
                     console.log(f"🚀 Injected [bold magenta]{secret_count}[/] secrets from Application: [bold cyan]{application_message}[/], Environment: [bold green]{environment_message}[/]\n")
                 
                 # Start and inject secrets
-                process = subprocess.run(command, shell=True, env=new_env)
+                process = subprocess.run(command, shell=True, env=secrets_env)
                 # Exit with the same return code as the subprocess
                 sys.exit(process.returncode)
 

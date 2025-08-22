@@ -117,35 +117,30 @@ phase run npm start
 
 ## Development:
 
-### Make sure virtualenv is installed
-
-```bash
-pip3 install virtualenv
-
-```
-
 ### Create a virtualenv:
 
 ```bash
-virtualenv phase-cli
+python -m venv venv
 ```
 
 ### Switch to the virtualenv:
 
 ```bash
-source phase-cli/bin/activate
+source venv/bin/activate
 ```
 
 ### Install dependencies:
 
 ```bash
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-```
-export PYTHONPATH="$PWD"
+### Install the CLI in editable mode:
+
+```bash
+pip install -e .
 ```
 
 ```bash
-python3 phase_cli/main.py
+phase --version
 ```

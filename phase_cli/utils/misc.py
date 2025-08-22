@@ -422,6 +422,38 @@ def tag_matches(secret_tags, user_tag):
     return False
 
 
+def clean_subprocess_env():
+    """
+    Create a clean environment for subprocess execution by removing PyInstaller library paths.
+    
+    PyInstaller bundles its own copies of system libraries which can interfere with 
+    subprocess execution when spawned from a PyInstaller-built application.
+
+    TODO: Considering filtering for: 
+        '_MEIPASS',            # PyInstaller temporary directory
+        '_MEIPASS2',           # PyInstaller temporary directory (alternative)
+        'PYTHONPATH',          # Python module search path (can contain bundled modules)
+    
+    Returns:
+        dict: A copy of os.environ with PyInstaller library paths removed.
+        
+    References:
+        https://github.com/pyinstaller/pyinstaller/blob/34508a2cda1072718a81ef1d5a660ce89e62d295/doc/common-issues-and-pitfalls.rst
+    """
+    clean_env = os.environ.copy()
+    
+    # Remove PyInstaller library path variables that can cause conflicts
+    pyinstaller_vars = [
+        'LD_LIBRARY_PATH',     # Linux dynamic library path
+        'DYLD_LIBRARY_PATH',   # macOS dynamic library path
+    ]
+    
+    for var in pyinstaller_vars:
+        clean_env.pop(var, None)
+    
+    return clean_env
+
+
 def open_browser(url):
     """Open a URL in the default browser, with fallbacks and error handling."""
     try:
@@ -438,8 +470,10 @@ def open_browser(url):
                 cmd = ['xdg-open', url]
 
             # Suppress output by redirecting to devnull
+            # Use clean environment to avoid library conflicts with bundled libraries
+            clean_env = clean_subprocess_env()
             with open(os.devnull, 'w') as fnull:
-                subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True)
+                subprocess.run(cmd, stdout=fnull, stderr=fnull, check=True, env=clean_env)
         except Exception as e:
             # If all methods fail, instruct the user to open the URL manually
             print(f"Unable to automatically open the Phase Console in your default web browser")
