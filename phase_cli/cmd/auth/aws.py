@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import base64
 import json
-import os
-import sys
 from urllib.parse import urljoin
 
 import requests
@@ -10,6 +8,7 @@ from botocore.awsrequest import AWSRequest
 from botocore.auth import SigV4Auth
 from botocore.credentials import get_credentials
 from botocore.session import get_session
+from botocore.config import Config
 
 DEFAULT_PATH = "/service/identity/v1/aws/iam/auth"
 DEFAULT_GLOBAL_STS = "https://sts.amazonaws.com"
@@ -20,18 +19,19 @@ def b64_str(s: str) -> str:
     return base64.b64encode(s.encode("utf-8")).decode("utf-8")
 
 
-def resolve_region_and_endpoint(cli_region: str | None, cli_sts_endpoint: str | None) -> tuple[str, str]:
+def resolve_region_and_endpoint() -> tuple[str, str]:
     session = get_session()
-    detected_region = cli_region or session.get_config_variable('region') or os.environ.get('AWS_DEFAULT_REGION')
-    
-    if cli_sts_endpoint:
-        endpoint = cli_sts_endpoint if cli_sts_endpoint.startswith("http") else f"https://{cli_sts_endpoint}"
-        region = detected_region or DEFAULT_REGION_FOR_GLOBAL_STS
-        return region, endpoint
+    aws_region = session.get_config_variable('region')
+    if not aws_region:
+        try:
+            client_config = Config(region_name=None)
+            session.create_client('sts', config=client_config)
+            aws_region = session.get_config_variable('region')
+        except Exception:
+            pass
 
-    if detected_region:
-        # Prefer regional STS endpoint when region is known
-        return detected_region, f"https://sts.{detected_region}.amazonaws.com"
+    if aws_region:
+        return aws_region, f"https://sts.{aws_region}.amazonaws.com"
 
     # Fallback to legacy global endpoint, sign with us-east-1
     return DEFAULT_REGION_FOR_GLOBAL_STS, DEFAULT_GLOBAL_STS
@@ -99,7 +99,7 @@ def authenticate_with_phase(phase_base: str, service_account_id: str, ttl: int |
     return resp.json()
 
 
-def perform_aws_iam_auth(phase_base: str, service_account_id: str, ttl: int | None = None, region: str | None = None, sts_endpoint: str | None = None, method: str = "POST"):
+def perform_aws_iam_auth(phase_base: str, service_account_id: str, ttl: int | None = None, method: str = "POST"):
     """
     Perform complete AWS IAM authentication flow with Phase.
     
@@ -107,14 +107,12 @@ def perform_aws_iam_auth(phase_base: str, service_account_id: str, ttl: int | No
         phase_base: Phase API base URL
         service_account_id: Service Account ID to authenticate (UUID)
         ttl: Requested token TTL in seconds (optional)
-        region: AWS region to sign with (optional)
-        sts_endpoint: Custom STS endpoint (optional)
         method: HTTP method to sign (default: POST)
     
     Returns:
         dict: Authentication response from Phase API containing token
     """
-    region, endpoint = resolve_region_and_endpoint(region, sts_endpoint)
+    region, endpoint = resolve_region_and_endpoint()
     signed = sign_get_caller_identity(region=region, endpoint=endpoint, method=method)
     result = authenticate_with_phase(phase_base, service_account_id, ttl, signed, method=method)
     return result
