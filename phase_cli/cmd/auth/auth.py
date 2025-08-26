@@ -10,10 +10,11 @@ import threading
 import base64
 import time, random
 import questionary
-from phase_cli.utils.misc import open_browser, validate_url, print_phase_links
+from phase_cli.utils.misc import open_browser, validate_url
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
+from phase_cli.cmd.auth.aws import perform_aws_iam_auth
 from rich.console import Console
 
 class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -93,9 +94,9 @@ def start_server(port, PHASE_API_HOST):
     return httpd
 
 
-def phase_auth(mode="webauth"):
+def phase_auth(mode="webauth", service_account_id=None):
     """
-    Handles authentication for the Phase CLI using either web-based or token-based authentication.
+    Handles authentication for the Phase CLI using web-based, token-based, or AWS IAM authentication.
 
     If a user is already authenticated, the function will notify the user of their logged-in status and provide instructions for logging out and logging back in.
 
@@ -114,8 +115,15 @@ def phase_auth(mode="webauth"):
         - Asks the user for their email and personal access token.
         - Validates the credentials and writes them to the keyring.
 
+    For aws-iam:
+        - Uses AWS IAM credentials to authenticate with Phase.
+        - Requires a service account ID to be provided.
+        - Signs an AWS STS GetCallerIdentity request and sends it to Phase for verification.
+        - Receives a Phase token in response and stores it in the keyring.
+
     Args:
-        - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth" or "token".
+        - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth", "token", or "aws-iam".
+        - service_account_id (str): Required for aws-iam mode. The service account ID to authenticate with.
 
     Returns:
         None
@@ -125,8 +133,61 @@ def phase_auth(mode="webauth"):
 
     server = None
     try:
-        # Choose the authentication mode: webauth (default) or token-based.
-        if mode == 'token':
+        # Choose the authentication mode: webauth (default), token-based, or aws-iam.
+        if mode == 'aws-iam':
+            # AWS IAM authentication
+            if not service_account_id:
+                console.log("Error: --service-account-id is required when using --mode aws-iam")
+                return
+            
+            # Check if PHASE_HOST environment variable is set for headless operation
+            PHASE_API_HOST = os.getenv("PHASE_HOST")
+            
+            if PHASE_API_HOST:
+                console.log(f"Using PHASE_HOST environment variable: {PHASE_API_HOST}")
+            else:
+                # Interactive mode: ask user to choose instance type
+                phase_instance_type = questionary.select(
+                    'Choose your Phase instance type:',
+                    choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+                ).ask()
+
+                if not phase_instance_type:
+                    console.log("\nExiting phase...")
+                    return
+
+                if phase_instance_type == '🛠️  Self Hosted':
+                    PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+                    if not PHASE_API_HOST:
+                        console.log("\nExiting phase...")
+                        return
+                else:
+                    PHASE_API_HOST = PHASE_CLOUD_API_HOST
+
+            # Perform AWS IAM authentication
+            try:
+                console.log("Authenticating with AWS IAM credentials...")
+                aws_result = perform_aws_iam_auth(PHASE_API_HOST, service_account_id)
+                
+                # Extract the token from the AWS auth response
+                auth_data = aws_result.get("authentication", {})
+                auth_token = auth_data.get("token")
+                
+                if not auth_token:
+                    raise ValueError("No token received from AWS IAM authentication")
+                
+                console.log("AWS IAM authentication successful")
+                
+                # Validate the token with Phase API by initializing Phase client
+                phase = Phase(init=False, pss=auth_token, host=PHASE_API_HOST)
+                result = phase.auth()
+                user_email = None  # Service accounts don't have emails
+                
+            except Exception as e:
+                console.log(f"AWS IAM authentication failed: {e}")
+                return
+            
+        elif mode == 'token':
             # Manual token-based authentication
             # Check if PHASE_HOST environment variable is set for headless operation
             PHASE_API_HOST = os.getenv("PHASE_HOST")
@@ -306,11 +367,9 @@ def phase_auth(mode="webauth"):
                 json.dump(config_data, f, indent=4)
 
             if token_saved_in_keyring:
-                print("\033[1;32m✅ Authentication successful.\033[0m")
+                console.print("[bold green]✅ Authentication successful.[/bold green]")
             else:
-                print("\033[1;32m✅ Authentication successful.\033[0m")
-            print("\033[1;36m🎉 Welcome to Phase CLI!\033[0m\n")
-            print_phase_links()
+                console.print("[bold green]✅ Authentication successful.[/bold green]")
 
         else:
             console.log("Failed to authenticate with the provided credentials.")
