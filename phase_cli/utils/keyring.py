@@ -2,7 +2,7 @@ import os
 import sys
 import getpass
 import keyring
-from phase_cli.utils.misc import get_default_user_id, get_default_user_token
+from phase_cli.utils.misc import get_default_account_id, get_default_user_token
 
 def get_credentials():
     # Use environment variables if available
@@ -11,9 +11,9 @@ def get_credentials():
     if pss:
         return pss
 
-    # Fetch user ID for keyring service name
-    default_user_id = get_default_user_id()
-    service_name = f"phase-cli-user-{default_user_id}"
+    # Fetch account ID for keyring service name
+    default_account_id = get_default_account_id()
+    service_name = f"phase-cli-user-{default_account_id}"
 
     try:
         pss = keyring.get_password(service_name, "pss")
