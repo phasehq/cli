@@ -28,19 +28,6 @@ def get_terminal_width():
         return 80
 
 
-def print_phase_links():
-    """
-    Print a beautiful welcome message inviting users to Phase's community and GitHub repository.
-    """
-    # Calculate the dynamic width of the terminal for the separator line
-    separator_line = "─" * get_terminal_width()
-    
-    print("\033[1;34m" + separator_line + "\033[0m")
-    print("🙋 Need help?: \033[4mhttps://slack.phase.dev\033[0m")
-    print("💻 Bug reports / feature requests: \033[4mhttps://github.com/phasehq/cli\033[0m")
-    print("\033[1;34m" + separator_line + "\033[0m")
-
-
 def sanitize_value(value):
     """Sanitize values by removing surrounding single or double quotes."""
     if value.startswith("'") and value.endswith("'"):
