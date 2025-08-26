@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 import base64
 import json
+import os
 import sys
 from urllib.parse import urljoin
 
-import boto3
 import requests
 from botocore.awsrequest import AWSRequest
 from botocore.auth import SigV4Auth
+from botocore.credentials import get_credentials
+from botocore.session import get_session
 
 DEFAULT_PATH = "/service/identity/v1/aws/iam/auth"
 DEFAULT_GLOBAL_STS = "https://sts.amazonaws.com"
@@ -19,8 +21,9 @@ def b64_str(s: str) -> str:
 
 
 def resolve_region_and_endpoint(cli_region: str | None, cli_sts_endpoint: str | None) -> tuple[str, str]:
-    session = boto3.Session()
-    detected_region = cli_region or session.region_name
+    session = get_session()
+    detected_region = cli_region or session.get_config_variable('region') or os.environ.get('AWS_DEFAULT_REGION')
+    
     if cli_sts_endpoint:
         endpoint = cli_sts_endpoint if cli_sts_endpoint.startswith("http") else f"https://{cli_sts_endpoint}"
         region = detected_region or DEFAULT_REGION_FOR_GLOBAL_STS
@@ -43,7 +46,7 @@ def sign_get_caller_identity(region: str, endpoint: str, method: str = "POST") -
     body = "Action=GetCallerIdentity&Version=2011-06-15"
     headers = {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
 
-    session = boto3.Session()
+    session = get_session()
     creds = session.get_credentials()
     if creds is None:
         raise SystemExit("No AWS credentials found. On EC2, attach an instance profile or set AWS_* env vars.")
