@@ -85,7 +85,8 @@ def main ():
         # Auth command
         auth_parser = subparsers.add_parser('auth', help='💻 Authenticate with Phase')
         auth_parser.add_argument('--mode', choices=['token', 'webauth', 'aws-iam'], default='webauth', help='Mode of authentication. Default: webauth')
-        auth_parser.add_argument('--service-account-id', type=str, help='Service Account ID for AWS IAM authentication (required when using --mode aws-iam)')
+        auth_parser.add_argument('--service-account-id', type=str, help='Service Account ID for when using external identities for authentication.')
+        auth_parser.add_argument('--ttl', type=int, help='Token TTL in seconds for tokens created using external identities.')
 
         # Init command
         init_parser = subparsers.add_parser('init', help='🔗 Link your project with your Phase app')
@@ -284,7 +285,7 @@ def main ():
         args = parser.parse_args()
 
         if args.command == 'auth':
-            phase_auth(args.mode, service_account_id=args.service_account_id)
+            phase_auth(args.mode, service_account_id=args.service_account_id, ttl=args.ttl)
             sys.exit(0)
         elif args.command == 'init':
             phase_init()
