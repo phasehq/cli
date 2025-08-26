@@ -94,7 +94,7 @@ def start_server(port, PHASE_API_HOST):
     return httpd
 
 
-def phase_auth(mode="webauth", service_account_id=None):
+def phase_auth(mode="webauth", service_account_id=None, ttl=None):
     """
     Handles authentication for the Phase CLI using web-based, token-based, or AWS IAM authentication.
 
@@ -124,6 +124,7 @@ def phase_auth(mode="webauth", service_account_id=None):
     Args:
         - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth", "token", or "aws-iam".
         - service_account_id (str): Required for aws-iam mode. The service account ID to authenticate with.
+        - ttl (int): Optional for aws-iam mode. Token TTL in seconds.
 
     Returns:
         None
@@ -167,7 +168,7 @@ def phase_auth(mode="webauth", service_account_id=None):
             # Perform AWS IAM authentication
             try:
                 console.log("Authenticating with AWS IAM credentials...")
-                aws_result = perform_aws_iam_auth(PHASE_API_HOST, service_account_id)
+                aws_result = perform_aws_iam_auth(PHASE_API_HOST, service_account_id, ttl=ttl)
                 
                 # Extract the token from the AWS auth response
                 auth_data = aws_result.get("authentication", {})
