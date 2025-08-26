@@ -14,7 +14,7 @@ from phase_cli.cmd.users.logout import phase_cli_logout
 from phase_cli.cmd.run import phase_run_inject
 from phase_cli.cmd.shell import phase_shell
 from phase_cli.cmd.init import phase_init
-from phase_cli.cmd.auth import phase_auth
+from phase_cli.cmd.auth.auth import phase_auth
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.cmd.secrets.get import phase_secrets_get
 from phase_cli.cmd.secrets.export import phase_secrets_env_export
@@ -84,7 +84,8 @@ def main ():
 
         # Auth command
         auth_parser = subparsers.add_parser('auth', help='💻 Authenticate with Phase')
-        auth_parser.add_argument('--mode', choices=['token', 'webauth'], default='webauth', help='Mode of authentication. Default: webauth')
+        auth_parser.add_argument('--mode', choices=['token', 'webauth', 'aws-iam'], default='webauth', help='Mode of authentication. Default: webauth')
+        auth_parser.add_argument('--service-account-id', type=str, help='Service Account ID for AWS IAM authentication (required when using --mode aws-iam)')
 
         # Init command
         init_parser = subparsers.add_parser('init', help='🔗 Link your project with your Phase app')
@@ -283,7 +284,7 @@ def main ():
         args = parser.parse_args()
 
         if args.command == 'auth':
-            phase_auth(args.mode)
+            phase_auth(args.mode, service_account_id=args.service_account_id)
             sys.exit(0)
         elif args.command == 'init':
             phase_init()
