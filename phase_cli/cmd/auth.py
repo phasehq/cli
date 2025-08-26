@@ -159,9 +159,17 @@ def phase_auth(mode="webauth"):
             
             # Check if it's a service token (they start with 'pss_service:')
             is_service_token = auth_token.startswith('pss_service:')
+            is_personal_token = auth_token.startswith('pss_user:')
             user_email = None
             
-            if not is_service_token:
+            if is_personal_token:
+                # Personal Access Tokens require an email
+                user_email = questionary.text("Please enter your email:").ask()
+                if not user_email:
+                    console.log("\nExiting phase...")
+                    return
+            elif not is_service_token and not is_personal_token:
+                # Unknown token format, might be an older format - ask for email to be safe
                 user_email = questionary.text("Please enter your email:").ask()
                 if not user_email:
                     console.log("\nExiting phase...")
