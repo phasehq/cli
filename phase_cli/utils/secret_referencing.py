@@ -271,10 +271,11 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
     original_ref = ref
     app_name, env_name, path, key_name = _parse_reference_context(ref, current_application_name, current_env_name)
 
-    # Try in-memory dict first
-    in_mem = _lookup_in_memory_value(secrets_dict, env_name, path, key_name, current_env_name)
-    if in_mem is not None:
-        return in_mem
+    # Try in-memory dict first only for same-application references
+    if app_name == current_application_name:
+        in_mem = _lookup_in_memory_value(secrets_dict, env_name, path, key_name, current_env_name)
+        if in_mem is not None:
+            return in_mem
 
     # Ensure caches for both original and matched env variants, then try cache
     _ensure_cached_for_env_variants(phase, app_name, env_name, path, secrets_dict)
