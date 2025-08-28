@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 from phase_cli.exceptions import EnvironmentNotFoundException
 from phase_cli.utils.const import SECRET_REF_REGEX
 from phase_cli.utils.phase_io import Phase
@@ -50,10 +50,99 @@ from phase_cli.utils.phase_io import Phase
 
     Note:
     The syntax allows for flexible secret management, enabling local references, cross-environment references, and cross-application references.
+
+    Caching:
+    - To improve performance and avoid N x 2 network requests when resolving references, secrets are cached in-memory
+    - `resolve_all_secrets` first seeds the cache from `all_secrets` and prefetches all combos
+      required by the references found in `value` by calling `phase.get()` without keys.
+    - `resolve_secret_reference` checks the provided `secrets_dict` for secrets,
+      falls back to the cache, and returns the unresolved placeholder if still not found.
+    - The cache is process-local and not persisted or invalidated; it only reduces repeated
+      lookups within a single execution.
 """
 
 
-def split_path_and_key(ref: str) -> tuple:
+# Keyed by (application, environment, path) → { key: value }
+_SECRETS_CACHE: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+# Structure (values are decrypted plaintext):
+# {
+#     ("my_app", "production", "/frontend"): {
+#         "SECRET_KEY": "backend_api_secret_key",
+#         "DEBUG": "false"
+#     },
+#     ("my_app", "current", "/"): {
+#         "KEY": "value1"
+#     }
+# }
+#
+
+
+def _normalize_path(path: Optional[str]) -> str:
+    """Return a normalized path that always starts with '/' and defaults to '/'."""
+    if not path:
+        return "/"
+    if not path.startswith("/"):
+        return "/" + path
+    return path
+
+
+def _cache_key(app_name: str, env_name: str, path: Optional[str]) -> Tuple[str, str, str]:
+    """Centralize path normalization so every cache access uses the exact same (app, env, normalized path) shape, avoiding subtle mismatches."""
+    return (app_name, env_name, _normalize_path(path))
+
+
+def _prime_cache_from_list(secrets: List[Dict], fallback_app_name: str) -> None:
+    """Seed the cache using secrets already available in memory.
+
+    Each secret must minimally include: key, value, environment, path; application is optional
+    and will default to `fallback_app_name` when not present.
+    """
+    for secret in secrets:
+        app = secret.get("application") or fallback_app_name
+        env = secret.get("environment")
+        path = secret.get("path", "/")
+        key = secret.get("key")
+        value = secret.get("value")
+        if not (app and env and key):
+            continue
+        ck = _cache_key(app, env, path)
+        if ck not in _SECRETS_CACHE:
+            _SECRETS_CACHE[ck] = {}
+        _SECRETS_CACHE[ck][key] = value
+
+
+def _ensure_cached(phase: 'Phase', app_name: str, env_name: str, path: Optional[str]) -> None:
+    """Ensure the cache contains all secrets for (app, env, path).
+
+    This fetches the entire bucket once per (application, environment, path) combo using
+    `phase.get(..., keys=None, path=...)`. Subsequent calls for the same combo are no-ops.
+    """
+    ck = _cache_key(app_name, env_name, path)
+    if ck in _SECRETS_CACHE:
+        return
+    try:
+        fetched = phase.get(env_name=env_name, app_name=app_name, keys=None, path=_normalize_path(path))
+    except EnvironmentNotFoundException:
+        return
+    bucket: Dict[str, str] = {}
+    for secret in fetched or []:
+        key = secret.get("key")
+        value = secret.get("value")
+        if key is not None:
+            bucket[key] = value
+    _SECRETS_CACHE[ck] = bucket
+
+
+def _get_from_cache(app_name: str, env_name: str, path: Optional[str], key_name: str) -> Optional[str]:
+    """Return a secret's value from the in-memory cache, if present."""
+    ck = _cache_key(app_name, env_name, path)
+    bucket = _SECRETS_CACHE.get(ck)
+    if bucket is None:
+        return None
+    return bucket.get(key_name)
+
+
+def split_path_and_key(ref: str) -> Tuple[str, str]:
     """
     Splits a reference string into path and key components.
 
@@ -116,24 +205,20 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
     else:  # Local reference
         path, key_name = split_path_and_key(ref)
 
-    try:
-        # Lookup with environment, path, and key
-        if env_name in secrets_dict:
-            # Try to find the secret in the exact path
-            if path in secrets_dict[env_name] and key_name in secrets_dict[env_name][path]:
-                return secrets_dict[env_name][path][key_name]
-            
-            # For local references, try to find the secret in the root path only if the original path was root
-            if env_name == current_env_name and path == "/" and '/' in secrets_dict[env_name] and key_name in secrets_dict[env_name]['/']:
-                return secrets_dict[env_name]['/'][key_name]
+    # Lookup with environment, path, and key from provided in-memory dict
+    if env_name in secrets_dict:
+        if path in secrets_dict[env_name] and key_name in secrets_dict[env_name][path]:
+            return secrets_dict[env_name][path][key_name]
 
-        # If the secret is not found in secrets_dict, try to fetch it from Phase
-        fetched_secrets = phase.get(env_name=env_name, app_name=app_name, keys=[key_name], path=path)
-        for secret in fetched_secrets:
-            if secret["key"] == key_name:
-                return secret["value"]
-    except EnvironmentNotFoundException:
-        pass
+        # For local references, try to find the secret in the root path only if the original path was root
+        if env_name == current_env_name and path == "/" and '/' in secrets_dict[env_name] and key_name in secrets_dict[env_name]['/']:
+            return secrets_dict[env_name]['/'][key_name]
+
+    # Ensure the (app, env, path) is cached; fetch all secrets for that combo once
+    _ensure_cached(phase, app_name, env_name, path)
+    cached_value = _get_from_cache(app_name, env_name, path, key_name)
+    if cached_value is not None:
+        return cached_value
 
     # Return the original reference as is if not resolved
     return f"${{{original_ref}}}"
@@ -159,6 +244,8 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
     """
 
     secrets_dict = {}
+    # Prime cache
+    _prime_cache_from_list(all_secrets, fallback_app_name=current_application_name)
     for secret in all_secrets:
         env_name = secret['environment']
         path = secret['path']
@@ -170,6 +257,18 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
         secrets_dict[env_name][path][key] = secret['value']
     
     refs = SECRET_REF_REGEX.findall(value)
+    for ref in refs:
+        app_name = current_application_name
+        env_name = current_env_name
+        ref_body = ref
+        if "::" in ref_body:
+            parts = ref_body.split("::", 1)
+            app_name, ref_body = parts[0], parts[1]
+        if "." in ref_body:
+            parts = ref_body.split(".", 1)
+            env_name, ref_body = parts[0], parts[1]
+        path, _ = split_path_and_key(ref_body)
+        _ensure_cached(phase, app_name, env_name, path)
     resolved_value = value
     # Resolve each found reference and replace it with resolved_secret_value.
     for ref in refs:
