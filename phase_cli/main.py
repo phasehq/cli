@@ -87,7 +87,7 @@ def main ():
         auth_parser.add_argument('--mode', choices=['token', 'webauth', 'aws-iam'], default='webauth', help='Mode of authentication. Default: webauth')
         auth_parser.add_argument('--service-account-id', type=str, help='Service Account ID for when using external identities for authentication.')
         auth_parser.add_argument('--ttl', type=int, help='Token TTL in seconds for tokens created using external identities.')
-        auth_parser.add_argument('--no-login', action='store_true', help='For external identity modes (e.g., aws-iam): print authentication tokens response to stdout and without logging in.')
+        auth_parser.add_argument('--no-store', action='store_true', help='For external identity modes (e.g., aws-iam): print authentication token response to stdout without storing credentials or setting a default user.')
 
         # Init command
         init_parser = subparsers.add_parser('init', help='🔗 Link your project with your Phase app')
@@ -286,7 +286,7 @@ def main ():
         args = parser.parse_args()
 
         if args.command == 'auth':
-            phase_auth(args.mode, service_account_id=args.service_account_id, ttl=args.ttl, no_login=args.no_login)
+            phase_auth(args.mode, service_account_id=args.service_account_id, ttl=args.ttl, no_store=args.no_store)
             sys.exit(0)
         elif args.command == 'init':
             phase_init()
