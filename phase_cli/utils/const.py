@@ -1,7 +1,7 @@
 import os
 import re
 
-__version__ = "1.19.6"
+__version__ = "1.20.0"
 __ph_version__ = "v1"
 
 description = (
