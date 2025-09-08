@@ -94,7 +94,7 @@ def start_server(port, PHASE_API_HOST):
     return httpd
 
 
-def phase_auth(mode="webauth", service_account_id=None, ttl=None):
+def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_login=False):
     """
     Handles authentication for the Phase CLI using web-based, token-based, or AWS IAM authentication.
 
@@ -178,6 +178,11 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None):
                     raise ValueError("No token received from AWS IAM authentication")
                 
                 console.log("AWS IAM authentication successful")
+                
+                # If user requested no-login, print raw result and exit early
+                if no_login:
+                    print(json.dumps(aws_result, indent=4))
+                    return
                 
                 # Validate the token with Phase API by initializing Phase client
                 phase = Phase(init=False, pss=auth_token, host=PHASE_API_HOST)
