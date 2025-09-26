@@ -105,21 +105,48 @@ def render_tree_with_tables(data, show, console):
     min_key_width = 15
 
     for path, secrets in sorted(paths.items()):
+        # Partition into static and dynamic for display control
+        static_secrets = [s for s in secrets if not s.get("is_dynamic")]
+        dynamic_secrets = [s for s in secrets if s.get("is_dynamic")]
+
         # Display the path and the number of secrets it contains
         path_node = root_tree.add(f"📁 Path: {path} - [bold magenta]{len(secrets)} Secrets[/]")
         table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
 
         # Calculate dynamic widths based on the secrets of the current path
-        max_key_length = max([len(secret.get("key", "")) for secret in secrets], default=min_key_width)
+        key_lengths = [len(secret.get("key", "")) for secret in secrets]
+        # Include dynamic group header labels in width calculation
+        for s in dynamic_secrets:
+            group_label = f"⚡ {s.get('dynamic_group', 'Dynamic Secret')}"
+            key_lengths.append(len(group_label))
+        max_key_length = max(key_lengths, default=min_key_width)
         key_width = max(min_key_width, min(max_key_length + 6, 40))
         value_width = max(console.width - key_width - 4, 20)
 
         table.add_column("KEY", width=key_width, no_wrap=True)
         table.add_column("VALUE", width=value_width, overflow="fold")
 
-        for secret in secrets:
+        for secret in static_secrets:
             key_display, value_display = format_secret_row(secret, value_width, show)
             table.add_row(key_display, value_display)
+
+        # Insert dynamic secrets into the same table with a separator
+        if dynamic_secrets:
+            table.add_section()
+            # Group dynamic secrets by their dynamic_group label
+            groups = {}
+            for s in dynamic_secrets:
+                groups.setdefault(s.get("dynamic_group", "⚡ Dynamic Secret"), []).append(s)
+
+            for group_label, items in groups.items():
+                # Group header row
+                table.add_row(f"⚡ {group_label}", "")
+                for s in items:
+                    value = s.get("value", "⚡")
+                    # When not showing, indicate that a lease needs to be created
+                    if not show:
+                        value = "lease required"
+                    table.add_row(s.get("key"), value)
 
         path_node.add(table)
 
