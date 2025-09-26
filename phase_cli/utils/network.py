@@ -222,7 +222,7 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
     return wrapped_key_share
 
 
-def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key_digest: str = '', path: str = '') -> requests.Response:
+def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key_digest: str = '', path: str = '', dynamic: bool = False, lease: bool = False) -> requests.Response:
     """
     Fetch a single secret from Phase KMS based on key digest, with an optional path parameter.
 
@@ -241,6 +241,10 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key
     headers = {**construct_http_headers(token_type, app_token), "Environment": id, "KeyDigest": key_digest}
     if path:
         headers["Path"] = path
+    if dynamic:
+        headers["dynamic"] = "true"
+    if lease:
+        headers["lease"] = "true"
 
     URL = f"{host}/service/secrets/"
 
