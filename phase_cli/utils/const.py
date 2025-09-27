@@ -34,6 +34,7 @@ CONFIG_FILE = os.path.join(
 )  # Holds local user account configurations
 
 PHASE_CLOUD_API_HOST = "https://console.phase.dev"
+PHASE_CLOUD_PUBLIC_API_HOST = "https://api.phase.dev"
 
 pss_user_pattern = re.compile(
     r"^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$"
