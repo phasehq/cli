@@ -1,9 +1,10 @@
 import os
 import requests
-from phase_cli.utils.misc import get_user_agent
+from phase_cli.utils.misc import get_user_agent, build_public_api_url
 from phase_cli.exceptions import AuthorizationError, APIError, SSLError
 from typing import List
 from typing import Dict
+from typing import Optional
 import json
 
 # Check if SSL verification should be skipped
@@ -362,6 +363,141 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         # Only try to parse JSON if response has content
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def list_dynamic_secret_leases(token_type: str, app_token: str, host: str, app_id: str, env: str, secret_id: Optional[str] = None) -> requests.Response:
+    """
+    List dynamic secret leases.
+
+    Query params:
+        app_id (str): Application ID
+        env (str): Environment name
+        secret_id (Optional[str]): Secret ID to filter leases
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = build_public_api_url(host, "/v1/secrets/dynamic/leases/")
+
+    params = {"app_id": app_id, "env": env}
+    if secret_id:
+        params["secret_id"] = secret_id
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def renew_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_id: str, env: str, lease_id: str, ttl: int) -> requests.Response:
+    """
+    Renew a dynamic secret lease.
+
+    Query params:
+        app_id (str)
+        env (str)
+
+    Body:
+        lease_id (str)
+        ttl (int)
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = build_public_api_url(host, "/v1/secrets/dynamic/leases/")
+
+    params = {"app_id": app_id, "env": env}
+    data = {"lease_id": lease_id, "ttl": ttl}
+
+    try:
+        response = requests.put(url, headers=headers, params=params, json=data, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def revoke_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_id: str, env: str, lease_id: str) -> requests.Response:
+    """
+    Revoke a dynamic secret lease.
+
+    Query params:
+        app_id (str)
+        env (str)
+
+    Body:
+        lease_id (str)
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = build_public_api_url(host, "/v1/secrets/dynamic/leases/")
+
+    params = {"app_id": app_id, "env": env}
+    data = {"lease_id": lease_id}
+
+    try:
+        response = requests.delete(url, headers=headers, params=params, json=data, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def list_dynamic_secrets(token_type: str, app_token: str, host: str, app_id: str, env: str, path: Optional[str] = None) -> requests.Response:
+    """
+    List dynamic secrets metadata via public API.
+
+    Query params:
+        app_id (str)
+        env (str)
+        path (Optional[str])
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = build_public_api_url(host, "/v1/secrets/dynamic/")
+
+    params: Dict[str, str] = {"app_id": app_id, "env": env}
+    if path is not None:
+        params["path"] = path
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=VERIFY_SSL)
+        handle_request_errors(response)
         if response.text.strip():
             try:
                 response.json()
