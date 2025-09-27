@@ -25,7 +25,7 @@ from phase_cli.cmd.secrets.update import phase_secrets_update
 from phase_cli.cmd.secrets.dynamic.list_dynamic import phase_dynamic_secrets_list
 from phase_cli.cmd.secrets.dynamic.list.lease_get import phase_dynamic_secrets_lease_get
 from phase_cli.cmd.secrets.dynamic.list.lease_revoke import phase_dynamic_secrets_lease_revoke
-from phase_cli.cmd.secrets.dynamic.list.lease_renew import phase_dynamic_secrets_lease_renewß
+from phase_cli.cmd.secrets.dynamic.list.lease_renew import phase_dynamic_secrets_lease_renew
 from phase_cli.utils.const import __version__
 from phase_cli.utils.const import phaseASCii, description
 from rich.console import Console
