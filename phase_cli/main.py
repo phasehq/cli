@@ -22,6 +22,10 @@ from phase_cli.cmd.secrets.import_env import phase_secrets_env_import
 from phase_cli.cmd.secrets.delete import phase_secrets_delete
 from phase_cli.cmd.secrets.create import phase_secrets_create
 from phase_cli.cmd.secrets.update import phase_secrets_update
+from phase_cli.cmd.secrets.dynamic.list_dynamic import phase_dynamic_secrets_list
+from phase_cli.cmd.secrets.dynamic.list.lease_get import phase_dynamic_secrets_lease_get
+from phase_cli.cmd.secrets.dynamic.list.lease_revoke import phase_dynamic_secrets_lease_revoke
+from phase_cli.cmd.secrets.dynamic.list.lease_renew import phase_dynamic_secrets_lease_renewß
 from phase_cli.utils.const import __version__
 from phase_cli.utils.const import phaseASCii, description
 from rich.console import Console
@@ -253,6 +257,45 @@ def main ():
             help='Specifies the export format. Supported formats: dotenv (default), kv, json, csv, yaml, xml, toml, hcl, ini, java_properties.')
         secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
 
+        # Dynamic secrets
+        dynamic_parser = subparsers.add_parser('dynamic-secrets', help='⚡ Manage dynamic secrets')
+        dynamic_subparsers = dynamic_parser.add_subparsers(dest='dynamic_command', required=True)
+
+        lease_parser = dynamic_subparsers.add_parser('lease', help='📜 Manage dynamic secret leases')
+        lease_subparsers = lease_parser.add_subparsers(dest='lease_command', required=True)
+        
+        # dynamic-secrets list
+        dyn_list_parser = dynamic_subparsers.add_parser('list', help='📇 List dynamic secrets (metadata)')
+        dyn_list_parser.add_argument('--env', type=str, help=env_help)
+        dyn_list_parser.add_argument('--app', type=str, help=app_help)
+        dyn_list_parser.add_argument('--app-id', type=str, help=app_id_help)
+        dyn_list_parser.add_argument('--path', type=str, default='/', help='Path to filter dynamic secrets')
+
+        # dynamic-secrets lease get
+        lease_get_parser = lease_subparsers.add_parser('get', help='🔍 Get leases for a dynamic secret')
+        lease_get_parser.add_argument('secret_id', type=str, help='Dynamic secret ID')
+        lease_get_parser.add_argument('--env', type=str, help=env_help)
+        lease_get_parser.add_argument('--app', type=str, help=app_help)
+        lease_get_parser.add_argument('--app-id', type=str, help=app_id_help)
+        lease_get_parser.add_argument('--path', type=str, default='/', help='Path (not required for leases)')
+
+        # dynamic-secrets lease renew
+        lease_renew_parser = lease_subparsers.add_parser('renew', help='🔁 Renew a lease')
+        lease_renew_parser.add_argument('lease_id', type=str, help='Lease ID')
+        lease_renew_parser.add_argument('ttl', type=int, help='TTL in seconds')
+        lease_renew_parser.add_argument('--env', type=str, help=env_help)
+        lease_renew_parser.add_argument('--app', type=str, help=app_help)
+        lease_renew_parser.add_argument('--app-id', type=str, help=app_id_help)
+        lease_renew_parser.add_argument('--path', type=str, default='/', help="Filter dynamic secrets by path when listing (unused for renew)")
+
+        # dynamic-secrets lease revoke
+        lease_revoke_parser = lease_subparsers.add_parser('revoke', help='🗑️\u200A Revoke a lease')
+        lease_revoke_parser.add_argument('lease_id', type=str, help='Lease ID')
+        lease_revoke_parser.add_argument('--env', type=str, help=env_help)
+        lease_revoke_parser.add_argument('--app', type=str, help=app_help)
+        lease_revoke_parser.add_argument('--app-id', type=str, help=app_id_help)
+        lease_revoke_parser.add_argument('--path', type=str, default='/', help="Filter dynamic secrets by path when listing (unused for revoke)")
+
         # Users command
         users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
         users_subparsers = users_parser.add_subparsers(dest='users_command', required=True)
@@ -329,6 +372,24 @@ def main ():
                 phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length, override=args.override, toggle_override=args.toggle_override)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
+                parser.print_help()
+                sys.exit(1)
+        elif args.command == 'dynamic-secrets':
+            if args.dynamic_command == 'lease':
+                if args.lease_command == 'get':
+                    phase_dynamic_secrets_lease_get(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, secret_id=args.secret_id)
+                elif args.lease_command == 'renew':
+                    phase_dynamic_secrets_lease_renew(args.lease_id, args.ttl, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
+                elif args.lease_command == 'revoke':
+                    phase_dynamic_secrets_lease_revoke(args.lease_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
+                else:
+                    print("Unknown lease sub-command: " + args.lease_command)
+                    parser.print_help()
+                    sys.exit(1)
+            elif args.dynamic_command == 'list':
+                phase_dynamic_secrets_list(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path)
+            else:
+                print("Unknown dynamic sub-command: " + args.dynamic_command)
                 parser.print_help()
                 sys.exit(1)
     except KeyboardInterrupt:
