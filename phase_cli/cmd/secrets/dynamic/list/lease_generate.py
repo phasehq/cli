@@ -5,9 +5,10 @@ from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.network import create_dynamic_secret_lease
 
 
-def phase_dynamic_secrets_lease_create(secret_id, env_name=None, phase_app=None, phase_app_id=None, ttl=None):
+def phase_dynamic_secrets_lease_generate(secret_id, env_name=None, phase_app=None, phase_app_id=None, ttl=None):
     """
-    Create a dynamic secret lease (generate credentials) by name/path via GET lease=true.
+    Generate a dynamic secret lease and credentials for a given secret_id.
+    Optionally pass a TTL (seconds) to override the default TTL.
     """
     console = Console()
     try:
@@ -33,9 +34,9 @@ def phase_dynamic_secrets_lease_create(secret_id, env_name=None, phase_app=None,
                 console.print(response.text)
         else:
             try:
-                console.print(json.dumps(response.json(), indent=4))
+                print(json.dumps(response.json(), indent=4))
             except Exception:
-                console.print(response.text)
+                print(response.text)
     except Exception as e:
         console.log(f"Error: {e}")
         sys.exit(1)
