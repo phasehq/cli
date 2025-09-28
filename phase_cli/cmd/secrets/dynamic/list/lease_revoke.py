@@ -32,9 +32,9 @@ def phase_dynamic_secrets_lease_revoke(lease_id, env_name=None, phase_app=None, 
         else:
             try:
                 import json
-                print(json.dumps(response.json(), indent=4))
+                console.print(json.dumps(response.json(), indent=4))
             except Exception:
-                print(response.text)
+                console.print(response.text)
     except Exception as e:
         console.log(f"Error: {e}")
         sys.exit(1)
