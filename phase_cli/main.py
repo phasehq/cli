@@ -300,6 +300,7 @@ def main ():
         # dynamic-secrets lease create
         lease_create_parser = lease_subparsers.add_parser('create', help='✨ Create a lease (generate credentials)')
         lease_create_parser.add_argument('secret_id', type=str, help='Dynamic secret ID')
+        lease_create_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds. If not provided, the default TTL will be used (optional)')
         lease_create_parser.add_argument('--env', type=str, help=env_help)
         lease_create_parser.add_argument('--app', type=str, help=app_help)
         lease_create_parser.add_argument('--app-id', type=str, help=app_id_help)
@@ -391,7 +392,7 @@ def main ():
                 elif args.lease_command == 'revoke':
                     phase_dynamic_secrets_lease_revoke(args.lease_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
                 elif args.lease_command == 'create':
-                    phase_dynamic_secrets_lease_create(args.secret_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
+                    phase_dynamic_secrets_lease_create(args.secret_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, ttl=args.lease_ttl)
                 else:
                     print("Unknown lease sub-command: " + args.lease_command)
                     parser.print_help()
