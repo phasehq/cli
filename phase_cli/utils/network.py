@@ -377,7 +377,7 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
 
 # Dynamic secrets
 
-def create_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_id: str, env: str, secret_id: str) -> requests.Response:
+def create_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_id: str, env: str, secret_id: str, ttl: Optional[int] = None) -> requests.Response:
     """
     Generate a dynamic secret lease by calling GET /v1/secrets/dynamic/ with lease=true.
 
@@ -393,6 +393,8 @@ def create_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_
     url = build_public_api_url(host, "/v1/secrets/dynamic/")
 
     params: Dict[str, str] = {"app_id": app_id, "env": env, "lease": "true", "id": secret_id}
+    if ttl is not None:
+        params["ttl"] = str(ttl)
 
     try:
         response = requests.get(url, headers=headers, params=params, verify=VERIFY_SSL)
