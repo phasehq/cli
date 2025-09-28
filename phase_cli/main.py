@@ -26,6 +26,7 @@ from phase_cli.cmd.secrets.dynamic.list_dynamic import phase_dynamic_secrets_lis
 from phase_cli.cmd.secrets.dynamic.list.lease_get import phase_dynamic_secrets_lease_get
 from phase_cli.cmd.secrets.dynamic.list.lease_revoke import phase_dynamic_secrets_lease_revoke
 from phase_cli.cmd.secrets.dynamic.list.lease_renew import phase_dynamic_secrets_lease_renew
+from phase_cli.cmd.secrets.dynamic.list.lease_create import phase_dynamic_secrets_lease_create
 from phase_cli.utils.const import __version__
 from phase_cli.utils.const import phaseASCii, description
 from rich.console import Console
@@ -296,6 +297,13 @@ def main ():
         lease_revoke_parser.add_argument('--app-id', type=str, help=app_id_help)
         lease_revoke_parser.add_argument('--path', type=str, default='/', help="Filter dynamic secrets by path when listing (unused for revoke)")
 
+        # dynamic-secrets lease create
+        lease_create_parser = lease_subparsers.add_parser('create', help='✨ Create a lease (generate credentials)')
+        lease_create_parser.add_argument('secret_id', type=str, help='Dynamic secret ID')
+        lease_create_parser.add_argument('--env', type=str, help=env_help)
+        lease_create_parser.add_argument('--app', type=str, help=app_help)
+        lease_create_parser.add_argument('--app-id', type=str, help=app_id_help)
+
         # Users command
         users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
         users_subparsers = users_parser.add_subparsers(dest='users_command', required=True)
@@ -382,6 +390,8 @@ def main ():
                     phase_dynamic_secrets_lease_renew(args.lease_id, args.ttl, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
                 elif args.lease_command == 'revoke':
                     phase_dynamic_secrets_lease_revoke(args.lease_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
+                elif args.lease_command == 'create':
+                    phase_dynamic_secrets_lease_create(args.secret_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
                 else:
                     print("Unknown lease sub-command: " + args.lease_command)
                     parser.print_help()
