@@ -258,7 +258,7 @@ def main ():
         secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
 
         # Dynamic secrets
-        dynamic_parser = subparsers.add_parser('dynamic-secrets', help='⚡ Manage dynamic secrets')
+        dynamic_parser = subparsers.add_parser('dynamic-secrets', help='⚡️ Manage dynamic secrets')
         dynamic_subparsers = dynamic_parser.add_subparsers(dest='dynamic_command', required=True)
 
         lease_parser = dynamic_subparsers.add_parser('lease', help='📜 Manage dynamic secret leases')
