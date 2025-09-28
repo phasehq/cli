@@ -222,6 +222,7 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
 
     return wrapped_key_share
 
+# Static secrets
 
 def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key_digest: str = '', path: str = '', dynamic: bool = False, lease: bool = False) -> requests.Response:
     """
@@ -363,6 +364,39 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
         handle_request_errors(response)
         # Only try to parse JSON if response has content
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+# Dynamic secrets
+
+def create_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_id: str, env: str, secret_id: str) -> requests.Response:
+    """
+    Generate a dynamic secret lease by calling GET /v1/secrets/dynamic/ with lease=true.
+
+    Query params:
+        app_id (str)
+        env (str)
+        id (str)            # dynamic secret id
+        lease (bool=true)
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = build_public_api_url(host, "/v1/secrets/dynamic/")
+
+    params: Dict[str, str] = {"app_id": app_id, "env": env, "lease": "true", "id": secret_id}
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=VERIFY_SSL)
+        handle_request_errors(response)
         if response.text.strip():
             try:
                 response.json()
