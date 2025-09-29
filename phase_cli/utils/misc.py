@@ -164,7 +164,7 @@ def render_tree_with_tables(data, show, console):
         key_lengths = [len(secret.get("key", "")) for secret in secrets]
         # Include dynamic group header labels in width calculation
         for s in dynamic_secrets:
-            group_label = f"⚡ {s.get('dynamic_group', 'Dynamic Secret')}"
+            group_label = f"⚡️ {s.get('dynamic_group', 'Dynamic Secret')}"
             key_lengths.append(len(group_label))
         max_key_length = max(key_lengths, default=min_key_width)
         key_width = max(min_key_width, min(max_key_length + 6, 40))
@@ -183,13 +183,13 @@ def render_tree_with_tables(data, show, console):
             # Group dynamic secrets by their dynamic_group label
             groups = {}
             for s in dynamic_secrets:
-                groups.setdefault(s.get("dynamic_group", "⚡ Dynamic Secret"), []).append(s)
+                groups.setdefault(s.get("dynamic_group", "⚡️ Dynamic Secret"), []).append(s)
 
             for group_label, items in groups.items():
                 # Group header row
-                table.add_row(f"⚡ {group_label}", "")
+                table.add_row(f"⚡️ {group_label}", "")
                 for s in items:
-                    value = s.get("value", "⚡")
+                    value = s.get("value", "⚡️")
                     # When not showing, indicate that a lease needs to be created
                     if not show:
                         value = "lease required"
