@@ -29,8 +29,7 @@ def phase_dynamic_secrets_list(env_name=None, phase_app=None, phase_app_id=None,
         if sys.stdout.isatty():
             console.print_json(data=dynamic_only)
         else:
-            import json
-            console.print_json(json.dumps(dynamic_only, indent=4))
+            console.print_json(data=dynamic_only, indent=4)
     except Exception as e:
         console.log(f"Error: {e}")
         sys.exit(1)
