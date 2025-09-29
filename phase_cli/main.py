@@ -122,7 +122,7 @@ def main ():
 
         # Secrets list command
         secrets_list_parser = secrets_subparsers.add_parser('list', help='📇 List all the secrets')
-        secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
+        secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored. If you have dynamic secrets configured, the CLI will automatically generate leases and display the values of the freshly created dynamic secrets along with static secrets in the table.')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.add_argument('--app', type=str, help=app_help)
         secrets_list_parser.add_argument('--app-id', type=str, help=app_id_help)
@@ -133,7 +133,8 @@ def main ():
             "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
             "🏷️ : Indicates a tag is associated with a secret.\n"
             "💬 : Indicates a comment is associated with a given secret.\n" 
-            "🔏 : Indicates a personal secret, visible only to the user who set it."
+            "🔏 : Indicates a personal secret, visible only to the user who set it.\n"
+            "⚡️ : Indicates a dynamic secret."
 
         )
 
@@ -274,7 +275,7 @@ def main ():
         lease_subparsers = lease_parser.add_subparsers(dest='lease_command', required=True)
         
         # dynamic-secrets list
-        dyn_list_parser = dynamic_subparsers.add_parser('list', help='📇 List dynamic secrets (metadata)')
+        dyn_list_parser = dynamic_subparsers.add_parser('list', help='📇 List dynamic secrets & metadata')
         dyn_list_parser.add_argument('--env', type=str, help=env_help)
         dyn_list_parser.add_argument('--app', type=str, help=app_help)
         dyn_list_parser.add_argument('--app-id', type=str, help=app_id_help)
@@ -306,7 +307,7 @@ def main ():
         lease_revoke_parser.add_argument('--path', type=str, default='/', help="Filter dynamic secrets by path when listing (unused for revoke)")
 
         # dynamic-secrets lease generate
-        lease_generate_parser = lease_subparsers.add_parser('generate', help='✨ Generate a lease (create credentials)')
+        lease_generate_parser = lease_subparsers.add_parser('generate', help='✨ Generate a lease (create fresh dynamic secret)')
         lease_generate_parser.add_argument('secret_id', type=str, help='Dynamic secret ID')
         lease_generate_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds. If not provided, the default TTL will be used (optional)')
         lease_generate_parser.add_argument('--env', type=str, help=env_help)
