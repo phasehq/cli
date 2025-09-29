@@ -2,6 +2,7 @@ import sys
 from phase_cli.utils.phase_io import Phase
 from rich.console import Console
 import json
+from phase_cli.utils.misc import parse_bool_flag
 
 def phase_secrets_get(key, env_name=None, phase_app=None, phase_app_id=None, tags=None, path='/', generate_leases: str = 'true', lease_ttl: int = None):
     """
@@ -19,7 +20,7 @@ def phase_secrets_get(key, env_name=None, phase_app=None, phase_app_id=None, tag
     
     try:
         key = key.upper()
-        lease_flag = str(generate_leases).lower() not in ['false', '0', 'no']
+        lease_flag = parse_bool_flag(generate_leases)
         secrets_data = phase.get(env_name=env_name, keys=[key], app_name=phase_app, app_id=phase_app_id, tag=tags, path=path, dynamic=True, lease=lease_flag, lease_ttl=lease_ttl)
         
         # Find the specific secret for the given key within the provided path
