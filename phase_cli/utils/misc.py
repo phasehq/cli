@@ -192,7 +192,7 @@ def render_tree_with_tables(data, show, console):
                     value = s.get("value", "⚡️")
                     # When not showing, indicate that a lease needs to be created
                     if not show:
-                        value = "lease required"
+                        value = "****************"
                     table.add_row(s.get("key"), value)
 
         path_node.add(table)
