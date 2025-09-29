@@ -16,6 +16,19 @@ from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API
 import platform
 import shutil
 
+def parse_bool_flag(value) -> bool:
+    """
+    Parse common CLI boolean strings into a bool.
+    Treats 'false', '0', 'no', 'off' (case-insensitive) as False.
+    Everything else (including None) is True by default.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    s = str(value).strip().lower()
+    return s not in ('false', '0', 'no', 'off')
+
 def get_public_api_base(host: str) -> str:
     """
     Resolve the correct public API base depending on cloud vs self-hosted.
