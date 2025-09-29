@@ -96,12 +96,14 @@ def main ():
 
         # Run command
         run_parser = subparsers.add_parser('run', help='🚀 Run and inject secrets to your app')
-        run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run. Ex. phase run yarn dev')
+        run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run with secrets injected - Ex. phase run yarn dev')
         run_parser.add_argument('--env', type=str, help=env_help)
         run_parser.add_argument('--app', type=str, help=app_help)
         run_parser.add_argument('--app-id', type=str, help=app_id_help)
         run_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your application. Default is '/'. Pass an empty string "" to fetch secrets from all paths.")
         run_parser.add_argument('--tags', type=str, help=tag_help)
+        run_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        run_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
 
         # Shell command
         shell_parser = subparsers.add_parser('shell', help='🐚 Launch a sub-shell with secrets as environment variables (BETA)')
@@ -111,6 +113,8 @@ def main ():
         shell_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your shell. Default is '/'. Pass an empty string \"\" to fetch secrets from all paths.")
         shell_parser.add_argument('--tags', type=str, help=tag_help)
         shell_parser.add_argument('--shell', type=str, help="Specify which shell to use (bash, zsh, sh, fish, powershell, etc). If not specified, will use the current shell or system default.")
+        shell_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        shell_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
 
         # Secrets command
         secrets_parser = subparsers.add_parser('secrets', help='🗝️\u200A Manage your secrets')
@@ -141,6 +145,8 @@ def main ():
         secrets_get_parser.add_argument('--app-id', type=str, help=app_id_help)
         secrets_get_parser.add_argument('--tags', type=str, help=tag_help)
         secrets_get_parser.add_argument('--path', type=str, default='/', required=False, help="The path from which to fetch the secret from. Default is '/'. Pass an empty string \"\" to fetch secrets from all paths.")
+        secrets_get_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        secrets_get_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
@@ -257,6 +263,8 @@ def main ():
             choices=['dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 'java_properties', 'kv'], 
             help='Specifies the export format. Supported formats: dotenv (default), kv, json, csv, yaml, xml, toml, hcl, ini, java_properties.')
         secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
+        secrets_export_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        secrets_export_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
 
         # Dynamic secrets
         dynamic_parser = subparsers.add_parser('dynamic-secrets', help='⚡️ Manage dynamic secrets')
@@ -341,9 +349,9 @@ def main ():
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
-            phase_run_inject(command, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags)
+            phase_run_inject(command, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)
         elif args.command == 'shell':
-            phase_shell(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, shell_type=args.shell)
+            phase_shell(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, shell_type=args.shell, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)
         elif args.command == 'console':
             phase_open_console()
         elif args.command == 'docs':
@@ -368,7 +376,7 @@ def main ():
             if args.secrets_command == 'list':
                 phase_list_secrets(args.show, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags)
             elif args.secrets_command == 'get':
-                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags)  
+                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)  
             elif args.secrets_command == 'create':
                 phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, random_type=args.random, random_length=args.length, override=args.override)
             elif args.secrets_command == 'delete':
@@ -376,7 +384,7 @@ def main ():
             elif args.secrets_command == 'import':
                 phase_secrets_env_import(args.env_file, env_name=args.env, path=args.path, phase_app=args.app, phase_app_id=args.app_id)
             elif args.secrets_command == 'export':
-                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, format=args.format)
+                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, format=args.format, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)
             elif args.secrets_command == 'update':
                 phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length, override=args.override, toggle_override=args.toggle_override)
             else:
