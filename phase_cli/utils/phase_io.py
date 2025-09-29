@@ -161,7 +161,7 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, app_id: str = None, tag: str = None, path: str = '', dynamic: bool = False, lease: bool = False) -> List[Dict]:
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, app_id: str = None, tag: str = None, path: str = '', dynamic: bool = False, lease: bool = False, lease_ttl: Optional[int] = None) -> List[Dict]:
         """
         Get secrets from Phase KMS based on key and environment, with support for personal overrides,
         optional tag matching, decrypting comments, and now including path support and key digest optimization.
@@ -196,13 +196,15 @@ class Phase:
 
         # Construct dynamic secret params
         params = {"path": path, "dynamic": dynamic, "lease": lease}
+        if lease_ttl is not None:
+            params["lease_ttl"] = lease_ttl
         if keys and len(keys) == 1:
             wrapped_salt = environment_key.get("wrapped_salt")
             decrypted_salt = self.decrypt(wrapped_salt, user_data)
             key_digest = CryptoUtils.blake2b_digest(keys[0], decrypted_salt)
             params["key_digest"] = key_digest
 
-        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, **params)
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, key_digest=params.get("key_digest", ''), path=path, dynamic=dynamic, lease=lease, lease_ttl=lease_ttl)
 
         secrets_data = secrets_response.json()
         results = []
