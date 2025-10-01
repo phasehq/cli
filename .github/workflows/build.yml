@@ -20,11 +20,11 @@ jobs:
     strategy:
       matrix:
         # ubuntu-22.04 - context: https://github.com/phasehq/cli/issues/94
-        # macos-14-large darwin-amd64 builds (intel)
+        # macos-13 darwin-amd64 builds (intel)
         # macos-14 darwin-arm64 builds (apple silicon)
         # context: https://github.com/actions/runner-images?tab=readme-ov-file#available-images
 
-        os: [ubuntu-22.04, windows-2022, macos-14-large, macos-14]
+        os: [ubuntu-22.04, windows-2022, macos-13, macos-14]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -81,7 +81,7 @@ jobs:
         run: |
           if [[ "${{ matrix.os }}" == "macos-14" ]]; then
             echo "ARTIFACT_NAME=${{ runner.os }}-arm64-binary" >> $GITHUB_ENV
-          elif [[ "${{ matrix.os }}" == "macos-14-large" ]]; then
+          elif [[ "${{ matrix.os }}" == "macos-13" ]]; then
             echo "ARTIFACT_NAME=${{ runner.os }}-amd64-binary" >> $GITHUB_ENV
           else
             echo "ARTIFACT_NAME=${{ runner.os }}-binary" >> $GITHUB_ENV
