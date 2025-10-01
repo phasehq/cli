@@ -24,7 +24,7 @@ jobs:
         # macos-14 darwin-arm64 builds (apple silicon)
         # context: https://github.com/actions/runner-images?tab=readme-ov-file#available-images
 
-        os: [ubuntu-22.04, windows-2022, macos-13, macos-14]
+        os: [ubuntu-22.04, windows-2022, macos-14, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
