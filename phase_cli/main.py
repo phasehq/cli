@@ -70,8 +70,22 @@ class HelpfulParser(argparse.ArgumentParser):
     def error(self, message):
         print (description)
         print(phaseASCii)
-        self.print_help()
-        sys.exit(0)
+        # Correctly show the help for the command / subcommand that was used in the case of an error and return error code 2.
+        parser_to_show = self
+        try:
+            def descend(parser, tokens):
+                if not tokens:
+                    return parser
+                sub_action = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+                if sub_action and tokens[0] in sub_action.choices:
+                    return descend(sub_action.choices[tokens[0]], tokens[1:])
+                return parser
+
+            parser_to_show = descend(self, sys.argv[1:])
+        except Exception:
+            parser_to_show = self
+        parser_to_show.print_help()
+        sys.exit(2)
 
     def add_subparsers(self, **kwargs):
         kwargs['title'] = 'Commands'
