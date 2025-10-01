@@ -33,6 +33,12 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pip install pyinstaller
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+      - name: Codesign macOS build output
+        if: runner.os == 'macOS'
+        run: |
+          uname -a
+          codesign --force --deep --sign - dist/phase/phase
+          codesign --verify --deep --verbose=2 dist/phase/phase
       - name: Print GLIBC version
         if: matrix.os == 'ubuntu-22.04'
         run: ldd --version
