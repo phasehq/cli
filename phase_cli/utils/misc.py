@@ -286,18 +286,20 @@ def get_default_user_host() -> str:
     raise ValueError(f"No user found in config.json with id: {default_user_id}.")
 
 
-def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
+def get_default_account_id(all_ids=False) -> Union[str, List[str]]:
     """
-    Fetch the default user's ID from the config file in PHASE_SECRETS_DIR.
+    Fetch the default account ID from the config file in PHASE_SECRETS_DIR.
+    
+    This function handles both user accounts (PATs) and service accounts (service tokens).
 
     Parameters:
-    - all_ids (bool): If set to True, returns a list of all user IDs. Otherwise, returns the default user's ID.
+    - all_ids (bool): If set to True, returns a list of all account IDs. Otherwise, returns the default account ID.
 
     Returns:
-    - Union[str, List[str]]: The default user's ID, or a list of all user IDs if all_ids is True.
+    - Union[str, List[str]]: The default account ID, or a list of all account IDs if all_ids is True.
 
     Raises:
-    - ValueError: If the config file is not found or if the default user's ID is missing.
+    - ValueError: If the config file is not found or if the default account ID is missing.
     """
     config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
     
@@ -311,6 +313,25 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
         return [user['id'] for user in config_data.get('phase-users', [])]
     else:
         return config_data.get("default-user")
+
+
+def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
+    """
+    Fetch the default user's ID from the config file in PHASE_SECRETS_DIR.
+    
+    DEPRECATED: Use get_default_account_id() instead for better compatibility with service accounts.
+    This function is kept for backward compatibility.
+
+    Parameters:
+    - all_ids (bool): If set to True, returns a list of all user IDs. Otherwise, returns the default user's ID.
+
+    Returns:
+    - Union[str, List[str]]: The default user's ID, or a list of all user IDs if all_ids is True.
+
+    Raises:
+    - ValueError: If the config file is not found or if the default user's ID is missing.
+    """
+    return get_default_account_id(all_ids)
 
 
 def get_default_user_org(config_file_path):

@@ -27,8 +27,9 @@ def phase_users_whoami():
             sys.exit(1)
 
         # Print the default user details
-        print(f"✉️\u200A Email: {default_user['email']}")
-        print(f"🙋 User ID: {default_user['id']}")
+        email = default_user.get('email', 'N/A (Service Account)')
+        print(f"✉️\u200A Email: {email}")
+        print(f"🙋 Account ID: {default_user['id']}")
         print(f"🏢 Organization: {default_user['organization_name']}")
         print(f"☁️\u200A Host: {default_user['host']}")
 
