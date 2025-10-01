@@ -22,7 +22,7 @@ def phase_list_secrets(show=False, env_name=None, phase_app=None, phase_app_id=N
     console = Console()
 
     try:
-        secrets_data = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path)
+        secrets_data = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path, dynamic=True, lease=show)
         
         # Check that secrets_data is a list of dictionaries
         if not isinstance(secrets_data, list):

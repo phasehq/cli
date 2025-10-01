@@ -1,12 +1,12 @@
 import sys
 import subprocess
 from phase_cli.utils.phase_io import Phase
-from phase_cli.utils.misc import clean_subprocess_env
+from phase_cli.utils.misc import clean_subprocess_env, parse_bool_flag
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn
 
-def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, tags=None, path: str = '/'):
+def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, tags=None, path: str = '/', generate_leases: str = 'true', lease_ttl: int = None):
     """
     Executes a shell command with environment variables set to the secrets 
     fetched from Phase for the specified environment, resolving references as needed.
@@ -32,7 +32,8 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
                 task1 = progress.add_task("[bold green]Fetching secrets...", total=None)        
 
                 # Fetch all secrets
-                all_secrets = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path)
+                lease_flag = parse_bool_flag(generate_leases)
+                all_secrets = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path, dynamic=True, lease=lease_flag, lease_ttl=lease_ttl)
                 
                 # Organize all secrets into a dictionary for easier lookup
                 secrets_dict = {}
@@ -50,6 +51,8 @@ def phase_run_inject(command, env_name=None, phase_app=None, phase_app_id=None, 
                 resolved_secrets_dict = {}
                 for secret in all_secrets:
                     # Attempt to resolve secret references in the value
+                    if secret["value"] is None:
+                        continue
                     resolved_value = resolve_all_secrets(secret["value"], all_secrets, phase, secret.get('application'), secret.get('environment'))
                     resolved_secrets_dict[secret["key"]] = resolved_value
 

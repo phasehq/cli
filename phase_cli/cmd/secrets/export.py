@@ -4,12 +4,13 @@ import json
 import csv
 import yaml
 from phase_cli.utils.phase_io import Phase
+from phase_cli.utils.misc import parse_bool_flag
 import xml.sax.saxutils as saxutils
 from phase_cli.utils.secret_referencing import resolve_all_secrets
 from rich.console import Console
 
 
-def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, keys=None, tags=None, format='dotenv', path: str = ''):
+def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, keys=None, tags=None, format='dotenv', path: str = '', generate_leases: str = 'true', lease_ttl: int = None):
     """
     Exports secrets from the specified environment with support for multiple export formats. 
     This function fetches secrets from Phase, resolves any cross-environment or local secret references, and then outputs them in the chosen format.
@@ -51,7 +52,8 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
 
     try:
         # Fetch all secrets
-        all_secrets = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path)
+        lease_flag = parse_bool_flag(generate_leases)
+        all_secrets = phase.get(env_name=env_name, app_name=phase_app, app_id=phase_app_id, tag=tags, path=path, dynamic=True, lease=lease_flag, lease_ttl=lease_ttl)
 
         # Organize all secrets into a dictionary for easier lookup.
         secrets_dict = {}
@@ -70,7 +72,9 @@ def phase_secrets_env_export(env_name=None, phase_app=None, phase_app_id=None, k
                 current_env_name = secret['environment']
                 current_application_name = secret['application']
 
-                # Attempt to resolve secret references in the value
+                # Attempt to resolve secret references in the value (skip if None)
+                if secret["value"] is None:
+                    continue
                 resolved_value = resolve_all_secrets(value=secret["value"], all_secrets=all_secrets, phase=phase, current_application_name=current_application_name, current_env_name=current_env_name)
                 resolved_secrets.append({
                     **secret,

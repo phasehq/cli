@@ -12,9 +12,56 @@ from rich import box
 from rich.box import ROUNDED
 from urllib.parse import urlparse
 from typing import Union, List
-from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
+from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_CLOUD_PUBLIC_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 import platform
 import shutil
+
+def parse_bool_flag(value) -> bool:
+    """
+    Parse common CLI boolean strings into a bool.
+    Treats 'false', '0', 'no', 'off' (case-insensitive) as False.
+    Everything else (including None) is True by default.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    s = str(value).strip().lower()
+    return s not in ('false', '0', 'no', 'off')
+
+def get_public_api_base(host: str) -> str:
+    """
+    Resolve the correct public API base depending on cloud vs self-hosted.
+
+    - If host matches Phase Cloud console host (console.phase.dev) or no host provided, return api.phase.dev
+    - If PHASE_HOST is provided or host is any other domain, append /service/public
+    """
+    # Normalize
+    host = (host or '').strip()
+    if not host or host == PHASE_CLOUD_API_HOST:
+        return PHASE_CLOUD_PUBLIC_API_HOST
+
+    # For self-hosted, ensure scheme and append public path
+    parsed = urlparse(host)
+    if not parsed.scheme:
+        host = f"https://{host}"
+        parsed = urlparse(host)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    return f"{base}/service/public"
+
+
+def build_public_api_url(host: str, path: str = '/') -> str:
+    """
+    Build a full URL for public API given a host and path.
+    Ensures single trailing/leading slash handling.
+    """
+    base = get_public_api_base(host)
+    # Normalize slashes
+    if not path:
+        path = '/'
+    if not path.startswith('/'):
+        path = '/' + path
+    return base.rstrip('/') + path
 
 def get_terminal_width():
     """
@@ -105,21 +152,48 @@ def render_tree_with_tables(data, show, console):
     min_key_width = 15
 
     for path, secrets in sorted(paths.items()):
+        # Partition into static and dynamic for display control
+        static_secrets = [s for s in secrets if not s.get("is_dynamic")]
+        dynamic_secrets = [s for s in secrets if s.get("is_dynamic")]
+
         # Display the path and the number of secrets it contains
         path_node = root_tree.add(f"📁 Path: {path} - [bold magenta]{len(secrets)} Secrets[/]")
         table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
 
         # Calculate dynamic widths based on the secrets of the current path
-        max_key_length = max([len(secret.get("key", "")) for secret in secrets], default=min_key_width)
+        key_lengths = [len(secret.get("key", "")) for secret in secrets]
+        # Include dynamic group header labels in width calculation
+        for s in dynamic_secrets:
+            group_label = f"⚡️ {s.get('dynamic_group', 'Dynamic Secret')}"
+            key_lengths.append(len(group_label))
+        max_key_length = max(key_lengths, default=min_key_width)
         key_width = max(min_key_width, min(max_key_length + 6, 40))
         value_width = max(console.width - key_width - 4, 20)
 
         table.add_column("KEY", width=key_width, no_wrap=True)
         table.add_column("VALUE", width=value_width, overflow="fold")
 
-        for secret in secrets:
+        for secret in static_secrets:
             key_display, value_display = format_secret_row(secret, value_width, show)
             table.add_row(key_display, value_display)
+
+        # Insert dynamic secrets into the same table with a separator
+        if dynamic_secrets:
+            table.add_section()
+            # Group dynamic secrets by their dynamic_group label
+            groups = {}
+            for s in dynamic_secrets:
+                groups.setdefault(s.get("dynamic_group", "⚡️ Dynamic Secret"), []).append(s)
+
+            for group_label, items in groups.items():
+                # Group header row
+                table.add_row(f"⚡️ {group_label}", "")
+                for s in items:
+                    value = s.get("value", "⚡️")
+                    # When not showing, indicate that a lease needs to be created
+                    if not show:
+                        value = "****************"
+                    table.add_row(s.get("key"), value)
 
         path_node.add(table)
 

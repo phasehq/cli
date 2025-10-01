@@ -22,6 +22,11 @@ from phase_cli.cmd.secrets.import_env import phase_secrets_env_import
 from phase_cli.cmd.secrets.delete import phase_secrets_delete
 from phase_cli.cmd.secrets.create import phase_secrets_create
 from phase_cli.cmd.secrets.update import phase_secrets_update
+from phase_cli.cmd.secrets.dynamic.list_dynamic import phase_dynamic_secrets_list
+from phase_cli.cmd.secrets.dynamic.list.lease_get import phase_dynamic_secrets_lease_get
+from phase_cli.cmd.secrets.dynamic.list.lease_revoke import phase_dynamic_secrets_lease_revoke
+from phase_cli.cmd.secrets.dynamic.list.lease_renew import phase_dynamic_secrets_lease_renew
+from phase_cli.cmd.secrets.dynamic.list.lease_generate import phase_dynamic_secrets_lease_generate
 from phase_cli.utils.const import __version__
 from phase_cli.utils.const import phaseASCii, description
 from rich.console import Console
@@ -36,7 +41,8 @@ PHASE_DEBUG = os.environ.get('PHASE_DEBUG', 'False').lower() == 'true'
 
 class CustomHelpFormatter(argparse.HelpFormatter):
     def __init__(self, prog):
-        super().__init__(prog, max_help_position=15, width=sys.maxsize) # set the alignment and wrapping width
+        # Control whitespace between sub-commands and their descriptions
+        super().__init__(prog, max_help_position=22, width=sys.maxsize)
 
     def add_usage(self, usage, actions, groups, prefix=None):
         # Override to prevent the default behavior
@@ -48,9 +54,12 @@ class CustomHelpFormatter(argparse.HelpFormatter):
             # Filter out the metavar option
             action.metavar = None
         parts = super(CustomHelpFormatter, self)._format_action(action)
-        # remove the unnecessary line
-        if "{auth,init,run,shell,secrets,users,docs,console,update}" in parts:
-            parts = parts.replace("{auth,init,run,shell,secrets,users,docs,console,update}", "")
+        # For subparsers only, remove the redundant brace-enclosed choices line, e.g. {auth,init,...}
+        if isinstance(action, argparse._SubParsersAction):
+            parts = ''.join(
+                line for line in parts.splitlines(keepends=True)
+                if not ('{' in line and '}' in line)
+            )
         return parts
 
 class HelpfulParser(argparse.ArgumentParser):
@@ -61,8 +70,22 @@ class HelpfulParser(argparse.ArgumentParser):
     def error(self, message):
         print (description)
         print(phaseASCii)
-        self.print_help()
-        sys.exit(0)
+        # Correctly show the help for the command / subcommand that was used in the case of an error and return error code 2.
+        parser_to_show = self
+        try:
+            def descend(parser, tokens):
+                if not tokens:
+                    return parser
+                sub_action = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+                if sub_action and tokens[0] in sub_action.choices:
+                    return descend(sub_action.choices[tokens[0]], tokens[1:])
+                return parser
+
+            parser_to_show = descend(self, sys.argv[1:])
+        except Exception:
+            parser_to_show = self
+        parser_to_show.print_help()
+        sys.exit(2)
 
     def add_subparsers(self, **kwargs):
         kwargs['title'] = 'Commands'
@@ -91,12 +114,14 @@ def main ():
 
         # Run command
         run_parser = subparsers.add_parser('run', help='🚀 Run and inject secrets to your app')
-        run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run. Ex. phase run yarn dev')
+        run_parser.add_argument('command_to_run', nargs=argparse.REMAINDER, help='Command to be run with secrets injected - Ex. phase run yarn dev')
         run_parser.add_argument('--env', type=str, help=env_help)
         run_parser.add_argument('--app', type=str, help=app_help)
         run_parser.add_argument('--app-id', type=str, help=app_id_help)
         run_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your application. Default is '/'. Pass an empty string "" to fetch secrets from all paths.")
         run_parser.add_argument('--tags', type=str, help=tag_help)
+        run_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        run_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
 
         # Shell command
         shell_parser = subparsers.add_parser('shell', help='🐚 Launch a sub-shell with secrets as environment variables (BETA)')
@@ -106,6 +131,8 @@ def main ():
         shell_parser.add_argument('--path', type=str, default='/', help="Specific path under which to fetch secrets from and inject into your shell. Default is '/'. Pass an empty string \"\" to fetch secrets from all paths.")
         shell_parser.add_argument('--tags', type=str, help=tag_help)
         shell_parser.add_argument('--shell', type=str, help="Specify which shell to use (bash, zsh, sh, fish, powershell, etc). If not specified, will use the current shell or system default.")
+        shell_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        shell_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
 
         # Secrets command
         secrets_parser = subparsers.add_parser('secrets', help='🗝️\u200A Manage your secrets')
@@ -113,7 +140,7 @@ def main ():
 
         # Secrets list command
         secrets_list_parser = secrets_subparsers.add_parser('list', help='📇 List all the secrets')
-        secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored')
+        secrets_list_parser.add_argument('--show', action='store_true', help='Return secrets uncensored. If you have dynamic secrets configured, the CLI will automatically generate leases and display the values of the freshly created dynamic secrets along with static secrets in the table.')
         secrets_list_parser.add_argument('--env', type=str, help=env_help)
         secrets_list_parser.add_argument('--app', type=str, help=app_help)
         secrets_list_parser.add_argument('--app-id', type=str, help=app_id_help)
@@ -124,7 +151,8 @@ def main ():
             "⛓️ : Indicates a cross-environment reference, where a secret in the current environment references a secret from another environment.\n"
             "🏷️ : Indicates a tag is associated with a secret.\n"
             "💬 : Indicates a comment is associated with a given secret.\n" 
-            "🔏 : Indicates a personal secret, visible only to the user who set it."
+            "🔏 : Indicates a personal secret, visible only to the user who set it.\n"
+            "⚡️ : Indicates a dynamic secret."
 
         )
 
@@ -136,6 +164,8 @@ def main ():
         secrets_get_parser.add_argument('--app-id', type=str, help=app_id_help)
         secrets_get_parser.add_argument('--tags', type=str, help=tag_help)
         secrets_get_parser.add_argument('--path', type=str, default='/', required=False, help="The path from which to fetch the secret from. Default is '/'. Pass an empty string \"\" to fetch secrets from all paths.")
+        secrets_get_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        secrets_get_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
 
         # Secrets create command
         secrets_create_parser = secrets_subparsers.add_parser(
@@ -252,6 +282,55 @@ def main ():
             choices=['dotenv', 'json', 'csv', 'yaml', 'xml', 'toml', 'hcl', 'ini', 'java_properties', 'kv'], 
             help='Specifies the export format. Supported formats: dotenv (default), kv, json, csv, yaml, xml, toml, hcl, ini, java_properties.')
         secrets_export_parser.add_argument('--tags', type=str, help=tag_help)
+        secrets_export_parser.add_argument('--generate-leases', type=str, default='true', help='Whether to generate leases for dynamic secrets (true/false). Default: true')
+        secrets_export_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds to use when generating leases (optional)')
+
+        # Dynamic secrets
+        dynamic_parser = subparsers.add_parser('dynamic-secrets', help='⚡️ Manage dynamic secrets')
+        dynamic_subparsers = dynamic_parser.add_subparsers(dest='dynamic_command', required=True)
+
+        lease_parser = dynamic_subparsers.add_parser('lease', help='📜 Manage dynamic secret leases')
+        lease_subparsers = lease_parser.add_subparsers(dest='lease_command', required=True)
+        
+        # dynamic-secrets list
+        dyn_list_parser = dynamic_subparsers.add_parser('list', help='📇 List dynamic secrets & metadata')
+        dyn_list_parser.add_argument('--env', type=str, help=env_help)
+        dyn_list_parser.add_argument('--app', type=str, help=app_help)
+        dyn_list_parser.add_argument('--app-id', type=str, help=app_id_help)
+        dyn_list_parser.add_argument('--path', type=str, default='/', help='Path to filter dynamic secrets')
+
+        # dynamic-secrets lease get
+        lease_get_parser = lease_subparsers.add_parser('get', help='🔍 Get leases for a dynamic secret')
+        lease_get_parser.add_argument('secret_id', type=str, help='Dynamic secret ID')
+        lease_get_parser.add_argument('--env', type=str, help=env_help)
+        lease_get_parser.add_argument('--app', type=str, help=app_help)
+        lease_get_parser.add_argument('--app-id', type=str, help=app_id_help)
+        lease_get_parser.add_argument('--path', type=str, default='/', help='Path (not required for leases)')
+
+        # dynamic-secrets lease renew
+        lease_renew_parser = lease_subparsers.add_parser('renew', help='🔁 Renew a lease')
+        lease_renew_parser.add_argument('lease_id', type=str, help='Lease ID')
+        lease_renew_parser.add_argument('ttl', type=int, help='TTL in seconds')
+        lease_renew_parser.add_argument('--env', type=str, help=env_help)
+        lease_renew_parser.add_argument('--app', type=str, help=app_help)
+        lease_renew_parser.add_argument('--app-id', type=str, help=app_id_help)
+        lease_renew_parser.add_argument('--path', type=str, default='/', help="Filter dynamic secrets by path when listing (unused for renew)")
+
+        # dynamic-secrets lease revoke
+        lease_revoke_parser = lease_subparsers.add_parser('revoke', help='🗑️\u200A Revoke a lease')
+        lease_revoke_parser.add_argument('lease_id', type=str, help='Lease ID')
+        lease_revoke_parser.add_argument('--env', type=str, help=env_help)
+        lease_revoke_parser.add_argument('--app', type=str, help=app_help)
+        lease_revoke_parser.add_argument('--app-id', type=str, help=app_id_help)
+        lease_revoke_parser.add_argument('--path', type=str, default='/', help="Filter dynamic secrets by path when listing (unused for revoke)")
+
+        # dynamic-secrets lease generate
+        lease_generate_parser = lease_subparsers.add_parser('generate', help='✨ Generate a lease (create fresh dynamic secret)')
+        lease_generate_parser.add_argument('secret_id', type=str, help='Dynamic secret ID')
+        lease_generate_parser.add_argument('--lease-ttl', type=int, help='TTL in seconds. If not provided, the default TTL will be used (optional)')
+        lease_generate_parser.add_argument('--env', type=str, help=env_help)
+        lease_generate_parser.add_argument('--app', type=str, help=app_help)
+        lease_generate_parser.add_argument('--app-id', type=str, help=app_id_help)
 
         # Users command
         users_parser = subparsers.add_parser('users', help='👥 Manage users and accounts')
@@ -289,9 +368,9 @@ def main ():
             phase_init()
         elif args.command == 'run':
             command = ' '.join(args.command_to_run)
-            phase_run_inject(command, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags)
+            phase_run_inject(command, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)
         elif args.command == 'shell':
-            phase_shell(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, shell_type=args.shell)
+            phase_shell(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, shell_type=args.shell, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)
         elif args.command == 'console':
             phase_open_console()
         elif args.command == 'docs':
@@ -316,7 +395,7 @@ def main ():
             if args.secrets_command == 'list':
                 phase_list_secrets(args.show, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags)
             elif args.secrets_command == 'get':
-                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags)  
+                phase_secrets_get(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)  
             elif args.secrets_command == 'create':
                 phase_secrets_create(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, random_type=args.random, random_length=args.length, override=args.override)
             elif args.secrets_command == 'delete':
@@ -324,11 +403,31 @@ def main ():
             elif args.secrets_command == 'import':
                 phase_secrets_env_import(args.env_file, env_name=args.env, path=args.path, phase_app=args.app, phase_app_id=args.app_id)
             elif args.secrets_command == 'export':
-                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, format=args.format)
+                phase_secrets_env_export(env_name=args.env, keys=args.keys, phase_app=args.app, phase_app_id=args.app_id, path=args.path, tags=args.tags, format=args.format, generate_leases=args.generate_leases, lease_ttl=args.lease_ttl)
             elif args.secrets_command == 'update':
                 phase_secrets_update(args.key, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, source_path=args.path, destination_path=args.updated_path, random_type=args.random, random_length=args.length, override=args.override, toggle_override=args.toggle_override)
             else:
                 print("Unknown secrets sub-command: " + args.secrets_command)
+                parser.print_help()
+                sys.exit(1)
+        elif args.command == 'dynamic-secrets':
+            if args.dynamic_command == 'lease':
+                if args.lease_command == 'get':
+                    phase_dynamic_secrets_lease_get(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path, secret_id=args.secret_id)
+                elif args.lease_command == 'renew':
+                    phase_dynamic_secrets_lease_renew(args.lease_id, args.ttl, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
+                elif args.lease_command == 'revoke':
+                    phase_dynamic_secrets_lease_revoke(args.lease_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id)
+                elif args.lease_command == 'generate':
+                    phase_dynamic_secrets_lease_generate(args.secret_id, env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, ttl=args.lease_ttl)
+                else:
+                    print("Unknown lease sub-command: " + args.lease_command)
+                    parser.print_help()
+                    sys.exit(1)
+            elif args.dynamic_command == 'list':
+                phase_dynamic_secrets_list(env_name=args.env, phase_app=args.app, phase_app_id=args.app_id, path=args.path)
+            else:
+                print("Unknown dynamic sub-command: " + args.dynamic_command)
                 parser.print_help()
                 sys.exit(1)
     except KeyboardInterrupt:

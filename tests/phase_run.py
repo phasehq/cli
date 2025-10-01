@@ -42,7 +42,7 @@ class TestPhaseRunInject(unittest.TestCase):
             phase_run_inject(command, env_name=env_name, phase_app=phase_app)
 
         # Assert phase: verify the behavior of the function
-        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/')
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/', dynamic=True, lease=True, lease_ttl=None)
         mock_resolve_all_secrets.assert_called()
         mock_subprocess_run.assert_called_once_with(command, shell=True, env=unittest.mock.ANY)
         new_env = mock_subprocess_run.call_args[1]['env']
@@ -88,7 +88,7 @@ class TestPhaseRunInject(unittest.TestCase):
             phase_run_inject(command, env_name=env_name, phase_app=phase_app)
 
         # Assert phase: verify the behavior of the function
-        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/')
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/', dynamic=True, lease=True, lease_ttl=None)
         mock_resolve_all_secrets.assert_called()
         mock_subprocess_run.assert_called_once_with(command, shell=True, env=unittest.mock.ANY)
         new_env = mock_subprocess_run.call_args[1]['env']
@@ -121,7 +121,7 @@ class TestPhaseRunInject(unittest.TestCase):
 
         # Verify that the error message was logged and sys.exit was called with 1
         mock_console_instance.log.assert_called_with("Error: Some error occurred")
-        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/')
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=phase_app, app_id=None, tag=None, path='/', dynamic=True, lease=True, lease_ttl=None)
         mock_exit.assert_called_once_with(1)
 
     @patch('phase_cli.cmd.run.subprocess.run')
@@ -157,7 +157,7 @@ class TestPhaseRunInject(unittest.TestCase):
             phase_run_inject(command, env_name=env_name, phase_app_id=app_id)
 
         # Assert phase: verify app_id is used instead of app_name
-        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=None, app_id=app_id, tag=None, path='/')
+        mock_phase_instance.get.assert_called_once_with(env_name=env_name, app_name=None, app_id=app_id, tag=None, path='/', dynamic=True, lease=True, lease_ttl=None)
         # Verify that sys.exit was called with the process's return code
         mock_exit.assert_called_once_with(0)
 
