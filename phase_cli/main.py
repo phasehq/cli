@@ -41,7 +41,8 @@ PHASE_DEBUG = os.environ.get('PHASE_DEBUG', 'False').lower() == 'true'
 
 class CustomHelpFormatter(argparse.HelpFormatter):
     def __init__(self, prog):
-        super().__init__(prog, max_help_position=15, width=sys.maxsize) # set the alignment and wrapping width
+        # Control whitespace between sub-commands and their descriptions
+        super().__init__(prog, max_help_position=22, width=sys.maxsize)
 
     def add_usage(self, usage, actions, groups, prefix=None):
         # Override to prevent the default behavior
