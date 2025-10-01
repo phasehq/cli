@@ -54,9 +54,12 @@ class CustomHelpFormatter(argparse.HelpFormatter):
             # Filter out the metavar option
             action.metavar = None
         parts = super(CustomHelpFormatter, self)._format_action(action)
-        # remove the unnecessary line
-        if "{auth,init,run,shell,secrets,users,docs,console,update}" in parts:
-            parts = parts.replace("{auth,init,run,shell,secrets,users,docs,console,update}", "")
+        # For subparsers only, remove the redundant brace-enclosed choices line, e.g. {auth,init,...}
+        if isinstance(action, argparse._SubParsersAction):
+            parts = ''.join(
+                line for line in parts.splitlines(keepends=True)
+                if not ('{' in line and '}' in line)
+            )
         return parts
 
 class HelpfulParser(argparse.ArgumentParser):
