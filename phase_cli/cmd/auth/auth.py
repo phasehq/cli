@@ -168,7 +168,7 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
             # Perform AWS IAM authentication
             try:
                 console.log("Authenticating with AWS IAM credentials...")
-                aws_result = perform_aws_iam_auth(PHASE_API_HOST, service_account_id, ttl=ttl)
+                aws_result = perform_aws_iam_auth(host=PHASE_API_HOST, service_account_id=service_account_id, ttl=ttl)
                 
                 # Extract the token from the AWS auth response
                 auth_data = aws_result.get("authentication", {})
