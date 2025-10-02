@@ -12,7 +12,7 @@ from rich import box
 from rich.box import ROUNDED
 from urllib.parse import urlparse
 from typing import Union, List
-from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_CLOUD_PUBLIC_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
+from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 import platform
 import shutil
 
