@@ -53,7 +53,10 @@ class TestPhaseSecretsGet(unittest.TestCase):
                 app_name="test-app", 
                 app_id=None, 
                 tag=None, 
-                path="/"
+                path="/",
+                dynamic=True,
+                lease=True,
+                lease_ttl=None
             )
     
     def test_phase_secrets_get_secret_not_found(self):

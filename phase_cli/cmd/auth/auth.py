@@ -206,7 +206,21 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
                     'Choose your Phase instance type:',
                     choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
                 ).ask()
+            # Check if PHASE_HOST environment variable is set for headless operation
+            PHASE_API_HOST = os.getenv("PHASE_HOST")
+            
+            if PHASE_API_HOST:
+                console.log(f"Using PHASE_HOST environment variable: {PHASE_API_HOST}")
+            else:
+                # Interactive mode: ask user to choose instance type
+                phase_instance_type = questionary.select(
+                    'Choose your Phase instance type:',
+                    choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+                ).ask()
 
+                if not phase_instance_type:
+                    console.log("\nExiting phase...")
+                    return
                 if not phase_instance_type:
                     console.log("\nExiting phase...")
                     return
@@ -218,7 +232,16 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
                         return
                 else:
                     PHASE_API_HOST = PHASE_CLOUD_API_HOST
+                if phase_instance_type == '🛠️  Self Hosted':
+                    PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+                    if not PHASE_API_HOST:
+                        console.log("\nExiting phase...")
+                        return
+                else:
+                    PHASE_API_HOST = PHASE_CLOUD_API_HOST
 
+            auth_token = getpass.getpass("Please enter Personal Access Token (PAT) or a Service Account Token (hidden): ")
+            if not auth_token:
             auth_token = getpass.getpass("Please enter Personal Access Token (PAT) or a Service Account Token (hidden): ")
             if not auth_token:
                 console.log("\nExiting phase...")
@@ -241,8 +264,27 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
                 if not user_email:
                     console.log("\nExiting phase...")
                     return
+            
+            # Check if it's a service token (they start with 'pss_service:')
+            is_service_token = auth_token.startswith('pss_service:')
+            is_personal_token = auth_token.startswith('pss_user:')
+            user_email = None
+            
+            if is_personal_token:
+                # Personal Access Tokens require an email
+                user_email = questionary.text("Please enter your email:").ask()
+                if not user_email:
+                    console.log("\nExiting phase...")
+                    return
+            elif not is_service_token and not is_personal_token:
+                # Unknown token format, might be an older format - ask for email to be safe
+                user_email = questionary.text("Please enter your email:").ask()
+                if not user_email:
+                    console.log("\nExiting phase...")
+                    return
 
             # Authenticate using the provided token
+            phase = Phase(init=False, pss=auth_token, host=PHASE_API_HOST)
             phase = Phase(init=False, pss=auth_token, host=PHASE_API_HOST)
             result = phase.auth()
 
@@ -259,7 +301,20 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
                     'Choose your Phase instance type:',
                     choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
                 ).ask()
+            # Check if PHASE_HOST environment variable is set for headless operation
+            PHASE_API_HOST = os.getenv("PHASE_HOST")
+            
+            if PHASE_API_HOST:
+                console.log(f"Using PHASE_HOST environment variable: {PHASE_API_HOST}")
+            else:
+                # Interactive mode: ask user to choose instance type
+                phase_instance_type = questionary.select(
+                    'Choose your Phase instance type:',
+                    choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+                ).ask()
 
+                if not phase_instance_type:
+                    return
                 if not phase_instance_type:
                     return
 
@@ -267,7 +322,13 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
                     PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
                 else:
                     PHASE_API_HOST = PHASE_CLOUD_API_HOST
+                if phase_instance_type == '🛠️  Self Hosted':
+                    PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+                else:
+                    PHASE_API_HOST = PHASE_CLOUD_API_HOST
 
+                if not PHASE_API_HOST:
+                    return
                 if not PHASE_API_HOST:
                     return
             
@@ -313,10 +374,16 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
             # Authenticate with the decrypted pss
             phase = Phase(init=False, pss=decrypted_personal_access_token, host=PHASE_API_HOST)
             auth_token = decrypted_personal_access_token
+            auth_token = decrypted_personal_access_token
             result = phase.auth()
 
         if result == "Success":
             user_data = phase.init()
+            # Handle both user accounts (PATs) and service accounts (service tokens)
+            account_id = user_data.get("user_id") or user_data.get("account_id")
+            if not account_id:
+                raise ValueError("Neither user_id nor account_id found in authentication response")
+            
             # Handle both user accounts (PATs) and service accounts (service tokens)
             account_id = user_data.get("user_id") or user_data.get("account_id")
             if not account_id:
@@ -331,6 +398,7 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
 
             # Save the credentials in the Phase keyring
             try:
+                keyring.set_password(f"phase-cli-user-{account_id}", "pss", auth_token)
                 keyring.set_password(f"phase-cli-user-{account_id}", "pss", auth_token)
                 token_saved_in_keyring = True
             except Exception as e:
@@ -349,7 +417,9 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
             # Update the config_data with the new user, ensuring no duplicates
             existing_users = {user['id']: user for user in config_data["phase-users"]}
             user_data_config = {
+            user_data_config = {
                 "host": PHASE_API_HOST,
+                "id": account_id,
                 "id": account_id,
                 "organization_id": organization_id,
                 "organization_name": organization_name,
@@ -358,13 +428,19 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
             # Only add email if it exists (service accounts may not have one)
             if user_email:
                 user_data_config["email"] = user_email
+            # Only add email if it exists (service accounts may not have one)
+            if user_email:
+                user_data_config["email"] = user_email
             # If saving to keyring failed, save the token in the config_data
             if not token_saved_in_keyring:
+                user_data_config["token"] = auth_token
+            existing_users[account_id] = user_data_config
                 user_data_config["token"] = auth_token
             existing_users[account_id] = user_data_config
             config_data["phase-users"] = list(existing_users.values())
 
             # Set the latest user as the default user
+            config_data["default-user"] = account_id
             config_data["default-user"] = account_id
 
             # Save the updated configuration
