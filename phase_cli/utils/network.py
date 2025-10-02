@@ -1,11 +1,13 @@
 import os
 import requests
+import base64
+import json
+from urllib.parse import urljoin
 from phase_cli.utils.misc import get_user_agent
 from phase_cli.exceptions import AuthorizationError, APIError, SSLError
 from typing import List
 from typing import Dict
 from typing import Optional
-import json
 
 # Check if SSL verification should be skipped
 VERIFY_SSL = os.environ.get('PHASE_VERIFY_SSL', 'True').lower() != 'false'
@@ -16,6 +18,19 @@ PHASE_DEBUG = os.environ.get('PHASE_DEBUG', 'False').lower() == 'true'
 # Suppress InsecureRequestWarning if SSL verification is skipped
 if not VERIFY_SSL:
     requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+
+
+def b64_str(s: str) -> str:
+    """
+    Base64 encode a string.
+    
+    Args:
+        s (str): String to encode
+        
+    Returns:
+        str: Base64 encoded string
+    """
+    return base64.b64encode(s.encode("utf-8")).decode("utf-8")
 
 
 def handle_response_errors(response: requests.Response) -> None:
@@ -542,6 +557,49 @@ def list_dynamic_secrets(token_type: str, app_token: str, host: str, app_id: str
             except json.JSONDecodeError:
                 handle_response_errors(response)
         return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def external_identity_auth_aws(host: str, service_account_id: str, ttl: Optional[int], signed_request: tuple[str, dict, str], method: str = "POST") -> dict:
+    """
+    Authenticate with Phase using AWS IAM credentials.
+    
+    Args:
+        host (str): Phase API base URL
+        service_account_id (str): Service Account ID to authenticate (UUID)
+        ttl (Optional[int]): Requested token TTL in seconds (optional)
+        signed_request (tuple[str, dict, str]): Tuple of (signed_url, signed_headers, body) from sign_get_caller_identity
+        method (str): HTTP method used for signing (default: POST)
+    
+    Returns:
+        dict: Authentication response from Phase API
+    """
+    signed_url, signed_headers, body = signed_request
+    payload = {
+        "account": {
+            "type": "service",
+            "id": service_account_id,
+        },
+        "awsIam": {
+            "httpRequestMethod": method,
+            "httpRequestUrl": b64_str(signed_url),
+            "httpRequestHeaders": b64_str(json.dumps(signed_headers)),
+            "httpRequestBody": b64_str(body),
+        },
+    }
+
+    if ttl is not None:
+        payload["tokenRequest"] = {"ttl": int(ttl)}
+
+    URL = f"{host}/service/public/identities/v1/aws/iam/auth"
+    
+    try:
+        response = requests.post(URL, json=payload, timeout=20, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        return response.json()
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
     except requests.exceptions.ConnectionError as e:
