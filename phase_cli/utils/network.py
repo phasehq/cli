@@ -1,6 +1,6 @@
 import os
 import requests
-from phase_cli.utils.misc import get_user_agent, build_public_api_url
+from phase_cli.utils.misc import get_user_agent
 from phase_cli.exceptions import AuthorizationError, APIError, SSLError
 from typing import List
 from typing import Dict
@@ -392,7 +392,7 @@ def create_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_
 
     headers = construct_http_headers(token_type, app_token)
 
-    url = build_public_api_url(host, "/v1/secrets/dynamic/")
+    url = f"{host}/service/public/v1/secrets/dynamic/"
 
     params: Dict[str, str] = {"app_id": app_id, "env": env, "lease": "true", "id": secret_id}
     if ttl is not None:
@@ -425,7 +425,7 @@ def list_dynamic_secret_leases(token_type: str, app_token: str, host: str, app_i
 
     headers = construct_http_headers(token_type, app_token)
 
-    url = build_public_api_url(host, "/v1/secrets/dynamic/leases/")
+    url = f"{host}/service/public/v1/secrets/dynamic/leases/"
 
     params = {"app_id": app_id, "env": env}
     if secret_id:
@@ -461,7 +461,7 @@ def renew_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_i
 
     headers = construct_http_headers(token_type, app_token)
 
-    url = build_public_api_url(host, "/v1/secrets/dynamic/leases/")
+    url = f"{host}/service/public/v1/secrets/dynamic/leases/"
 
     params = {"app_id": app_id, "env": env}
     data = {"lease_id": lease_id, "ttl": ttl}
@@ -495,7 +495,7 @@ def revoke_dynamic_secret_lease(token_type: str, app_token: str, host: str, app_
 
     headers = construct_http_headers(token_type, app_token)
 
-    url = build_public_api_url(host, "/v1/secrets/dynamic/leases/")
+    url = f"{host}/service/public/v1/secrets/dynamic/leases/"
 
     params = {"app_id": app_id, "env": env}
     data = {"lease_id": lease_id}
@@ -527,7 +527,7 @@ def list_dynamic_secrets(token_type: str, app_token: str, host: str, app_id: str
 
     headers = construct_http_headers(token_type, app_token)
 
-    url = build_public_api_url(host, "/v1/secrets/dynamic/")
+    url = f"{host}/service/public/v1/secrets/dynamic/"
 
     params: Dict[str, str] = {"app_id": app_id, "env": env}
     if path is not None:
