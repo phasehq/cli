@@ -29,40 +29,6 @@ def parse_bool_flag(value) -> bool:
     s = str(value).strip().lower()
     return s not in ('false', '0', 'no', 'off')
 
-def get_public_api_base(host: str) -> str:
-    """
-    Resolve the correct public API base depending on cloud vs self-hosted.
-
-    - If host matches Phase Cloud console host (console.phase.dev) or no host provided, return api.phase.dev
-    - If PHASE_HOST is provided or host is any other domain, append /service/public
-    """
-    # Normalize
-    host = (host or '').strip()
-    if not host or host == PHASE_CLOUD_API_HOST:
-        return PHASE_CLOUD_PUBLIC_API_HOST
-
-    # For self-hosted, ensure scheme and append public path
-    parsed = urlparse(host)
-    if not parsed.scheme:
-        host = f"https://{host}"
-        parsed = urlparse(host)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    return f"{base}/service/public"
-
-
-def build_public_api_url(host: str, path: str = '/') -> str:
-    """
-    Build a full URL for public API given a host and path.
-    Ensures single trailing/leading slash handling.
-    """
-    base = get_public_api_base(host)
-    # Normalize slashes
-    if not path:
-        path = '/'
-    if not path.startswith('/'):
-        path = '/' + path
-    return base.rstrip('/') + path
-
 def get_terminal_width():
     """
     Get the width of the terminal window.
