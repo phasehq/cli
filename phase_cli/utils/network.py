@@ -594,7 +594,7 @@ def external_identity_auth_aws(host: str, service_account_id: str, ttl: Optional
     if ttl is not None:
         payload["tokenRequest"] = {"ttl": int(ttl)}
 
-    URL = f"{host}/service/public/identities/v1/aws/iam/auth"
+    URL = f"{host}/service/public/identities/external/v1/aws/iam/auth"
     
     try:
         response = requests.post(URL, json=payload, timeout=20, verify=VERIFY_SSL)
