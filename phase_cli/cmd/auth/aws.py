@@ -1,17 +1,10 @@
-import base64
 from botocore.awsrequest import AWSRequest
 from botocore.auth import SigV4Auth
 from botocore.credentials import get_credentials
 from botocore.session import get_session
 from botocore.config import Config
 from phase_cli.utils.network import external_identity_auth_aws
-
-DEFAULT_GLOBAL_STS = "https://sts.amazonaws.com"
-DEFAULT_REGION_FOR_GLOBAL_STS = "us-east-1"
-
-
-def b64_str(s: str) -> str:
-    return base64.b64encode(s.encode("utf-8")).decode("utf-8")
+from phase_cli.utils.const import AWS_DEFAULT_GLOBAL_STS_REGION, AWS_DEFAULT_GLOBAL_STS_ENDPOINT
 
 
 def resolve_region_and_endpoint() -> tuple[str, str]:
@@ -29,7 +22,7 @@ def resolve_region_and_endpoint() -> tuple[str, str]:
         return aws_region, f"https://sts.{aws_region}.amazonaws.com"
 
     # Fallback to legacy global endpoint, sign with us-east-1
-    return DEFAULT_REGION_FOR_GLOBAL_STS, DEFAULT_GLOBAL_STS
+    return AWS_DEFAULT_GLOBAL_STS_REGION, AWS_DEFAULT_GLOBAL_STS_ENDPOINT
 
 
 def sign_get_caller_identity(region: str, endpoint: str, method: str = "POST") -> tuple[str, dict, str]:
