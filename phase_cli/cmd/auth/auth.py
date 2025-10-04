@@ -139,7 +139,7 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
             # AWS IAM authentication
             if not service_account_id:
                 console.log("Error: --service-account-id is required when using --mode aws-iam")
-                return
+                sys.exit(2)
             
             # Check if PHASE_HOST environment variable is set for headless operation
             PHASE_API_HOST = os.getenv("PHASE_HOST")
@@ -215,6 +215,7 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
                     PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
                     if not PHASE_API_HOST:
                         console.log("\nExiting phase...")
+                        sys.exit(2)
                         return
                 else:
                     PHASE_API_HOST = PHASE_CLOUD_API_HOST
@@ -273,6 +274,7 @@ def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False
             
             if not validate_url(PHASE_API_HOST):
                 console.log("Invalid URL. Please ensure you include the scheme (e.g., https) and domain. Keep in mind, path and port are optional.")
+                sys.exit(2)
                 return
 
             # Start an HTTP web server at a random port and spin up the keys.
