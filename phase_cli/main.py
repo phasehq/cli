@@ -362,6 +362,14 @@ def main ():
         if sys.platform == "linux":
             update_parser = subparsers.add_parser('update', help='🆙 Update the Phase CLI to the latest version')
 
+        # If no arguments are provided, show top-level help and exit successfully (code 0)
+        # TODO: This is a temporary fix to ensure the CLI exits successfully when no arguments are provided.
+        if len(sys.argv) == 1:
+            print(description)
+            print(phaseASCii)
+            parser.print_help()
+            sys.exit(0)
+
         args = parser.parse_args()
 
         if args.command == 'auth':
