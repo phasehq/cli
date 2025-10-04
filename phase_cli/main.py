@@ -14,7 +14,7 @@ from phase_cli.cmd.users.logout import phase_cli_logout
 from phase_cli.cmd.run import phase_run_inject
 from phase_cli.cmd.shell import phase_shell
 from phase_cli.cmd.init import phase_init
-from phase_cli.cmd.auth import phase_auth
+from phase_cli.cmd.auth.auth import phase_auth
 from phase_cli.cmd.secrets.list import phase_list_secrets
 from phase_cli.cmd.secrets.get import phase_secrets_get
 from phase_cli.cmd.secrets.export import phase_secrets_env_export
@@ -107,7 +107,10 @@ def main ():
 
         # Auth command
         auth_parser = subparsers.add_parser('auth', help='💻 Authenticate with Phase')
-        auth_parser.add_argument('--mode', choices=['token', 'webauth'], default='webauth', help='Mode of authentication. Default: webauth')
+        auth_parser.add_argument('--mode', choices=['token', 'webauth', 'aws-iam'], default='webauth', help='Mode of authentication. Default: webauth')
+        auth_parser.add_argument('--service-account-id', type=str, help='Service Account ID for when using external identities for authentication.')
+        auth_parser.add_argument('--ttl', type=int, help='Token TTL in seconds for tokens created using external identities.')
+        auth_parser.add_argument('--no-store', action='store_true', help='For external identity modes (e.g., aws-iam): print authentication token response to stdout without storing credentials or setting a default user.')
 
         # Init command
         init_parser = subparsers.add_parser('init', help='🔗 Link your project with your Phase app')
@@ -359,10 +362,18 @@ def main ():
         if sys.platform == "linux":
             update_parser = subparsers.add_parser('update', help='🆙 Update the Phase CLI to the latest version')
 
+        # If no arguments are provided, show top-level help and exit successfully (code 0)
+        # TODO: This is a temporary fix to ensure the CLI exits successfully when no arguments are provided.
+        if len(sys.argv) == 1:
+            print(description)
+            print(phaseASCii)
+            parser.print_help()
+            sys.exit(0)
+
         args = parser.parse_args()
 
         if args.command == 'auth':
-            phase_auth(args.mode)
+            phase_auth(args.mode, service_account_id=args.service_account_id, ttl=args.ttl, no_store=args.no_store)
             sys.exit(0)
         elif args.command == 'init':
             phase_init()

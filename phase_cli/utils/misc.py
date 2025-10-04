@@ -12,7 +12,7 @@ from rich import box
 from rich.box import ROUNDED
 from urllib.parse import urlparse
 from typing import Union, List
-from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_CLOUD_PUBLIC_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
+from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
 import platform
 import shutil
 
@@ -29,40 +29,6 @@ def parse_bool_flag(value) -> bool:
     s = str(value).strip().lower()
     return s not in ('false', '0', 'no', 'off')
 
-def get_public_api_base(host: str) -> str:
-    """
-    Resolve the correct public API base depending on cloud vs self-hosted.
-
-    - If host matches Phase Cloud console host (console.phase.dev) or no host provided, return api.phase.dev
-    - If PHASE_HOST is provided or host is any other domain, append /service/public
-    """
-    # Normalize
-    host = (host or '').strip()
-    if not host or host == PHASE_CLOUD_API_HOST:
-        return PHASE_CLOUD_PUBLIC_API_HOST
-
-    # For self-hosted, ensure scheme and append public path
-    parsed = urlparse(host)
-    if not parsed.scheme:
-        host = f"https://{host}"
-        parsed = urlparse(host)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    return f"{base}/service/public"
-
-
-def build_public_api_url(host: str, path: str = '/') -> str:
-    """
-    Build a full URL for public API given a host and path.
-    Ensures single trailing/leading slash handling.
-    """
-    base = get_public_api_base(host)
-    # Normalize slashes
-    if not path:
-        path = '/'
-    if not path.startswith('/'):
-        path = '/' + path
-    return base.rstrip('/') + path
-
 def get_terminal_width():
     """
     Get the width of the terminal window.
@@ -73,19 +39,6 @@ def get_terminal_width():
         return os.get_terminal_size().columns
     except OSError:
         return 80
-
-
-def print_phase_links():
-    """
-    Print a beautiful welcome message inviting users to Phase's community and GitHub repository.
-    """
-    # Calculate the dynamic width of the terminal for the separator line
-    separator_line = "─" * get_terminal_width()
-    
-    print("\033[1;34m" + separator_line + "\033[0m")
-    print("🙋 Need help?: \033[4mhttps://slack.phase.dev\033[0m")
-    print("💻 Bug reports / feature requests: \033[4mhttps://github.com/phasehq/cli\033[0m")
-    print("\033[1;34m" + separator_line + "\033[0m")
 
 
 def sanitize_value(value):
