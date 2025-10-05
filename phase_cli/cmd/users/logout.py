@@ -5,7 +5,9 @@ import shutil
 import keyring
 from phase_cli.utils.const import PHASE_SECRETS_DIR, CONFIG_FILE
 from phase_cli.utils.misc import get_default_account_id
+from rich.console import Console
 
+console = Console(stderr=True)
 def save_config(config_data):
     """Saves the updated configuration data to the config file."""
     with open(CONFIG_FILE, 'w') as f:
@@ -24,16 +26,16 @@ def phase_cli_logout(purge=False):
             # Delete PHASE_SECRETS_DIR if it exists
             if os.path.exists(PHASE_SECRETS_DIR):
                 shutil.rmtree(PHASE_SECRETS_DIR)
-                print("Logged out and purged all local data.")
+                console.print("Logged out and purged all local data.")
             else:
-                print("No local data found to purge.")
+                console.print("No local data found to purge.")
         except ValueError as e:
-            print(e)
+            console.log(f"Error: {e}")
             sys.exit(1)
     else:
         # Load the existing config to update it
         if not os.path.exists(config_file_path):
-            print("No configuration found. Please run 'phase auth' to set up your configuration.")
+            console.log("Error: No configuration found. Please run 'phase auth' to set up your configuration.")
             sys.exit(1)
 
         with open(config_file_path, 'r') as f:
@@ -53,6 +55,6 @@ def phase_cli_logout(purge=False):
                 config_data['default-user'] = config_data['phase-users'][0]['id']
 
             save_config(config_data)
-            print("Logged out successfully.")
+            console.print("Logged out successfully.")
         else:
-            print("No default user in configuration found. Please run 'phase auth' to set up your configuration.")
+            console.log("Error: No default user in configuration found. Please run 'phase auth' to set up your configuration.")
