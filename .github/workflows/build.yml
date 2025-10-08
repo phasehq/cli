@@ -34,8 +34,18 @@ jobs:
         if: runner.os != 'Linux'
       - run: pip install pyinstaller
         if: runner.os != 'Linux'
-      - run: pyinstaller --hidden-import _cffi_backend --collect-all prompt_toolkit --collect-all questionary --paths ./phase_cli --name phase phase_cli/main.py
+      - name: Build with PyInstaller and prompt_toolkit hook
         if: runner.os != 'Linux'
+        run: |
+
+          pyinstaller \
+            --hidden-import _cffi_backend \
+            --runtime-hook freeze_hook_prompt_toolkit.py \
+            --collect-all prompt_toolkit \
+            --collect-all questionary \
+            --name phase \
+            --paths ./phase_cli \
+            phase_cli/main.py
       - name: Build Linux binary in manylinux2014 container (glibc 2.17 baseline)
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -79,7 +89,14 @@ jobs:
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --copy-metadata prompt_toolkit --copy-metadata questionary --collect-all prompt_toolkit --collect-all questionary --paths ./phase_cli --name phase phase_cli/main.py'
+              /opt/py-shared/bin/python3 -m PyInstaller \
+                --hidden-import _cffi_backend \
+                --runtime-hook freeze_hook_prompt_toolkit.py \
+                --collect-all prompt_toolkit \
+                --collect-all questionary \
+                --paths ./phase_cli \
+                --name phase \
+                phase_cli/main.py'
         shell: bash
 
       - name: Codesign macOS build output
@@ -190,7 +207,14 @@ jobs:
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --copy-metadata prompt_toolkit --copy-metadata questionary --collect-all prompt_toolkit --collect-all questionary --paths ./phase_cli --name phase phase_cli/main.py'
+              /opt/py-shared/bin/python3 -m PyInstaller \
+                --hidden-import _cffi_backend \
+                --runtime-hook freeze_hook_prompt_toolkit.py \
+                --collect-all prompt_toolkit \
+                --collect-all questionary \
+                --paths ./phase_cli \
+                --name phase \
+                phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
