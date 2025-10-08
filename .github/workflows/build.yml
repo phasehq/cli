@@ -278,9 +278,9 @@ jobs:
           - { image: fedora:41, family: rpm, name: fedora-41 }
           - { image: fedora:42, family: rpm, name: fedora-42 }
           - { image: centos:7, family: rpm, name: centos-7 }
-          - { image: centos:8, family: rpm, name: centos-8 }
-          - { image: centos:9, family: rpm, name: centos-9 }
-          - { image: centos:10, family: rpm, name: centos-10 }
+          - { image: quay.io/centos/centos:stream8, family: rpm, name: centos-stream8 }
+          - { image: quay.io/centos/centos:stream9, family: rpm, name: centos-stream9 }
+          - { image: quay.io/centos/centos:stream10, family: rpm, name: centos-stream10 }
           - { image: rockylinux:8, family: rpm, name: rocky-8 }
           - { image: rockylinux:9, family: rpm, name: rocky-9 }
           - { image: amazonlinux:2, family: rpm, name: amazonlinux-2 }
@@ -393,9 +393,9 @@ jobs:
           - { image: fedora:41, family: other, name: fedora-41 }
           - { image: fedora:42, family: other, name: fedora-42 }
           - { image: centos:7, family: other, name: centos-7 }
-          - { image: centos:8, family: other, name: centos-8 }
-          - { image: centos:9, family: other, name: centos-9 }
-          - { image: centos:10, family: other, name: centos-10 }
+          - { image: quay.io/centos/centos:stream8, family: other, name: centos-stream8 }
+          - { image: quay.io/centos/centos:stream9, family: other, name: centos-stream9 }
+          - { image: quay.io/centos/centos:stream10, family: other, name: centos-stream10 }
           - { image: rockylinux:8, family: other, name: rocky-8 }
           - { image: rockylinux:9, family: other, name: rocky-9 }
           - { image: amazonlinux:2, family: other, name: amazonlinux-2 }
