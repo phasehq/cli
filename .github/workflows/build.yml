@@ -336,7 +336,7 @@ jobs:
                   ;; \
               esac; \
               echo '=== Verifying ==='; \
-              if command -v phase >/dev/null 2>&1; then echo "phase found: $(command -v phase)"; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
+              if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
               echo '=== phase -v ==='; \
               phase -v || true; \
               echo '=== phase --help (head) ==='; \
@@ -390,7 +390,7 @@ jobs:
                   ;; \
               esac; \
               echo '=== Verifying ==='; \
-              if command -v phase >/dev/null 2>&1; then echo "phase found: $(command -v phase)"; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
+              if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
               echo '=== phase -v ==='; \
               phase -v || true; \
               echo '=== phase --help (head) ==='; \
