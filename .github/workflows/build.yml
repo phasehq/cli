@@ -34,7 +34,7 @@ jobs:
         if: runner.os != 'Linux'
       - run: pip install pyinstaller
         if: runner.os != 'Linux'
-      - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+      - run: pyinstaller --hidden-import _cffi_backend --collect-metadata prompt_toolkit --collect-metadata questionary --paths ./phase_cli --name phase phase_cli/main.py
         if: runner.os != 'Linux'
       - name: Build Linux binary in manylinux2014 container (glibc 2.17 baseline)
         if: matrix.os == 'ubuntu-22.04'
@@ -79,7 +79,7 @@ jobs:
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --collect-metadata prompt_toolkit --collect-metadata questionary --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
 
       - name: Codesign macOS build output
@@ -190,7 +190,7 @@ jobs:
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --collect-metadata prompt_toolkit --collect-metadata questionary --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
@@ -326,7 +326,14 @@ jobs:
                 alpine) \
                   apk update; \
                   apk add --no-cache libstdc++; \
-                  apk add --no-cache --allow-untrusted ./apk-amd64/*.apk; \
+                  ALP_VER=\$(cut -d. -f1,2 /etc/alpine-release); \
+                  if [ "\$ALP_VER" = "3.18" ] || [ "\$ALP_VER" = "3.19" ]; then \
+                    echo 'Using installer for Alpine < 3.20'; \
+                    chmod +x ./install.sh; \
+                    ./install.sh --version '${{ inputs.version }}'; \
+                  else \
+                    apk add --no-cache --allow-untrusted ./apk-amd64/*.apk; \
+                  fi; \
                   ;; \
                 other) \
                   chmod +x ./install.sh; \
