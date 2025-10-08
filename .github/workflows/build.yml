@@ -54,7 +54,9 @@ jobs:
               "$PYBIN" --version; \
               "$PYBIN" -m pip install --upgrade pip; \
               "$PYBIN" -m pip install -r requirements.txt; \
-              "$PYBIN" -m pip install pyinstaller; \
+              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
+              "$PYBIN" -m pip install --no-binary :all: pyinstaller; \
+              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
               "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
       - name: Codesign macOS build output
@@ -140,7 +142,9 @@ jobs:
               "$PYBIN" --version; \
               "$PYBIN" -m pip install --upgrade pip; \
               "$PYBIN" -m pip install -r requirements.txt; \
-              "$PYBIN" -m pip install pyinstaller; \
+              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
+              "$PYBIN" -m pip install --no-binary :all: pyinstaller; \
+              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
               "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
