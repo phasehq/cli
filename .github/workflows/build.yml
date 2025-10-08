@@ -31,8 +31,20 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
       - run: pip install -r requirements.txt
+        if: runner.os != 'Linux'
       - run: pip install pyinstaller
+        if: runner.os != 'Linux'
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+        if: runner.os != 'Linux'
+      - name: Build Linux binary in Debian bullseye container (older glibc - 2.31 (specifically glibc 2.31-13+deb11u13))
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            python:${{ inputs.python_version }}-bullseye \
+            /bin/bash -lc "set -e; pip install -r requirements.txt && pip install pyinstaller && pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py"
+        shell: bash
       - name: Codesign macOS build output
         if: runner.os == 'macOS'
         run: |
