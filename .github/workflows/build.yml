@@ -43,21 +43,30 @@ jobs:
             -v "${PWD}":/workspace \
             -w /workspace \
             quay.io/pypa/manylinux2014_x86_64 \
-            /bin/bash -lc 'set -e; \
+            /bin/bash -lc 'set -euo pipefail; \
+              echo "=== Installing build deps (manylinux2014 x86_64) ==="; \
+              yum -y install wget tar xz make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils >/dev/null; \
               PYVER="${{ inputs.python_version }}"; \
-              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
-              MINOR=$(echo "$PYVER" | cut -d. -f2); \
-              TAG=cp${MAJOR}${MINOR}-cp${MAJOR}${MINOR}; \
-              PYBIN="/opt/python/${TAG}/bin/python"; \
-              if [ ! -x "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp${MAJOR}${MINOR}*/bin/python 2>/dev/null | head -n1); fi; \
-              if [ -z "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp3*/bin/python | sort | tail -n1); fi; \
-              "$PYBIN" --version; \
-              "$PYBIN" -m pip install --upgrade pip; \
-              "$PYBIN" -m pip install -r requirements.txt; \
-              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
-              "$PYBIN" -m pip install --no-binary :all: pyinstaller; \
-              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
-              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
+                MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
+                FULLVER=$(curl -s https://www.python.org/ftp/python/ | grep -oE ">${MAJOR}\\.${MINOR}\\.[0-9]+/" | tr -d ">/" | sort -V | tail -1); \
+              else \
+                FULLVER="$PYVER"; \
+              fi; \
+              echo "Using CPython ${FULLVER}"; \
+              cd /tmp; \
+              wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
+              tar -xzf Python-${FULLVER}.tgz; \
+              cd Python-${FULLVER}; \
+              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared >/dev/null; \
+              make -j2 >/dev/null; \
+              make install >/dev/null; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
+              /opt/py-shared/bin/python3 --version; \
+              /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
+              /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
       - name: Codesign macOS build output
         if: runner.os == 'macOS'
@@ -131,21 +140,30 @@ jobs:
             -v "${PWD}":/workspace \
             -w /workspace \
             quay.io/pypa/manylinux2014_aarch64 \
-            /bin/bash -lc 'set -e; \
+            /bin/bash -lc 'set -euo pipefail; \
+              echo "=== Installing build deps (manylinux2014 aarch64) ==="; \
+              yum -y install wget tar xz make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils >/dev/null; \
               PYVER="${{ inputs.python_version }}"; \
-              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
-              MINOR=$(echo "$PYVER" | cut -d. -f2); \
-              TAG=cp${MAJOR}${MINOR}-cp${MAJOR}${MINOR}; \
-              PYBIN="/opt/python/${TAG}/bin/python"; \
-              if [ ! -x "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp${MAJOR}${MINOR}*/bin/python 2>/dev/null | head -n1); fi; \
-              if [ -z "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp3*/bin/python | sort | tail -n1); fi; \
-              "$PYBIN" --version; \
-              "$PYBIN" -m pip install --upgrade pip; \
-              "$PYBIN" -m pip install -r requirements.txt; \
-              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
-              "$PYBIN" -m pip install --no-binary :all: pyinstaller; \
-              export PYINSTALLER_USE_STATIC_LIBPYTHON=1; \
-              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
+                MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
+                FULLVER=$(curl -s https://www.python.org/ftp/python/ | grep -oE ">${MAJOR}\\.${MINOR}\\.[0-9]+/" | tr -d ">/" | sort -V | tail -1); \
+              else \
+                FULLVER="$PYVER"; \
+              fi; \
+              echo "Using CPython ${FULLVER}"; \
+              cd /tmp; \
+              wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
+              tar -xzf Python-${FULLVER}.tgz; \
+              cd Python-${FULLVER}; \
+              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared >/dev/null; \
+              make -j2 >/dev/null; \
+              make install >/dev/null; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
+              /opt/py-shared/bin/python3 --version; \
+              /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
+              /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
