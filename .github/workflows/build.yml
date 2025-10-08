@@ -34,10 +34,9 @@ jobs:
         if: runner.os != 'Linux'
       - run: pip install pyinstaller
         if: runner.os != 'Linux'
-      - name: Build with PyInstaller and prompt_toolkit hook
-        if: runner.os != 'Linux'
+      - name: Build with PyInstaller and prompt_toolkit hook (macOS)
+        if: runner.os == 'macOS'
         run: |
-
           pyinstaller \
             --hidden-import _cffi_backend \
             --runtime-hook freeze_hook_prompt_toolkit.py \
@@ -45,6 +44,17 @@ jobs:
             --collect-all questionary \
             --name phase \
             --paths ./phase_cli \
+            phase_cli/main.py
+      - name: Build with PyInstaller and prompt_toolkit hook (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller `
+            --hidden-import _cffi_backend `
+            --runtime-hook freeze_hook_prompt_toolkit.py `
+            --collect-all prompt_toolkit `
+            --collect-all questionary `
+            --name phase `
+            --paths ./phase_cli `
             phase_cli/main.py
       - name: Build Linux binary in manylinux2014 container (glibc 2.17 baseline)
         if: matrix.os == 'ubuntu-22.04'
