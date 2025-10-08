@@ -109,8 +109,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
-          fpm -s dir -t deb -n phase -v ${{ inputs.version }} dist/phase/=usr/bin/
-          fpm -s dir -t rpm -n phase -v ${{ inputs.version }} dist/phase/=usr/bin/
+          # Stage files to preserve PyInstaller onedir layout
+          rm -rf pkgroot
+          mkdir -p pkgroot/usr/lib/phase
+          cp -a dist/phase/. pkgroot/usr/lib/phase/
+          mkdir -p pkgroot/usr/bin
+          ln -sf ../lib/phase/phase pkgroot/usr/bin/phase
+          # Build packages from staged root
+          fpm -s dir -t deb -n phase -v ${{ inputs.version }} -C pkgroot .
+          fpm -s dir -t rpm -n phase -v ${{ inputs.version }} -C pkgroot .
         if: matrix.os == 'ubuntu-22.04'
         shell: bash
 
