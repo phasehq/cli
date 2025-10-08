@@ -43,19 +43,19 @@ jobs:
             -v "${PWD}":/workspace \
             -w /workspace \
             quay.io/pypa/manylinux2014_x86_64 \
-            /bin/bash -lc "set -e; \
-              PYVER='${{ inputs.python_version }}'; \
-              MAJOR=\$(echo \"$PYVER\" | cut -d. -f1); \
-              MINOR=\$(echo \"$PYVER\" | cut -d. -f2); \
-              TAG=cp\${MAJOR}\${MINOR}-cp\${MAJOR}\${MINOR}; \
-              PYBIN=\"/opt/python/\${TAG}/bin/python\"; \
-              if [ ! -x \"$PYBIN\" ]; then PYBIN=\$(ls -1d /opt/python/cp\${MAJOR}\${MINOR}*/bin/python 2>/dev/null | head -n1); fi; \
-              if [ -z \"$PYBIN\" ]; then PYBIN=\$(ls -1d /opt/python/cp3*/bin/python | sort | tail -n1); fi; \
-              \"$PYBIN\" --version; \
-              \"$PYBIN\" -m pip install --upgrade pip; \
-              \"$PYBIN\" -m pip install -r requirements.txt; \
-              \"$PYBIN\" -m pip install pyinstaller; \
-              \"$PYBIN\" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py"
+            /bin/bash -lc 'set -e; \
+              PYVER="${{ inputs.python_version }}"; \
+              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
+              MINOR=$(echo "$PYVER" | cut -d. -f2); \
+              TAG=cp${MAJOR}${MINOR}-cp${MAJOR}${MINOR}; \
+              PYBIN="/opt/python/${TAG}/bin/python"; \
+              if [ ! -x "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp${MAJOR}${MINOR}*/bin/python 2>/dev/null | head -n1); fi; \
+              if [ -z "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp3*/bin/python | sort | tail -n1); fi; \
+              "$PYBIN" --version; \
+              "$PYBIN" -m pip install --upgrade pip; \
+              "$PYBIN" -m pip install -r requirements.txt; \
+              "$PYBIN" -m pip install pyinstaller; \
+              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
       - name: Codesign macOS build output
         if: runner.os == 'macOS'
@@ -129,19 +129,19 @@ jobs:
             -v "${PWD}":/workspace \
             -w /workspace \
             quay.io/pypa/manylinux2014_aarch64 \
-            /bin/bash -lc "set -e; \
-              PYVER='${{ inputs.python_version }}'; \
-              MAJOR=\$(echo \"$PYVER\" | cut -d. -f1); \
-              MINOR=\$(echo \"$PYVER\" | cut -d. -f2); \
-              TAG=cp\${MAJOR}\${MINOR}-cp\${MAJOR}\${MINOR}; \
-              PYBIN=\"/opt/python/\${TAG}/bin/python\"; \
-              if [ ! -x \"$PYBIN\" ]; then PYBIN=\$(ls -1d /opt/python/cp\${MAJOR}\${MINOR}*/bin/python 2>/dev/null | head -n1); fi; \
-              if [ -z \"$PYBIN\" ]; then PYBIN=\$(ls -1d /opt/python/cp3*/bin/python | sort | tail -n1); fi; \
-              \"$PYBIN\" --version; \
-              \"$PYBIN\" -m pip install --upgrade pip; \
-              \"$PYBIN\" -m pip install -r requirements.txt; \
-              \"$PYBIN\" -m pip install pyinstaller; \
-              \"$PYBIN\" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py"
+            /bin/bash -lc 'set -e; \
+              PYVER="${{ inputs.python_version }}"; \
+              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
+              MINOR=$(echo "$PYVER" | cut -d. -f2); \
+              TAG=cp${MAJOR}${MINOR}-cp${MAJOR}${MINOR}; \
+              PYBIN="/opt/python/${TAG}/bin/python"; \
+              if [ ! -x "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp${MAJOR}${MINOR}*/bin/python 2>/dev/null | head -n1); fi; \
+              if [ -z "$PYBIN" ]; then PYBIN=$(ls -1d /opt/python/cp3*/bin/python | sort | tail -n1); fi; \
+              "$PYBIN" --version; \
+              "$PYBIN" -m pip install --upgrade pip; \
+              "$PYBIN" -m pip install -r requirements.txt; \
+              "$PYBIN" -m pip install pyinstaller; \
+              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
