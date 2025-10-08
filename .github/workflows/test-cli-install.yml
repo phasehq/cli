@@ -91,7 +91,7 @@ jobs:
   test-cli-install-arm64:
     runs-on: ubuntu-22.04-arm
     container:
-      image: python:3.11.0-bullseye
+      image: python:3.12.0-bullseye
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

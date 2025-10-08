@@ -18,7 +18,7 @@ jobs:
   pytest:
     uses: ./.github/workflows/pytest.yml
     with:
-      python_version: '3.11'
+      python_version: '3.12'
 
   # Fetch and validate version from source code
   version:
@@ -31,7 +31,7 @@ jobs:
     needs: [pytest, version]
     uses: ./.github/workflows/build.yml
     with:
-      python_version: '3.11'
+      python_version: '3.12'
       version: ${{ needs.version.outputs.version }}
       alpine_version: '3.21'
 
@@ -79,5 +79,5 @@ jobs:
     uses: ./.github/workflows/test-cli-install.yml
     with:
       version: ${{ needs.version.outputs.version }}
-      python_version: '3.11'
+      python_version: '3.12'
       alpine_version: '3.21'

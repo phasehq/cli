@@ -46,7 +46,7 @@ jobs:
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 x86_64) ==="; \
               yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
-              echo "=== Build OpenSSL 1.1.1 (required for Python 3.11 ssl) ==="; \
+              echo "=== Build OpenSSL 1.1.1 (required for Python 3.12 ssl) ==="; \
               cd /tmp; \
               OPENSSL_V=1.1.1w; \
               wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
@@ -157,7 +157,7 @@ jobs:
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 aarch64) ==="; \
               yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
-              echo "=== Build OpenSSL 1.1.1 (required for Python 3.11 ssl) ==="; \
+              echo "=== Build OpenSSL 1.1.1 (required for Python 3.12 ssl) ==="; \
               cd /tmp; \
               OPENSSL_V=1.1.1w; \
               wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
