@@ -265,16 +265,22 @@ jobs:
           - { image: ubuntu:24.04, family: deb, name: ubuntu-24.04 }
           - { image: debian:bullseye, family: deb, name: debian-bullseye }
           - { image: debian:bookworm, family: deb, name: debian-bookworm }
+          - { image: debian:trixie, family: deb, name: debian-trixie }
           - { image: fedora:39, family: rpm, name: fedora-39 }
           - { image: fedora:40, family: rpm, name: fedora-40 }
+          - { image: fedora:41, family: rpm, name: fedora-41 }
+          - { image: fedora:42, family: rpm, name: fedora-42 }
           - { image: centos:7, family: rpm, name: centos-7 }
+          - { image: centos:8, family: rpm, name: centos-8 }
+          - { image: centos:9, family: rpm, name: centos-9 }
+          - { image: centos:10, family: rpm, name: centos-10 }
           - { image: rockylinux:8, family: rpm, name: rocky-8 }
           - { image: rockylinux:9, family: rpm, name: rocky-9 }
           - { image: amazonlinux:2, family: rpm, name: amazonlinux-2 }
           - { image: amazonlinux:2023, family: rpm, name: amazonlinux-2023 }
-          - { image: alpine:3.18, family: alpine, name: alpine-3.18 }
-          - { image: alpine:3.19, family: alpine, name: alpine-3.19 }
           - { image: alpine:3.20, family: alpine, name: alpine-3.20 }
+          - { image: alpine:3.21, family: alpine, name: alpine-3.21 }
+          - { image: alpine:3.22, family: alpine, name: alpine-3.22 }
           - { image: archlinux:latest, family: other, name: archlinux-latest }
     steps:
       - uses: actions/checkout@v4
@@ -368,11 +374,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { image: ubuntu:22.04, family: other, name: ubuntu-22.04-arm64 }
-          - { image: ubuntu:24.04, family: other, name: ubuntu-24.04-arm64 }
-          - { image: debian:bookworm, family: other, name: debian-bookworm-arm64 }
-          - { image: amazonlinux:2023, family: other, name: amazonlinux-2023-arm64 }
-          - { image: alpine:3.20, family: alpine, name: alpine-3.20-arm64 }
+          # Add arm64 deb & rpm packages
+          - { image: ubuntu:20.04, family: other, name: ubuntu-20.04 }
+          - { image: ubuntu:22.04, family: other, name: ubuntu-22.04 }
+          - { image: ubuntu:24.04, family: other, name: ubuntu-24.04 }
+          - { image: debian:bullseye, family: other, name: debian-bullseye }
+          - { image: debian:bookworm, family: other, name: debian-bookworm }
+          - { image: debian:trixie, family: other, name: debian-trixie }
+          - { image: fedora:39, family: other, name: fedora-39 }
+          - { image: fedora:40, family: other, name: fedora-40 }
+          - { image: fedora:41, family: other, name: fedora-41 }
+          - { image: fedora:42, family: other, name: fedora-42 }
+          - { image: centos:7, family: other, name: centos-7 }
+          - { image: centos:8, family: other, name: centos-8 }
+          - { image: centos:9, family: other, name: centos-9 }
+          - { image: centos:10, family: other, name: centos-10 }
+          - { image: rockylinux:8, family: other, name: rocky-8 }
+          - { image: rockylinux:9, family: other, name: rocky-9 }
+          - { image: amazonlinux:2, family: other, name: amazonlinux-2 }
+          - { image: amazonlinux:2023, family: other, name: amazonlinux-2023 }
+          - { image: alpine:3.20, family: alpine, name: alpine-3.20 }
+          - { image: alpine:3.21, family: alpine, name: alpine-3.21 }
+          - { image: alpine:3.22, family: alpine, name: alpine-3.22 }
+          - { image: archlinux:latest, family: other, name: archlinux-latest }
     steps:
       - uses: actions/checkout@v4
       - name: Download APK artifact (arm64)
