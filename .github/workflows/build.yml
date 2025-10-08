@@ -260,11 +260,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { image: ubuntu:18.04, family: deb, name: ubuntu-18.04 }
           - { image: ubuntu:20.04, family: deb, name: ubuntu-20.04 }
           - { image: ubuntu:22.04, family: deb, name: ubuntu-22.04 }
           - { image: ubuntu:24.04, family: deb, name: ubuntu-24.04 }
-          - { image: debian:buster, family: deb, name: debian-buster }
           - { image: debian:bullseye, family: deb, name: debian-bullseye }
           - { image: debian:bookworm, family: deb, name: debian-bookworm }
           - { image: fedora:39, family: rpm, name: fedora-39 }
