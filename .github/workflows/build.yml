@@ -34,7 +34,7 @@ jobs:
         if: runner.os != 'Linux'
       - run: pip install pyinstaller
         if: runner.os != 'Linux'
-      - run: pyinstaller --hidden-import _cffi_backend --copy-metadata prompt_toolkit --copy-metadata questionary --paths ./phase_cli --name phase phase_cli/main.py
+      - run: pyinstaller --hidden-import _cffi_backend --collect-all prompt_toolkit --collect-all questionary --paths ./phase_cli --name phase phase_cli/main.py
         if: runner.os != 'Linux'
       - name: Build Linux binary in manylinux2014 container (glibc 2.17 baseline)
         if: matrix.os == 'ubuntu-22.04'
@@ -79,7 +79,7 @@ jobs:
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --copy-metadata prompt_toolkit --copy-metadata questionary --paths ./phase_cli --name phase phase_cli/main.py'
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --copy-metadata prompt_toolkit --copy-metadata questionary --collect-all prompt_toolkit --collect-all questionary --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
 
       - name: Codesign macOS build output
@@ -190,7 +190,7 @@ jobs:
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --copy-metadata prompt_toolkit --copy-metadata questionary --paths ./phase_cli --name phase phase_cli/main.py'
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --copy-metadata prompt_toolkit --copy-metadata questionary --collect-all prompt_toolkit --collect-all questionary --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
@@ -340,6 +340,11 @@ jobs:
                   ./install.sh --version '${{ inputs.version }}'; \
                   ;; \
               esac; \
+              # Ensure minimal locale/terminal env for prompt_toolkit/questionary
+              export TERM=xterm; \
+              export LANG=C.UTF-8; \
+              export LC_ALL=C.UTF-8; \
+              export PYTHONIOENCODING=UTF-8; \
               echo '=== Verifying ==='; \
               if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
               echo '=== phase (no args) ==='; \
@@ -398,6 +403,11 @@ jobs:
                   ./install.sh --version '${{ inputs.version }}'; \
                   ;; \
               esac; \
+              # Ensure minimal locale/terminal env for prompt_toolkit/questionary
+              export TERM=xterm; \
+              export LANG=C.UTF-8; \
+              export LC_ALL=C.UTF-8; \
+              export PYTHONIOENCODING=UTF-8; \
               echo '=== Verifying ==='; \
               if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
               echo '=== phase (no args) ==='; \
