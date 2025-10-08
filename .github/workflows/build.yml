@@ -45,7 +45,18 @@ jobs:
             quay.io/pypa/manylinux2014_x86_64 \
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 x86_64) ==="; \
-              yum -y install wget tar xz make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils >/dev/null; \
+              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
+              echo "=== Build OpenSSL 1.1.1 (required for Python 3.11 ssl) ==="; \
+              cd /tmp; \
+              OPENSSL_V=1.1.1w; \
+              wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
+              tar -xzf openssl-${OPENSSL_V}.tar.gz; \
+              cd openssl-${OPENSSL_V}; \
+              ./config --prefix=/opt/openssl shared -fPIC >/dev/null; \
+              make -j2 >/dev/null; \
+              make install_sw >/dev/null; \
+              export LD_LIBRARY_PATH=/opt/openssl/lib:$LD_LIBRARY_PATH; \
+              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:$PKG_CONFIG_PATH; \
               PYVER="${{ inputs.python_version }}"; \
               if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
                 MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
@@ -58,16 +69,19 @@ jobs:
               wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
               tar -xzf Python-${FULLVER}.tgz; \
               cd Python-${FULLVER}; \
-              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared >/dev/null; \
+              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib" \
+                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
               /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
+
       - name: Codesign macOS build output
         if: runner.os == 'macOS'
         run: |
@@ -142,7 +156,18 @@ jobs:
             quay.io/pypa/manylinux2014_aarch64 \
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 aarch64) ==="; \
-              yum -y install wget tar xz make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils >/dev/null; \
+              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
+              echo "=== Build OpenSSL 1.1.1 (required for Python 3.11 ssl) ==="; \
+              cd /tmp; \
+              OPENSSL_V=1.1.1w; \
+              wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
+              tar -xzf openssl-${OPENSSL_V}.tar.gz; \
+              cd openssl-${OPENSSL_V}; \
+              ./config --prefix=/opt/openssl shared -fPIC >/dev/null; \
+              make -j2 >/dev/null; \
+              make install_sw >/dev/null; \
+              export LD_LIBRARY_PATH=/opt/openssl/lib:$LD_LIBRARY_PATH; \
+              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:$PKG_CONFIG_PATH; \
               PYVER="${{ inputs.python_version }}"; \
               if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
                 MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
@@ -155,12 +180,14 @@ jobs:
               wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
               tar -xzf Python-${FULLVER}.tgz; \
               cd Python-${FULLVER}; \
-              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared >/dev/null; \
+              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib" \
+                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
               /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
