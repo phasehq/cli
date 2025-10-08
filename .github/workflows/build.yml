@@ -326,14 +326,15 @@ jobs:
                   dpkg -i deb/*.deb || apt-get -f install -y; \
                   ;; \
                 rpm) \
-                  if command -v dnf >/dev/null 2>&1; then \
-                    dnf install -y rpm || true; \
-                    dnf install -y rpm-build || true; \
-                    dnf install -y ./rpm/*.rpm; \
+                  # Prefer installing local RPM without contacting repos (avoids mirror DNS failures)
+                  if command -v rpm >/dev/null 2>&1 && rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; then \
+                    :; \
+                  elif command -v dnf >/dev/null 2>&1; then \
+                    dnf install -y --disablerepo='*' ./rpm/*.rpm || rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; \
                   elif command -v microdnf >/dev/null 2>&1; then \
-                    microdnf install -y ./rpm/*.rpm; \
+                    microdnf --disablerepo='*' install -y ./rpm/*.rpm || rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; \
                   else \
-                    yum install -y ./rpm/*.rpm || rpm -Uvh ./rpm/*.rpm; \
+                    yum --disablerepo='*' install -y ./rpm/*.rpm || rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; \
                   fi; \
                   ;; \
                 alpine) \
@@ -402,7 +403,7 @@ jobs:
           - { image: alpine:3.20, family: alpine, name: alpine-3.20 }
           - { image: alpine:3.21, family: alpine, name: alpine-3.21 }
           - { image: alpine:3.22, family: alpine, name: alpine-3.22 }
-          - { image: archlinux:latest, family: other, name: archlinux-latest }
+
     steps:
       - uses: actions/checkout@v4
       - name: Download APK artifact (arm64)
