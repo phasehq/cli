@@ -335,8 +335,12 @@ jobs:
               esac; \
               echo '=== Verifying ==='; \
               if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
+              echo '=== phase (no args) ==='; \
+              phase || true; \
               echo '=== phase -v ==='; \
-              phase -v || true; \
+              phase -v; \
+              echo '=== phase users keyring ==='; \
+              phase users keyring || true; \
               echo '=== phase --help (head) ==='; \
               phase --help | head -20 || true; \
               echo '=== ldd version (post) ==='; \
@@ -389,8 +393,12 @@ jobs:
               esac; \
               echo '=== Verifying ==='; \
               if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
+              echo '=== phase (no args) ==='; \
+              phase || true; \
               echo '=== phase -v ==='; \
-              phase -v || true; \
+              phase -v; \
+              echo '=== phase users keyring ==='; \
+              phase users keyring || true; \
               echo '=== phase --help (head) ==='; \
               phase --help | head -20 || true; \
               echo '=== ldd version (post) ==='; \
