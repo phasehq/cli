@@ -1,17 +1,22 @@
+"""Runtime hook to ensure importlib.metadata.version never returns None for prompt_toolkit.
+This avoids prompt_toolkit failing its version regex when wheel metadata is absent
+in the frozen application.
 """
-Runtime-hook for PyInstaller:
-ensure prompt_toolkit has a __version__ attribute even when
-importlib.metadata cannot find the wheel metadata in the frozen bundle.
-"""
-import importlib
-import importlib.metadata
-import sys
+import importlib.metadata as _metadata
 
-# Ensure the module is loaded and then safely set __version__ if it's missing.
-# We set a default to prevent a crash if metadata is not found.
-sys.modules.setdefault(
-    "prompt_toolkit",
-    importlib.import_module("prompt_toolkit")
-).__dict__.setdefault(
-    "__version__", importlib.metadata.version("prompt_toolkit")
-)
+_real_version = _metadata.version
+
+# Package name we need to guard.
+_TARGET = "prompt_toolkit"
+
+def _safe_version(name: str, *args, **kwargs):  # type: ignore[override]
+    """Return a fake version for prompt_toolkit if metadata missing."""
+    try:
+        return _real_version(name, *args, **kwargs)
+    except _metadata.PackageNotFoundError:
+        if name == _TARGET:
+            return "0.0.0"
+        raise
+
+# Monkey-patch
+_metadata.version = _safe_version
