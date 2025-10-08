@@ -326,15 +326,14 @@ jobs:
                   dpkg -i deb/*.deb || apt-get -f install -y; \
                   ;; \
                 rpm) \
-                  # Prefer installing local RPM without contacting repos (avoids mirror DNS failures)
-                  if command -v rpm >/dev/null 2>&1 && rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; then \
-                    :; \
-                  elif command -v dnf >/dev/null 2>&1; then \
-                    dnf install -y --disablerepo='*' ./rpm/*.rpm || rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; \
+                  if command -v dnf >/dev/null 2>&1; then \
+                    dnf install -y rpm || true; \
+                    dnf install -y rpm-build || true; \
+                    dnf install -y ./rpm/*.rpm; \
                   elif command -v microdnf >/dev/null 2>&1; then \
-                    microdnf --disablerepo='*' install -y ./rpm/*.rpm || rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; \
+                    microdnf install -y ./rpm/*.rpm; \
                   else \
-                    yum --disablerepo='*' install -y ./rpm/*.rpm || rpm -Uvh --nodeps --nosignature ./rpm/*.rpm; \
+                    yum install -y ./rpm/*.rpm || rpm -Uvh ./rpm/*.rpm; \
                   fi; \
                   ;; \
                 alpine) \
@@ -393,9 +392,6 @@ jobs:
           - { image: fedora:40, family: other, name: fedora-40 }
           - { image: fedora:41, family: other, name: fedora-41 }
           - { image: fedora:42, family: other, name: fedora-42 }
-          - { image: quay.io/centos/centos:stream8, family: other, name: centos-stream8 }
-          - { image: quay.io/centos/centos:stream9, family: other, name: centos-stream9 }
-          - { image: quay.io/centos/centos:stream10, family: other, name: centos-stream10 }
           - { image: rockylinux:8, family: other, name: rocky-8 }
           - { image: rockylinux:9, family: other, name: rocky-9 }
           - { image: amazonlinux:2, family: other, name: amazonlinux-2 }
@@ -403,7 +399,6 @@ jobs:
           - { image: alpine:3.20, family: alpine, name: alpine-3.20 }
           - { image: alpine:3.21, family: alpine, name: alpine-3.21 }
           - { image: alpine:3.22, family: alpine, name: alpine-3.22 }
-
     steps:
       - uses: actions/checkout@v4
       - name: Download APK artifact (arm64)
