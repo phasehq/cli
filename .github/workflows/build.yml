@@ -200,3 +200,153 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ./output/${{ env.OUTPUT_PACKAGE_NAME }}
+
+# Test install on Linux distros (x86_64) TODO: REMOVE
+
+  test_install_x86_64:
+    name: Test install on Linux distros (x86_64)
+    needs: [build, build_apk]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: ubuntu:18.04, family: deb, name: ubuntu-18.04 }
+          - { image: ubuntu:20.04, family: deb, name: ubuntu-20.04 }
+          - { image: ubuntu:22.04, family: deb, name: ubuntu-22.04 }
+          - { image: ubuntu:24.04, family: deb, name: ubuntu-24.04 }
+          - { image: debian:buster, family: deb, name: debian-buster }
+          - { image: debian:bullseye, family: deb, name: debian-bullseye }
+          - { image: debian:bookworm, family: deb, name: debian-bookworm }
+          - { image: fedora:39, family: rpm, name: fedora-39 }
+          - { image: fedora:40, family: rpm, name: fedora-40 }
+          - { image: centos:7, family: rpm, name: centos-7 }
+          - { image: rockylinux:8, family: rpm, name: rocky-8 }
+          - { image: rockylinux:9, family: rpm, name: rocky-9 }
+          - { image: amazonlinux:2, family: rpm, name: amazonlinux-2 }
+          - { image: amazonlinux:2023, family: rpm, name: amazonlinux-2023 }
+          - { image: alpine:3.18, family: alpine, name: alpine-3.18 }
+          - { image: alpine:3.19, family: alpine, name: alpine-3.19 }
+          - { image: alpine:3.20, family: alpine, name: alpine-3.20 }
+          - { image: archlinux:latest, family: other, name: archlinux-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download DEB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-deb
+          path: deb
+      - name: Download RPM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-rpm
+          path: rpm
+      - name: Download APK artifact (amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: phase_cli_linux_amd64_alpine_${{ inputs.version }}
+          path: apk-amd64
+        continue-on-error: true
+      - name: Run tests in ${{ matrix.name }} container
+        run: |
+          set -e
+          echo "=== Running in ${{ matrix.image }} ==="
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            /bin/sh -ec "\
+              echo '=== ldd version ==='; \
+              if command -v ldd >/dev/null 2>&1; then ldd --version || true; else echo 'ldd not found'; fi; \
+              echo '=== Installing package ==='; \
+              case '${{ matrix.family }}' in \
+                deb) \
+                  apt-get update; \
+                  apt-get install -y ca-certificates; \
+                  dpkg -i deb/*.deb || apt-get -f install -y; \
+                  ;; \
+                rpm) \
+                  if command -v dnf >/dev/null 2>&1; then \
+                    dnf install -y rpm || true; \
+                    dnf install -y rpm-build || true; \
+                    dnf install -y ./rpm/*.rpm; \
+                  elif command -v microdnf >/dev/null 2>&1; then \
+                    microdnf install -y ./rpm/*.rpm; \
+                  else \
+                    yum install -y ./rpm/*.rpm || rpm -Uvh ./rpm/*.rpm; \
+                  fi; \
+                  ;; \
+                alpine) \
+                  apk update; \
+                  apk add --no-cache libstdc++; \
+                  apk add --no-cache --allow-untrusted ./apk-amd64/*.apk; \
+                  ;; \
+                other) \
+                  chmod +x ./install.sh; \
+                  ./install.sh --version '${{ inputs.version }}'; \
+                  ;; \
+              esac; \
+              echo '=== Verifying ==='; \
+              which phase || { echo 'phase not found in PATH'; exit 1; }; \
+              echo '=== phase -v ==='; \
+              phase -v || true; \
+              echo '=== phase --help (head) ==='; \
+              phase --help | head -20 || true; \
+              echo '=== ldd version (post) ==='; \
+              ldd --version || true; \
+            "
+        shell: bash
+
+  test_install_arm64:
+    name: Test install on Linux distros (ARM64)
+    needs: [build_arm, build_apk]
+    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: ubuntu:22.04, family: other, name: ubuntu-22.04-arm64 }
+          - { image: ubuntu:24.04, family: other, name: ubuntu-24.04-arm64 }
+          - { image: debian:bookworm, family: other, name: debian-bookworm-arm64 }
+          - { image: amazonlinux:2023, family: other, name: amazonlinux-2023-arm64 }
+          - { image: alpine:3.20, family: alpine, name: alpine-3.20-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download APK artifact (arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: phase_cli_linux_arm64_alpine_${{ inputs.version }}
+          path: apk-arm64
+        continue-on-error: true
+      - name: Run tests in ${{ matrix.name }} container
+        run: |
+          set -e
+          echo "=== Running in ${{ matrix.image }} (arm64) ==="
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            /bin/sh -ec "\
+              echo '=== ldd version ==='; \
+              if command -v ldd >/dev/null 2>&1; then ldd --version || true; else echo 'ldd not found'; fi; \
+              case '${{ matrix.family }}' in \
+                alpine) \
+                  apk update; \
+                  apk add --no-cache libstdc++; \
+                  apk add --no-cache --allow-untrusted ./apk-arm64/*.apk; \
+                  ;; \
+                other) \
+                  chmod +x ./install.sh; \
+                  ./install.sh --version '${{ inputs.version }}'; \
+                  ;; \
+              esac; \
+              echo '=== Verifying ==='; \
+              which phase || { echo 'phase not found in PATH'; exit 1; }; \
+              echo '=== phase -v ==='; \
+              phase -v || true; \
+              echo '=== phase --help (head) ==='; \
+              phase --help | head -20 || true; \
+              echo '=== ldd version (post) ==='; \
+              ldd --version || true; \
+            "
+        shell: bash
