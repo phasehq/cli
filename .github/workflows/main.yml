@@ -72,7 +72,14 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
-  # Install, run and validate CLI version. 
+  # Install, run and validate CLI version on various Linux distros
+  test-install:
+    needs: [build, version]
+    uses: ./.github/workflows/test-install.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  # Install, run and validate CLI version using installer script
   test-cli-install:
     needs: [version, attach-to-release]
     if: github.event_name != 'release' || (github.event_name == 'release' && github.event.action == 'created')
