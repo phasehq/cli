@@ -46,31 +46,28 @@ jobs:
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== ldd version (manylinux_2_28 x86_64) ==="; \
               ldd --version; \
-              echo "=== Installing build deps ==="; \
-              yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel >/dev/null; \
+              echo "=== Finding Python ${{ inputs.python_version }} ==="; \
               PYVER="${{ inputs.python_version }}"; \
-              if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
-                MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
-                FULLVER=$(curl -s https://www.python.org/ftp/python/ | grep -oE ">${MAJOR}\\.${MINOR}\\.[0-9]+/" | tr -d ">/" | sort -V | tail -1); \
-              else \
-                FULLVER="$PYVER"; \
+              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
+              MINOR=$(echo "$PYVER" | cut -d. -f2); \
+              PYBIN="/opt/python/cp${MAJOR}${MINOR}-cp${MAJOR}${MINOR}/bin/python"; \
+              if [ ! -x "$PYBIN" ]; then \
+                echo "Python $PYVER not found, trying any cp${MAJOR}${MINOR}*"; \
+                PYBIN=$(ls -1 /opt/python/cp${MAJOR}${MINOR}*/bin/python 2>/dev/null | head -1); \
               fi; \
-              echo "Using CPython ${FULLVER}"; \
-              cd /tmp; \
-              wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
-              tar -xzf Python-${FULLVER}.tgz; \
-              cd Python-${FULLVER}; \
-              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-system-openssl >/dev/null; \
-              make -j2 >/dev/null; \
-              make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
-              /opt/py-shared/bin/python3 --version; \
-              /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL support OK")'\''; \
-              /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              if [ -z "$PYBIN" ] || [ ! -x "$PYBIN" ]; then \
+                echo "Error: No Python ${MAJOR}.${MINOR} found in /opt/python/"; \
+                ls -la /opt/python/; \
+                exit 1; \
+              fi; \
+              echo "Using: $PYBIN"; \
+              "$PYBIN" --version; \
+              "$PYBIN" -c '\''import ssl; print("SSL support OK")'\''; \
+              "$PYBIN" -m pip install --upgrade pip >/dev/null; \
               cd /workspace; \
-              /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
-              /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              "$PYBIN" -m pip install -r requirements.txt >/dev/null; \
+              "$PYBIN" -m pip install pyinstaller >/dev/null; \
+              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
 
       - name: Codesign macOS build output
@@ -155,31 +152,28 @@ jobs:
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== ldd version (manylinux_2_28 aarch64) ==="; \
               ldd --version; \
-              echo "=== Installing build deps ==="; \
-              yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel >/dev/null; \
+              echo "=== Finding Python ${{ inputs.python_version }} ==="; \
               PYVER="${{ inputs.python_version }}"; \
-              if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
-                MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
-                FULLVER=$(curl -s https://www.python.org/ftp/python/ | grep -oE ">${MAJOR}\\.${MINOR}\\.[0-9]+/" | tr -d ">/" | sort -V | tail -1); \
-              else \
-                FULLVER="$PYVER"; \
+              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
+              MINOR=$(echo "$PYVER" | cut -d. -f2); \
+              PYBIN="/opt/python/cp${MAJOR}${MINOR}-cp${MAJOR}${MINOR}/bin/python"; \
+              if [ ! -x "$PYBIN" ]; then \
+                echo "Python $PYVER not found, trying any cp${MAJOR}${MINOR}*"; \
+                PYBIN=$(ls -1 /opt/python/cp${MAJOR}${MINOR}*/bin/python 2>/dev/null | head -1); \
               fi; \
-              echo "Using CPython ${FULLVER}"; \
-              cd /tmp; \
-              wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
-              tar -xzf Python-${FULLVER}.tgz; \
-              cd Python-${FULLVER}; \
-              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-system-openssl >/dev/null; \
-              make -j2 >/dev/null; \
-              make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
-              /opt/py-shared/bin/python3 --version; \
-              /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL support OK")'\''; \
-              /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              if [ -z "$PYBIN" ] || [ ! -x "$PYBIN" ]; then \
+                echo "Error: No Python ${MAJOR}.${MINOR} found in /opt/python/"; \
+                ls -la /opt/python/; \
+                exit 1; \
+              fi; \
+              echo "Using: $PYBIN"; \
+              "$PYBIN" --version; \
+              "$PYBIN" -c '\''import ssl; print("SSL support OK")'\''; \
+              "$PYBIN" -m pip install --upgrade pip >/dev/null; \
               cd /workspace; \
-              /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
-              /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
-              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              "$PYBIN" -m pip install -r requirements.txt >/dev/null; \
+              "$PYBIN" -m pip install pyinstaller >/dev/null; \
+              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
