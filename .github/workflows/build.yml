@@ -67,7 +67,7 @@ jobs:
               cd /workspace; \
               "$PYBIN" -m pip install -r requirements.txt >/dev/null; \
               "$PYBIN" -m pip install pyinstaller >/dev/null; \
-              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              PYINSTALLER_COMPILE_BOOTLOADER=1 "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
         shell: bash
 
       - name: Codesign macOS build output
@@ -173,7 +173,7 @@ jobs:
               cd /workspace; \
               "$PYBIN" -m pip install -r requirements.txt >/dev/null; \
               "$PYBIN" -m pip install pyinstaller >/dev/null; \
-              "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+              PYINSTALLER_COMPILE_BOOTLOADER=1 "$PYBIN" -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
