@@ -36,27 +36,18 @@ jobs:
         if: runner.os != 'Linux'
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
         if: runner.os != 'Linux'
-      - name: Build Linux binary in manylinux2014 container (glibc 2.17 baseline)
+      - name: Build Linux binary in manylinux_2_28 container (glibc 2.28 baseline)
         if: matrix.os == 'ubuntu-22.04'
         run: |
           docker run --rm \
             -v "${PWD}":/workspace \
             -w /workspace \
-            quay.io/pypa/manylinux2014_x86_64 \
+            quay.io/pypa/manylinux_2_28_x86_64 \
             /bin/bash -lc 'set -euo pipefail; \
-              echo "=== Installing build deps (manylinux2014 x86_64) ==="; \
-              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd >/dev/null; \
-              echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
-              cd /tmp; \
-              OPENSSL_V=3.0.15; \
-              wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
-              tar -xzf openssl-${OPENSSL_V}.tar.gz; \
-              cd openssl-${OPENSSL_V}; \
-              ./config --prefix=/opt/openssl shared -fPIC >/dev/null; \
-              make -j2 >/dev/null; \
-              make install_sw >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
-              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:/opt/openssl/lib64/pkgconfig:$PKG_CONFIG_PATH; \
+              echo "=== ldd version (manylinux_2_28 x86_64) ==="; \
+              ldd --version; \
+              echo "=== Installing build deps ==="; \
+              yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel >/dev/null; \
               PYVER="${{ inputs.python_version }}"; \
               if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
                 MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
@@ -69,11 +60,10 @@ jobs:
               wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
               tar -xzf Python-${FULLVER}.tgz; \
               cd Python-${FULLVER}; \
-              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib64 -L/opt/openssl/lib -Wl,-rpath,/opt/openssl/lib64 -Wl,-rpath,/opt/openssl/lib" \
-                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
+              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-system-openssl >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
               /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL support OK")'\''; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
@@ -156,26 +146,17 @@ jobs:
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
-      - name: Build with PyInstaller (manylinux2014 aarch64 via docker)
+      - name: Build with PyInstaller (manylinux_2_28 aarch64 via docker)
         run: |
           docker run --rm \
             -v "${PWD}":/workspace \
             -w /workspace \
-            quay.io/pypa/manylinux2014_aarch64 \
+            quay.io/pypa/manylinux_2_28_aarch64 \
             /bin/bash -lc 'set -euo pipefail; \
-              echo "=== Installing build deps (manylinux2014 aarch64) ==="; \
-              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd pkgconfig >/dev/null || true; \
-              echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
-              cd /tmp; \
-              OPENSSL_V=3.0.15; \
-              wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
-              tar -xzf openssl-${OPENSSL_V}.tar.gz; \
-              cd openssl-${OPENSSL_V}; \
-              ./config --prefix=/opt/openssl shared -fPIC >/dev/null; \
-              make -j2 >/dev/null; \
-              make install_sw >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
-              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:/opt/openssl/lib64/pkgconfig:$PKG_CONFIG_PATH; \
+              echo "=== ldd version (manylinux_2_28 aarch64) ==="; \
+              ldd --version; \
+              echo "=== Installing build deps ==="; \
+              yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel >/dev/null; \
               PYVER="${{ inputs.python_version }}"; \
               if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
                 MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
@@ -188,11 +169,10 @@ jobs:
               wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
               tar -xzf Python-${FULLVER}.tgz; \
               cd Python-${FULLVER}; \
-              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib64 -L/opt/openssl/lib -Wl,-rpath,/opt/openssl/lib64 -Wl,-rpath,/opt/openssl/lib" \
-                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
+              ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-system-openssl >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
               /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL support OK")'\''; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
