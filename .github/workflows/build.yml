@@ -45,7 +45,7 @@ jobs:
             quay.io/pypa/manylinux2014_x86_64 \
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 x86_64) ==="; \
-              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
+              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd >/dev/null; \
               echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
               cd /tmp; \
               OPENSSL_V=3.0.15; \
@@ -163,7 +163,7 @@ jobs:
             quay.io/pypa/manylinux2014_aarch64 \
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 aarch64) ==="; \
-              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
+              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd >/dev/null; \
               echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
               cd /tmp; \
               OPENSSL_V=3.0.15; \
