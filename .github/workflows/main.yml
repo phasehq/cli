@@ -75,7 +75,7 @@ jobs:
   # Install, run and validate CLI version on various Linux distros
   test-install:
     needs: [build, version]
-    uses: ./.github/workflows/test-install.yml
+    uses: ./.github/workflows/test-install-post-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
 
@@ -83,7 +83,7 @@ jobs:
   test-cli-install:
     needs: [version, attach-to-release]
     if: github.event_name != 'release' || (github.event_name == 'release' && github.event.action == 'created')
-    uses: ./.github/workflows/test-cli-install.yml
+    uses: ./.github/workflows/test-cli-install-post-release.yml
     with:
       version: ${{ needs.version.outputs.version }}
       python_version: '3.12'
