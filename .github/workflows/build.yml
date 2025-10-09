@@ -45,7 +45,7 @@ jobs:
             quay.io/pypa/manylinux2014_x86_64 \
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 x86_64) ==="; \
-              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd >/dev/null; \
+              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd pkgconfig >/dev/null || true; \
               echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
               cd /tmp; \
               OPENSSL_V=3.0.15; \
@@ -69,8 +69,8 @@ jobs:
               wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
               tar -xzf Python-${FULLVER}.tgz; \
               cd Python-${FULLVER}; \
-              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib" \
-                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
+              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib -Wl,-rpath,/opt/openssl/lib -Wl,-rpath,/opt/openssl/lib64" \
+                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl --with-openssl-rpath=auto >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
               export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
@@ -163,7 +163,7 @@ jobs:
             quay.io/pypa/manylinux2014_aarch64 \
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 aarch64) ==="; \
-              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd >/dev/null; \
+              yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl perl-IPC-Cmd pkgconfig >/dev/null || true; \
               echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
               cd /tmp; \
               OPENSSL_V=3.0.15; \
@@ -187,8 +187,8 @@ jobs:
               wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
               tar -xzf Python-${FULLVER}.tgz; \
               cd Python-${FULLVER}; \
-              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib" \
-                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
+              CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib -Wl,-rpath,/opt/openssl/lib -Wl,-rpath,/opt/openssl/lib64" \
+                ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl --with-openssl-rpath=auto >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
               export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
