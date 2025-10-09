@@ -75,7 +75,7 @@ jobs:
               make install >/dev/null; \
               export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
-              /opt/py-shared/bin/python3 -c "import ssl; print('SSL support OK')"; \
+              /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL support OK")'\''; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
@@ -194,7 +194,7 @@ jobs:
               make install >/dev/null; \
               export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
-              /opt/py-shared/bin/python3 -c "import ssl; print('SSL support OK')"; \
+              /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL support OK")'\''; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
               cd /workspace; \
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
