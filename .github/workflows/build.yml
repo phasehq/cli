@@ -46,17 +46,17 @@ jobs:
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 x86_64) ==="; \
               yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
-              echo "=== Build OpenSSL 1.1.1 (required for Python 3.12 ssl) ==="; \
+              echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
               cd /tmp; \
-              OPENSSL_V=1.1.1w; \
+              OPENSSL_V=3.0.15; \
               wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
               tar -xzf openssl-${OPENSSL_V}.tar.gz; \
               cd openssl-${OPENSSL_V}; \
               ./config --prefix=/opt/openssl shared -fPIC >/dev/null; \
               make -j2 >/dev/null; \
               make install_sw >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/openssl/lib:$LD_LIBRARY_PATH; \
-              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:$PKG_CONFIG_PATH; \
+              export LD_LIBRARY_PATH=/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
+              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:/opt/openssl/lib64/pkgconfig:$PKG_CONFIG_PATH; \
               PYVER="${{ inputs.python_version }}"; \
               if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
                 MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
@@ -73,7 +73,7 @@ jobs:
                 ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:$LD_LIBRARY_PATH; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
               cd /workspace; \
@@ -164,17 +164,17 @@ jobs:
             /bin/bash -lc 'set -euo pipefail; \
               echo "=== Installing build deps (manylinux2014 aarch64) ==="; \
               yum -y install wget tar xz make gcc bzip2-devel libffi-devel zlib-devel sqlite-devel readline-devel which findutils perl >/dev/null; \
-              echo "=== Build OpenSSL 1.1.1 (required for Python 3.12 ssl) ==="; \
+              echo "=== Build OpenSSL 3.0.15 (LTS) ==="; \
               cd /tmp; \
-              OPENSSL_V=1.1.1w; \
+              OPENSSL_V=3.0.15; \
               wget -q https://www.openssl.org/source/openssl-${OPENSSL_V}.tar.gz; \
               tar -xzf openssl-${OPENSSL_V}.tar.gz; \
               cd openssl-${OPENSSL_V}; \
               ./config --prefix=/opt/openssl shared -fPIC >/dev/null; \
               make -j2 >/dev/null; \
               make install_sw >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/openssl/lib:$LD_LIBRARY_PATH; \
-              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:$PKG_CONFIG_PATH; \
+              export LD_LIBRARY_PATH=/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
+              export PKG_CONFIG_PATH=/opt/openssl/lib/pkgconfig:/opt/openssl/lib64/pkgconfig:$PKG_CONFIG_PATH; \
               PYVER="${{ inputs.python_version }}"; \
               if [[ "$PYVER" =~ ^[0-9]+\.[0-9]+$ ]]; then \
                 MAJOR=$(echo "$PYVER" | cut -d. -f1); MINOR=$(echo "$PYVER" | cut -d. -f2); \
@@ -191,7 +191,7 @@ jobs:
                 ./configure --prefix=/opt/py-shared --enable-optimizations --enable-shared --with-openssl=/opt/openssl >/dev/null; \
               make -j2 >/dev/null; \
               make install >/dev/null; \
-              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:$LD_LIBRARY_PATH; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:/opt/openssl/lib:/opt/openssl/lib64:$LD_LIBRARY_PATH; \
               /opt/py-shared/bin/python3 --version; \
               /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
               cd /workspace; \
