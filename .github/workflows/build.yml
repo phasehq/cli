@@ -80,7 +80,7 @@ jobs:
               /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
               /opt/py-shared/bin/python3 -m pip install pyinstaller >/dev/null; \
               /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
-              shell: bash
+        shell: bash
 
       - name: Codesign macOS build output
         if: runner.os == 'macOS'
