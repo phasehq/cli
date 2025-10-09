@@ -253,9 +253,6 @@ jobs:
           - { image: fedora:40, family: rpm, name: fedora-40 }
           - { image: fedora:41, family: rpm, name: fedora-41 }
           - { image: fedora:42, family: rpm, name: fedora-42 }
-          - { image: quay.io/centos/centos:stream8, family: rpm, name: centos-stream8 }
-          - { image: quay.io/centos/centos:stream9, family: rpm, name: centos-stream9 }
-          - { image: quay.io/centos/centos:stream10, family: rpm, name: centos-stream10 }
           - { image: rockylinux:8, family: rpm, name: rocky-8 }
           - { image: rockylinux:9, family: rpm, name: rocky-9 }
           - { image: amazonlinux:2023, family: rpm, name: amazonlinux-2023 }
