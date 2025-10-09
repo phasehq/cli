@@ -233,8 +233,6 @@ jobs:
           name: ${{ env.ARTIFACT_NAME }}
           path: ./output/${{ env.OUTPUT_PACKAGE_NAME }}
 
-# Test install on Linux distros (x86_64) TODO: REMOVE
-
   test_install_x86_64:
     name: Test install on Linux distros (x86_64)
     needs: [build, build_apk]
