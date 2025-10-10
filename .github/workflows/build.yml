@@ -55,7 +55,7 @@ jobs:
               ldd --version; \
               echo "=== Installing build deps ==="; \
               yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel >/dev/null; \
-              echo "Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller."
+              echo "Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller."; \
               echo "=== Building Python ${{ inputs.python_version }} with --enable-shared ==="; \
               PYVER="${{ inputs.python_version }}"; \
               MAJOR=$(echo "$PYVER" | cut -d. -f1); \
