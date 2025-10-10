@@ -111,6 +111,7 @@ jobs:
           cp -a dist/phase/. pkgroot/usr/lib/phase/
           mkdir -p pkgroot/usr/bin
           echo "Symlink ensures PATH-discoverable binary while keeping full onedir intact"
+          # This will create a symlink to the phase binary in the /usr/lib/phase/ directory
           ln -sf ../lib/phase/phase pkgroot/usr/bin/phase
           # Build packages from staged root
           fpm -s dir -t deb -n phase -v ${{ inputs.version }} -C pkgroot .
