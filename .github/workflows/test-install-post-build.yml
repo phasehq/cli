@@ -10,6 +10,7 @@ on:
 jobs:
   test_install_x86_64:
     name: Test install on Linux distros (x86_64)
+    continue-on-error: true
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -143,6 +144,7 @@ jobs:
 
   test_install_arm64:
     name: Test install on Linux distros (ARM64)
+    continue-on-error: true
     runs-on: ubuntu-22.04-arm
     strategy:
       fail-fast: false

@@ -78,7 +78,6 @@ jobs:
     uses: ./.github/workflows/test-install-post-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
-    continue-on-error: true
 
   # Install, run and validate CLI version using installer script
   test-cli-install-post-release:
@@ -89,4 +88,3 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       python_version: '3.12'
       alpine_version: '3.21'
-    continue-on-error: true
