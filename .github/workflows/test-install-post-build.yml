@@ -88,7 +88,7 @@ jobs:
                   ;; \
                 alpine) \
                   apk update; \
-                  apk add --no-cache libstdc++; \
+                  apk add --no-cache libstdc++ findutils; \
                   ALP_VER=\$(cut -d. -f1,2 /etc/alpine-release); \
                   if [ "\$ALP_VER" = "3.18" ] || [ "\$ALP_VER" = "3.19" ]; then \
                     echo 'Using binary artifact for Alpine < 3.20'; \
@@ -105,6 +105,13 @@ jobs:
                   ;; \
                 other) \
                   echo 'Installing from local x86_64 binary artifact'; \
+                  if ! command -v find >/dev/null 2>&1; then \
+                    (command -v dnf >/dev/null 2>&1 && dnf install -y findutils) || \
+                    (command -v apt-get >/dev/null 2>&1 && apt-get update && apt-get install -y findutils) || \
+                    (command -v apk >/dev/null 2>&1 && apk add --no-cache findutils) || \
+                    (command -v yum >/dev/null 2>&1 && yum install -y findutils) || \
+                    (command -v pacman >/dev/null 2>&1 && pacman -Sy --noconfirm findutils) || true; \
+                  fi; \
                   BINDIR=\$(find ./linux-amd64 -maxdepth 2 -type f -name phase -printf '%h\n' -quit); \
                   if [ -z "\$BINDIR" ]; then echo 'x86_64 binary artifact not found'; exit 1; fi; \
                   install -Dm755 "\$BINDIR/phase" /usr/local/bin/phase; \
