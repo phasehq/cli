@@ -38,6 +38,13 @@ jobs:
         if: runner.os != 'Linux'
       - name: Build Linux binary in manylinux_2_28 container (glibc 2.28 baseline)
         if: matrix.os == 'ubuntu-22.04'
+        # Design decisions:
+        # - Use manylinux_2_28 for Linux builds to target glibc 3.28 baseline while maintaining wide compatibility
+        # - Build CPython in-container with --enable-shared (shared libpython) so PyInstaller can bundle correctly.
+        # - Use system OpenSSL from manylinux_2_28; avoid building OpenSSL from source for speed and simplicity.
+        # - Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller.
+        # - Package PyInstaller onedir under /usr/lib/phase and symlink /usr/bin/phase to preserve metadata and bundled files (avoids runtime import errors on RPM-based distros).
+        # - Print ldd --version
         run: |
           docker run --rm \
             -v "${PWD}":/workspace \
@@ -48,6 +55,7 @@ jobs:
               ldd --version; \
               echo "=== Installing build deps ==="; \
               yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel >/dev/null; \
+              echo "Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller."
               echo "=== Building Python ${{ inputs.python_version }} with --enable-shared ==="; \
               PYVER="${{ inputs.python_version }}"; \
               MAJOR=$(echo "$PYVER" | cut -d. -f1); \
@@ -102,6 +110,7 @@ jobs:
           mkdir -p pkgroot/usr/lib/phase
           cp -a dist/phase/. pkgroot/usr/lib/phase/
           mkdir -p pkgroot/usr/bin
+          echo "Symlink ensures PATH-discoverable binary while keeping full onedir intact"
           ln -sf ../lib/phase/phase pkgroot/usr/bin/phase
           # Build packages from staged root
           fpm -s dir -t deb -n phase -v ${{ inputs.version }} -C pkgroot .
@@ -154,6 +163,7 @@ jobs:
               ldd --version; \
               echo "=== Installing build deps ==="; \
               yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel >/dev/null; \
+              echo "Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller."
               echo "=== Building Python ${{ inputs.python_version }} with --enable-shared ==="; \
               PYVER="${{ inputs.python_version }}"; \
               MAJOR=$(echo "$PYVER" | cut -d. -f1); \
