@@ -16,6 +16,19 @@ from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API
 import platform
 import shutil
 
+def parse_bool_flag(value) -> bool:
+    """
+    Parse common CLI boolean strings into a bool.
+    Treats 'false', '0', 'no', 'off' (case-insensitive) as False.
+    Everything else (including None) is True by default.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    s = str(value).strip().lower()
+    return s not in ('false', '0', 'no', 'off')
+
 def get_terminal_width():
     """
     Get the width of the terminal window.
@@ -26,19 +39,6 @@ def get_terminal_width():
         return os.get_terminal_size().columns
     except OSError:
         return 80
-
-
-def print_phase_links():
-    """
-    Print a beautiful welcome message inviting users to Phase's community and GitHub repository.
-    """
-    # Calculate the dynamic width of the terminal for the separator line
-    separator_line = "─" * get_terminal_width()
-    
-    print("\033[1;34m" + separator_line + "\033[0m")
-    print("🙋 Need help?: \033[4mhttps://slack.phase.dev\033[0m")
-    print("💻 Bug reports / feature requests: \033[4mhttps://github.com/phasehq/cli\033[0m")
-    print("\033[1;34m" + separator_line + "\033[0m")
 
 
 def sanitize_value(value):
@@ -105,21 +105,48 @@ def render_tree_with_tables(data, show, console):
     min_key_width = 15
 
     for path, secrets in sorted(paths.items()):
+        # Partition into static and dynamic for display control
+        static_secrets = [s for s in secrets if not s.get("is_dynamic")]
+        dynamic_secrets = [s for s in secrets if s.get("is_dynamic")]
+
         # Display the path and the number of secrets it contains
         path_node = root_tree.add(f"📁 Path: {path} - [bold magenta]{len(secrets)} Secrets[/]")
         table = Table(show_header=True, header_style="bold white", box=box.ROUNDED)
 
         # Calculate dynamic widths based on the secrets of the current path
-        max_key_length = max([len(secret.get("key", "")) for secret in secrets], default=min_key_width)
+        key_lengths = [len(secret.get("key", "")) for secret in secrets]
+        # Include dynamic group header labels in width calculation
+        for s in dynamic_secrets:
+            group_label = f"⚡️ {s.get('dynamic_group', 'Dynamic Secret')}"
+            key_lengths.append(len(group_label))
+        max_key_length = max(key_lengths, default=min_key_width)
         key_width = max(min_key_width, min(max_key_length + 6, 40))
         value_width = max(console.width - key_width - 4, 20)
 
         table.add_column("KEY", width=key_width, no_wrap=True)
         table.add_column("VALUE", width=value_width, overflow="fold")
 
-        for secret in secrets:
+        for secret in static_secrets:
             key_display, value_display = format_secret_row(secret, value_width, show)
             table.add_row(key_display, value_display)
+
+        # Insert dynamic secrets into the same table with a separator
+        if dynamic_secrets:
+            table.add_section()
+            # Group dynamic secrets by their dynamic_group label
+            groups = {}
+            for s in dynamic_secrets:
+                groups.setdefault(s.get("dynamic_group", "⚡️ Dynamic Secret"), []).append(s)
+
+            for group_label, items in groups.items():
+                # Group header row
+                table.add_row(f"⚡️ {group_label}", "")
+                for s in items:
+                    value = s.get("value", "⚡️")
+                    # When not showing, indicate that a lease needs to be created
+                    if not show:
+                        value = "****************"
+                    table.add_row(s.get("key"), value)
 
         path_node.add(table)
 
@@ -212,18 +239,20 @@ def get_default_user_host() -> str:
     raise ValueError(f"No user found in config.json with id: {default_user_id}.")
 
 
-def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
+def get_default_account_id(all_ids=False) -> Union[str, List[str]]:
     """
-    Fetch the default user's ID from the config file in PHASE_SECRETS_DIR.
+    Fetch the default account ID from the config file in PHASE_SECRETS_DIR.
+    
+    This function handles both user accounts (PATs) and service accounts (service tokens).
 
     Parameters:
-    - all_ids (bool): If set to True, returns a list of all user IDs. Otherwise, returns the default user's ID.
+    - all_ids (bool): If set to True, returns a list of all account IDs. Otherwise, returns the default account ID.
 
     Returns:
-    - Union[str, List[str]]: The default user's ID, or a list of all user IDs if all_ids is True.
+    - Union[str, List[str]]: The default account ID, or a list of all account IDs if all_ids is True.
 
     Raises:
-    - ValueError: If the config file is not found or if the default user's ID is missing.
+    - ValueError: If the config file is not found or if the default account ID is missing.
     """
     config_file_path = os.path.join(PHASE_SECRETS_DIR, 'config.json')
     
@@ -237,6 +266,25 @@ def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
         return [user['id'] for user in config_data.get('phase-users', [])]
     else:
         return config_data.get("default-user")
+
+
+def get_default_user_id(all_ids=False) -> Union[str, List[str]]:
+    """
+    Fetch the default user's ID from the config file in PHASE_SECRETS_DIR.
+    
+    DEPRECATED: Use get_default_account_id() instead for better compatibility with service accounts.
+    This function is kept for backward compatibility.
+
+    Parameters:
+    - all_ids (bool): If set to True, returns a list of all user IDs. Otherwise, returns the default user's ID.
+
+    Returns:
+    - Union[str, List[str]]: The default user's ID, or a list of all user IDs if all_ids is True.
+
+    Raises:
+    - ValueError: If the config file is not found or if the default user's ID is missing.
+    """
+    return get_default_account_id(all_ids)
 
 
 def get_default_user_org(config_file_path):

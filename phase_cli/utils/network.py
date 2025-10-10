@@ -1,48 +1,66 @@
 import os
 import requests
+import base64
+import json
+from urllib.parse import urljoin
 from phase_cli.utils.misc import get_user_agent
 from phase_cli.exceptions import AuthorizationError, APIError, SSLError
 from typing import List
 from typing import Dict
-import json
+from typing import Optional
 
 # Check if SSL verification should be skipped
-VERIFY_SSL = os.environ.get('PHASE_VERIFY_SSL', 'True').lower() != 'false'
+VERIFY_SSL = os.environ.get("PHASE_VERIFY_SSL", "True").lower() != "false"
 
 # Check if debug mode is enabled
-PHASE_DEBUG = os.environ.get('PHASE_DEBUG', 'False').lower() == 'true'
+PHASE_DEBUG = os.environ.get("PHASE_DEBUG", "False").lower() == "true"
 
 # Suppress InsecureRequestWarning if SSL verification is skipped
 if not VERIFY_SSL:
-    requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+    requests.packages.urllib3.disable_warnings(
+        requests.packages.urllib3.exceptions.InsecureRequestWarning
+    )
+
+
+def b64_str(s: str) -> str:
+    """
+    Base64 encode a string.
+
+    Args:
+        s (str): String to encode
+
+    Returns:
+        str: Base64 encoded string
+    """
+    return base64.b64encode(s.encode("utf-8")).decode("utf-8")
 
 
 def handle_response_errors(response: requests.Response) -> None:
     """
     Handle JSON decode errors from API responses.
-    
+
     Args:
         response (requests.Response): The HTTP response that failed to decode.
-    
+
     Raises:
         APIError: An error with details about the invalid response.
     """
     error_message = "🗿 Unexpected response received from the Phase API. Please set PHASE_DEBUG=True to see the error & response."
-    
+
     if PHASE_DEBUG and response.text:
         # Print the first 500 characters of the response if PHASE_DEBUG is enabled
         truncated_text = response.text[:500]
         if len(response.text) > 500:
             truncated_text += "... [truncated]"
         error_message += f"\nResponse preview: {truncated_text}"
-    
+
     raise APIError(error_message)
 
 
 def handle_request_errors(response: requests.Response) -> None:
     """
     Check the HTTP status code of a response and print the error if the status code is not 200.
-    
+
     Args:
         response (requests.Response): The HTTP response to check.
     """
@@ -51,22 +69,22 @@ def handle_request_errors(response: requests.Response) -> None:
         try:
             # Check if the API response contains an error
             error_data = response.json()
-            if 'error' in error_data:
+            if "error" in error_data:
                 raise AuthorizationError(f"🚫 Not authorized. {error_data['error']}")
             else:
                 raise AuthorizationError("🚫 Not authorized.")
         except json.JSONDecodeError:
             raise AuthorizationError("🚫 Not authorized.")
-    
+
     # Handle generic API errors
     if response.status_code != 200:
         try:
-            error_details = json.loads(response.text).get('error', 'Unknown error')
+            error_details = json.loads(response.text).get("error", "Unknown error")
         except json.JSONDecodeError:
-            error_details = 'Unknown error'
+            error_details = "Unknown error"
             if PHASE_DEBUG:
                 error_details += f" (Raw response: {response.text})"
-        
+
         error_message = f"🗿 Request failed with status code {response.status_code}: {error_details}"
         raise APIError(error_message)
 
@@ -100,17 +118,17 @@ def handle_ssl_error(e: Exception) -> None:
 def construct_http_headers(token_type: str, app_token: str) -> Dict[str, str]:
     """
     Construct common headers used for HTTP requests.
-    
+
     Args:
         token_type (str): The type of token being used.
         app_token (str): The token for the application.
-    
+
     Returns:
         Dict[str, str]: The common headers including User-Agent.
     """
     return {
         "Authorization": f"Bearer {token_type} {app_token}",
-        "User-Agent": get_user_agent()
+        "User-Agent": get_user_agent(),
     }
 
 
@@ -127,7 +145,7 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
 
     headers = construct_http_headers(token_type, app_token)
 
-    URL =  f"{host}/service/secrets/tokens/"
+    URL = f"{host}/service/secrets/tokens/"
 
     try:
         response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
@@ -143,6 +161,7 @@ def fetch_phase_user(token_type: str, app_token: str, host: str) -> requests.Res
         handle_ssl_error(e)
     except requests.exceptions.ConnectionError as e:
         handle_connection_error(e)
+
 
 def fetch_app_key(token_type: str, app_token, host) -> str:
     """
@@ -160,12 +179,14 @@ def fetch_app_key(token_type: str, app_token, host) -> str:
 
     headers = construct_http_headers(token_type, app_token)
 
-    URL =  f"{host}/service/secrets/tokens/"
+    URL = f"{host}/service/secrets/tokens/"
 
     response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
 
     if response.status_code != 200:
-        raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
+        raise ValueError(
+            f"Request failed with status code {response.status_code}: {response.text}"
+        )
 
     if not response.text:
         raise ValueError("The response body is empty!")
@@ -205,7 +226,9 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
     response = requests.get(URL, headers=headers, verify=VERIFY_SSL)
 
     if response.status_code != 200:
-        raise ValueError(f"Request failed with status code {response.status_code}: {response.text}")
+        raise ValueError(
+            f"Request failed with status code {response.status_code}: {response.text}"
+        )
 
     if not response.text:
         raise ValueError("The response body is empty!")
@@ -222,7 +245,20 @@ def fetch_wrapped_key_share(token_type: str, app_token: str, host: str) -> str:
     return wrapped_key_share
 
 
-def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key_digest: str = '', path: str = '') -> requests.Response:
+# Static secrets
+
+
+def fetch_phase_secrets(
+    token_type: str,
+    app_token: str,
+    id: str,
+    host: str,
+    key_digest: str = "",
+    path: str = "",
+    dynamic: bool = False,
+    lease: bool = False,
+    lease_ttl: Optional[int] = None,
+) -> requests.Response:
     """
     Fetch a single secret from Phase KMS based on key digest, with an optional path parameter.
 
@@ -238,9 +274,19 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key
         dict: The single secret fetched from the Phase KMS, or an error message.
     """
 
-    headers = {**construct_http_headers(token_type, app_token), "Environment": id, "KeyDigest": key_digest}
+    headers = {
+        **construct_http_headers(token_type, app_token),
+        "Environment": id,
+        "KeyDigest": key_digest,
+    }
     if path:
         headers["Path"] = path
+    if dynamic:
+        headers["dynamic"] = "true"
+    if lease:
+        headers["lease"] = "true"
+    if lease_ttl is not None:
+        headers["lease-ttl"] = str(lease_ttl)
 
     URL = f"{host}/service/secrets/"
 
@@ -259,7 +305,10 @@ def fetch_phase_secrets(token_type: str, app_token: str, id: str, host: str, key
     except requests.exceptions.ConnectionError as e:
         handle_connection_error(e)
 
-def create_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
+
+def create_phase_secrets(
+    token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str
+) -> requests.Response:
     """
     Create secrets in Phase KMS through HTTP POST request.
 
@@ -272,13 +321,14 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {**construct_http_headers(token_type, app_token), "Environment": environment_id}
-
-    data = {
-        "secrets": secrets
+    headers = {
+        **construct_http_headers(token_type, app_token),
+        "Environment": environment_id,
     }
 
-    URL =  f"{host}/service/secrets/"
+    data = {"secrets": secrets}
+
+    URL = f"{host}/service/secrets/"
 
     try:
         response = requests.post(URL, headers=headers, json=data, verify=VERIFY_SSL)
@@ -296,7 +346,9 @@ def create_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         handle_connection_error(e)
 
 
-def update_phase_secrets(token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str) -> requests.Response:
+def update_phase_secrets(
+    token_type: str, app_token: str, environment_id: str, secrets: List[dict], host: str
+) -> requests.Response:
     """
     Update secrets in Phase KMS through HTTP PUT request.
 
@@ -309,13 +361,14 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {**construct_http_headers(token_type, app_token), "Environment": environment_id}
-
-    data = {
-        "secrets": secrets
+    headers = {
+        **construct_http_headers(token_type, app_token),
+        "Environment": environment_id,
     }
 
-    URL =  f"{host}/service/secrets/"
+    data = {"secrets": secrets}
+
+    URL = f"{host}/service/secrets/"
 
     try:
         response = requests.put(URL, headers=headers, json=data, verify=VERIFY_SSL)
@@ -333,7 +386,13 @@ def update_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         handle_connection_error(e)
 
 
-def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, secret_ids: List[str], host: str) -> requests.Response:
+def delete_phase_secrets(
+    token_type: str,
+    app_token: str,
+    environment_id: str,
+    secret_ids: List[str],
+    host: str,
+) -> requests.Response:
     """
     Delete secrets from Phase KMS.
 
@@ -346,13 +405,14 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
         requests.Response: The HTTP response from the Phase KMS.
     """
 
-    headers = {**construct_http_headers(token_type, app_token), "Environment": environment_id}
-
-    data = {
-        "secrets": secret_ids
+    headers = {
+        **construct_http_headers(token_type, app_token),
+        "Environment": environment_id,
     }
 
-    URL =  f"{host}/service/secrets/"
+    data = {"secrets": secret_ids}
+
+    URL = f"{host}/service/secrets/"
 
     try:
         response = requests.delete(URL, headers=headers, json=data, verify=VERIFY_SSL)
@@ -364,6 +424,268 @@ def delete_phase_secrets(token_type: str, app_token: str, environment_id: str, s
             except json.JSONDecodeError:
                 handle_response_errors(response)
         return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+# Dynamic secrets
+
+
+def create_dynamic_secret_lease(
+    token_type: str,
+    app_token: str,
+    host: str,
+    app_id: str,
+    env: str,
+    secret_id: str,
+    ttl: Optional[int] = None,
+) -> requests.Response:
+    """
+    Generate a dynamic secret lease by calling GET /v1/secrets/dynamic/ with lease=true.
+
+    Query params:
+        app_id (str)
+        env (str)
+        id (str)            # dynamic secret id
+        lease (bool=true)
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = f"{host}/service/public/v1/secrets/dynamic/"
+
+    params: Dict[str, str] = {
+        "app_id": app_id,
+        "env": env,
+        "lease": "true",
+        "id": secret_id,
+    }
+    if ttl is not None:
+        params["ttl"] = str(ttl)
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def list_dynamic_secret_leases(
+    token_type: str,
+    app_token: str,
+    host: str,
+    app_id: str,
+    env: str,
+    secret_id: Optional[str] = None,
+) -> requests.Response:
+    """
+    List dynamic secret leases.
+
+    Query params:
+        app_id (str): Application ID
+        env (str): Environment name
+        secret_id (Optional[str]): Secret ID to filter leases
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = f"{host}/service/public/v1/secrets/dynamic/leases/"
+
+    params = {"app_id": app_id, "env": env}
+    if secret_id:
+        params["secret_id"] = secret_id
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def renew_dynamic_secret_lease(
+    token_type: str,
+    app_token: str,
+    host: str,
+    app_id: str,
+    env: str,
+    lease_id: str,
+    ttl: int,
+) -> requests.Response:
+    """
+    Renew a dynamic secret lease.
+
+    Query params:
+        app_id (str)
+        env (str)
+
+    Body:
+        lease_id (str)
+        ttl (int)
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = f"{host}/service/public/v1/secrets/dynamic/leases/"
+
+    params = {"app_id": app_id, "env": env}
+    data = {"lease_id": lease_id, "ttl": ttl}
+
+    try:
+        response = requests.put(
+            url, headers=headers, params=params, json=data, verify=VERIFY_SSL
+        )
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def revoke_dynamic_secret_lease(
+    token_type: str, app_token: str, host: str, app_id: str, env: str, lease_id: str
+) -> requests.Response:
+    """
+    Revoke a dynamic secret lease.
+
+    Query params:
+        app_id (str)
+        env (str)
+
+    Body:
+        lease_id (str)
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = f"{host}/service/public/v1/secrets/dynamic/leases/"
+
+    params = {"app_id": app_id, "env": env}
+    data = {"lease_id": lease_id}
+
+    try:
+        response = requests.delete(
+            url, headers=headers, params=params, json=data, verify=VERIFY_SSL
+        )
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def list_dynamic_secrets(
+    token_type: str,
+    app_token: str,
+    host: str,
+    app_id: str,
+    env: str,
+    path: Optional[str] = None,
+) -> requests.Response:
+    """
+    List dynamic secrets metadata via public API.
+
+    Query params:
+        app_id (str)
+        env (str)
+        path (Optional[str])
+    """
+
+    headers = construct_http_headers(token_type, app_token)
+
+    url = f"{host}/service/public/v1/secrets/dynamic/"
+
+    params: Dict[str, str] = {"app_id": app_id, "env": env}
+    if path is not None:
+        params["path"] = path
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        if response.text.strip():
+            try:
+                response.json()
+            except json.JSONDecodeError:
+                handle_response_errors(response)
+        return response
+    except requests.exceptions.SSLError as e:
+        handle_ssl_error(e)
+    except requests.exceptions.ConnectionError as e:
+        handle_connection_error(e)
+
+
+def external_identity_auth_aws(
+    host: str,
+    service_account_id: str,
+    ttl: Optional[int],
+    signed_request: tuple[str, dict, str],
+    method: str = "POST",
+) -> dict:
+    """
+    Authenticate with Phase using AWS IAM credentials.
+
+    Args:
+        host (str): Phase API base URL
+        service_account_id (str): Service Account ID to authenticate (UUID)
+        ttl (Optional[int]): Requested token TTL in seconds (optional)
+        signed_request (tuple[str, dict, str]): Tuple of (signed_url, signed_headers, body) from sign_get_caller_identity
+        method (str): HTTP method used for signing (default: POST)
+
+    Returns:
+        dict: Authentication response from Phase API
+    """
+    signed_url, signed_headers, body = signed_request
+    payload = {
+        "account": {
+            "type": "service",
+            "id": service_account_id,
+        },
+        "awsIam": {
+            "httpRequestMethod": method,
+            "httpRequestUrl": b64_str(signed_url),
+            "httpRequestHeaders": b64_str(json.dumps(signed_headers)),
+            "httpRequestBody": b64_str(body),
+        },
+    }
+
+    if ttl is not None:
+        payload["tokenRequest"] = {"ttl": int(ttl)}
+
+    URL = f"{host}/service/public/identities/external/v1/aws/iam/auth/"
+
+    try:
+        response = requests.post(URL, json=payload, timeout=20, verify=VERIFY_SSL)
+        handle_request_errors(response)
+        return response.json()
     except requests.exceptions.SSLError as e:
         handle_ssl_error(e)
     except requests.exceptions.ConnectionError as e:

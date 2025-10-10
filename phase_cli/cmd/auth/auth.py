@@ -10,10 +10,11 @@ import threading
 import base64
 import time, random
 import questionary
-from phase_cli.utils.misc import open_browser, validate_url, print_phase_links
+from phase_cli.utils.misc import open_browser, validate_url
 from phase_cli.utils.crypto import CryptoUtils
 from phase_cli.utils.phase_io import Phase
 from phase_cli.utils.const import PHASE_SECRETS_DIR, PHASE_CLOUD_API_HOST
+from phase_cli.cmd.auth.aws import perform_aws_iam_auth
 from rich.console import Console
 
 class SimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -93,9 +94,9 @@ def start_server(port, PHASE_API_HOST):
     return httpd
 
 
-def phase_auth(mode="webauth"):
+def phase_auth(mode="webauth", service_account_id=None, ttl=None, no_store=False):
     """
-    Handles authentication for the Phase CLI using either web-based or token-based authentication.
+    Handles authentication for the Phase CLI using web-based, token-based, or AWS IAM authentication.
 
     If a user is already authenticated, the function will notify the user of their logged-in status and provide instructions for logging out and logging back in.
 
@@ -114,8 +115,16 @@ def phase_auth(mode="webauth"):
         - Asks the user for their email and personal access token.
         - Validates the credentials and writes them to the keyring.
 
+    For aws-iam:
+        - Uses AWS IAM credentials to authenticate with Phase.
+        - Requires a service account ID to be provided.
+        - Signs an AWS STS GetCallerIdentity request and sends it to Phase for verification.
+        - Receives a Phase token in response and stores it in the keyring.
+
     Args:
-        - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth" or "token".
+        - mode (str): The mode of authentication to use. Default is "webauth". Can be either "webauth", "token", or "aws-iam".
+        - service_account_id (str): Required for aws-iam mode. The service account ID to authenticate with.
+        - ttl (int): Optional for aws-iam mode. Token TTL in seconds.
 
     Returns:
         None
@@ -125,60 +134,147 @@ def phase_auth(mode="webauth"):
 
     server = None
     try:
-        # Choose the authentication mode: webauth (default) or token-based.
-        if mode == 'token':
-            # Manual token-based authentication
-            phase_instance_type = questionary.select(
-                'Choose your Phase instance type:',
-                choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
-            ).ask()
+        # Choose the authentication mode: webauth (default), token-based, or aws-iam.
+        if mode == 'aws-iam':
+            # AWS IAM authentication
+            if not service_account_id:
+                console.log("Error: --service-account-id is required when using --mode aws-iam")
+                sys.exit(2)
+            
+            # Check if PHASE_HOST environment variable is set for headless operation
+            PHASE_API_HOST = os.getenv("PHASE_HOST")
+            
+            if PHASE_API_HOST:
+                console.log(f"Using PHASE_HOST environment variable: {PHASE_API_HOST}")
+            else:
+                # Interactive mode: ask user to choose instance type
+                phase_instance_type = questionary.select(
+                    'Choose your Phase instance type:',
+                    choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+                ).ask()
 
-            if not phase_instance_type:
-                console.log("\nExiting phase...")
-                return
-
-            if phase_instance_type == '🛠️  Self Hosted':
-                PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
-                if not PHASE_API_HOST:
+                if not phase_instance_type:
                     console.log("\nExiting phase...")
                     return
+
+                if phase_instance_type == '🛠️  Self Hosted':
+                    PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+                    if not PHASE_API_HOST:
+                        console.log("\nExiting phase...")
+                        return
+                else:
+                    PHASE_API_HOST = PHASE_CLOUD_API_HOST
+
+            # Perform AWS IAM authentication
+            try:
+                console.log("Authenticating with AWS IAM credentials...")
+                aws_result = perform_aws_iam_auth(host=PHASE_API_HOST, service_account_id=service_account_id, ttl=ttl)
+                
+                # Extract the token from the AWS auth response
+                auth_data = aws_result.get("authentication", {})
+                auth_token = auth_data.get("token")
+                
+                if not auth_token:
+                    raise ValueError("No token received from AWS IAM authentication")
+                
+                console.log("AWS IAM authentication successful")
+                
+                # If user requested no-store, print raw result and exit early
+                if no_store:
+                    print(json.dumps(aws_result, indent=4))
+                    return
+                
+                # Validate the token with Phase API by initializing Phase client
+                phase = Phase(init=False, pss=auth_token, host=PHASE_API_HOST)
+                result = phase.auth()
+                user_email = None  # Service accounts don't have emails
+                
+            except Exception as e:
+                console.log(f"AWS IAM authentication failed: {e}")
+                return
+            
+        elif mode == 'token':
+            # Manual token-based authentication
+            # Check if PHASE_HOST environment variable is set for headless operation
+            PHASE_API_HOST = os.getenv("PHASE_HOST")
+            
+            if PHASE_API_HOST:
+                console.log(f"Using PHASE_HOST environment variable: {PHASE_API_HOST}")
             else:
-                PHASE_API_HOST = PHASE_CLOUD_API_HOST
+                # Interactive mode: ask user to choose instance type
+                phase_instance_type = questionary.select(
+                    'Choose your Phase instance type:',
+                    choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+                ).ask()
 
-            user_email = questionary.text("Please enter your email:").ask()
-            if not user_email:
+                if not phase_instance_type:
+                    console.log("\nExiting phase...")
+                    return
+
+                if phase_instance_type == '🛠️  Self Hosted':
+                    PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+                    if not PHASE_API_HOST:
+                        console.log("\nExiting phase...")
+                        sys.exit(2)
+                        return
+                else:
+                    PHASE_API_HOST = PHASE_CLOUD_API_HOST
+
+            auth_token = getpass.getpass("Please enter Personal Access Token (PAT) or a Service Account Token (hidden): ")
+            if not auth_token:
                 console.log("\nExiting phase...")
                 return
-
-            personal_access_token = getpass.getpass("Please enter Phase user token (hidden): ")
-            if not personal_access_token:
-                console.log("\nExiting phase...")
-                return
+            
+            # Check if it's a service token (they start with 'pss_service:')
+            is_service_token = auth_token.startswith('pss_service:')
+            is_personal_token = auth_token.startswith('pss_user:')
+            user_email = None
+            
+            if is_personal_token:
+                # Personal Access Tokens require an email
+                user_email = questionary.text("Please enter your email:").ask()
+                if not user_email:
+                    console.log("\nExiting phase...")
+                    return
+            elif not is_service_token and not is_personal_token:
+                # Unknown token format, might be an older format - ask for email to be safe
+                user_email = questionary.text("Please enter your email:").ask()
+                if not user_email:
+                    console.log("\nExiting phase...")
+                    return
 
             # Authenticate using the provided token
-            phase = Phase(init=False, pss=personal_access_token, host=PHASE_API_HOST)
+            phase = Phase(init=False, pss=auth_token, host=PHASE_API_HOST)
             result = phase.auth()
 
         else:
             # Web-based authentication
-            phase_instance_type = questionary.select(
-                'Choose your Phase instance type:',
-                choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
-            ).ask()
-
-            if not phase_instance_type:
-                return
-
-            if phase_instance_type == '🛠️  Self Hosted':
-                PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+            # Check if PHASE_HOST environment variable is set for headless operation
+            PHASE_API_HOST = os.getenv("PHASE_HOST")
+            
+            if PHASE_API_HOST:
+                console.log(f"Using PHASE_HOST environment variable: {PHASE_API_HOST}")
             else:
-                PHASE_API_HOST = PHASE_CLOUD_API_HOST
+                # Interactive mode: ask user to choose instance type
+                phase_instance_type = questionary.select(
+                    'Choose your Phase instance type:',
+                    choices=['☁️  Phase Cloud', '🛠️  Self Hosted']
+                ).ask()
 
-            if not PHASE_API_HOST:
-                return
+                if not phase_instance_type:
+                    return
+
+                if phase_instance_type == '🛠️  Self Hosted':
+                    PHASE_API_HOST = questionary.text("Please enter your host (URL eg. https://example.com/path):").ask()
+                else:
+                    PHASE_API_HOST = PHASE_CLOUD_API_HOST
+
+                if not PHASE_API_HOST:
+                    return
             
             if not validate_url(PHASE_API_HOST):
                 console.log("Invalid URL. Please ensure you include the scheme (e.g., https) and domain. Keep in mind, path and port are optional.")
+                sys.exit(2)
                 return
 
             # Start an HTTP web server at a random port and spin up the keys.
@@ -218,12 +314,16 @@ def phase_auth(mode="webauth"):
 
             # Authenticate with the decrypted pss
             phase = Phase(init=False, pss=decrypted_personal_access_token, host=PHASE_API_HOST)
-            personal_access_token=decrypted_personal_access_token
+            auth_token = decrypted_personal_access_token
             result = phase.auth()
 
         if result == "Success":
             user_data = phase.init()
-            user_id = user_data["user_id"]
+            # Handle both user accounts (PATs) and service accounts (service tokens)
+            account_id = user_data.get("user_id") or user_data.get("account_id")
+            if not account_id:
+                raise ValueError("Neither user_id nor account_id found in authentication response")
+            
             offline_enabled = user_data["offline_enabled"]
             wrapped_key_share = None if not offline_enabled else user_data["wrapped_key_share"]
 
@@ -233,7 +333,7 @@ def phase_auth(mode="webauth"):
 
             # Save the credentials in the Phase keyring
             try:
-                keyring.set_password(f"phase-cli-user-{user_id}", "pss", personal_access_token)
+                keyring.set_password(f"phase-cli-user-{account_id}", "pss", auth_token)
                 token_saved_in_keyring = True
             except Exception as e:
                 if os.getenv("PHASE_DEBUG") == "True":
@@ -250,22 +350,24 @@ def phase_auth(mode="webauth"):
 
             # Update the config_data with the new user, ensuring no duplicates
             existing_users = {user['id']: user for user in config_data["phase-users"]}
-            user_data = {
-                "email": user_email,
+            user_data_config = {
                 "host": PHASE_API_HOST,
-                "id": user_id,
+                "id": account_id,
                 "organization_id": organization_id,
                 "organization_name": organization_name,
                 "wrapped_key_share": wrapped_key_share
             }
+            # Only add email if it exists (service accounts may not have one)
+            if user_email:
+                user_data_config["email"] = user_email
             # If saving to keyring failed, save the token in the config_data
             if not token_saved_in_keyring:
-                user_data["token"] = personal_access_token
-            existing_users[user_id] = user_data
+                user_data_config["token"] = auth_token
+            existing_users[account_id] = user_data_config
             config_data["phase-users"] = list(existing_users.values())
 
             # Set the latest user as the default user
-            config_data["default-user"] = user_id
+            config_data["default-user"] = account_id
 
             # Save the updated configuration
             os.makedirs(PHASE_SECRETS_DIR, exist_ok=True)
@@ -273,11 +375,9 @@ def phase_auth(mode="webauth"):
                 json.dump(config_data, f, indent=4)
 
             if token_saved_in_keyring:
-                print("\033[1;32m✅ Authentication successful.\033[0m")
+                console.print("[bold green]✅ Authentication successful.[/bold green]")
             else:
-                print("\033[1;32m✅ Authentication successful.\033[0m")
-            print("\033[1;36m🎉 Welcome to Phase CLI!\033[0m\n")
-            print_phase_links()
+                console.print("[bold green]✅ Authentication successful.[/bold green]")
 
         else:
             console.log("Failed to authenticate with the provided credentials.")

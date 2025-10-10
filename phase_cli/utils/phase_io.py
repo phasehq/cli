@@ -161,7 +161,7 @@ class Phase:
         return create_phase_secrets(self._token_type, self._app_secret.app_token, env_id, secrets, self._api_host)
 
 
-    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, app_id: str = None, tag: str = None, path: str = '') -> List[Dict]:
+    def get(self, env_name: str, keys: List[str] = None, app_name: str = None, app_id: str = None, tag: str = None, path: str = '', dynamic: bool = False, lease: bool = False, lease_ttl: Optional[int] = None) -> List[Dict]:
         """
         Get secrets from Phase KMS based on key and environment, with support for personal overrides,
         optional tag matching, decrypting comments, and now including path support and key digest optimization.
@@ -194,23 +194,60 @@ class Phase:
         key_pair = CryptoUtils.env_keypair(decrypted_seed)
         env_private_key = key_pair['privateKey']
 
-        params = {"path": path}
+        # Construct dynamic secret params
+        params = {"path": path, "dynamic": dynamic, "lease": lease}
+        if lease_ttl is not None:
+            params["lease_ttl"] = lease_ttl
         if keys and len(keys) == 1:
             wrapped_salt = environment_key.get("wrapped_salt")
             decrypted_salt = self.decrypt(wrapped_salt, user_data)
             key_digest = CryptoUtils.blake2b_digest(keys[0], decrypted_salt)
             params["key_digest"] = key_digest
 
-        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, **params)
+        secrets_response = fetch_phase_secrets(self._token_type, self._app_secret.app_token, env_id, self._api_host, key_digest=params.get("key_digest", ''), path=path, dynamic=dynamic, lease=lease, lease_ttl=lease_ttl)
 
         secrets_data = secrets_response.json()
-
         results = []
+
         for secret in secrets_data:
+
+            # Handle dynamic secrets
+            if secret.get("type") == "dynamic":
+                group_label = f"{secret.get('name') or 'Dynamic secret'} ({secret.get('provider') or ''})"
+                # If lease(s) are requested, decrypt secrets in credential map
+                cred_map = {
+                    CryptoUtils.decrypt_asymmetric(c.get("key"), env_private_key, public_key):
+                    CryptoUtils.decrypt_asymmetric(c.get("value"), env_private_key, public_key)
+                    for c in (secret["lease"].get("credentials") or [])
+                } if lease and secret.get("lease") else {}
+
+                # Decrypt the dynamic secret key names from the key_map which is returned regardless of lease status
+                for km in (secret.get("key_map") or []):
+                    enc_key_name = km.get("key_name")
+                    name = CryptoUtils.decrypt_asymmetric(enc_key_name, env_private_key, public_key) if enc_key_name else None
+                    if not name:
+                        continue
+                    
+                    # Map the dynamic secret key from the key_map with the corresponding value from the credential map
+                    value = cred_map.get(name) if lease else None
+                    results.append({
+                        "key": name,
+                        "value": value,
+                        "overridden": False,
+                        "tags": [],
+                        "comment": None,
+                        "path": secret.get("path", "/"),
+                        "application": app_name,
+                        "environment": env_name,
+                        "is_dynamic": True,
+                        "dynamic_group": group_label
+                    })
+                continue
             # Check if a tag filter is applied and if the secret has the correct tags.
             if tag and not tag_matches(secret.get("tags", []), tag):
                 continue
-
+            
+            # Handle static secrets
             secret_id = secret["id"]
             override = secret.get("override")
             # Check if the override exists and is active.

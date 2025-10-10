@@ -31,8 +31,8 @@ def switch_user():
     # Prepare user choices, including a visual separator as a title.
     # Also, create a mapping for the partial UUID to the full UUID.
     uuid_mapping = {}
-    user_choices = [Separator("🏢 Organization, ✉️\u200A Email, ☁️\u200A Phase Host, 🆔 User ID")] + [
-        f"{user.get('organization_name', 'N/A') if user.get('organization_name') else 'N/A'}, {user['email']}, {user['host']}, {user['id'][:8]}"
+    user_choices = [Separator("🏢 Organization, ✉️\u200A Email, ☁️\u200A Phase Host, 🆔 Account ID")] + [
+        f"{user.get('organization_name', 'N/A') if user.get('organization_name') else 'N/A'}, {user.get('email', 'Service Account')}, {user['host']}, {user['id'][:8]}"
         for user in config_data['phase-users']
     ]
     
@@ -43,7 +43,7 @@ def switch_user():
     try:
         while True:
             selected = select(
-                "Choose a user to switch to:",
+                "Choose an account to switch to:",
                 choices=user_choices
             ).ask()
 
@@ -59,13 +59,13 @@ def switch_user():
             if full_uuid:
                 config_data['default-user'] = full_uuid
                 save_config(config_data)
-                print(f"Switched to user 🙋: {selected}")
+                print(f"Switched to account 🙋: {selected}")
                 break
             else:
-                print("User switch failed.")
+                print("Account switch failed.")
                 sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as e:
-        print(f"Error switching user: {e}")
+        print(f"Error switching account: {e}")
         sys.exit(1)
