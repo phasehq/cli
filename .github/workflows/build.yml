@@ -39,7 +39,7 @@ jobs:
       - name: Build Linux binary in manylinux_2_28 container (glibc 2.28 baseline)
         if: matrix.os == 'ubuntu-22.04'
         # Design decisions:
-        # - Use manylinux_2_28 for Linux builds to target glibc 3.28 baseline while maintaining wide compatibility
+        # - Use manylinux_2_28 for Linux builds to target glibc 2.28 baseline while maintaining wide compatibility
         # - Build CPython in-container with --enable-shared (shared libpython) so PyInstaller can bundle correctly.
         # - Use system OpenSSL from manylinux_2_28; avoid building OpenSSL from source for speed and simplicity.
         # - Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller.
