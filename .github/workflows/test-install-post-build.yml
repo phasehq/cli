@@ -163,6 +163,12 @@ jobs:
           name: phase_cli_linux_arm64_alpine_${{ inputs.version }}
           path: apk-arm64
         continue-on-error: true
+      - name: Download Linux ARM64 binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Linux-binary-arm64
+          path: linux-arm64
+        continue-on-error: true
       - name: Run tests in ${{ matrix.name }} container
         run: |
           set -e
@@ -181,8 +187,14 @@ jobs:
                   apk add --no-cache --allow-untrusted ./apk-arm64/*.apk; \
                   ;; \
                 other) \
-                  chmod +x ./install.sh; \
-                  ./install.sh --version '${{ inputs.version }}'; \
+                  echo 'Installing from local ARM64 binary artifact'; \
+                  BINDIR=\$(find ./linux-arm64 -maxdepth 2 -type f -name phase -printf '%h\n' -quit); \
+                  if [ -z "\$BINDIR" ]; then echo 'ARM64 binary artifact not found'; exit 1; fi; \
+                  install -Dm755 "\$BINDIR/phase" /usr/local/bin/phase; \
+                  if [ -d "\$BINDIR/_internal" ]; then \
+                    rm -rf /usr/local/bin/_internal; \
+                    cp -a "\$BINDIR/_internal" /usr/local/bin/_internal; \
+                  fi; \
                   ;; \
               esac; \
               # Ensure minimal locale/terminal env for prompt_toolkit/questionary
