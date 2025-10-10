@@ -18,7 +18,7 @@ jobs:
   pytest:
     uses: ./.github/workflows/pytest.yml
     with:
-      python_version: '3.11'
+      python_version: '3.12'
 
   # Fetch and validate version from source code
   version:
@@ -31,7 +31,7 @@ jobs:
     needs: [pytest, version]
     uses: ./.github/workflows/build.yml
     with:
-      python_version: '3.11'
+      python_version: '3.12'
       version: ${{ needs.version.outputs.version }}
       alpine_version: '3.21'
 
@@ -72,12 +72,19 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
-  # Install, run and validate CLI version. 
-  test-cli-install:
-    needs: [version, attach-to-release]
-    if: github.event_name != 'release' || (github.event_name == 'release' && github.event.action == 'created')
-    uses: ./.github/workflows/test-cli-install.yml
+  # Install, run and validate CLI version on various Linux distros
+  test-install-post-build:
+    needs: [build, version]
+    uses: ./.github/workflows/test-install-post-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
-      python_version: '3.11'
+
+  # Install, run and validate CLI version using installer script
+  test-cli-install-post-release:
+    needs: [version, attach-to-release]
+    if: github.event_name != 'release' || (github.event_name == 'release' && github.event.action == 'created')
+    uses: ./.github/workflows/test-cli-install-post-release.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      python_version: '3.12'
       alpine_version: '3.21'

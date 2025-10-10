@@ -1,0 +1,216 @@
+name: Test CLI Installation
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      python_version:
+        required: true
+        type: string
+      alpine_version:
+        required: true
+        type: string
+
+jobs:
+  test_install_x86_64:
+    name: Test install on Linux distros (x86_64)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: ubuntu:20.04, name: ubuntu-20.04 }
+          - { image: ubuntu:22.04, name: ubuntu-22.04 }
+          - { image: ubuntu:24.04, name: ubuntu-24.04 }
+          - { image: debian:bullseye, name: debian-bullseye }
+          - { image: debian:bookworm, name: debian-bookworm }
+          - { image: debian:trixie, name: debian-trixie }
+          - { image: fedora:39, name: fedora-39 }
+          - { image: fedora:40, name: fedora-40 }
+          - { image: fedora:41, name: fedora-41 }
+          - { image: fedora:42, name: fedora-42 }
+          - { image: rockylinux:8, name: rocky-8 }
+          - { image: rockylinux:9, name: rocky-9 }
+          - { image: amazonlinux:2023, name: amazonlinux-2023 }
+          - { image: alpine:3.20, name: alpine-3.20 }
+          - { image: alpine:3.21, name: alpine-3.21 }
+          - { image: alpine:3.22, name: alpine-3.22 }
+          - { image: archlinux:latest, name: archlinux-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests in ${{ matrix.name }} container
+        run: |
+          set -e
+          echo "=== Running in ${{ matrix.image }} ==="
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            /bin/sh -ec "\
+              echo '=== ldd version ==='; \
+              if command -v ldd >/dev/null 2>&1; then ldd --version || true; else echo 'ldd not found'; fi; \
+              echo '=== Installing via install.sh ==='; \
+              chmod +x ./install.sh; \
+              ./install.sh --version '${{ inputs.version }}'; \
+              # Ensure minimal locale/terminal env for prompt_toolkit/questionary
+              export TERM=xterm; \
+              export LANG=C.UTF-8; \
+              export LC_ALL=C.UTF-8; \
+              export PYTHONIOENCODING=UTF-8; \
+              echo '=== Verifying ==='; \
+              if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
+              echo '=== phase (no args) ==='; \
+              phase || true; \
+              echo '=== phase -v ==='; \
+              phase -v; \
+              echo '=== phase users keyring ==='; \
+              phase users keyring || true; \
+              echo '=== phase --help (head) ==='; \
+              phase --help | head -20 || true; \
+              echo '=== ldd version (post) ==='; \
+              ldd --version || true; \
+            "
+        shell: bash
+
+  test-alpine-apk-install:
+    name: Test Alpine APK Installation
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test in Alpine container
+        run: |
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            alpine:${{ inputs.alpine_version }} \
+            /bin/sh -ec "
+              echo '=== Testing Alpine APK installation on ${{ matrix.arch }} ==='
+              apk add --no-cache bash
+              chmod +x ./install.sh
+              ./install.sh --version '${{ inputs.version }}'
+              
+              echo '=== Verifying installation ==='
+              which phase
+              
+              echo '=== Checking version ==='
+              installed_version=\$(phase -v)
+              expected_version='${{ inputs.version }}'
+              if [ \"\$installed_version\" != \"\$expected_version\" ]; then
+                echo \"Version mismatch: Expected \$expected_version, got \$installed_version\"
+                exit 1
+              fi
+              echo \"CLI version matches: \$installed_version\"
+              
+              echo '=== Testing basic functionality ==='
+              phase --help | head -10
+            "
+
+  test_install_arm64:
+    name: Test install on Linux distros (ARM64)
+    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: ubuntu:20.04, name: ubuntu-20.04 }
+          - { image: ubuntu:22.04, name: ubuntu-22.04 }
+          - { image: ubuntu:24.04, name: ubuntu-24.04 }
+          - { image: debian:bullseye, name: debian-bullseye }
+          - { image: debian:bookworm, name: debian-bookworm }
+          - { image: debian:trixie, name: debian-trixie }
+          - { image: fedora:39, name: fedora-39 }
+          - { image: fedora:40, name: fedora-40 }
+          - { image: fedora:41, name: fedora-41 }
+          - { image: fedora:42, name: fedora-42 }
+          - { image: amazonlinux:2023, name: amazonlinux-2023 }
+          - { image: alpine:3.20, name: alpine-3.20 }
+          - { image: alpine:3.21, name: alpine-3.21 }
+          - { image: alpine:3.22, name: alpine-3.22 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests in ${{ matrix.name }} container
+        run: |
+          set -e
+          echo "=== Running in ${{ matrix.image }} (arm64) ==="
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            /bin/sh -ec "\
+              echo '=== ldd version ==='; \
+              if command -v ldd >/dev/null 2>&1; then ldd --version || true; else echo 'ldd not found'; fi; \
+              echo '=== Installing via install.sh ==='; \
+              chmod +x ./install.sh; \
+              ./install.sh --version '${{ inputs.version }}'; \
+              # Ensure minimal locale/terminal env for prompt_toolkit/questionary
+              export TERM=xterm; \
+              export LANG=C.UTF-8; \
+              export LC_ALL=C.UTF-8; \
+              export PYTHONIOENCODING=UTF-8; \
+              echo '=== Verifying ==='; \
+              if command -v phase >/dev/null 2>&1; then echo 'phase found'; else echo 'phase not found in PATH'; echo "PATH=$PATH"; ls -l /usr/local/bin || true; ls -l /usr/bin || true; exit 1; fi; \
+              echo '=== phase (no args) ==='; \
+              phase || true; \
+              echo '=== phase -v ==='; \
+              phase -v; \
+              echo '=== phase users keyring ==='; \
+              phase users keyring || true; \
+              echo '=== phase --help (head) ==='; \
+              phase --help | head -20 || true; \
+              echo '=== ldd version (post) ==='; \
+              ldd --version || true; \
+            "
+        shell: bash
+
+  test-pip-install:
+    name: Test PyPI (pip) Installation
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13, macos-14, macos-15, macos-26, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package from PyPI
+        run: |
+          python -m pip install --upgrade pip
+          pip install phase-cli==${{ inputs.version }}
+
+      - name: Test installed package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          installed_version=$(phase -v)
+          echo "Installed version: $installed_version"
+          echo "Expected version: ${{ inputs.version }}"
+          if [ "$installed_version" != "${{ inputs.version }}" ]; then
+            echo "Version mismatch!"
+            exit 1
+          fi
+          phase --help
+
+      - name: Test installed package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: UTF-8
+        run: |
+          $installed_version = phase -v
+          echo "Installed version: $installed_version"
+          echo "Expected version: ${{ inputs.version }}"
+          if ($installed_version -ne "${{ inputs.version }}") {
+            echo "Version mismatch!"
+            exit 1
+          }
+          phase --help

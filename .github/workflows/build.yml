@@ -31,8 +31,53 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
       - run: pip install -r requirements.txt
-      - run: pip install pyinstaller
+        if: runner.os != 'Linux'
+      - run: pip install pyinstaller==6.16.0
+        if: runner.os != 'Linux'
       - run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+        if: runner.os != 'Linux'
+      - name: Build Linux binary in manylinux_2_28 container (glibc 2.28 baseline)
+        if: matrix.os == 'ubuntu-22.04'
+        # Design decisions:
+        # - Use manylinux_2_28 for Linux builds to target glibc 2.28 baseline while maintaining wide compatibility
+        # - Build CPython in-container with --enable-shared (shared libpython) so PyInstaller can bundle correctly.
+        # - Use system OpenSSL from manylinux_2_28; avoid building OpenSSL from source for speed and simplicity.
+        # - Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller.
+        # - Package PyInstaller onedir under /usr/lib/phase and symlink /usr/bin/phase to preserve metadata and bundled files (avoids runtime import errors on RPM-based distros).
+        # - Print ldd --version
+        run: |
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            quay.io/pypa/manylinux_2_28_x86_64 \
+            /bin/bash -lc 'set -euo pipefail; \
+              echo "=== ldd version (manylinux_2_28 x86_64) ==="; \
+              ldd --version; \
+              echo "=== Installing build deps ==="; \
+              yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel >/dev/null; \
+              echo "Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller."; \
+              echo "=== Building Python ${{ inputs.python_version }} with --enable-shared ==="; \
+              PYVER="${{ inputs.python_version }}"; \
+              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
+              MINOR=$(echo "$PYVER" | cut -d. -f2); \
+              FULLVER=$(curl -s https://www.python.org/ftp/python/ | grep -oE ">${MAJOR}\\.${MINOR}\\.[0-9]+/" | tr -d ">/" | sort -V | tail -1 || echo "$PYVER"); \
+              cd /tmp; \
+              wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
+              tar -xzf Python-${FULLVER}.tgz; \
+              cd Python-${FULLVER}; \
+              ./configure --prefix=/opt/py-shared --enable-shared --with-system-openssl >/dev/null; \
+              make -j$(nproc) >/dev/null; \
+              make install >/dev/null; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
+              /opt/py-shared/bin/python3 --version; \
+              /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL OK")'\''; \
+              /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              cd /workspace; \
+              /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
+              /opt/py-shared/bin/python3 -m pip install pyinstaller==6.16.0 >/dev/null; \
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
+        shell: bash
+
       - name: Codesign macOS build output
         if: runner.os == 'macOS'
         run: |
@@ -60,8 +105,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ruby-dev rubygems build-essential 
           sudo gem install --no-document fpm
-          fpm -s dir -t deb -n phase -v ${{ inputs.version }} dist/phase/=usr/bin/
-          fpm -s dir -t rpm -n phase -v ${{ inputs.version }} dist/phase/=usr/bin/
+          # Stage files to preserve PyInstaller onedir layout
+          rm -rf pkgroot
+          mkdir -p pkgroot/usr/lib/phase
+          cp -a dist/phase/. pkgroot/usr/lib/phase/
+          mkdir -p pkgroot/usr/bin
+          echo "Symlink ensures PATH-discoverable binary while keeping full onedir intact"
+          # This will create a symlink to the phase binary in the /usr/lib/phase/ directory
+          ln -sf ../lib/phase/phase pkgroot/usr/bin/phase
+          # Build packages from staged root
+          fpm -s dir -t deb -n phase -v ${{ inputs.version }} -C pkgroot .
+          fpm -s dir -t rpm -n phase -v ${{ inputs.version }} -C pkgroot .
         if: matrix.os == 'ubuntu-22.04'
         shell: bash
 
@@ -97,17 +151,40 @@ jobs:
   build_arm:
     name: Build Linux ARM64
     runs-on: ubuntu-22.04-arm
-    container:
-      image: python:3.11.0-bullseye
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Environment
+      - name: Build with PyInstaller (manylinux_2_28 aarch64 via docker)
         run: |
-          python --version
-          pip install -r requirements.txt
-          pip install pyinstaller
-      - name: Build with PyInstaller
-        run: pyinstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py
+          docker run --rm \
+            -v "${PWD}":/workspace \
+            -w /workspace \
+            quay.io/pypa/manylinux_2_28_aarch64 \
+            /bin/bash -lc 'set -euo pipefail; \
+              echo "=== ldd version (manylinux_2_28 aarch64) ==="; \
+              ldd --version; \
+              echo "=== Installing build deps ==="; \
+              yum -y install wget tar make gcc openssl-devel bzip2-devel libffi-devel zlib-devel >/dev/null; \
+              echo "Install Python from source with --enable-shared to ensure a shared libpython is available for PyInstaller."; \
+              echo "=== Building Python ${{ inputs.python_version }} with --enable-shared ==="; \
+              PYVER="${{ inputs.python_version }}"; \
+              MAJOR=$(echo "$PYVER" | cut -d. -f1); \
+              MINOR=$(echo "$PYVER" | cut -d. -f2); \
+              FULLVER=$(curl -s https://www.python.org/ftp/python/ | grep -oE ">${MAJOR}\\.${MINOR}\\.[0-9]+/" | tr -d ">/" | sort -V | tail -1 || echo "$PYVER"); \
+              cd /tmp; \
+              wget -q https://www.python.org/ftp/python/${FULLVER}/Python-${FULLVER}.tgz; \
+              tar -xzf Python-${FULLVER}.tgz; \
+              cd Python-${FULLVER}; \
+              ./configure --prefix=/opt/py-shared --enable-shared --with-system-openssl >/dev/null; \
+              make -j$(nproc) >/dev/null; \
+              make install >/dev/null; \
+              export LD_LIBRARY_PATH=/opt/py-shared/lib:$LD_LIBRARY_PATH; \
+              /opt/py-shared/bin/python3 --version; \
+              /opt/py-shared/bin/python3 -c '\''import ssl; print("SSL OK")'\''; \
+              /opt/py-shared/bin/python3 -m pip install --upgrade pip >/dev/null; \
+              cd /workspace; \
+              /opt/py-shared/bin/python3 -m pip install -r requirements.txt >/dev/null; \
+              /opt/py-shared/bin/python3 -m pip install pyinstaller==6.16.0 >/dev/null; \
+              /opt/py-shared/bin/python3 -m PyInstaller --hidden-import _cffi_backend --paths ./phase_cli --name phase phase_cli/main.py'
       - uses: actions/upload-artifact@v4
         with:
           name: Linux-binary-arm64
