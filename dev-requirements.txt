@@ -5,7 +5,7 @@ requests==2.32.5
 PyNaCl==1.6.0
 pytest==8.4.2
 pytest-mock==3.14.1
-rich==14.1.0
+rich==14.2.0
 pyyaml==6.0.3
 toml==0.10.2
 python-hcl2==4.3.2
