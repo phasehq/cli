@@ -2,7 +2,7 @@ keyring==25.6.0
 questionary==2.1.1
 cffi==1.17.1
 requests==2.32.5
-PyNaCl==1.6.0
+PyNaCl==1.6.1
 pytest==8.4.2
 pytest-mock==3.14.1
 rich==14.1.0
