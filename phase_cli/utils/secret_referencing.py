@@ -201,6 +201,10 @@ def _parse_reference_context(
     if "." in ref_body:
         parts = ref_body.split(".", 1)
         env_name, ref_body = parts[0], parts[1]
+        if is_cross_app and not env_name:
+            raise ValueError(
+                f"Invalid reference '{ref}': Cross-application references must specify an environment."
+            )
     elif is_cross_app:
         raise ValueError(
             f"Invalid reference '{ref}': Cross-application references must specify an environment."
