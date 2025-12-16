@@ -55,3 +55,14 @@ def test_cross_app_reference_with_empty_env_raises_error():
         ValueError, match="Cross-application references must specify an environment"
     ):
         _parse_reference_context(ref, current_app, current_env)
+
+
+def test_cross_app_reference_with_path_but_no_env_raises_error():
+    ref = "backend_api::/path/to/KEY"
+    current_app = "my_app"
+    current_env = "dev"
+
+    with pytest.raises(
+        ValueError, match="Cross-application references must specify an environment"
+    ):
+        _parse_reference_context(ref, current_app, current_env)
