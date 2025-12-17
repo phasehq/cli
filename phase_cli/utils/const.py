@@ -8,7 +8,7 @@ description = (
     "Securely manage application secrets and environment variables with Phase."
 )
 
-phaseASCii = f"""
+phaseASCii = r"""
            /$$
           | $$
   /$$$$$$ | $$$$$$$   /$$$$$$   /$$$$$$$  /$$$$$$
