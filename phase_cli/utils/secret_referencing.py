@@ -86,7 +86,9 @@ def _normalize_path(path: Optional[str]) -> str:
     return path
 
 
-def _cache_key(app_name: str, env_name: str, path: Optional[str]) -> Tuple[str, str, str]:
+def _cache_key(
+    app_name: str, env_name: str, path: Optional[str]
+) -> Tuple[str, str, str]:
     """Centralize path normalization so every cache access uses the exact same (app, env, normalized path) shape, avoiding subtle mismatches."""
     return (app_name, env_name, _normalize_path(path))
 
@@ -111,7 +113,9 @@ def _prime_cache_from_list(secrets: List[Dict], fallback_app_name: str) -> None:
         _SECRETS_CACHE[ck][key] = value
 
 
-def _ensure_cached(phase: 'Phase', app_name: str, env_name: str, path: Optional[str]) -> None:
+def _ensure_cached(
+    phase: "Phase", app_name: str, env_name: str, path: Optional[str]
+) -> None:
     """Ensure the cache contains all secrets for (app, env, path).
 
     This fetches the entire bucket once per (application, environment, path) combo using
@@ -121,7 +125,9 @@ def _ensure_cached(phase: 'Phase', app_name: str, env_name: str, path: Optional[
     if ck in _SECRETS_CACHE:
         return
     try:
-        fetched = phase.get(env_name=env_name, app_name=app_name, keys=None, path=_normalize_path(path))
+        fetched = phase.get(
+            env_name=env_name, app_name=app_name, keys=None, path=_normalize_path(path)
+        )
     except EnvironmentNotFoundException:
         return
     bucket: Dict[str, str] = {}
@@ -133,7 +139,9 @@ def _ensure_cached(phase: 'Phase', app_name: str, env_name: str, path: Optional[
     _SECRETS_CACHE[ck] = bucket
 
 
-def _get_from_cache(app_name: str, env_name: str, path: Optional[str], key_name: str) -> Optional[str]:
+def _get_from_cache(
+    app_name: str, env_name: str, path: Optional[str], key_name: str
+) -> Optional[str]:
     """Return a secret's value from the in-memory cache, if present."""
     ck = _cache_key(app_name, env_name, path)
     bucket = _SECRETS_CACHE.get(ck)
@@ -142,7 +150,9 @@ def _get_from_cache(app_name: str, env_name: str, path: Optional[str], key_name:
     return bucket.get(key_name)
 
 
-def _find_env_key_case_insensitive(secrets_dict: Dict[str, Dict[str, Dict[str, str]]], env_name: str) -> Optional[str]:
+def _find_env_key_case_insensitive(
+    secrets_dict: Dict[str, Dict[str, Dict[str, str]]], env_name: str
+) -> Optional[str]:
     """Find the appropriate environment key in secrets_dict for the given env_name.
 
     Tries exact match first, then case-insensitive exact match, and finally
@@ -161,7 +171,8 @@ def _find_env_key_case_insensitive(secrets_dict: Dict[str, Dict[str, Dict[str, s
     # Partial match (prefer shorter names to mimic existing selection heuristics)
     env_lower = env_name.lower()
     partials = [
-        k for k in secrets_dict.keys()
+        k
+        for k in secrets_dict.keys()
         if env_lower in k.lower() or k.lower() in env_lower
     ]
     if partials:
@@ -170,7 +181,9 @@ def _find_env_key_case_insensitive(secrets_dict: Dict[str, Dict[str, Dict[str, s
     return None
 
 
-def _parse_reference_context(ref: str, current_application_name: str, current_env_name: str) -> Tuple[str, str, str, str]:
+def _parse_reference_context(
+    ref: str, current_application_name: str, current_env_name: str
+) -> Tuple[str, str, str, str]:
     """Parse a secret reference and return (app_name, env_name, path, key_name).
 
     Falls back to current app/env when they are not specified in the reference.
@@ -178,12 +191,25 @@ def _parse_reference_context(ref: str, current_application_name: str, current_en
     app_name = current_application_name
     env_name = current_env_name
     ref_body = ref
+
+    is_cross_app = False
     if "::" in ref_body:
+        is_cross_app = True
         parts = ref_body.split("::", 1)
         app_name, ref_body = parts[0], parts[1]
+
     if "." in ref_body:
         parts = ref_body.split(".", 1)
         env_name, ref_body = parts[0], parts[1]
+        if is_cross_app and not env_name:
+            raise ValueError(
+                f"Invalid reference '{ref}': Cross-application references must specify an environment."
+            )
+    elif is_cross_app:
+        raise ValueError(
+            f"Invalid reference '{ref}': Cross-application references must specify an environment."
+        )
+
     path, key_name = split_path_and_key(ref_body)
     return app_name, env_name, path, key_name
 
@@ -205,13 +231,17 @@ def _lookup_in_memory_value(
     env_bucket = secrets_dict.get(env_lookup_key) or {}
     if key_name in env_bucket.get(path, {}):
         return env_bucket[path][key_name]
-    if path == "/" and env_name.lower() == current_env_name.lower() and key_name in env_bucket.get("/", {}):
+    if (
+        path == "/"
+        and env_name.lower() == current_env_name.lower()
+        and key_name in env_bucket.get("/", {})
+    ):
         return env_bucket["/"][key_name]
     return None
 
 
 def _ensure_cached_for_env_variants(
-    phase: 'Phase',
+    phase: "Phase",
     app_name: str,
     env_name: str,
     path: str,
@@ -237,7 +267,7 @@ def split_path_and_key(ref: str) -> Tuple[str, str]:
     last_slash_index = ref.rfind("/")
     if last_slash_index != -1:
         path = ref[:last_slash_index]
-        key_name = ref[last_slash_index + 1:]
+        key_name = ref[last_slash_index + 1 :]
     else:
         path = "/"
         key_name = ref
@@ -249,31 +279,41 @@ def split_path_and_key(ref: str) -> Tuple[str, str]:
     return path, key_name
 
 
-def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[str, str]]], phase: 'Phase', current_application_name: str, current_env_name: str) -> str:
+def resolve_secret_reference(
+    ref: str,
+    secrets_dict: Dict[str, Dict[str, Dict[str, str]]],
+    phase: "Phase",
+    current_application_name: str,
+    current_env_name: str,
+) -> str:
     """
     Resolves a single secret reference to its actual value by fetching it from the specified environment.
-    
+
     The function supports local, cross-environment, and cross-application secret references, allowing for flexible secret management.
     Local references are identified by the absence of a dot '.' in the reference string, implying the current environment.
     Cross-environment references include an environment name, separated by a dot from the rest of the path.
     Cross-application references use '::' to separate the application name from the rest of the reference.
-    
+
     Args:
         ref (str): The secret reference string, which could be a local, cross-environment, or cross-application reference.
         secrets_dict (Dict[str, Dict[str, Dict[str, str]]]): A dictionary containing known secrets.
         phase ('Phase'): An instance of the Phase class to fetch secrets.
         current_application_name (str): The name of the current application.
         current_env_name (str): The current environment name, used for resolving local references.
-        
+
     Returns:
         str: The resolved secret value or the original reference if not resolved.
     """
     original_ref = ref
-    app_name, env_name, path, key_name = _parse_reference_context(ref, current_application_name, current_env_name)
+    app_name, env_name, path, key_name = _parse_reference_context(
+        ref, current_application_name, current_env_name
+    )
 
     # Try in-memory dict first only for same-application references
     if app_name == current_application_name:
-        in_mem = _lookup_in_memory_value(secrets_dict, env_name, path, key_name, current_env_name)
+        in_mem = _lookup_in_memory_value(
+            secrets_dict, env_name, path, key_name, current_env_name
+        )
         if in_mem is not None:
             return in_mem
 
@@ -290,21 +330,28 @@ def resolve_secret_reference(ref: str, secrets_dict: Dict[str, Dict[str, Dict[st
     return f"${{{original_ref}}}"
 
 
-def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'Phase', current_application_name: str, current_env_name: str, _visited: Optional[Set[str]] = None) -> str:
+def resolve_all_secrets(
+    value: str,
+    all_secrets: List[Dict[str, str]],
+    phase: "Phase",
+    current_application_name: str,
+    current_env_name: str,
+    _visited: Optional[Set[str]] = None,
+) -> str:
     """
     Resolves all secret references within a given string to their actual values.
-    
+
     This function is particularly useful for processing configuration strings or entire files that
     may contain multiple secret references. It iterates through each reference found in the input string,
     resolves it using `resolve_secret_reference`, and replaces the reference with the resolved value.
-    
+
     Args:
         value (str): The input string containing one or more secret references.
         all_secrets (List[Dict[str, str]]): A list of all known secrets.
         phase ('Phase'): An instance of the Phase class to fetch secrets.
         current_application_name (str): The name of the current application.
         current_env_name (str): The current environment name for resolving local references.
-        
+
     Returns:
         str: The input string with all secret references resolved to their actual values.
     """
@@ -312,15 +359,17 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
     secrets_dict: Dict[str, Dict[str, Dict[str, str]]] = {}
     _prime_cache_from_list(all_secrets, fallback_app_name=current_application_name)
     for secret in all_secrets:
-        env_bucket = secrets_dict.setdefault(secret['environment'], {})
-        path_bucket = env_bucket.setdefault(secret['path'], {})
-        path_bucket[secret['key']] = secret['value']
-    
+        env_bucket = secrets_dict.setdefault(secret["environment"], {})
+        path_bucket = env_bucket.setdefault(secret["path"], {})
+        path_bucket[secret["key"]] = secret["value"]
+
     refs = SECRET_REF_REGEX.findall(value)
     # Prefetch caches for unique (app, env, path) combos
     seen_combos: Set[Tuple[str, str, str]] = set()
     for ref in refs:
-        app_name, env_name, path, _ = _parse_reference_context(ref, current_application_name, current_env_name)
+        app_name, env_name, path, _ = _parse_reference_context(
+            ref, current_application_name, current_env_name
+        )
         combo = (app_name, env_name, path)
         if combo in seen_combos:
             continue
@@ -330,17 +379,23 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
     # Resolve each found reference and replace it with resolved_secret_value.
     _visited = _visited or set()
     for ref in refs:
-        app_name, env_name, path, key_name = _parse_reference_context(ref, current_application_name, current_env_name)
+        app_name, env_name, path, key_name = _parse_reference_context(
+            ref, current_application_name, current_env_name
+        )
         canonical = f"{app_name}|{env_name}|{path}|{key_name}"
         if canonical in _visited:
             # Leave placeholder unresolved to break potential cycles
             continue
         _visited.add(canonical)
 
-        resolved_secret_value = resolve_secret_reference(ref, secrets_dict, phase, current_application_name, current_env_name)
+        resolved_secret_value = resolve_secret_reference(
+            ref, secrets_dict, phase, current_application_name, current_env_name
+        )
 
         # If we successfully resolved to some value that itself contains references, resolve them recursively
-        if resolved_secret_value != f"${{{ref}}}" and SECRET_REF_REGEX.search(resolved_secret_value):
+        if resolved_secret_value != f"${{{ref}}}" and SECRET_REF_REGEX.search(
+            resolved_secret_value
+        ):
             resolved_secret_value = resolve_all_secrets(
                 value=resolved_secret_value,
                 all_secrets=all_secrets,
@@ -350,5 +405,5 @@ def resolve_all_secrets(value: str, all_secrets: List[Dict[str, str]], phase: 'P
                 _visited=_visited,
             )
         resolved_value = resolved_value.replace(f"${{{ref}}}", resolved_secret_value)
-    
+
     return resolved_value
