@@ -291,3 +291,51 @@ def test_multiple_occurrences_same_reference(phase, current_application_name, cu
     ]
     resolved_value = resolve_all_secrets(value, all_secrets, phase, current_application_name, current_env_name)
     assert resolved_value == "A=v;B=v"
+
+
+# =============================================================================
+# Syntax preservation tests to prevent referencing syntax overalp with third party platforms like Railway with ${{...}}
+# =============================================================================
+
+def test_railway_syntax_preserved(phase, current_application_name, current_env_name):
+    """Railway-style ${{...}} syntax should NOT be treated as a secret reference."""
+    value = "Some value with ${{RAILWAY_REF}}"
+    all_secrets = []
+    resolved_value = resolve_all_secrets(value, all_secrets, phase, current_application_name, current_env_name)
+    assert resolved_value == "Some value with ${{RAILWAY_REF}}"
+
+
+def test_railway_syntax_with_env_preserved(phase, current_application_name, current_env_name):
+    """Railway-style ${{env.key}} should NOT be treated as cross-env reference."""
+    value = "${{production.DATABASE_URL}}"
+    all_secrets = []
+    resolved_value = resolve_all_secrets(value, all_secrets, phase, current_application_name, current_env_name)
+    assert resolved_value == "${{production.DATABASE_URL}}"
+
+
+def test_mixed_railway_and_phase_refs(phase, current_application_name, current_env_name):
+    """Mix of ${{...}} Railway and ${...} Phase refs - only Phase should be resolved."""
+    value = "Railway: ${{RAILWAY_TOKEN}}, Phase: ${KEY}"
+    all_secrets = [
+        {"environment": current_env_name, "path": "/", "key": "KEY", "value": "secret_value"},
+    ]
+    resolved_value = resolve_all_secrets(value, all_secrets, phase, current_application_name, current_env_name)
+    assert resolved_value == "Railway: ${{RAILWAY_TOKEN}}, Phase: secret_value"
+
+
+def test_secret_value_containing_railway_syntax(phase, current_application_name, current_env_name):
+    """Secret values containing ${{...}} should preserve the Railway syntax after resolution."""
+    value = "${CONFIG}"
+    all_secrets = [
+        {"environment": current_env_name, "path": "/", "key": "CONFIG", "value": "url=${{RAILWAY.STATIC_URL}}"},
+    ]
+    resolved_value = resolve_all_secrets(value, all_secrets, phase, current_application_name, current_env_name)
+    assert resolved_value == "url=${{RAILWAY.STATIC_URL}}"
+
+
+def test_github_actions_syntax_preserved(phase, current_application_name, current_env_name):
+    """GitHub Actions ${{ secrets.X }} syntax should be preserved like Railway."""
+    value = "${{ secrets.GITHUB_TOKEN }}"
+    all_secrets = []
+    resolved_value = resolve_all_secrets(value, all_secrets, phase, current_application_name, current_env_name)
+    assert resolved_value == "${{ secrets.GITHUB_TOKEN }}"
