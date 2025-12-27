@@ -47,5 +47,6 @@ pss_service_pattern = re.compile(
     r"^pss_service:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$"
 )
 
-cross_env_pattern = re.compile(r"\$\{(.+?)\.(.+?)\}")
-local_ref_pattern = re.compile(r"\$\{([^.]+?)\}")
+CROSS_APP_ENV_PATTERN = re.compile(r"\$\{(?!\{)(.+?)::(.+?)\.(.+?)\}")
+CROSS_ENV_PATTERN = re.compile(r"\$\{(?!\{)(?![^{]*::)([^.]+?)\.(.+?)\}")
+LOCAL_REF_PATTERN = re.compile(r"\$\{(?!\{)([^.]+?)\}")
