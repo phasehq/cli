@@ -1,4 +1,4 @@
-keyring==25.6.0
+keyring==25.7.0
 questionary==2.1.1
 cffi==1.17.1
 requests==2.32.5
