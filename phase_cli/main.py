@@ -92,6 +92,19 @@ class HelpfulParser(argparse.ArgumentParser):
         return super(HelpfulParser, self).add_subparsers(**kwargs)
 
 def main ():
+    # Ensure stdout/stderr encoding is set to utf-8 to avoid UnicodeEncodeError on Windows
+    # when printing emojis (e.g. in help text or status messages), including when piping output.
+    # Eg to setting PYTHONUTF8=1
+    if sys.platform == "win32":
+        import io
+        try:
+            if sys.stdout and hasattr(sys.stdout, 'buffer'):
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            if sys.stderr and hasattr(sys.stderr, 'buffer'):
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
     env_help = "Environment name eg. dev, staging, production"
     tag_help = '🏷️: Comma-separated list of tags to filter the secrets. Tags are case-insensitive and support partial matching. For example, using --tags "prod,config" will include secrets tagged with "Production" or "ConfigData". Underscores in tags are treated as spaces, so "prod_data" matches "prod data".'
     app_help = 'The name of your Phase application. Optional: If you don\'t have a .phase.json file in your project directory or simply want to override it.'
