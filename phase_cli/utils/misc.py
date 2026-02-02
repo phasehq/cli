@@ -12,7 +12,7 @@ from rich import box
 from rich.box import ROUNDED
 from urllib.parse import urlparse
 from typing import Union, List
-from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, cross_env_pattern, local_ref_pattern
+from phase_cli.utils.const import __version__, PHASE_ENV_CONFIG, PHASE_CLOUD_API_HOST, PHASE_SECRETS_DIR, CROSS_ENV_PATTERN, LOCAL_REF_PATTERN
 import platform
 import shutil
 
@@ -171,8 +171,8 @@ def format_secret_row(secret, value_width, show):
     comment = " 💬" if secret.get("comment") else ""
     key_display = f"{key}{tags}{comment}"
 
-    icon = '⛓️  ' if cross_env_pattern.search(value) else ''
-    icon += '🔗 ' if local_ref_pattern.search(value) else ''
+    icon = '⛓️  ' if CROSS_ENV_PATTERN.search(value) else ''
+    icon += '🔗 ' if LOCAL_REF_PATTERN.search(value) else ''
 
     personal_indicator = '🔏 ' if secret.get("overridden", False) else ''
 
