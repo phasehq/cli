@@ -1,0 +1,28 @@
+name: "[Go] Validate and set version"
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: "Phase CLI version extracted from Go source"
+        value: ${{ jobs.extract_version.outputs.version }}
+
+jobs:
+  extract_version:
+    name: Extract Go CLI Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from src/cmd/root.go
+        id: get_version
+        run: |
+          VERSION=$(grep -oP '(?<=var Version = ")[^"]*' src/cmd/root.go)
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from src/cmd/root.go"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"

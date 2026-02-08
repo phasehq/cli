@@ -1,0 +1,40 @@
+name: "[Go] Test and Vet"
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Go Test & Vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: src/go.sum
+
+      - name: Clone Go SDK
+        uses: actions/checkout@v4
+        with:
+          repository: phasehq/golang-sdk
+          path: golang-sdk
+
+      - name: Patch go.mod replace directive for CI
+        working-directory: src
+        run: |
+          go mod edit -replace github.com/phasehq/golang-sdk=../golang-sdk
+
+      - name: Download dependencies
+        working-directory: src
+        run: go mod download
+
+      - name: Vet
+        working-directory: src
+        run: go vet ./...
+
+      - name: Build (smoke test)
+        working-directory: src
+        run: CGO_ENABLED=0 go build -o /dev/null ./
