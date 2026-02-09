@@ -2,11 +2,7 @@ package util
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"fmt"
-	"math/big"
 	"os"
 	"os/exec"
 	"runtime"
@@ -18,6 +14,7 @@ type EnvKeyValue struct {
 	Value string
 }
 
+// Parse secrets from a .env file
 func ParseEnvFile(path string) ([]EnvKeyValue, error) {
 	f, err := os.Open(path)
 	if err != nil {
