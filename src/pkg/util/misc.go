@@ -97,10 +97,6 @@ func CleanSubprocessEnv() map[string]string {
 	return env
 }
 
-func NormalizeTag(tag string) string {
-	return strings.ToLower(strings.ReplaceAll(tag, "_", " "))
-}
-
 func ParseBoolFlag(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "false", "no", "0":
