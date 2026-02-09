@@ -8,6 +8,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	"github.com/phasehq/golang-sdk/phase/misc"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -62,7 +63,7 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "⚠️\u200A Warning: The length argument is ignored for '%s'. Using default lengths.\n", randomType)
 		}
 		var err error
-		newValue, err = util.GenerateRandomSecret(randomType, randomLength)
+		newValue, err = misc.GenerateRandomSecret(randomType, randomLength)
 		if err != nil {
 			return fmt.Errorf("failed to generate random secret: %w", err)
 		}

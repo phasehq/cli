@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/phasehq/cli/pkg/network"
+	"github.com/phasehq/golang-sdk/phase/network"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/spf13/cobra"
 )
