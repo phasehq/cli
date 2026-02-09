@@ -104,17 +104,6 @@ func NormalizeTag(tag string) string {
 	return strings.ToLower(strings.ReplaceAll(tag, "_", " "))
 }
 
-func TagMatches(secretTags []string, userTag string) bool {
-	normalizedUserTag := NormalizeTag(userTag)
-	for _, tag := range secretTags {
-		normalizedSecretTag := NormalizeTag(tag)
-		if strings.Contains(normalizedSecretTag, normalizedUserTag) {
-			return true
-		}
-	}
-	return false
-}
-
 func ParseBoolFlag(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "false", "no", "0":
