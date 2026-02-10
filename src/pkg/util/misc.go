@@ -87,24 +87,10 @@ func ParseBoolFlag(value string) bool {
 }
 
 func GetShellCommand(shellType string) ([]string, error) {
-	shellMap := map[string]string{
-		"bash":       "bash",
-		"zsh":        "zsh",
-		"fish":       "fish",
-		"sh":         "sh",
-		"powershell": "powershell",
-		"pwsh":       "pwsh",
-		"cmd":        "cmd",
-	}
-
-	bin, ok := shellMap[strings.ToLower(shellType)]
-	if !ok {
-		return nil, fmt.Errorf("unsupported shell type: %s", shellType)
-	}
-
-	path, err := exec.LookPath(bin)
+	shell := strings.ToLower(shellType)
+	path, err := exec.LookPath(shell)
 	if err != nil {
-		return nil, fmt.Errorf("shell '%s' not found in PATH: %w", bin, err)
+		return nil, fmt.Errorf("shell '%s' not found in PATH: %w", shell, err)
 	}
 	return []string{path}, nil
 }
