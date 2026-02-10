@@ -139,42 +139,30 @@ func runAWSIAMAuth(cmd *cobra.Command, host string) error {
 		return fmt.Errorf("invalid token received: %w", err)
 	}
 
-	if err := p.Auth(); err != nil {
+	if err := phase.Auth(p); err != nil {
 		return fmt.Errorf("token validation failed: %w", err)
 	}
 
 	// Get user data
-	userData, err := p.InitRaw()
+	userData, err := phase.Init(p)
 	if err != nil {
 		return fmt.Errorf("failed to fetch user data: %w", err)
 	}
 
-	accountID := ""
-	if uid, ok := userData["user_id"].(string); ok && uid != "" {
-		accountID = uid
-	} else if aid, ok := userData["account_id"].(string); ok && aid != "" {
-		accountID = aid
-	}
-	if accountID == "" {
-		return fmt.Errorf("no account ID found in response")
+	accountID, err := phase.AccountID(userData)
+	if err != nil {
+		return err
 	}
 
 	var orgID, orgName *string
-	if org, ok := userData["organisation"].(map[string]interface{}); ok && org != nil {
-		if id, ok := org["id"].(string); ok {
-			orgID = &id
-		}
-		if name, ok := org["name"].(string); ok {
-			orgName = &name
-		}
+	if userData.Organisation != nil {
+		orgID = &userData.Organisation.ID
+		orgName = &userData.Organisation.Name
 	}
 
 	var wrappedKeyShare *string
-	offlineEnabled, _ := userData["offline_enabled"].(bool)
-	if offlineEnabled {
-		if wks, ok := userData["wrapped_key_share"].(string); ok {
-			wrappedKeyShare = &wks
-		}
+	if userData.OfflineEnabled && userData.WrappedKeyShare != "" {
+		wrappedKeyShare = &userData.WrappedKeyShare
 	}
 
 	tokenSavedInKeyring := true
