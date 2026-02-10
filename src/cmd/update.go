@@ -53,14 +53,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to make script executable: %w", err)
 	}
 
-	cleanEnv := util.CleanSubprocessEnv()
-	var envSlice []string
-	for k, v := range cleanEnv {
-		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
-	}
-
 	c := exec.Command(tmpPath)
-	c.Env = envSlice
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	c.Stdin = os.Stdin
