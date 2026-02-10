@@ -1,9 +1,9 @@
 # Build stage: compile Go binary
 FROM golang:1.24-alpine AS builder
 
-ARG VERSION=dev
+ARG VERSION
 ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 
 WORKDIR /build
 
@@ -21,7 +21,7 @@ RUN go mod edit -replace github.com/phasehq/golang-sdk=../golang-sdk
 # Download dependencies and build
 RUN go mod download && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags "-s -w -X github.com/phasehq/cli/cmd.Version=${VERSION}" \
+    go build -ldflags "-s -w${VERSION:+ -X github.com/phasehq/cli/pkg/version.Version=${VERSION}}" \
     -o /phase ./
 
 # Runtime stage: minimal scratch image
