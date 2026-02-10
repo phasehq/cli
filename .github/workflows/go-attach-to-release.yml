@@ -1,0 +1,26 @@
+name: "[Go] Attach Assets to Release"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  attach-to-release:
+    name: Attach Go Assets to Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download processed assets
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-go-release
+          path: ./phase-go-release
+
+      - name: Attach assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./phase-go-release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

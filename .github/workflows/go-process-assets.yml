@@ -1,0 +1,92 @@
+name: "[Go] Process and Package Assets"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  process-assets:
+    name: Process and Package Assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package and hash assets
+        run: |
+          set -e
+          VERSION="${{ inputs.version }}"
+          OUTDIR="phase-go-release"
+          mkdir -p "$OUTDIR"
+
+          # Map of artifact dirs to output names
+          # Format: artifact_name output_file
+          declare -A TARGETS=(
+            # Tier 1: Primary platforms (tar.gz for unix, zip for windows)
+            ["phase-darwin-amd64"]="phase_cli_darwin_amd64_${VERSION}"
+            ["phase-darwin-arm64"]="phase_cli_darwin_arm64_${VERSION}"
+            ["phase-linux-amd64"]="phase_cli_linux_amd64_${VERSION}"
+            ["phase-linux-arm64"]="phase_cli_linux_arm64_${VERSION}"
+            ["phase-linux-386"]="phase_cli_linux_386_${VERSION}"
+            ["phase-linux-arm"]="phase_cli_linux_arm_${VERSION}"
+            ["phase-windows-amd64"]="phase_cli_windows_amd64_${VERSION}"
+            ["phase-windows-arm64"]="phase_cli_windows_arm64_${VERSION}"
+            ["phase-windows-386"]="phase_cli_windows_386_${VERSION}"
+            # Tier 2: BSD variants
+            ["phase-freebsd-amd64"]="phase_cli_freebsd_amd64_${VERSION}"
+            ["phase-freebsd-arm64"]="phase_cli_freebsd_arm64_${VERSION}"
+            ["phase-freebsd-386"]="phase_cli_freebsd_386_${VERSION}"
+            ["phase-freebsd-arm"]="phase_cli_freebsd_arm_${VERSION}"
+            ["phase-openbsd-amd64"]="phase_cli_openbsd_amd64_${VERSION}"
+            ["phase-openbsd-arm64"]="phase_cli_openbsd_arm64_${VERSION}"
+            ["phase-netbsd-amd64"]="phase_cli_netbsd_amd64_${VERSION}"
+            ["phase-netbsd-arm"]="phase_cli_netbsd_arm_${VERSION}"
+            ["phase-dragonfly-amd64"]="phase_cli_dragonfly_amd64_${VERSION}"
+            # Tier 3: MIPS / Solaris / Illumos
+            ["phase-linux-mips"]="phase_cli_linux_mips_${VERSION}"
+            ["phase-linux-mipsle"]="phase_cli_linux_mipsle_${VERSION}"
+            ["phase-linux-mips64"]="phase_cli_linux_mips64_${VERSION}"
+            ["phase-linux-mips64le"]="phase_cli_linux_mips64le_${VERSION}"
+            ["phase-solaris-amd64"]="phase_cli_solaris_amd64_${VERSION}"
+            ["phase-illumos-amd64"]="phase_cli_illumos_amd64_${VERSION}"
+          )
+
+          for artifact_name in "${!TARGETS[@]}"; do
+            base_name="${TARGETS[$artifact_name]}"
+            artifact_path="artifacts/${artifact_name}"
+
+            if [ ! -d "$artifact_path" ]; then
+              echo "Warning: Artifact $artifact_name not found, skipping"
+              continue
+            fi
+
+            # Windows gets .zip, everything else gets .tar.gz
+            if [[ "$artifact_name" == *windows* ]]; then
+              archive="${base_name}.zip"
+              (cd "$artifact_path" && zip -r "../../${OUTDIR}/${archive}" .)
+            else
+              archive="${base_name}.tar.gz"
+              tar -czf "${OUTDIR}/${archive}" -C "$artifact_path" .
+            fi
+
+            # Generate SHA256
+            (cd "$OUTDIR" && sha256sum "$archive" > "${archive}.sha256")
+            echo "Packaged: $archive"
+          done
+
+          echo ""
+          echo "=== Release assets ==="
+          ls -lh "$OUTDIR/"
+
+      - name: Upload processed assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-go-release
+          path: ./phase-go-release/
+          retention-days: 7

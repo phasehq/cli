@@ -1,19 +1,36 @@
-FROM python:3.12-alpine3.19
+# Build stage: compile Go binary
+FROM golang:1.24-alpine AS builder
 
-# Set source directory
-WORKDIR /app
+ARG VERSION
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+WORKDIR /build
+
+# Copy Go SDK (placed alongside by CI or Docker build context)
+COPY golang-sdk/ ./golang-sdk/
 
 # Copy source
-COPY phase_cli ./phase_cli
-COPY setup.py requirements.txt LICENSE README.md ./
+COPY src/ ./src/
 
-# Install build dependencies and the CLI
-RUN apk add --no-cache --virtual .build-deps gcc musl-dev libffi-dev openssl-dev && \
-    pip install --no-cache-dir . && \
-    apk del .build-deps
+WORKDIR /build/src
 
-# CLI Entrypoint
+# Patch replace directive for build context
+RUN go mod edit -replace github.com/phasehq/golang-sdk=../golang-sdk
+
+# Download dependencies and build
+RUN go mod download && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags "-s -w${VERSION:+ -X github.com/phasehq/cli/pkg/version.Version=${VERSION}}" \
+    -o /phase ./
+
+# Runtime stage: minimal scratch image
+FROM alpine:3.21
+
+# Install CA certificates for HTTPS API calls
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /phase /usr/local/bin/phase
+
 ENTRYPOINT ["phase"]
-
-# Run help by default
 CMD ["--help"]

@@ -1,0 +1,97 @@
+name: "[Go] Cross-compile"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS
+          - { goos: darwin,    goarch: amd64,    suffix: "" }
+          - { goos: darwin,    goarch: arm64,    suffix: "" }
+          # Linux
+          - { goos: linux,     goarch: amd64,    suffix: "" }
+          - { goos: linux,     goarch: arm64,    suffix: "" }
+          - { goos: linux,     goarch: "386",    suffix: "" }
+          - { goos: linux,     goarch: arm,      suffix: "" }
+          # Windows
+          - { goos: windows,   goarch: amd64,    suffix: ".exe" }
+          - { goos: windows,   goarch: arm64,    suffix: ".exe" }
+          - { goos: windows,   goarch: "386",    suffix: ".exe" }
+          # FreeBSD
+          - { goos: freebsd,   goarch: amd64,    suffix: "" }
+          - { goos: freebsd,   goarch: arm64,    suffix: "" }
+          - { goos: freebsd,   goarch: "386",    suffix: "" }
+          - { goos: freebsd,   goarch: arm,      suffix: "" }
+          # OpenBSD
+          - { goos: openbsd,   goarch: amd64,    suffix: "" }
+          - { goos: openbsd,   goarch: arm64,    suffix: "" }
+          # NetBSD
+          - { goos: netbsd,    goarch: amd64,    suffix: "" }
+          - { goos: netbsd,    goarch: arm,      suffix: "" }
+          # Dragonfly
+          - { goos: dragonfly, goarch: amd64,    suffix: "" }
+          # Linux MIPS
+          - { goos: linux,     goarch: mips,     suffix: "" }
+          - { goos: linux,     goarch: mipsle,   suffix: "" }
+          - { goos: linux,     goarch: mips64,   suffix: "" }
+          - { goos: linux,     goarch: mips64le, suffix: "" }
+          # Solaris / Illumos
+          - { goos: solaris,   goarch: amd64,    suffix: "" }
+          - { goos: illumos,   goarch: amd64,    suffix: "" }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: src/go.sum
+
+      - name: Clone Go SDK
+        uses: actions/checkout@v4
+        with:
+          repository: phasehq/golang-sdk
+          path: golang-sdk
+
+      - name: Patch go.mod replace directive for CI
+        working-directory: src
+        run: |
+          go mod edit -replace github.com/phasehq/golang-sdk=../golang-sdk
+
+      - name: Build
+        working-directory: src
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          BINARY_NAME="phase${{ matrix.suffix }}"
+          LDFLAGS="-s -w -X github.com/phasehq/cli/cmd.Version=${{ inputs.version }}"
+          go build -ldflags "$LDFLAGS" -o "$BINARY_NAME" ./
+          echo "Built: $BINARY_NAME for $GOOS/$GOARCH"
+
+      - name: Prepare artifact
+        working-directory: src
+        run: |
+          ARTIFACT_DIR="phase-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "$ARTIFACT_DIR"
+          cp "phase${{ matrix.suffix }}" "$ARTIFACT_DIR/"
+          echo "Artifact directory: $ARTIFACT_DIR"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: src/phase-${{ matrix.goos }}-${{ matrix.goarch }}/
+          retention-days: 7
