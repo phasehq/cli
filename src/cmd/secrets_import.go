@@ -5,6 +5,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
 	"github.com/spf13/cobra"
 )
 
@@ -36,18 +37,15 @@ func runSecretsImport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read file %s: %w", envFile, err)
 	}
 
+	appName, envName, appID = phase.GetConfig(appName, envName, appID)
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		return err
 	}
 
-	kvPairs := make([]phase.KeyValuePair, len(pairs))
-	for i, kv := range pairs {
-		kvPairs[i] = phase.KeyValuePair{Key: kv.Key, Value: kv.Value}
-	}
-
-	err = p.Create(phase.CreateOptions{
-		KeyValuePairs: kvPairs,
+	err = p.Create(sdk.CreateOptions{
+		KeyValuePairs: pairs,
 		EnvName:       envName,
 		AppName:       appName,
 		AppID:         appID,
