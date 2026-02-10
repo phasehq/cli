@@ -8,6 +8,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
 	"github.com/spf13/cobra"
 )
 
@@ -39,12 +40,14 @@ func runShell(cmd *cobra.Command, args []string) error {
 	generateLeases, _ := cmd.Flags().GetString("generate-leases")
 	leaseTTL, _ := cmd.Flags().GetInt("lease-ttl")
 
+	appName, envName, appID = phase.GetConfig(appName, envName, appID)
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		return err
 	}
 
-	opts := phase.GetOptions{
+	opts := sdk.GetOptions{
 		EnvName: envName,
 		AppName: appName,
 		AppID:   appID,
@@ -71,18 +74,9 @@ func runShell(cmd *cobra.Command, args []string) error {
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue := phase.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
+		resolvedValue := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
 		resolvedSecrets[secret.Key] = resolvedValue
 	}
-
-	// Build environment
-	cleanEnv := util.CleanSubprocessEnv()
-	for k, v := range resolvedSecrets {
-		cleanEnv[k] = v
-	}
-
-	// Set Phase shell markers
-	cleanEnv["PHASE_SHELL"] = "true"
 
 	// Collect env/app info for display
 	apps := map[string]bool{}
@@ -97,22 +91,21 @@ func runShell(cmd *cobra.Command, args []string) error {
 	}
 	appNames := mapKeys(apps)
 	envNames := mapKeys(envs)
+
+	// Build environment: inherit current env, add secrets and shell markers
+	envSlice := os.Environ()
+	for k, v := range resolvedSecrets {
+		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
+	}
+	envSlice = append(envSlice, "PHASE_SHELL=true")
 	if len(envNames) > 0 {
-		cleanEnv["PHASE_ENV"] = envNames[0]
+		envSlice = append(envSlice, fmt.Sprintf("PHASE_ENV=%s", envNames[0]))
 	}
 	if len(appNames) > 0 {
-		cleanEnv["PHASE_APP"] = appNames[0]
+		envSlice = append(envSlice, fmt.Sprintf("PHASE_APP=%s", appNames[0]))
 	}
-
-	// Ensure TERM is set
-	if cleanEnv["TERM"] == "" {
-		cleanEnv["TERM"] = "xterm-256color"
-	}
-
-	// Convert to env slice
-	var envSlice []string
-	for k, v := range cleanEnv {
-		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
+	if os.Getenv("TERM") == "" {
+		envSlice = append(envSlice, "TERM=xterm-256color")
 	}
 
 	// Determine shell

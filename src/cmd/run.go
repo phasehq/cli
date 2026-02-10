@@ -8,6 +8,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
 	"github.com/spf13/cobra"
 )
 
@@ -39,13 +40,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 	generateLeases, _ := cmd.Flags().GetString("generate-leases")
 	leaseTTL, _ := cmd.Flags().GetInt("lease-ttl")
 
+	appName, envName, appID = phase.GetConfig(appName, envName, appID)
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		return err
 	}
 
 	// Fetch secrets
-	opts := phase.GetOptions{
+	opts := sdk.GetOptions{
 		EnvName: envName,
 		AppName: appName,
 		AppID:   appID,
@@ -72,19 +75,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue := phase.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
+		resolvedValue := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
 		resolvedSecrets[secret.Key] = resolvedValue
 	}
 
-	// Build environment
-	cleanEnv := util.CleanSubprocessEnv()
+	// Build environment: inherit current env and append secrets
+	envSlice := os.Environ()
 	for k, v := range resolvedSecrets {
-		cleanEnv[k] = v
-	}
-
-	// Convert to env slice
-	var envSlice []string
-	for k, v := range cleanEnv {
 		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
 	}
 
