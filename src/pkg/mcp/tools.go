@@ -15,9 +15,10 @@ import (
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
+	"github.com/phasehq/golang-sdk/phase/misc"
 )
 
-// SecretMetadata is a safe output struct that never includes secret values.
 type SecretMetadata struct {
 	Key         string   `json:"key"`
 	Path        string   `json:"path"`
@@ -28,7 +29,7 @@ type SecretMetadata struct {
 	Overridden  bool     `json:"overridden"`
 }
 
-func newPhaseClient() (*phase.Phase, error) {
+func newPhaseClient() (*sdk.Phase, error) {
 	return phase.NewPhase(true, "", "")
 }
 
@@ -159,10 +160,12 @@ func handleSecretsList(_ context.Context, _ *gomcp.CallToolRequest, args Secrets
 		return errorResult(fmt.Sprintf("Failed to initialize Phase client: %v", err))
 	}
 
-	secrets, err := p.Get(phase.GetOptions{
-		EnvName: args.Env,
-		AppName: args.App,
-		AppID:   args.AppID,
+	app, env, appID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	secrets, err := p.Get(sdk.GetOptions{
+		EnvName: env,
+		AppName: app,
+		AppID:   appID,
 		Path:    args.Path,
 		Tag:     args.Tags,
 	})
@@ -204,7 +207,7 @@ func handleSecretsCreate(_ context.Context, _ *gomcp.CallToolRequest, args Secre
 		length = 32
 	}
 
-	value, err := util.GenerateRandomSecret(randomType, length)
+	value, err := misc.GenerateRandomSecret(randomType, length)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Failed to generate random secret: %v", err))
 	}
@@ -219,11 +222,13 @@ func handleSecretsCreate(_ context.Context, _ *gomcp.CallToolRequest, args Secre
 		path = "/"
 	}
 
-	err = p.Create(phase.CreateOptions{
-		KeyValuePairs: []phase.KeyValuePair{{Key: key, Value: value}},
-		EnvName:       args.Env,
-		AppName:       args.App,
-		AppID:         args.AppID,
+	app, env, aID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	err = p.Create(sdk.CreateOptions{
+		KeyValuePairs: []sdk.KeyValuePair{{Key: key, Value: value}},
+		EnvName:       env,
+		AppName:       app,
+		AppID:         aID,
 		Path:          path,
 	})
 	if err != nil {
@@ -258,11 +263,13 @@ func handleSecretsSet(_ context.Context, _ *gomcp.CallToolRequest, args SecretsS
 		path = "/"
 	}
 
-	err = p.Create(phase.CreateOptions{
-		KeyValuePairs: []phase.KeyValuePair{{Key: key, Value: args.Value}},
-		EnvName:       args.Env,
-		AppName:       args.App,
-		AppID:         args.AppID,
+	app, env, aID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	err = p.Create(sdk.CreateOptions{
+		KeyValuePairs: []sdk.KeyValuePair{{Key: key, Value: args.Value}},
+		EnvName:       env,
+		AppName:       app,
+		AppID:         aID,
 		Path:          path,
 	})
 	if err != nil {
@@ -288,10 +295,12 @@ func handleSecretsUpdate(_ context.Context, _ *gomcp.CallToolRequest, args Secre
 		return errorResult(fmt.Sprintf("Failed to initialize Phase client: %v", err))
 	}
 
-	result, err := p.Update(phase.UpdateOptions{
-		EnvName:    args.Env,
-		AppName:    args.App,
-		AppID:      args.AppID,
+	app, env, aID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	result, err := p.Update(sdk.UpdateOptions{
+		EnvName:    env,
+		AppName:    app,
+		AppID:      aID,
 		Key:        key,
 		Value:      args.Value,
 		SourcePath: args.Path,
@@ -322,10 +331,12 @@ func handleSecretsDelete(_ context.Context, _ *gomcp.CallToolRequest, args Secre
 		return errorResult(fmt.Sprintf("Failed to initialize Phase client: %v", err))
 	}
 
-	keysNotFound, err := p.Delete(phase.DeleteOptions{
-		EnvName:      args.Env,
-		AppName:      args.App,
-		AppID:        args.AppID,
+	app, env, aID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	keysNotFound, err := p.Delete(sdk.DeleteOptions{
+		EnvName:      env,
+		AppName:      app,
+		AppID:        aID,
 		KeysToDelete: keys,
 		Path:         args.Path,
 	})
@@ -355,14 +366,6 @@ func handleSecretsImport(_ context.Context, _ *gomcp.CallToolRequest, args Secre
 		return textResult("No secrets found in the file."), nil, nil
 	}
 
-	var kvPairs []phase.KeyValuePair
-	for _, pair := range pairs {
-		kvPairs = append(kvPairs, phase.KeyValuePair{
-			Key:   pair.Key,
-			Value: pair.Value,
-		})
-	}
-
 	p, err := newPhaseClient()
 	if err != nil {
 		return errorResult(fmt.Sprintf("Failed to initialize Phase client: %v", err))
@@ -373,18 +376,20 @@ func handleSecretsImport(_ context.Context, _ *gomcp.CallToolRequest, args Secre
 		path = "/"
 	}
 
-	err = p.Create(phase.CreateOptions{
-		KeyValuePairs: kvPairs,
-		EnvName:       args.Env,
-		AppName:       args.App,
-		AppID:         args.AppID,
+	app, env, aID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	err = p.Create(sdk.CreateOptions{
+		KeyValuePairs: pairs,
+		EnvName:       env,
+		AppName:       app,
+		AppID:         aID,
 		Path:          path,
 	})
 	if err != nil {
 		return errorResult(fmt.Sprintf("Failed to import secrets: %v", err))
 	}
 
-	return textResult(fmt.Sprintf("Successfully imported %d secrets from %s (values hidden for security).", len(kvPairs), args.FilePath)), nil, nil
+	return textResult(fmt.Sprintf("Successfully imported %d secrets from %s (values hidden for security).", len(pairs), args.FilePath)), nil, nil
 }
 
 func handleSecretsGet(_ context.Context, _ *gomcp.CallToolRequest, args SecretsGetArgs) (*gomcp.CallToolResult, any, error) {
@@ -395,10 +400,12 @@ func handleSecretsGet(_ context.Context, _ *gomcp.CallToolRequest, args SecretsG
 		return errorResult(fmt.Sprintf("Failed to initialize Phase client: %v", err))
 	}
 
-	secrets, err := p.Get(phase.GetOptions{
-		EnvName: args.Env,
-		AppName: args.App,
-		AppID:   args.AppID,
+	app, env, aID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	secrets, err := p.Get(sdk.GetOptions{
+		EnvName: env,
+		AppName: app,
+		AppID:   aID,
 		Keys:    []string{key},
 		Path:    args.Path,
 	})
@@ -435,10 +442,12 @@ func handleRun(ctx context.Context, _ *gomcp.CallToolRequest, args RunArgs) (*go
 		return errorResult(fmt.Sprintf("Failed to initialize Phase client: %v", err))
 	}
 
-	secrets, err := p.Get(phase.GetOptions{
-		EnvName: args.Env,
-		AppName: args.App,
-		AppID:   args.AppID,
+	app, env, aID := phase.GetConfig(args.App, args.Env, args.AppID)
+
+	secrets, err := p.Get(sdk.GetOptions{
+		EnvName: env,
+		AppName: app,
+		AppID:   aID,
 		Tag:     args.Tags,
 		Path:    args.Path,
 	})
@@ -452,18 +461,13 @@ func handleRun(ctx context.Context, _ *gomcp.CallToolRequest, args RunArgs) (*go
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue := phase.ResolveAllSecrets(secret.Value, secrets, p, secret.Application, secret.Environment)
+		resolvedValue := sdk.ResolveAllSecrets(secret.Value, secrets, p, secret.Application, secret.Environment)
 		resolvedSecrets[secret.Key] = resolvedValue
 	}
 
-	// Build environment
-	cleanEnv := util.CleanSubprocessEnv()
+	// Build environment: inherit current env and append secrets
+	envSlice := os.Environ()
 	for k, v := range resolvedSecrets {
-		cleanEnv[k] = v
-	}
-
-	var envSlice []string
-	for k, v := range cleanEnv {
 		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
 	}
 
@@ -516,7 +520,7 @@ func handleInit(_ context.Context, _ *gomcp.CallToolRequest, args InitArgs) (*go
 		return errorResult(fmt.Sprintf("Failed to initialize Phase client: %v", err))
 	}
 
-	data, err := p.Init()
+	data, err := phase.Init(p)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Failed to fetch app data: %v", err))
 	}
