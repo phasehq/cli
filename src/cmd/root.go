@@ -3,10 +3,9 @@ package cmd
 import (
 	"os"
 
+	"github.com/phasehq/cli/pkg/version"
 	"github.com/spf13/cobra"
 )
-
-var Version = "2.0.0"
 
 const phaseASCii = `
              /$$
@@ -36,7 +35,7 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.Version = Version
+	rootCmd.Version = version.Version
 	rootCmd.SetVersionTemplate("{{ .Version }}\n")
 
 	// Add emojis to built-in cobra commands
