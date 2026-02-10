@@ -117,7 +117,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	command := strings.Join(args, " ")
 	shell := util.GetDefaultShell()
 	var c *exec.Cmd
-	if shell != nil && len(shell) > 0 {
+	if len(shell) > 0 {
 		c = exec.Command(shell[0], "-c", command)
 	} else {
 		c = exec.Command("sh", "-c", command)
