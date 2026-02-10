@@ -7,22 +7,19 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	sdk "github.com/phasehq/golang-sdk/phase"
 )
 
-type EnvKeyValue struct {
-	Key   string
-	Value string
-}
-
-// Parse secrets from a .env file
-func ParseEnvFile(path string) ([]EnvKeyValue, error) {
+// ParseEnvFile parses a .env file
+func ParseEnvFile(path string) ([]sdk.KeyValuePair, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	var pairs []EnvKeyValue
+	var pairs []sdk.KeyValuePair
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -33,7 +30,7 @@ func ParseEnvFile(path string) ([]EnvKeyValue, error) {
 		key := strings.TrimSpace(line[:idx])
 		value := strings.TrimSpace(line[idx+1:])
 		value = sanitizeValue(value)
-		pairs = append(pairs, EnvKeyValue{
+		pairs = append(pairs, sdk.KeyValuePair{
 			Key:   strings.ToUpper(key),
 			Value: value,
 		})
