@@ -76,23 +76,6 @@ func GetDefaultShell() []string {
 	return nil
 }
 
-func CleanSubprocessEnv() map[string]string {
-	env := map[string]string{}
-	for _, e := range os.Environ() {
-		idx := strings.Index(e, "=")
-		if idx < 0 {
-			continue
-		}
-		key := e[:idx]
-		value := e[idx+1:]
-		// Remove PyInstaller library path variables
-		if key == "LD_LIBRARY_PATH" || key == "DYLD_LIBRARY_PATH" {
-			continue
-		}
-		env[key] = value
-	}
-	return env
-}
 
 func ParseBoolFlag(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
