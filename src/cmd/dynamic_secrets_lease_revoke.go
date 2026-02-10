@@ -34,7 +34,7 @@ func runDynamicSecretsLeaseRevoke(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	userData, err := p.Init()
+	userData, err := phase.Init(p)
 	if err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func runDynamicSecretsLeaseRevoke(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	result, err := network.RevokeDynamicSecretLease(p.TokenType, p.AppToken, p.APIHost, resolvedAppID, resolvedEnvName, leaseID)
+	result, err := network.RevokeDynamicSecretLease(p.TokenType, p.AppToken, p.Host, resolvedAppID, resolvedEnvName, leaseID)
 	if err != nil {
 		return err
 	}

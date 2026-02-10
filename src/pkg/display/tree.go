@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
 )
 
 var (
@@ -34,7 +34,7 @@ func censorSecret(secret string, maxLength int) string {
 }
 
 // renderSecretRow renders a single secret row into the table.
-func renderSecretRow(pathPrefix string, s phase.SecretResult, show bool, keyWidth, valueWidth int, bold, reset string) {
+func renderSecretRow(pathPrefix string, s sdk.SecretResult, show bool, keyWidth, valueWidth int, bold, reset string) {
 	keyDisplay := s.Key
 	if len(s.Tags) > 0 {
 		keyDisplay += " 🏷️"
@@ -83,7 +83,7 @@ func renderSecretRow(pathPrefix string, s phase.SecretResult, show bool, keyWidt
 }
 
 // RenderSecretsTree renders secrets in a tree view with path hierarchy
-func RenderSecretsTree(secrets []phase.SecretResult, show bool) {
+func RenderSecretsTree(secrets []sdk.SecretResult, show bool) {
 	if len(secrets) == 0 {
 		fmt.Println("No secrets to display.")
 		return
@@ -98,7 +98,7 @@ func RenderSecretsTree(secrets []phase.SecretResult, show bool) {
 		"🔮", bold, cyan, appName, reset, bold, green, envName, reset)
 
 	// Organize by path
-	paths := map[string][]phase.SecretResult{}
+	paths := map[string][]sdk.SecretResult{}
 	for _, s := range secrets {
 		path := s.Path
 		if path == "" {
@@ -131,8 +131,8 @@ func RenderSecretsTree(secrets []phase.SecretResult, show bool) {
 			pathConnector, "📁", path, bold, magenta, len(pathSecrets), reset)
 
 		// Separate static and dynamic secrets
-		var staticSecrets []phase.SecretResult
-		dynamicGroups := map[string][]phase.SecretResult{}
+		var staticSecrets []sdk.SecretResult
+		dynamicGroups := map[string][]sdk.SecretResult{}
 		var dynamicGroupOrder []string
 		for _, s := range pathSecrets {
 			if s.IsDynamic {

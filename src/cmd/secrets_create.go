@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/phasehq/cli/pkg/phase"
+	sdk "github.com/phasehq/golang-sdk/phase"
 	"github.com/phasehq/golang-sdk/phase/misc"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -90,13 +91,15 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 		overrideValue = string(ovBytes)
 	}
 
+	appName, envName, appID = phase.GetConfig(appName, envName, appID)
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		return err
 	}
 
-	err = p.Create(phase.CreateOptions{
-		KeyValuePairs: []phase.KeyValuePair{{Key: key, Value: value}},
+	err = p.Create(sdk.CreateOptions{
+		KeyValuePairs: []sdk.KeyValuePair{{Key: key, Value: value}},
 		EnvName:       envName,
 		AppName:       appName,
 		AppID:         appID,

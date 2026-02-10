@@ -8,6 +8,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
 	"github.com/spf13/cobra"
 )
 
@@ -37,13 +38,15 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 	generateLeases, _ := cmd.Flags().GetString("generate-leases")
 	leaseTTL, _ := cmd.Flags().GetInt("lease-ttl")
 
+	appName, envName, appID = phase.GetConfig(appName, envName, appID)
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	opts := phase.GetOptions{
+	opts := sdk.GetOptions{
 		EnvName: envName,
 		AppName: appName,
 		AppID:   appID,
@@ -62,7 +65,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	var found *phase.SecretResult
+	var found *sdk.SecretResult
 	for i, s := range secrets {
 		if s.Key == key {
 			found = &secrets[i]

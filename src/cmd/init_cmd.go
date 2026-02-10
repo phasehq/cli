@@ -28,7 +28,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	data, err := p.Init()
+	data, err := phase.Init(p)
 	if err != nil {
 		return err
 	}

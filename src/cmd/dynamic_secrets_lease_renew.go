@@ -40,7 +40,7 @@ func runDynamicSecretsLeaseRenew(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	userData, err := p.Init()
+	userData, err := phase.Init(p)
 	if err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func runDynamicSecretsLeaseRenew(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	result, err := network.RenewDynamicSecretLease(p.TokenType, p.AppToken, p.APIHost, resolvedAppID, resolvedEnvName, leaseID, ttl)
+	result, err := network.RenewDynamicSecretLease(p.TokenType, p.AppToken, p.Host, resolvedAppID, resolvedEnvName, leaseID, ttl)
 	if err != nil {
 		return err
 	}

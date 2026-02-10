@@ -36,7 +36,7 @@ func runDynamicSecretsLeaseGenerate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	userData, err := p.Init()
+	userData, err := phase.Init(p)
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func runDynamicSecretsLeaseGenerate(cmd *cobra.Command, args []string) error {
 		ttlPtr = &leaseTTL
 	}
 
-	result, err := network.CreateDynamicSecretLease(p.TokenType, p.AppToken, p.APIHost, resolvedAppID, resolvedEnvName, secretID, ttlPtr)
+	result, err := network.CreateDynamicSecretLease(p.TokenType, p.AppToken, p.Host, resolvedAppID, resolvedEnvName, secretID, ttlPtr)
 	if err != nil {
 		return err
 	}

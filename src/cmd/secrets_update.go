@@ -8,6 +8,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
 	"github.com/phasehq/golang-sdk/phase/misc"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -91,12 +92,14 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	appName, envName, appID = phase.GetConfig(appName, envName, appID)
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		return err
 	}
 
-	result, err := p.Update(phase.UpdateOptions{
+	result, err := p.Update(sdk.UpdateOptions{
 		EnvName:         envName,
 		AppName:         appName,
 		AppID:           appID,

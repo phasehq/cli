@@ -34,7 +34,7 @@ func runDynamicSecretsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	userData, err := p.Init()
+	userData, err := phase.Init(p)
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func runDynamicSecretsList(cmd *cobra.Command, args []string) error {
 	}
 	_ = resolvedAppName
 
-	result, err := network.ListDynamicSecrets(p.TokenType, p.AppToken, p.APIHost, resolvedAppID, resolvedEnvName, path)
+	result, err := network.ListDynamicSecrets(p.TokenType, p.AppToken, p.Host, resolvedAppID, resolvedEnvName, path)
 	if err != nil {
 		return err
 	}

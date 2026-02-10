@@ -7,6 +7,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	sdk "github.com/phasehq/golang-sdk/phase"
 	"github.com/spf13/cobra"
 )
 
@@ -43,12 +44,14 @@ func runSecretsDelete(cmd *cobra.Command, args []string) error {
 		keysToDelete[i] = strings.ToUpper(k)
 	}
 
+	appName, envName, appID = phase.GetConfig(appName, envName, appID)
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		return err
 	}
 
-	keysNotFound, err := p.Delete(phase.DeleteOptions{
+	keysNotFound, err := p.Delete(sdk.DeleteOptions{
 		EnvName:      envName,
 		AppName:      appName,
 		AppID:        appID,
