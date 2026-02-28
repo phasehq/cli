@@ -6,7 +6,6 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
 	github.com/manifoldco/promptui v0.9.0
-	github.com/modelcontextprotocol/go-sdk v1.2.0
 	github.com/phasehq/golang-sdk v0.0.0-00010101000000-000000000000
 	github.com/spf13/cobra v1.8.0
 	github.com/zalando/go-keyring v0.2.6
@@ -31,12 +30,9 @@ require (
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	github.com/google/jsonschema-go v0.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
-	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 )
 
