@@ -22,7 +22,7 @@ func init() {
 	secretsExportCmd.Flags().String("app", "", "Application name")
 	secretsExportCmd.Flags().String("app-id", "", "Application ID")
 	secretsExportCmd.Flags().String("tags", "", "Filter by tags")
-	secretsExportCmd.Flags().String("path", "", "Path filter")
+	secretsExportCmd.Flags().String("path", "/", "Path filter (default '/'. Pass empty string to export from all paths)")
 	secretsExportCmd.Flags().String("generate-leases", "true", "Generate leases for dynamic secrets")
 	secretsExportCmd.Flags().Int("lease-ttl", 0, "Lease TTL in seconds")
 	secretsCmd.AddCommand(secretsExportCmd)
@@ -63,40 +63,44 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve secret references and build key-value map
-	secretsDict := map[string]string{}
+	// Resolve secret references and build ordered key-value slice
+	var secretsList []util.KeyValue
 	for _, secret := range allSecrets {
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
-		secretsDict[secret.Key] = resolvedValue
+		resolvedValue, err := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			continue
+		}
+		secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: resolvedValue})
 	}
 
 	switch format {
 	case "json":
-		util.ExportJSON(secretsDict)
+		util.ExportJSON(secretsList)
 	case "csv":
-		util.ExportCSV(secretsDict)
+		util.ExportCSV(secretsList)
 	case "yaml":
-		util.ExportYAML(secretsDict)
+		util.ExportYAML(secretsList)
 	case "xml":
-		util.ExportXML(secretsDict)
+		util.ExportXML(secretsList)
 	case "toml":
-		util.ExportTOML(secretsDict)
+		util.ExportTOML(secretsList)
 	case "hcl":
-		util.ExportHCL(secretsDict)
+		util.ExportHCL(secretsList)
 	case "ini":
-		util.ExportINI(secretsDict)
+		util.ExportINI(secretsList)
 	case "java_properties":
-		util.ExportJavaProperties(secretsDict)
+		util.ExportJavaProperties(secretsList)
 	case "kv":
-		util.ExportKV(secretsDict)
+		util.ExportKV(secretsList)
 	case "dotenv":
-		util.ExportDotenv(secretsDict)
+		util.ExportDotenv(secretsList)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown format: %s, using dotenv\n", format)
-		util.ExportDotenv(secretsDict)
+		util.ExportDotenv(secretsList)
 	}
 
 	return nil
