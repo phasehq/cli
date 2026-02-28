@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
+	phaseerrors "github.com/phasehq/cli/pkg/errors"
 	"github.com/phasehq/cli/pkg/version"
 	"github.com/spf13/cobra"
 )
@@ -23,13 +25,16 @@ const phaseASCii = `
 const description = "Keep Secrets."
 
 var rootCmd = &cobra.Command{
-	Use:   "phase",
-	Short: description,
-	Long:  description + "\n" + phaseASCii,
+	Use:          "phase",
+	Short:        description,
+	Long:         description + "\n" + phaseASCii,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", phaseerrors.FormatSDKError(err))
 		os.Exit(1)
 	}
 }
