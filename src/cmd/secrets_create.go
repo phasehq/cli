@@ -110,6 +110,8 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create secret: %w", err)
 	}
 
-	listSecrets(p, envName, appName, appID, "", path, false)
+	if err := listSecrets(p, envName, appName, appID, "", path, false, false, false, nil); err != nil {
+		return err
+	}
 	return nil
 }

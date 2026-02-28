@@ -21,7 +21,7 @@ func init() {
 	secretsDeleteCmd.Flags().String("env", "", "Environment name")
 	secretsDeleteCmd.Flags().String("app", "", "Application name")
 	secretsDeleteCmd.Flags().String("app-id", "", "Application ID")
-	secretsDeleteCmd.Flags().String("path", "", "Path filter")
+	secretsDeleteCmd.Flags().String("path", "/", "Path filter (default '/'. Pass empty string to delete from all paths)")
 	secretsCmd.AddCommand(secretsDeleteCmd)
 }
 
@@ -59,8 +59,7 @@ func runSecretsDelete(cmd *cobra.Command, args []string) error {
 		Path:         path,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to delete secrets: %w", err)
 	}
 
 	if len(keysNotFound) > 0 {
@@ -69,6 +68,8 @@ func runSecretsDelete(cmd *cobra.Command, args []string) error {
 		fmt.Println(util.BoldGreen("✅ Successfully deleted the secrets."))
 	}
 
-	listSecrets(p, envName, appName, appID, "", path, false)
+	if err := listSecrets(p, envName, appName, appID, "", path, false, false, false, nil); err != nil {
+		return err
+	}
 	return nil
 }
