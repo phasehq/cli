@@ -13,7 +13,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var sampleSecrets = map[string]string{
+var sampleSecrets = []KeyValue{
+	{Key: "AWS_SECRET_ACCESS_KEY", Value: "abc/xyz"},
+	{Key: "AWS_ACCESS_KEY_ID", Value: "AKIA123"},
+	{Key: "JWT_SECRET", Value: "token.value"},
+	{Key: "DB_PASSWORD", Value: "pass%word"},
+}
+
+// sampleSecretsMap is a convenience lookup for assertions.
+var sampleSecretsMap = map[string]string{
 	"AWS_SECRET_ACCESS_KEY": "abc/xyz",
 	"AWS_ACCESS_KEY_ID":     "AKIA123",
 	"JWT_SECRET":            "token.value",
@@ -65,10 +73,10 @@ func TestExportJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal json output: %v", err)
 	}
-	if len(got) != len(sampleSecrets) {
-		t.Fatalf("unexpected key count: got %d want %d", len(got), len(sampleSecrets))
+	if len(got) != len(sampleSecretsMap) {
+		t.Fatalf("unexpected key count: got %d want %d", len(got), len(sampleSecretsMap))
 	}
-	for k, v := range sampleSecrets {
+	for k, v := range sampleSecretsMap {
 		if got[k] != v {
 			t.Fatalf("mismatch for %s: got %q want %q", k, got[k], v)
 		}
@@ -94,7 +102,7 @@ func TestExportCSV(t *testing.T) {
 		}
 		got[row[0]] = row[1]
 	}
-	for k, v := range sampleSecrets {
+	for k, v := range sampleSecretsMap {
 		if got[k] != v {
 			t.Fatalf("mismatch for %s: got %q want %q", k, got[k], v)
 		}
@@ -108,7 +116,7 @@ func TestExportYAML(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal yaml output: %v", err)
 	}
-	for k, v := range sampleSecrets {
+	for k, v := range sampleSecretsMap {
 		if got[k] != v {
 			t.Fatalf("mismatch for %s: got %q want %q", k, got[k], v)
 		}
@@ -133,7 +141,7 @@ func TestExportXML(t *testing.T) {
 	for _, e := range parsed.Entries {
 		got[e.Name] = e.Value
 	}
-	for k, v := range sampleSecrets {
+	for k, v := range sampleSecretsMap {
 		if got[k] != v {
 			t.Fatalf("mismatch for %s: got %q want %q", k, got[k], v)
 		}
@@ -143,7 +151,7 @@ func TestExportXML(t *testing.T) {
 func TestExportDotenvAndKVLikeFormats(t *testing.T) {
 	dotenvOut := captureStdout(t, func() { ExportDotenv(sampleSecrets) })
 	dotenv := parseKeyValueLines(t, dotenvOut)
-	for k, v := range sampleSecrets {
+	for k, v := range sampleSecretsMap {
 		if dotenv[k] != `"`+v+`"` {
 			t.Fatalf("dotenv mismatch for %s: got %q want %q", k, dotenv[k], `"`+v+`"`)
 		}
@@ -151,7 +159,7 @@ func TestExportDotenvAndKVLikeFormats(t *testing.T) {
 
 	kvOut := captureStdout(t, func() { ExportKV(sampleSecrets) })
 	kv := parseKeyValueLines(t, kvOut)
-	for k, v := range sampleSecrets {
+	for k, v := range sampleSecretsMap {
 		if kv[k] != v {
 			t.Fatalf("kv mismatch for %s: got %q want %q", k, kv[k], v)
 		}
@@ -159,7 +167,7 @@ func TestExportDotenvAndKVLikeFormats(t *testing.T) {
 
 	javaOut := captureStdout(t, func() { ExportJavaProperties(sampleSecrets) })
 	javaProps := parseKeyValueLines(t, javaOut)
-	for k, v := range sampleSecrets {
+	for k, v := range sampleSecretsMap {
 		if javaProps[k] != v {
 			t.Fatalf("java properties mismatch for %s: got %q want %q", k, javaProps[k], v)
 		}
