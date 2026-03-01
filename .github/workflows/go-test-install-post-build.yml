@@ -1,0 +1,105 @@
+name: "[Go] Test Installation on Linux"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  test_install_x86_64:
+    name: Test on Linux distros (x86_64)
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:22.04", name: ubuntu-22.04 }
+          - { image: "ubuntu:24.04", name: ubuntu-24.04 }
+          - { image: "debian:bookworm", name: debian-bookworm }
+          - { image: "debian:trixie", name: debian-trixie }
+          - { image: "fedora:41", name: fedora-41 }
+          - { image: "fedora:42", name: fedora-42 }
+          - { image: "rockylinux:9", name: rocky-9 }
+          - { image: "amazonlinux:2023", name: amazonlinux-2023 }
+          - { image: "alpine:3.21", name: alpine-3.21 }
+          - { image: "alpine:3.22", name: alpine-3.22 }
+          - { image: "archlinux:latest", name: archlinux-latest }
+    steps:
+      - name: Download linux/amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-linux-amd64
+          path: binary
+
+      - name: Run tests in ${{ matrix.name }}
+        run: |
+          set -e
+          chmod +x binary/phase
+          docker run --rm \
+            -v "${PWD}/binary":/binary \
+            ${{ matrix.image }} \
+            /bin/sh -c "\
+              install -Dm755 /binary/phase /usr/local/bin/phase && \
+              echo '=== Verify phase exists ===' && \
+              command -v phase && \
+              echo '=== phase --version ===' && \
+              phase --version && \
+              echo '=== phase --help (head) ===' && \
+              phase --help | head -20 && \
+              echo '=== version check ===' && \
+              RETURNED_VERSION=\$(phase --version | awk '{print \$1}') && \
+              if [ \"\$RETURNED_VERSION\" != \"${{ inputs.version }}\" ]; then \
+                echo \"Version mismatch: expected ${{ inputs.version }}, got \$RETURNED_VERSION\"; \
+                exit 1; \
+              fi && \
+              echo 'All checks passed' \
+            "
+        shell: bash
+
+  test_install_arm64:
+    name: Test on Linux distros (ARM64)
+    continue-on-error: true
+    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:24.04", name: ubuntu-24.04 }
+          - { image: "debian:bookworm", name: debian-bookworm }
+          - { image: "fedora:42", name: fedora-42 }
+          - { image: "alpine:3.21", name: alpine-3.21 }
+          - { image: "amazonlinux:2023", name: amazonlinux-2023 }
+    steps:
+      - name: Download linux/arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-linux-arm64
+          path: binary
+
+      - name: Run tests in ${{ matrix.name }} (arm64)
+        run: |
+          set -e
+          chmod +x binary/phase
+          docker run --rm \
+            -v "${PWD}/binary":/binary \
+            ${{ matrix.image }} \
+            /bin/sh -c "\
+              install -Dm755 /binary/phase /usr/local/bin/phase && \
+              echo '=== Verify phase exists ===' && \
+              command -v phase && \
+              echo '=== phase --version ===' && \
+              phase --version && \
+              echo '=== phase --help (head) ===' && \
+              phase --help | head -20 && \
+              echo '=== version check ===' && \
+              RETURNED_VERSION=\$(phase --version | awk '{print \$1}') && \
+              if [ \"\$RETURNED_VERSION\" != \"${{ inputs.version }}\" ]; then \
+                echo \"Version mismatch: expected ${{ inputs.version }}, got \$RETURNED_VERSION\"; \
+                exit 1; \
+              fi && \
+              echo 'All checks passed' \
+            "
+        shell: bash

@@ -1,0 +1,71 @@
+name: "[Go] Test, Build, Package the Phase CLI"
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - ".github/workflows/go-*.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - ".github/workflows/go-*.yml"
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+
+  # Run Go tests and vet
+  go-test:
+    uses: ./.github/workflows/go-test.yml
+
+  # Extract version from Go source
+  go-version:
+    uses: ./.github/workflows/go-version.yml
+
+  # Cross-compile for all platforms
+  go-build:
+    needs: [go-test, go-version]
+    uses: ./.github/workflows/go-build.yml
+    with:
+      version: ${{ needs.go-version.outputs.version }}
+
+  # Package, hash, and zip release assets
+  go-process-assets:
+    needs: [go-build, go-version]
+    uses: ./.github/workflows/go-process-assets.yml
+    with:
+      version: ${{ needs.go-version.outputs.version }}
+
+  # Attach release assets to GitHub release
+  go-attach-to-release:
+    if: github.event_name == 'release' && github.event.action == 'created'
+    needs: [go-process-assets, go-version]
+    uses: ./.github/workflows/go-attach-to-release.yml
+    with:
+      version: ${{ needs.go-version.outputs.version }}
+
+  # Build and push Docker image
+  go-docker:
+    if: github.event_name == 'release' && github.event.action == 'created'
+    needs: [go-version]
+    uses: ./.github/workflows/go-docker.yml
+    with:
+      version: ${{ needs.go-version.outputs.version }}
+    secrets:
+      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+  # Test installation on various Linux distros
+  go-test-install:
+    needs: [go-build, go-version]
+    uses: ./.github/workflows/go-test-install-post-build.yml
+    with:
+      version: ${{ needs.go-version.outputs.version }}
