@@ -24,21 +24,21 @@ Commands:
   secrets get                       🔍 Fetch details about a secret in JSON
   secrets create                    💳 Create a new secret
   secrets update                    📝 Update an existing secret
-  secrets delete                    🗑️  Delete a secret
+  secrets delete                    🗑️ Delete a secret
   secrets import                    📩 Import secrets from a .env file
   secrets export                    🥡 Export secrets in a specific format
   dynamic-secrets list              📇 List dynamic secrets & metadata
   dynamic-secrets lease generate    ✨ Generate a lease (create fresh dynamic secret)
   dynamic-secrets lease get         🔍 Get leases for a dynamic secret
   dynamic-secrets lease renew       🔁 Renew a lease
-  dynamic-secrets lease revoke      🗑️  Revoke a lease
+  dynamic-secrets lease revoke      🗑️ Revoke a lease
   users whoami                      🙋 See details of the current user
-  users switch                      🪄  Switch between Phase users, orgs and hosts
+  users switch                      🪄 Switch between Phase users, orgs and hosts
   users logout                      🏃 Logout from phase-cli
   users keyring                     🔐 Display information about the Phase keyring
-  console                           🖥️  Open the Phase Console in your browser
+  console                           🖥️ Open the Phase Console in your browser
   docs                              📖 Open the Phase CLI Docs in your browser
-  completion                        ⌨️  Generate the autocompletion script for the specified shell
+  completion                        ⌨️ Generate the autocompletion script for the specified shell
 
 Flags:
   -h, --help      help for phase
@@ -62,10 +62,6 @@ Flags:
 - **OS keyring integration** — credentials stored in macOS Keychain, GNOME Keyring, or Windows Credential Manager
 - **Multiple environments** — dev, staging, production, and custom environments with per-project defaults via `phase init`
 
-## See it in action
-
-[![asciicast](media/phase-cli-demo.gif)](asciinema-cli-demo)
-
 ## Installation
 
 You can install Phase-CLI using curl:
@@ -76,9 +72,11 @@ curl -fsSL https://pkg.phase.dev/install.sh | bash
 
 ## Usage
 
-### Login
+### Prerequisites
 
-Create an app in the [Phase Console](https://console.phase.dev) and copy appID and pss
+- Create an app in the [Phase Console](https://console.phase.dev)
+
+### Login
 
 ```bash
 phase auth
@@ -92,7 +90,7 @@ Link the phase cli to your project
 phase init
 ```
 
-### Import .env
+### Import .env (optional)
 
 Import and encrypt existing secrets and environment variables
 
@@ -100,7 +98,7 @@ Import and encrypt existing secrets and environment variables
 phase secrets import .env
 ```
 
-## List / view secrets
+### List / view secrets
 
 ```bash
 phase secrets list --show
