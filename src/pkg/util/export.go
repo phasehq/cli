@@ -11,73 +11,113 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func ExportDotenv(secrets map[string]string) {
-	for key, value := range secrets {
-		fmt.Printf("%s=\"%s\"\n", key, value)
+// KeyValue preserves insertion order for deterministic export output.
+type KeyValue struct {
+	Key   string
+	Value string
+}
+
+func ExportDotenv(secrets []KeyValue) {
+	for _, kv := range secrets {
+		fmt.Printf("%s=\"%s\"\n", kv.Key, kv.Value)
 	}
 }
 
-func ExportJSON(secrets map[string]string) {
-	data, _ := json.MarshalIndent(secrets, "", "    ")
-	fmt.Println(string(data))
+func ExportJSON(secrets []KeyValue) {
+	// Use json.Encoder to produce an ordered JSON object
+	ordered := make([]struct {
+		Key   string
+		Value string
+	}, len(secrets))
+	for i, kv := range secrets {
+		ordered[i].Key = kv.Key
+		ordered[i].Value = kv.Value
+	}
+	// Build a manually ordered JSON object to preserve key order
+	fmt.Print("{\n")
+	for i, kv := range secrets {
+		keyJSON, _ := json.Marshal(kv.Key)
+		valJSON, _ := json.Marshal(kv.Value)
+		fmt.Printf("    %s: %s", string(keyJSON), string(valJSON))
+		if i < len(secrets)-1 {
+			fmt.Print(",")
+		}
+		fmt.Println()
+	}
+	fmt.Println("}")
 }
 
-func ExportCSV(secrets map[string]string) {
+func ExportCSV(secrets []KeyValue) {
 	w := csv.NewWriter(os.Stdout)
 	w.Write([]string{"Key", "Value"})
-	for key, value := range secrets {
-		w.Write([]string{key, value})
+	for _, kv := range secrets {
+		w.Write([]string{kv.Key, kv.Value})
 	}
 	w.Flush()
 }
 
-func ExportYAML(secrets map[string]string) {
-	data, _ := yaml.Marshal(secrets)
-	fmt.Print(string(data))
+func ExportYAML(secrets []KeyValue) {
+	// Build ordered YAML manually to preserve key order
+	node := &yaml.Node{
+		Kind: yaml.MappingNode,
+	}
+	for _, kv := range secrets {
+		node.Content = append(node.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: kv.Key},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: kv.Value},
+		)
+	}
+	doc := &yaml.Node{
+		Kind:    yaml.DocumentNode,
+		Content: []*yaml.Node{node},
+	}
+	enc := yaml.NewEncoder(os.Stdout)
+	enc.Encode(doc)
+	enc.Close()
 }
 
-func ExportXML(secrets map[string]string) {
+func ExportXML(secrets []KeyValue) {
 	fmt.Println("<Secrets>")
-	for key, value := range secrets {
+	for _, kv := range secrets {
 		var escaped strings.Builder
-		xml.EscapeText(&escaped, []byte(value))
-		fmt.Printf("  <secret name=\"%s\">%s</secret>\n", key, escaped.String())
+		xml.EscapeText(&escaped, []byte(kv.Value))
+		fmt.Printf("  <secret name=\"%s\">%s</secret>\n", kv.Key, escaped.String())
 	}
 	fmt.Println("</Secrets>")
 }
 
-func ExportTOML(secrets map[string]string) {
-	for key, value := range secrets {
-		fmt.Printf("%s = \"%s\"\n", key, value)
+func ExportTOML(secrets []KeyValue) {
+	for _, kv := range secrets {
+		fmt.Printf("%s = \"%s\"\n", kv.Key, kv.Value)
 	}
 }
 
-func ExportHCL(secrets map[string]string) {
-	for key, value := range secrets {
-		escaped := strings.ReplaceAll(value, "\"", "\\\"")
-		fmt.Printf("variable \"%s\" {\n", key)
+func ExportHCL(secrets []KeyValue) {
+	for _, kv := range secrets {
+		escaped := strings.ReplaceAll(kv.Value, "\"", "\\\"")
+		fmt.Printf("variable \"%s\" {\n", kv.Key)
 		fmt.Printf("  default = \"%s\"\n", escaped)
 		fmt.Println("}")
 		fmt.Println()
 	}
 }
 
-func ExportINI(secrets map[string]string) {
+func ExportINI(secrets []KeyValue) {
 	fmt.Println("[DEFAULT]")
-	for key, value := range secrets {
-		escaped := strings.ReplaceAll(value, "%", "%%")
-		fmt.Printf("%s = %s\n", key, escaped)
+	for _, kv := range secrets {
+		escaped := strings.ReplaceAll(kv.Value, "%", "%%")
+		fmt.Printf("%s = %s\n", kv.Key, escaped)
 	}
 }
 
-func ExportJavaProperties(secrets map[string]string) {
-	for key, value := range secrets {
-		fmt.Printf("%s=%s\n", key, value)
+func ExportJavaProperties(secrets []KeyValue) {
+	for _, kv := range secrets {
+		fmt.Printf("%s=%s\n", kv.Key, kv.Value)
 	}
 }
 
-func ExportKV(secrets map[string]string) {
-	for key, value := range secrets {
-		fmt.Printf("%s=%s\n", key, value)
+func ExportKV(secrets []KeyValue) {
+	for _, kv := range secrets {
+		fmt.Printf("%s=%s\n", kv.Key, kv.Value)
 	}
 }

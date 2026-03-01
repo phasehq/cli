@@ -13,7 +13,7 @@ type PhaseJSONConfig struct {
 	AppID           string `json:"appId"`
 	DefaultEnv      string `json:"defaultEnv"`
 	EnvID           string `json:"envId"`
-	MonorepoSupport bool   `json:"monorepoSupport,omitempty"`
+	MonorepoSupport bool   `json:"monorepoSupport"`
 }
 
 func FindPhaseConfig(maxDepth int) *PhaseJSONConfig {

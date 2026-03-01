@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/phasehq/cli/pkg/display"
 	"github.com/phasehq/cli/pkg/phase"
@@ -18,8 +17,8 @@ var secretsListCmd = &cobra.Command{
 
 Icon legend:
   🔗  Secret references another secret in the same environment
-  ⛓️   Cross-environment reference (secret from another environment)
-  🏷️  Tag associated with the secret
+  🌐  Cross-environment reference (secret from another environment in the same or different application)
+  🔖  Tag associated with the secret
   💬  Comment associated with the secret
   🔏  Personal secret override (visible only to you)
   ⚡️  Dynamic secret`,
@@ -33,27 +32,34 @@ func init() {
 	secretsListCmd.Flags().String("app-id", "", "Application ID")
 	secretsListCmd.Flags().String("tags", "", "Filter by tags")
 	secretsListCmd.Flags().String("path", "", "Path filter")
+	secretsListCmd.Flags().String("generate-leases", "", "Generate leases for dynamic secrets (defaults to value of --show)")
+	secretsListCmd.Flags().Int("lease-ttl", 0, "Lease TTL in seconds")
 	secretsCmd.AddCommand(secretsListCmd)
 }
 
 // listSecrets fetches and displays secrets. Used by list, create, update, and delete commands.
-func listSecrets(p *sdk.Phase, envName, appName, appID, tags, path string, show bool) {
+func listSecrets(p *sdk.Phase, envName, appName, appID, tags, path string, show, dynamic, lease bool, leaseTTL *int) error {
+	opts := sdk.GetOptions{
+		EnvName:  envName,
+		AppName:  appName,
+		AppID:    appID,
+		Tag:      tags,
+		Path:     path,
+		Dynamic:  dynamic,
+		Lease:    lease,
+		LeaseTTL: leaseTTL,
+	}
+
 	spinner := util.NewSpinner("Fetching secrets...")
 	spinner.Start()
-	secrets, err := p.Get(sdk.GetOptions{
-		EnvName: envName,
-		AppName: appName,
-		AppID:   appID,
-		Tag:     tags,
-		Path:    path,
-	})
+	secrets, err := p.Get(opts)
 	spinner.Stop()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return
+		return err
 	}
 
 	display.RenderSecretsTree(secrets, show)
+	return nil
 }
 
 func runSecretsList(cmd *cobra.Command, args []string) error {
@@ -63,16 +69,31 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 	appID, _ := cmd.Flags().GetString("app-id")
 	tags, _ := cmd.Flags().GetString("tags")
 	path, _ := cmd.Flags().GetString("path")
+	generateLeases, _ := cmd.Flags().GetString("generate-leases")
+	leaseTTL, _ := cmd.Flags().GetInt("lease-ttl")
 
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
-	listSecrets(p, envName, appName, appID, tags, path, show)
+	// Match Python behavior: lease=show unless --generate-leases explicitly set
+	var lease bool
+	if cmd.Flags().Changed("generate-leases") {
+		lease = util.ParseBoolFlag(generateLeases)
+	} else {
+		lease = show
+	}
+	var leaseTTLPtr *int
+	if cmd.Flags().Changed("lease-ttl") {
+		leaseTTLPtr = &leaseTTL
+	}
+
+	if err := listSecrets(p, envName, appName, appID, tags, path, show, true, lease, leaseTTLPtr); err != nil {
+		return err
+	}
 
 	fmt.Println("🔬 To view a secret, use: phase secrets get <key>")
 	if !show {

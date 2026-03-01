@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/phasehq/cli/pkg/phase"
@@ -24,6 +23,7 @@ func init() {
 	secretsGetCmd.Flags().String("app", "", "Application name")
 	secretsGetCmd.Flags().String("app-id", "", "Application ID")
 	secretsGetCmd.Flags().String("path", "/", "Path filter")
+	secretsGetCmd.Flags().String("tags", "", "Filter by tags")
 	secretsGetCmd.Flags().String("generate-leases", "true", "Generate leases for dynamic secrets")
 	secretsGetCmd.Flags().Int("lease-ttl", 0, "Lease TTL in seconds")
 	secretsCmd.AddCommand(secretsGetCmd)
@@ -35,6 +35,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 	appName, _ := cmd.Flags().GetString("app")
 	appID, _ := cmd.Flags().GetString("app-id")
 	path, _ := cmd.Flags().GetString("path")
+	tags, _ := cmd.Flags().GetString("tags")
 	generateLeases, _ := cmd.Flags().GetString("generate-leases")
 	leaseTTL, _ := cmd.Flags().GetInt("lease-ttl")
 
@@ -42,8 +43,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	opts := sdk.GetOptions{
@@ -51,6 +51,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		AppName: appName,
 		AppID:   appID,
 		Keys:    []string{key},
+		Tag:     tags,
 		Path:    path,
 		Dynamic: true,
 		Lease:   util.ParseBoolFlag(generateLeases),
@@ -61,8 +62,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 
 	secrets, err := p.Get(opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	var found *sdk.SecretResult
@@ -74,8 +74,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if found == nil {
-		fmt.Fprintf(os.Stderr, "🔍 Secret not found\n")
-		os.Exit(1)
+		return fmt.Errorf("🔍 Secret not found")
 	}
 
 	data, _ := json.MarshalIndent(found, "", "    ")

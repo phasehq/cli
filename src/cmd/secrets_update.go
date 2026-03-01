@@ -120,7 +120,9 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 		if destPath != "" {
 			listPath = destPath
 		}
-		listSecrets(p, envName, appName, appID, "", listPath, false)
+		if err := listSecrets(p, envName, appName, appID, "", listPath, false, false, false, nil); err != nil {
+			return err
+		}
 	} else {
 		fmt.Println(result)
 	}

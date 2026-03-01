@@ -74,7 +74,10 @@ func runShell(cmd *cobra.Command, args []string) error {
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
+		resolvedValue, err := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
+		if err != nil {
+			return err
+		}
 		resolvedSecrets[secret.Key] = resolvedValue
 	}
 

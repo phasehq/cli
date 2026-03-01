@@ -75,16 +75,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
+		resolvedValue, err := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
+		if err != nil {
+			return err
+		}
 		resolvedSecrets[secret.Key] = resolvedValue
 	}
 
-	// Build environment: inherit current env and append secrets
-	envSlice := os.Environ()
-	for k, v := range resolvedSecrets {
-		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
-	}
-
+	// Print injection stats to stderr (matches Python CLI behavior)
 	secretCount := len(resolvedSecrets)
 	apps := map[string]bool{}
 	envs := map[string]bool{}
@@ -96,7 +94,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 			envs[s.Environment] = true
 		}
 	}
-
 	appNames := mapKeys(apps)
 	envNames := mapKeys(envs)
 
@@ -111,6 +108,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 			util.BoldMagentaErr(fmt.Sprintf("%d", secretCount)),
 			util.BoldCyanErr(strings.Join(appNames, ", ")),
 			util.BoldGreenErr(strings.Join(envNames, ", ")))
+	}
+
+	// Build environment: inherit current env and append secrets
+	envSlice := os.Environ()
+	for k, v := range resolvedSecrets {
+		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
 	}
 
 	// Execute command
