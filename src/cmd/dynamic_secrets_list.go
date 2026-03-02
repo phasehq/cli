@@ -19,7 +19,7 @@ func init() {
 	dynamicSecretsListCmd.Flags().String("env", "", "Environment name")
 	dynamicSecretsListCmd.Flags().String("app", "", "Application name")
 	dynamicSecretsListCmd.Flags().String("app-id", "", "Application ID")
-	dynamicSecretsListCmd.Flags().String("path", "", "Path filter")
+	dynamicSecretsListCmd.Flags().String("path", "/", "Path filter")
 	dynamicSecretsCmd.AddCommand(dynamicSecretsListCmd)
 }
 
