@@ -3,6 +3,7 @@ package util
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -93,4 +94,13 @@ func GetShellCommand(shellType string) ([]string, error) {
 		return nil, fmt.Errorf("shell '%s' not found in PATH: %w", shell, err)
 	}
 	return []string{path}, nil
+}
+
+// ValidateURL checks that a URL has both a scheme (e.g. https) and a host (e.g. example.com).
+func ValidateURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme != "" && parsed.Host != ""
 }

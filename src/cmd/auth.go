@@ -56,6 +56,9 @@ func runAuth(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return fmt.Errorf("host URL is required for self-hosted instances")
 			}
+			if !util.ValidateURL(host) {
+				return fmt.Errorf("invalid URL. Please ensure you include the scheme (e.g., https) and domain. Keep in mind, path and port are optional")
+			}
 		} else {
 			host = config.PhaseCloudAPIHost
 		}
