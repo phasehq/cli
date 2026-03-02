@@ -6,6 +6,34 @@ import (
 	"testing"
 )
 
+func TestValidateURL(t *testing.T) {
+	valid := []string{
+		"https://example.com",
+		"https://console.phase.dev",
+		"http://localhost:8080",
+		"https://phase.internal.company.com/api",
+		"https://10.0.0.1:3000",
+	}
+	for _, u := range valid {
+		if !ValidateURL(u) {
+			t.Fatalf("expected valid for %q", u)
+		}
+	}
+
+	invalid := []string{
+		"example.com",
+		"just-a-hostname",
+		"://missing-scheme",
+		"",
+		"ftp//no-colon.com",
+	}
+	for _, u := range invalid {
+		if ValidateURL(u) {
+			t.Fatalf("expected invalid for %q", u)
+		}
+	}
+}
+
 func TestParseBoolFlag(t *testing.T) {
 	falseCases := []string{"false", "FALSE", "no", "0", "  no  "}
 	for _, tc := range falseCases {
