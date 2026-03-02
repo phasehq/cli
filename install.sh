@@ -1,285 +1,258 @@
-#!/bin/bash
+#!/bin/sh
+#
+#              /$$
+#             | $$
+#     /$$$$$$ | $$$$$$$   /$$$$$$   /$$$$$$$  /$$$$$$
+#    /$$__  $$| $$__  $$ |____  $$ /$$_____/ /$$__  $$
+#   | $$  \ $$| $$  \ $$  /$$$$$$$|  $$$$$$ | $$$$$$$$
+#   | $$  | $$| $$  | $$ /$$__  $$ \____  $$| $$_____/
+#   | $$$$$$$/| $$  | $$|  $$$$$$$ /$$$$$$$/|  $$$$$$$
+#   | $$____/ |__/  |__/ \_______/|_______/  \_______/
+#   | $$
+#   |__/
+# 
+# Phase CLI installer.
+# 
+# Usage:
+#   curl -fsSL https://pkg.phase.dev/install.sh | sh
+#   curl -fsSL https://pkg.phase.dev/install.sh | sh -s -- --version 2.0.0
+#
+# Supports: Linux, macOS, FreeBSD, OpenBSD, NetBSD
+# Architectures: x86_64, arm64, armv7, mips, mips64, riscv64, ppc64le, s390x
 
 set -e
 
 REPO="phasehq/cli"
-BASE_URL="https://github.com/$REPO/releases/download"
+INSTALL_DIR="/usr/local/bin"
+BINARY_NAME="phase"
 
-detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
+# --- Helpers ---
+
+die() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+info() {
+    echo "  $1"
+}
+
+# Run a command with elevated privileges if needed
+do_install() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo > /dev/null 2>&1; then
+        sudo "$@"
+    elif command -v doas > /dev/null 2>&1; then
+        doas "$@"
     else
-        echo "Can't detect OS type."
-        exit 1
+        die "This script must be run as root or with sudo/doas available."
     fi
 }
 
-has_sudo_access() {
-    if sudo -n true 2>/dev/null; then
-        return 0
+# Download a URL to a file. Prefers curl, falls back to wget.
+fetch() {
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL -o "$2" "$1"
+    elif command -v wget > /dev/null 2>&1; then
+        wget -qO "$2" "$1"
     else
-        return 1
+        die "curl or wget is required to download files."
     fi
 }
 
-can_install_without_sudo() {
-    case $OS in
-        ubuntu|debian)
-            if dpkg -l >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
-        fedora|rhel|centos|amzn|rocky)
-            if rpm -q rpm >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
-        alpine)
-            if apk --version >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
-        arch)
-            if pacman -V >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
+# Download a URL to stdout.
+fetch_stdout() {
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL "$1"
+    elif command -v wget > /dev/null 2>&1; then
+        wget -qO - "$1"
+    else
+        die "curl or wget is required to download files."
+    fi
+}
+
+# --- Detection ---
+
+detect_platform() {
+    OS="$(uname -s)"
+    ARCH="$(uname -m)"
+
+    case "$OS" in
+        Linux)                    OS="linux" ;;
+        Darwin)                   OS="darwin" ;;
+        FreeBSD)                  OS="freebsd" ;;
+        OpenBSD)                  OS="openbsd" ;;
+        NetBSD)                   OS="netbsd" ;;
+        MINGW*|MSYS*|CYGWIN*)     die "Windows is not supported by this script. Use Scoop instead: scoop bucket add phasehq https://github.com/phasehq/scoop-cli.git && scoop install phase" ;;
+        *)                        die "Unsupported operating system: $OS" ;;
     esac
-    return 1
-}
 
-prompt_sudo() {
-    if [ "$EUID" -ne 0 ]; then
-        if command -v sudo >/dev/null 2>&1; then
-            echo "This operation requires elevated privileges. Please enter your sudo password if prompted."
-            sudo -v
-            if [ $? -ne 0 ]; then
-                echo "Failed to obtain sudo privileges. Exiting."
-                exit 1
-            fi
-        else
-            echo "Error: This script must be run as root or with sudo privileges."
-            exit 1
-        fi
-    fi
-}
-
-install_tool() {
-    local TOOL=$1
-    echo "Installing $TOOL..."
-    if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-        case $OS in
-            ubuntu|debian)
-                apt-get update && apt-get install -y $TOOL
-                ;;
-            fedora|rhel|centos|amzn|rocky)
-                yum install -y $TOOL
-                ;;
-            alpine)
-                apk add $TOOL
-                ;;
-            arch)
-                pacman -Sy --noconfirm $TOOL
-                ;;
-        esac
-    else
-        prompt_sudo
-        case $OS in
-            ubuntu|debian)
-                sudo apt-get update && sudo apt-get install -y $TOOL
-                ;;
-            fedora|rhel|centos|amzn|rocky)
-                sudo yum install -y $TOOL
-                ;;
-            alpine)
-                sudo apk add $TOOL
-                ;;
-            arch)
-                sudo pacman -Sy --noconfirm $TOOL
-                ;;
-        esac
-    fi
-}
-
-check_required_tools() {
-    for TOOL in wget curl jq unzip; do
-        if ! command -v $TOOL > /dev/null; then
-            install_tool $TOOL
-        fi
-    done
-    # sha256sum is provided by coreutils on most distros
-    if ! command -v sha256sum > /dev/null; then
-        install_tool coreutils
-    fi
+    case "$ARCH" in
+        x86_64|amd64)     ARCH="amd64" ;;
+        aarch64|arm64)    ARCH="arm64" ;;
+        armv7l|armv6l)    ARCH="arm" ;;
+        mips)             ARCH="mips" ;;
+        mipsel)           ARCH="mipsle" ;;
+        mips64)           ARCH="mips64" ;;
+        mips64el)         ARCH="mips64le" ;;
+        riscv64)          ARCH="riscv64" ;;
+        ppc64le)          ARCH="ppc64le" ;;
+        s390x)            ARCH="s390x" ;;
+        i386|i686)        ARCH="386" ;;
+        *)                die "Unsupported architecture: $ARCH" ;;
+    esac
 }
 
 get_latest_version() {
-    curl -s "https://api.github.com/repos/$REPO/releases/latest" | jq -r .tag_name | cut -c 2-
+    fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" | \
+        sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p'
 }
 
-wget_download() {
-    if wget --help 2>&1 | grep -q '\--show-progress'; then
-        wget --show-progress "$1" -O "$2"
-    else
-        wget "$1" -O "$2"
-    fi
-}
+# --- Install ---
 
-verify_checksum() {
-    local file="$1"
-    local checksum_url="$2"
-    local checksum_file="$TMPDIR/checksum.sha256"
-    
-    wget_download "$checksum_url" "$checksum_file"
-    
-    while IFS= read -r line; do
-        local expected_checksum=$(echo "$line" | awk '{print $1}')
-        local target_file=$(echo "$line" | awk '{print $2}')
+cleanup_legacy() {
+    # Clean up any remnants of the PyInstaller-based Python CLI (v1.x).
+    # The old install script installed differently depending on distro/arch:
+    #   A) DEB package  (Ubuntu/Debian amd64):  dpkg package "phase" -> /usr/lib/phase/ + /usr/bin/phase symlink
+    #   B) RPM package  (Fedora/RHEL amd64):    rpm package "phase"  -> /usr/lib/phase/ + /usr/bin/phase symlink
+    #   C) APK package  (Alpine amd64+arm64):    apk package "phase"  -> Python setuptools install + /usr/bin/phase
+    #   D) Binary zip   (arm64 non-Alpine, Arch): raw files           -> /usr/local/bin/phase + /usr/local/bin/_internal/
 
-        if [[ -e "$target_file" ]]; then
-            local computed_checksum=$(sha256sum "$target_file" | awk '{print $1}')
-            
-            if [[ "$expected_checksum" != "$computed_checksum" ]]; then
-                echo "Checksum verification failed for $target_file!"
-                exit 1
-            fi
+    found_legacy=false
+
+    # --- Package manager cleanup (removes tracked files + database entry) ---
+
+    # Scenario A: DEB package
+    if command -v dpkg > /dev/null 2>&1; then
+        if dpkg -s phase > /dev/null 2>&1; then
+            info "Removing legacy Phase CLI v1 DEB package..."
+            do_install dpkg --purge phase 2>/dev/null || do_install dpkg -r phase 2>/dev/null || true
+            found_legacy=true
         fi
-    done < "$checksum_file"
-}
+    fi
 
-install_from_binary() {
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64)
-            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
-            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip.sha256"
-            EXTRACT_DIR="Linux-binary/phase"
-            ;;
-        aarch64)
-            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
-            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip.sha256"
-            EXTRACT_DIR="Linux-binary-arm64/phase"
-            ;;
-        *)
-            echo "Unsupported architecture: $ARCH. This script supports x86_64 and arm64."
-            exit 1
-            ;;
-    esac
+    # Scenario B: RPM package
+    if command -v rpm > /dev/null 2>&1; then
+        if rpm -q phase > /dev/null 2>&1; then
+            info "Removing legacy Phase CLI v1 RPM package..."
+            do_install rpm -e --nodeps phase 2>/dev/null || true
+            found_legacy=true
+        fi
+    fi
 
-    wget_download "$ZIP_URL" "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip"
-    unzip "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip" -d "$TMPDIR"
+    # Scenario C: APK package
+    if command -v apk > /dev/null 2>&1; then
+        if apk info -e phase > /dev/null 2>&1; then
+            info "Removing legacy Phase CLI v1 APK package..."
+            do_install apk del phase 2>/dev/null || true
+            found_legacy=true
+        fi
+    fi
 
-    BINARY_PATH="$TMPDIR/$EXTRACT_DIR/phase"
-    INTERNAL_DIR_PATH="$TMPDIR/$EXTRACT_DIR/_internal"
+    # --- Filesystem cleanup (catch anything left after package removal) ---
 
-    verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
-    chmod +x "$BINARY_PATH"
+    # Scenario D: PyInstaller _internal directory from binary zip install
+    if [ -d "${INSTALL_DIR}/_internal" ]; then
+        info "Removing legacy PyInstaller _internal directory..."
+        do_install rm -rf "${INSTALL_DIR}/_internal"
+        found_legacy=true
+    fi
 
-    if [ "$EUID" -eq 0 ]; then
-        # Running as root, no need for sudo
-        mv "$BINARY_PATH" /usr/local/bin/phase
-        mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
-    elif command -v sudo >/dev/null 2>&1; then
-        # Not root, but sudo is available
-        echo "This operation requires elevated privileges. Please enter your sudo password if prompted."
-        sudo mv "$BINARY_PATH" /usr/local/bin/phase
-        sudo mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
-    else
-        echo "Error: This script must be run as root or with sudo privileges."
-        exit 1
+    # Stale symlink at /usr/bin/phase from DEB/RPM packages
+    if [ -L "/usr/bin/phase" ]; then
+        link_target=$(readlink "/usr/bin/phase" 2>/dev/null || true)
+        case "$link_target" in
+            *lib/phase/phase*)
+                info "Removing stale symlink /usr/bin/phase..."
+                do_install rm -f "/usr/bin/phase"
+                found_legacy=true
+                ;;
+        esac
+    fi
+
+    # Leftover /usr/lib/phase/ directory from DEB/RPM packages
+    if [ -d "/usr/lib/phase" ]; then
+        info "Removing legacy /usr/lib/phase/ directory..."
+        do_install rm -rf "/usr/lib/phase"
+        found_legacy=true
+    fi
+
+    if [ "$found_legacy" = true ]; then
+        info "Legacy Phase CLI v1 cleanup complete."
     fi
 }
 
-install_package() {
-    ARCH=$(uname -m)
-    # For non-Alpine ARM64 systems, fall back to binary installation
-    if [ "$ARCH" = "aarch64" ] && [ "$OS" != "alpine" ]; then
-        install_from_binary
-        echo "phase-cli version $VERSION successfully installed"
-        return
+install_binary() {
+    version="$1"
+
+    asset_name="phase-cli_${OS}_${ARCH}"
+    download_url="https://github.com/${REPO}/releases/download/v${version}/${asset_name}"
+
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    echo ""
+    info "Phase CLI v${version} (${OS}/${ARCH})"
+    echo ""
+
+    info "Downloading ${download_url}..."
+    fetch "$download_url" "${tmpdir}/${asset_name}"
+
+    chmod +x "${tmpdir}/${asset_name}"
+
+    # Ensure install directory exists
+    if [ ! -d "$INSTALL_DIR" ]; then
+        do_install mkdir -p "$INSTALL_DIR"
     fi
 
-    if [ "$EUID" -ne 0 ] && ! can_install_without_sudo; then
-        prompt_sudo
-    fi
+    info "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
+    do_install install -m 755 "${tmpdir}/${asset_name}" "${INSTALL_DIR}/${BINARY_NAME}"
 
-    case $OS in
-        ubuntu|debian)
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
-            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
-            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.deb" "$PACKAGE_URL.sha256"
-            if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-                dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
-            else
-                sudo dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
-            fi
-            ;;
+    cleanup_legacy
 
-        fedora|rhel|centos|amzn|rocky)
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.rpm"
-            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.rpm" "$PACKAGE_URL.sha256"
-            if [ "$EUID" -eq 0 ]; then
-                rpm -Uvh $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            else
-                echo "Installing RPM package. This may require sudo privileges."
-                sudo rpm -Uvh $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            fi
-            ;;
+    echo ""
+    info "Phase CLI v${version} installed successfully."
+    echo ""
 
-        alpine)
-            case $ARCH in
-                x86_64)
-                    APK_ARCH="amd64"
-                    ;;
-                aarch64)
-                    APK_ARCH="arm64"
-                    ;;
-                *)
-                    echo "Unsupported architecture for Alpine: $ARCH"
-                    exit 1
-                    ;;
-            esac
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_${APK_ARCH}_$VERSION.apk"
-            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
-            verify_checksum "$TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk" "$PACKAGE_URL.sha256"
-            if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-                apk add --allow-untrusted $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
-            else
-                sudo apk add --allow-untrusted $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
-            fi
-            ;;
-
-        *)
-            install_from_binary
-            ;;
-    esac
-    echo "phase-cli version $VERSION successfully installed"
+    # Show the installed version
+    "${INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null || true
 }
+
+# --- Main ---
 
 main() {
-    detect_os
-    check_required_tools
-    TMPDIR=$(mktemp -d)
+    detect_platform
 
-    # Default to the latest version unless a specific version is requested
-    VERSION=$(get_latest_version)
+    VERSION=""
 
-    # Parse command-line arguments
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --version)
                 VERSION="$2"
                 shift 2
                 ;;
+            --help|-h)
+                echo "Usage: install.sh [--version VERSION]"
+                echo ""
+                echo "Install the Phase CLI. If no version is specified, the latest release is installed."
+                exit 0
+                ;;
             *)
-                break
+                die "Unknown option: $1. Use --help for usage."
                 ;;
         esac
     done
 
-    install_package
+    if [ -z "$VERSION" ]; then
+        info "Fetching latest version..."
+        VERSION=$(get_latest_version)
+        if [ -z "$VERSION" ]; then
+            die "Could not determine latest version. Specify one with --version"
+        fi
+    fi
+
+    install_binary "$VERSION"
 }
 
 main "$@"
