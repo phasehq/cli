@@ -68,17 +68,12 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve references
 	resolvedSecrets := map[string]string{}
 	for _, secret := range allSecrets {
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue, err := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
-		if err != nil {
-			return err
-		}
-		resolvedSecrets[secret.Key] = resolvedValue
+		resolvedSecrets[secret.Key] = secret.Value
 	}
 
 	// Collect env/app info for display

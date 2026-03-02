@@ -63,18 +63,12 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve secret references and build ordered key-value slice
 	var secretsList []util.KeyValue
 	for _, secret := range allSecrets {
 		if secret.Value == "" {
 			continue
 		}
-		resolvedValue, err := sdk.ResolveAllSecrets(secret.Value, allSecrets, p, secret.Application, secret.Environment)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
-			continue
-		}
-		secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: resolvedValue})
+		secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: secret.Value})
 	}
 
 	switch format {
