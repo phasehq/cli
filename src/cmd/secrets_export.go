@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
@@ -11,7 +12,7 @@ import (
 )
 
 var secretsExportCmd = &cobra.Command{
-	Use:   "export",
+	Use:   "export [keys...]",
 	Short: "🥡 Export secrets in a specific format",
 	RunE:  runSecretsExport,
 }
@@ -38,6 +39,12 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 	generateLeases, _ := cmd.Flags().GetString("generate-leases")
 	leaseTTL, _ := cmd.Flags().GetInt("lease-ttl")
 
+	// Uppercase requested keys for filtering
+	var filterKeys []string
+	for _, k := range args {
+		filterKeys = append(filterKeys, strings.ToUpper(k))
+	}
+
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
 	p, err := phase.NewPhase(true, "", "")
@@ -63,12 +70,37 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var secretsList []util.KeyValue
+	// Build a map of all secrets for key filtering
+	allSecretsMap := make(map[string]string)
 	for _, secret := range allSecrets {
-		if secret.Value == "" {
-			continue
+		if secret.Value != "" {
+			allSecretsMap[secret.Key] = secret.Value
 		}
-		secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: secret.Value})
+	}
+
+	var secretsList []util.KeyValue
+	if len(filterKeys) > 0 {
+		// Check for missing keys
+		var missingKeys []string
+		for _, key := range filterKeys {
+			if _, ok := allSecretsMap[key]; !ok {
+				missingKeys = append(missingKeys, key)
+			}
+		}
+		if len(missingKeys) > 0 {
+			return fmt.Errorf("🥡 failed to export — the following secret(s) do not exist: %s", strings.Join(missingKeys, ", "))
+		}
+		// Export only the requested keys (in the order they were specified)
+		for _, key := range filterKeys {
+			secretsList = append(secretsList, util.KeyValue{Key: key, Value: allSecretsMap[key]})
+		}
+	} else {
+		for _, secret := range allSecrets {
+			if secret.Value == "" {
+				continue
+			}
+			secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: secret.Value})
+		}
 	}
 
 	switch format {
