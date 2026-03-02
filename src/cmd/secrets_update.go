@@ -25,11 +25,11 @@ func init() {
 	secretsUpdateCmd.Flags().String("env", "", "Environment name")
 	secretsUpdateCmd.Flags().String("app", "", "Application name")
 	secretsUpdateCmd.Flags().String("app-id", "", "Application ID")
-	secretsUpdateCmd.Flags().String("path", "", "Source path of the secret")
+	secretsUpdateCmd.Flags().String("path", "/", "Source path of the secret")
 	secretsUpdateCmd.Flags().String("updated-path", "", "New path for the secret")
 	secretsUpdateCmd.Flags().Bool("override", false, "Update override value")
 	secretsUpdateCmd.Flags().Bool("toggle-override", false, "Toggle override state")
-	secretsUpdateCmd.Flags().String("random", "", "Random type (hex, alphanumeric, key128, key256)")
+	secretsUpdateCmd.Flags().String("random", "", "Random type (hex, alphanumeric, base64, base64url, key128, key256)")
 	secretsUpdateCmd.Flags().Int("length", 32, "Length for random secret")
 	secretsCmd.AddCommand(secretsUpdateCmd)
 }
@@ -60,6 +60,10 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 	if toggleOverride {
 		// No value needed for toggle
 	} else if randomType != "" {
+		validTypes := map[string]bool{"hex": true, "alphanumeric": true, "base64": true, "base64url": true, "key128": true, "key256": true}
+		if !validTypes[randomType] {
+			return fmt.Errorf("unsupported random type: %s. Supported types: hex, alphanumeric, base64, base64url, key128, key256", randomType)
+		}
 		if (randomType == "key128" || randomType == "key256") && randomLength != 32 {
 			fmt.Fprintf(os.Stderr, "⚠️\u200A Warning: The length argument is ignored for '%s'. Using default lengths.\n", randomType)
 		}

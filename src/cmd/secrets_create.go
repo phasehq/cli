@@ -26,7 +26,7 @@ func init() {
 	secretsCreateCmd.Flags().String("app-id", "", "Application ID")
 	secretsCreateCmd.Flags().String("path", "/", "Path for the secret")
 	secretsCreateCmd.Flags().Bool("override", false, "Create with override")
-	secretsCreateCmd.Flags().String("random", "", "Random type (hex, alphanumeric, key128, key256)")
+	secretsCreateCmd.Flags().String("random", "", "Random type (hex, alphanumeric, base64, base64url, key128, key256)")
 	secretsCreateCmd.Flags().Int("length", 32, "Length for random secret")
 	secretsCmd.AddCommand(secretsCreateCmd)
 }
@@ -55,6 +55,10 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 	if override {
 		value = ""
 	} else if randomType != "" {
+		validTypes := map[string]bool{"hex": true, "alphanumeric": true, "base64": true, "base64url": true, "key128": true, "key256": true}
+		if !validTypes[randomType] {
+			return fmt.Errorf("unsupported random type: %s. Supported types: hex, alphanumeric, base64, base64url, key128, key256", randomType)
+		}
 		if (randomType == "key128" || randomType == "key256") && randomLength != 32 {
 			fmt.Fprintf(os.Stderr, "⚠️\u200A Warning: The length argument is ignored for '%s'. Using default lengths.\n", randomType)
 		}
