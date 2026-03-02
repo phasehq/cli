@@ -1,41 +1,28 @@
-name: Validate and set version
+name: "Validate and set version"
 
 on:
   workflow_call:
     outputs:
       version:
-        description: "Validated Phase CLI version from const.py and APKBUILD"
-        value: ${{ jobs.validate_version.outputs.version }}
+        description: "Phase CLI version extracted from Go source"
+        value: ${{ jobs.extract_version.outputs.version }}
 
 jobs:
-  validate_version:
-    name: Validate and Extract Version
+  extract_version:
+    name: Extract Go CLI Version
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.extract_version.outputs.version }}
+      version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version from const.py
-        id: extract_version
+      - name: Extract version from src/pkg/version/version.go
+        id: get_version
         run: |
-          PHASE_CLI_VERSION=$(grep -oP '(?<=__version__ = ")[^"]*' phase_cli/utils/const.py)
-          echo "version=$PHASE_CLI_VERSION" >> $GITHUB_OUTPUT
-          # echo "$PHASE_CLI_VERSION" > ./PHASE_CLI_VERSION.txt
-
-      - name: Extract version from APKBUILD
-        id: extract_apkbuild_version
-        run: |
-          APKBUILD_VERSION=$(grep -oP '(?<=pkgver=)[^\s]*' APKBUILD)
-          echo "apkbuild_version=$APKBUILD_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Compare versions
-        run: |
-          if [ "${{ steps.extract_version.outputs.version }}" != "${{ steps.extract_apkbuild_version.outputs.apkbuild_version }}" ]; then
-            echo "Version mismatch detected!"
-            echo "const.py version: ${{ steps.extract_version.outputs.version }}"
-            echo "APKBUILD version: ${{ steps.extract_apkbuild_version.outputs.apkbuild_version }}"
+          VERSION=$(grep -oP '(?<=var Version = ")[^"]*' src/pkg/version/version.go)
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from src/pkg/version/version.go"
             exit 1
-          else
-            echo "Versions match: ${{ steps.extract_version.outputs.version }}"
           fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"

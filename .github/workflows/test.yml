@@ -1,4 +1,4 @@
-name: "[Go] Test and Vet"
+name: "Test and Vet"
 
 on:
   workflow_call:
