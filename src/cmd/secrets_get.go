@@ -55,6 +55,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		Path:    path,
 		Dynamic: true,
 		Lease:   util.ParseBoolFlag(generateLeases),
+		Raw:     true,
 	}
 	if cmd.Flags().Changed("lease-ttl") {
 		opts.LeaseTTL = &leaseTTL
