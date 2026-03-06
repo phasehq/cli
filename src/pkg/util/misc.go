@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	sdk "github.com/phasehq/golang-sdk/phase"
+	sdk "github.com/phasehq/golang-sdk/v2/phase"
 )
 
 // ParseEnvFile parses a .env file

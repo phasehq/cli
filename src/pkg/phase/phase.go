@@ -10,9 +10,9 @@ import (
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/version"
-	sdk "github.com/phasehq/golang-sdk/phase"
-	"github.com/phasehq/golang-sdk/phase/misc"
-	"github.com/phasehq/golang-sdk/phase/network"
+	sdk "github.com/phasehq/golang-sdk/v2/phase"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
+	"github.com/phasehq/golang-sdk/v2/phase/network"
 )
 
 // Create new Phase client. Return host and token

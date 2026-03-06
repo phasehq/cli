@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/phasehq/cli/pkg/util"
-	sdk "github.com/phasehq/golang-sdk/phase"
+	sdk "github.com/phasehq/golang-sdk/v2/phase"
 	"golang.org/x/term"
 )
 

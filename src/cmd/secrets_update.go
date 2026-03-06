@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -8,8 +9,8 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
-	sdk "github.com/phasehq/golang-sdk/phase"
-	"github.com/phasehq/golang-sdk/phase/misc"
+	sdk "github.com/phasehq/golang-sdk/v2/phase"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -103,7 +104,7 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	result, err := p.Update(sdk.UpdateOptions{
+	err = p.Update(sdk.UpdateOptions{
 		EnvName:         envName,
 		AppName:         appName,
 		AppID:           appID,
@@ -115,20 +116,21 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 		ToggleOverride:  toggleOverride,
 	})
 	if err != nil {
+		var notFound *sdk.ErrSecretNotFound
+		if errors.As(err, &notFound) {
+			fmt.Println(err.Error())
+			return nil
+		}
 		return fmt.Errorf("error updating secret: %w", err)
 	}
 
-	if result == "Success" {
-		fmt.Println(util.BoldGreen("✅ Successfully updated the secret."))
-		listPath := sourcePath
-		if destPath != "" {
-			listPath = destPath
-		}
-		if err := listSecrets(p, envName, appName, appID, "", listPath, false, false, false, nil); err != nil {
-			return err
-		}
-	} else {
-		fmt.Println(result)
+	fmt.Println(util.BoldGreen("✅ Successfully updated the secret."))
+	listPath := sourcePath
+	if destPath != "" {
+		listPath = destPath
+	}
+	if err := listSecrets(p, envName, appName, appID, "", listPath, false, false, false, nil); err != nil {
+		return err
 	}
 	return nil
 }

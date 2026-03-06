@@ -17,7 +17,7 @@ import (
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
-	"github.com/phasehq/golang-sdk/phase/crypto"
+	"github.com/phasehq/golang-sdk/v2/phase/crypto"
 	"github.com/spf13/cobra"
 )
 

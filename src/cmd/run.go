@@ -8,7 +8,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
-	sdk "github.com/phasehq/golang-sdk/phase"
+	sdk "github.com/phasehq/golang-sdk/v2/phase"
 	"github.com/spf13/cobra"
 )
 

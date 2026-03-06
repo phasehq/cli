@@ -7,8 +7,8 @@ import (
 	"syscall"
 
 	"github.com/phasehq/cli/pkg/phase"
-	sdk "github.com/phasehq/golang-sdk/phase"
-	"github.com/phasehq/golang-sdk/phase/misc"
+	sdk "github.com/phasehq/golang-sdk/v2/phase"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )

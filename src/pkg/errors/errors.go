@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/phasehq/golang-sdk/phase/network"
+	"github.com/phasehq/golang-sdk/v2/phase/network"
 )
 
 // FormatSDKError wraps SDK errors with user-facing presentation (emoji, hints).
