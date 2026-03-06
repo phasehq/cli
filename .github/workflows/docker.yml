@@ -19,12 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone Go SDK
-        uses: actions/checkout@v4
-        with:
-          repository: phasehq/golang-sdk
-          path: golang-sdk
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

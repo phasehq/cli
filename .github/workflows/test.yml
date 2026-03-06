@@ -16,17 +16,6 @@ jobs:
           go-version: "1.24"
           cache-dependency-path: src/go.sum
 
-      - name: Clone Go SDK
-        uses: actions/checkout@v4
-        with:
-          repository: phasehq/golang-sdk
-          path: golang-sdk
-
-      - name: Patch go.mod replace directive for CI
-        working-directory: src
-        run: |
-          go mod edit -replace github.com/phasehq/golang-sdk=../golang-sdk
-
       - name: Download dependencies
         working-directory: src
         run: go mod download
