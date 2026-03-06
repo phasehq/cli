@@ -71,9 +71,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	resolvedSecrets := map[string]string{}
 	for _, secret := range allSecrets {
-		if secret.Value == "" {
-			continue
-		}
 		resolvedSecrets[secret.Key] = secret.Value
 	}
 

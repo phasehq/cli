@@ -72,10 +72,10 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 
 	// Build a map of all secrets for key filtering
 	allSecretsMap := make(map[string]string)
+	allSecretsKeySet := make(map[string]bool)
 	for _, secret := range allSecrets {
-		if secret.Value != "" {
-			allSecretsMap[secret.Key] = secret.Value
-		}
+		allSecretsMap[secret.Key] = secret.Value
+		allSecretsKeySet[secret.Key] = true
 	}
 
 	var secretsList []util.KeyValue
@@ -83,7 +83,7 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		// Check for missing keys
 		var missingKeys []string
 		for _, key := range filterKeys {
-			if _, ok := allSecretsMap[key]; !ok {
+			if !allSecretsKeySet[key] {
 				missingKeys = append(missingKeys, key)
 			}
 		}
@@ -96,9 +96,6 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		for _, secret := range allSecrets {
-			if secret.Value == "" {
-				continue
-			}
 			secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: secret.Value})
 		}
 	}
