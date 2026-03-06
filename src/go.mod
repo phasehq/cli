@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
 	github.com/manifoldco/promptui v0.9.0
-	github.com/phasehq/golang-sdk v0.0.0-00010101000000-000000000000
+	github.com/phasehq/golang-sdk/v2 v2.0.0
 	github.com/spf13/cobra v1.8.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/term v0.39.0
@@ -35,5 +35,3 @@ require (
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 )
-
-replace github.com/phasehq/golang-sdk => /Users/nimish/git/phase/golang-sdk
