@@ -40,14 +40,15 @@ func init() {
 // listSecrets fetches and displays secrets. Used by list, create, update, and delete commands.
 func listSecrets(p *sdk.Phase, envName, appName, appID, tags, path string, show, dynamic, lease bool, leaseTTL *int) error {
 	opts := sdk.GetOptions{
-		EnvName:  envName,
-		AppName:  appName,
-		AppID:    appID,
-		Tag:      tags,
-		Path:     path,
-		Dynamic:  dynamic,
-		Lease:    lease,
-		LeaseTTL: leaseTTL,
+		EnvName:     envName,
+		AppName:     appName,
+		AppID:       appID,
+		Tag:         tags,
+		Path:        path,
+		Dynamic:     dynamic,
+		Lease:       lease,
+		LeaseTTL:    leaseTTL,
+		Raw: true,
 	}
 
 	spinner := util.NewSpinner("Fetching secrets...")
