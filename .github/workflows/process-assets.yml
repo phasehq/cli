@@ -1,0 +1,42 @@
+name: "Process and Rename Assets"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  process-assets:
+    name: Rename and checksum assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-cli-binaries
+          path: dist
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-cli-packages
+          path: dist/pkg
+
+      - name: Process assets
+        run: |
+          VERSION="${{ inputs.version }}" \
+          BINARIES_DIR=dist \
+          PACKAGES_DIR=dist/pkg \
+          OUTPUT_DIR=release \
+            bash scripts/process-assets.sh
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-cli-release
+          path: release/
+          retention-days: 7

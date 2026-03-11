@@ -32,40 +32,33 @@ jobs:
           # Raw binary install
           - { image: "archlinux:latest", name: archlinux-latest, install: binary }
     steps:
-      - name: Download binaries
+      - name: Download release assets
         uses: actions/download-artifact@v4
         with:
-          name: phase-cli-binaries
-          path: binaries
-
-      - name: Download packages
-        uses: actions/download-artifact@v4
-        with:
-          name: phase-cli-packages
-          path: packages
+          name: phase-cli-release
+          path: release
 
       - name: Run tests in ${{ matrix.name }}
         run: |
           set -e
-          chmod +x binaries/phase-cli_linux_amd64
+          chmod +x release/phase_cli_${{ inputs.version }}_linux_amd64
           docker run --rm \
-            -v "${PWD}/binaries":/binaries \
-            -v "${PWD}/packages":/packages \
+            -v "${PWD}/release":/release \
             ${{ matrix.image }} \
             /bin/sh -c "
               echo '=== Installing (${{ matrix.install }}) ==='
               case '${{ matrix.install }}' in
                 deb)
-                  dpkg -i /packages/phase_${{ inputs.version }}_amd64.deb
+                  dpkg -i /release/phase_cli_${{ inputs.version }}_linux_amd64.deb
                   ;;
                 rpm)
-                  rpm -i /packages/phase-${{ inputs.version }}-1.x86_64.rpm
+                  rpm -i /release/phase_cli_${{ inputs.version }}_linux_amd64.rpm
                   ;;
                 apk)
-                  apk add --allow-untrusted /packages/phase_${{ inputs.version }}_x86_64.apk
+                  apk add --allow-untrusted /release/phase_cli_${{ inputs.version }}_linux_amd64.apk
                   ;;
                 binary)
-                  install -Dm755 /binaries/phase-cli_linux_amd64 /usr/local/bin/phase
+                  install -Dm755 /release/phase_cli_${{ inputs.version }}_linux_amd64 /usr/local/bin/phase
                   ;;
               esac
 
@@ -103,40 +96,33 @@ jobs:
           - { image: "alpine:3.21", name: alpine-3.21, install: apk }
           - { image: "amazonlinux:2023", name: amazonlinux-2023, install: rpm }
     steps:
-      - name: Download binaries
+      - name: Download release assets
         uses: actions/download-artifact@v4
         with:
-          name: phase-cli-binaries
-          path: binaries
-
-      - name: Download packages
-        uses: actions/download-artifact@v4
-        with:
-          name: phase-cli-packages
-          path: packages
+          name: phase-cli-release
+          path: release
 
       - name: Run tests in ${{ matrix.name }} (arm64)
         run: |
           set -e
-          chmod +x binaries/phase-cli_linux_arm64
+          chmod +x release/phase_cli_${{ inputs.version }}_linux_arm64
           docker run --rm \
-            -v "${PWD}/binaries":/binaries \
-            -v "${PWD}/packages":/packages \
+            -v "${PWD}/release":/release \
             ${{ matrix.image }} \
             /bin/sh -c "
               echo '=== Installing (${{ matrix.install }}) ==='
               case '${{ matrix.install }}' in
                 deb)
-                  dpkg -i /packages/phase_${{ inputs.version }}_arm64.deb
+                  dpkg -i /release/phase_cli_${{ inputs.version }}_linux_arm64.deb
                   ;;
                 rpm)
-                  rpm -i /packages/phase-${{ inputs.version }}-1.aarch64.rpm
+                  rpm -i /release/phase_cli_${{ inputs.version }}_linux_arm64.rpm
                   ;;
                 apk)
-                  apk add --allow-untrusted /packages/phase_${{ inputs.version }}_aarch64.apk
+                  apk add --allow-untrusted /release/phase_cli_${{ inputs.version }}_linux_arm64.apk
                   ;;
                 binary)
-                  install -Dm755 /binaries/phase-cli_linux_arm64 /usr/local/bin/phase
+                  install -Dm755 /release/phase_cli_${{ inputs.version }}_linux_arm64 /usr/local/bin/phase
                   ;;
               esac
 

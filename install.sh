@@ -10,9 +10,9 @@
 #   | $$____/ |__/  |__/ \_______/|_______/  \_______/
 #   | $$
 #   |__/
-# 
+#
 # Phase CLI installer.
-# 
+#
 # Usage:
 #   curl -fsSL https://pkg.phase.dev/install.sh | sh
 #   curl -fsSL https://pkg.phase.dev/install.sh | sh -s -- --version 2.0.0
@@ -117,6 +117,24 @@ detect_platform() {
     esac
 }
 
+# Detect the Linux distro family for package-based installs.
+detect_distro() {
+    DISTRO=""
+    if [ "$OS" != "linux" ]; then
+        return
+    fi
+
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        case "$ID" in
+            ubuntu|debian)              DISTRO="deb" ;;
+            fedora|rhel|centos|amzn|rocky|ol|almalinux) DISTRO="rpm" ;;
+            alpine)                     DISTRO="apk" ;;
+        esac
+    fi
+}
+
 get_latest_version() {
     fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" | \
         sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p'
@@ -174,11 +192,13 @@ cleanup_legacy() {
     fi
 }
 
-install_binary() {
-    version="$1"
+# Asset naming convention: phase_cli_{version}_{os}_{arch}[.ext]
+asset_url() {
+    echo "https://github.com/${REPO}/releases/download/v${1}/phase_cli_${1}_${2}_${3}${4}"
+}
 
-    asset_name="phase-cli_${OS}_${ARCH}"
-    download_url="https://github.com/${REPO}/releases/download/v${version}/${asset_name}"
+install_package() {
+    version="$1"
 
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' EXIT
@@ -187,7 +207,61 @@ install_binary() {
     info "Phase CLI v${version} (${OS}/${ARCH})"
     echo ""
 
-    info "Downloading ${download_url}..."
+    case "$DISTRO" in
+        deb)
+            pkg_file="phase_cli_${version}_linux_${ARCH}.deb"
+            download_url=$(asset_url "$version" "linux" "$ARCH" ".deb")
+            info "Downloading ${pkg_file}..."
+            fetch "$download_url" "${tmpdir}/${pkg_file}"
+            info "Installing via dpkg..."
+            do_install dpkg -i "${tmpdir}/${pkg_file}"
+            ;;
+        rpm)
+            pkg_file="phase_cli_${version}_linux_${ARCH}.rpm"
+            download_url=$(asset_url "$version" "linux" "$ARCH" ".rpm")
+            info "Downloading ${pkg_file}..."
+            fetch "$download_url" "${tmpdir}/${pkg_file}"
+            info "Installing via rpm..."
+            do_install rpm -Uvh "${tmpdir}/${pkg_file}"
+            ;;
+        apk)
+            pkg_file="phase_cli_${version}_linux_${ARCH}.apk"
+            download_url=$(asset_url "$version" "linux" "$ARCH" ".apk")
+            info "Downloading ${pkg_file}..."
+            fetch "$download_url" "${tmpdir}/${pkg_file}"
+            info "Installing via apk..."
+            do_install apk add --allow-untrusted "${tmpdir}/${pkg_file}"
+            ;;
+        *)
+            # No supported package manager — install raw binary
+            install_binary "$version"
+            return
+            ;;
+    esac
+
+    cleanup_legacy
+
+    echo ""
+    info "Phase CLI v${version} installed successfully."
+    echo ""
+
+    phase --version 2>/dev/null || true
+}
+
+install_binary() {
+    version="$1"
+
+    asset_name="phase_cli_${version}_${OS}_${ARCH}"
+    download_url=$(asset_url "$version" "$OS" "$ARCH" "")
+
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    echo ""
+    info "Phase CLI v${version} (${OS}/${ARCH})"
+    echo ""
+
+    info "Downloading ${asset_name}..."
     fetch "$download_url" "${tmpdir}/${asset_name}"
 
     chmod +x "${tmpdir}/${asset_name}"
@@ -247,7 +321,14 @@ main() {
     fi
 
     check_install_dir
-    install_binary "$VERSION"
+    detect_distro
+
+    # Use native package manager on supported Linux distros, raw binary elsewhere
+    if [ -n "$DISTRO" ]; then
+        install_package "$VERSION"
+    else
+        install_binary "$VERSION"
+    fi
 }
 
 main "$@"

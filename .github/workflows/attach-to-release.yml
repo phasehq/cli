@@ -12,16 +12,10 @@ jobs:
     name: Attach Assets to Release
     runs-on: ubuntu-latest
     steps:
-      - name: Download binaries
+      - name: Download release assets
         uses: actions/download-artifact@v4
         with:
-          name: phase-cli-binaries
-          path: ./release
-
-      - name: Download packages
-        uses: actions/download-artifact@v4
-        with:
-          name: phase-cli-packages
+          name: phase-cli-release
           path: ./release
 
       - name: Attach assets to release

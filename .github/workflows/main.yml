@@ -36,9 +36,16 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  # Rename and checksum all assets into standard naming convention
+  process-assets:
+    needs: [build, package, version]
+    uses: ./.github/workflows/process-assets.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
   # Test binaries and packages on Linux distros
   test-install:
-    needs: [build, package, version]
+    needs: [process-assets, version]
     uses: ./.github/workflows/test-install-post-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
@@ -46,7 +53,7 @@ jobs:
   # Attach release assets to GitHub release
   attach-to-release:
     if: github.event_name == 'release' && github.event.action == 'created'
-    needs: [build, package, version]
+    needs: [process-assets, version]
     uses: ./.github/workflows/attach-to-release.yml
     with:
       version: ${{ needs.version.outputs.version }}
