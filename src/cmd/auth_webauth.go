@@ -90,24 +90,34 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 	server := &http.Server{Handler: mux}
 	go server.Serve(listener)
 
-	// Open browser
+	// Print webauth URL
 	authURL := fmt.Sprintf("%s/webauth/%s", host, encoded)
-	fmt.Fprintf(os.Stderr, "Opening browser for authentication...\n")
-	if err := util.OpenBrowser(authURL); err != nil {
-		fmt.Fprintf(os.Stderr, "Please open this URL in your browser:\n%s\n", authURL)
-	}
+	fmt.Fprintf(os.Stderr, "\n  %s\n\n", util.BoldCyanErr(authURL))
+	fmt.Fprintf(os.Stderr, "Press %s to open in your browser.\n\n", util.BoldErr("Enter"))
 
-	// Wait for data
-	fmt.Fprintf(os.Stderr, "Waiting for authentication...\n")
+	// Wait for Enter in a goroutine so we can also accept the callback
+	go func() {
+		buf := make([]byte, 1)
+		os.Stdin.Read(buf)
+		if err := util.OpenBrowser(authURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not open browser: %v\n", err)
+		}
+	}()
+
+	// Wait for webauth reponse
+	spinner := util.NewSpinner("Waiting for authentication")
+	spinner.Start()
 	var received authData
 	select {
 	case received = <-dataCh:
 	case <-time.After(5 * time.Minute):
+		spinner.Stop()
 		server.Close()
 		return fmt.Errorf("authentication timed out")
 	}
 
 	// Shut down server
+	spinner.Stop()
 	server.Close()
 
 	// Decrypt email and PSS
