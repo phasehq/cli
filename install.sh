@@ -50,6 +50,19 @@ do_install() {
     fi
 }
 
+# Check if we can write to INSTALL_DIR (or create it) without elevated privileges.
+# If not, fall back to ~/.local/bin for rootless installs.
+check_install_dir() {
+    if [ "$(id -u)" -eq 0 ] || command -v sudo > /dev/null 2>&1 || command -v doas > /dev/null 2>&1; then
+        return
+    fi
+
+    # No privilege escalation available — use a user-local directory
+    INSTALL_DIR="${HOME}/.local/bin"
+    info "No root/sudo/doas available. Installing to ${INSTALL_DIR} instead."
+    info "Make sure ${INSTALL_DIR} is in your PATH."
+}
+
 # Download a URL to a file. Prefers curl, falls back to wget.
 fetch() {
     if command -v curl > /dev/null 2>&1; then
@@ -112,74 +125,52 @@ get_latest_version() {
 # --- Install ---
 
 cleanup_legacy() {
-    # Clean up any remnants of the PyInstaller-based Python CLI (v1.x).
-    # The old install script installed differently depending on distro/arch:
-    #   A) DEB package  (Ubuntu/Debian amd64):  dpkg package "phase" -> /usr/lib/phase/ + /usr/bin/phase symlink
-    #   B) RPM package  (Fedora/RHEL amd64):    rpm package "phase"  -> /usr/lib/phase/ + /usr/bin/phase symlink
-    #   C) APK package  (Alpine amd64+arm64):    apk package "phase"  -> Python setuptools install + /usr/bin/phase
-    #   D) Binary zip   (arm64 non-Alpine, Arch): raw files           -> /usr/local/bin/phase + /usr/local/bin/_internal/
+    # Clean up remnants of the old Python CLI (v1.x).
+    #
+    # Package-managed installs (deb/rpm/apk): the v2.0 packages use
+    # --replaces, so the package manager handles the upgrade cleanly.
+    # We just nudge the user to use the package instead of this script.
+    #
+    # Binary zip installs (old arm64, Arch): clean up the leftover
+    # _internal/ directory and stale symlinks.
 
-    found_legacy=false
+    if command -v dpkg > /dev/null 2>&1 && dpkg -s phase > /dev/null 2>&1; then
+        echo ""
+        info "Detected Phase CLI v1 installed via DEB package."
+        info "Upgrade with the v2 package instead: dpkg -i phase_<version>_<arch>.deb"
+        info "Download from: https://github.com/${REPO}/releases"
+        echo ""
+    elif command -v rpm > /dev/null 2>&1 && rpm -q phase > /dev/null 2>&1; then
+        echo ""
+        info "Detected Phase CLI v1 installed via RPM package."
+        info "Upgrade with the v2 package instead: rpm -Uvh phase-<version>-1.<arch>.rpm"
+        info "Download from: https://github.com/${REPO}/releases"
+        echo ""
+    elif command -v apk > /dev/null 2>&1 && apk info -e phase > /dev/null 2>&1; then
+        echo ""
+        info "Detected Phase CLI v1 installed via APK package."
+        info "Upgrade with the v2 package instead: apk add --allow-untrusted phase_<version>_<arch>.apk"
+        info "Download from: https://github.com/${REPO}/releases"
+        echo ""
+    fi
 
-    # --- Package manager cleanup (removes tracked files + database entry) ---
-
-    # Scenario A: DEB package
-    if command -v dpkg > /dev/null 2>&1; then
-        if dpkg -s phase > /dev/null 2>&1; then
-            info "Removing legacy Phase CLI v1 DEB package..."
-            do_install dpkg --purge phase 2>/dev/null || do_install dpkg -r phase 2>/dev/null || true
-            found_legacy=true
+    # Clean up binary zip leftovers (_internal/ directory)
+    for dir in "${INSTALL_DIR}/_internal" "/usr/bin/_internal"; do
+        if [ -d "$dir" ]; then
+            info "Removing legacy ${dir}..."
+            do_install rm -rf "$dir"
         fi
-    fi
+    done
 
-    # Scenario B: RPM package
-    if command -v rpm > /dev/null 2>&1; then
-        if rpm -q phase > /dev/null 2>&1; then
-            info "Removing legacy Phase CLI v1 RPM package..."
-            do_install rpm -e --nodeps phase 2>/dev/null || true
-            found_legacy=true
-        fi
-    fi
-
-    # Scenario C: APK package
-    if command -v apk > /dev/null 2>&1; then
-        if apk info -e phase > /dev/null 2>&1; then
-            info "Removing legacy Phase CLI v1 APK package..."
-            do_install apk del phase 2>/dev/null || true
-            found_legacy=true
-        fi
-    fi
-
-    # --- Filesystem cleanup (catch anything left after package removal) ---
-
-    # Scenario D: PyInstaller _internal directory from binary zip install
-    if [ -d "${INSTALL_DIR}/_internal" ]; then
-        info "Removing legacy PyInstaller _internal directory..."
-        do_install rm -rf "${INSTALL_DIR}/_internal"
-        found_legacy=true
-    fi
-
-    # Stale symlink at /usr/bin/phase from DEB/RPM packages
+    # Clean up stale symlinks pointing to old /usr/lib/phase/
     if [ -L "/usr/bin/phase" ]; then
         link_target=$(readlink "/usr/bin/phase" 2>/dev/null || true)
         case "$link_target" in
             *lib/phase/phase*)
                 info "Removing stale symlink /usr/bin/phase..."
                 do_install rm -f "/usr/bin/phase"
-                found_legacy=true
                 ;;
         esac
-    fi
-
-    # Leftover /usr/lib/phase/ directory from DEB/RPM packages
-    if [ -d "/usr/lib/phase" ]; then
-        info "Removing legacy /usr/lib/phase/ directory..."
-        do_install rm -rf "/usr/lib/phase"
-        found_legacy=true
-    fi
-
-    if [ "$found_legacy" = true ]; then
-        info "Legacy Phase CLI v1 cleanup complete."
     fi
 }
 
@@ -236,6 +227,9 @@ main() {
                 echo "Usage: install.sh [--version VERSION]"
                 echo ""
                 echo "Install the Phase CLI. If no version is specified, the latest release is installed."
+                echo ""
+                echo "Options:"
+                echo "  --version VERSION   Install a specific version"
                 exit 0
                 ;;
             *)
@@ -252,6 +246,7 @@ main() {
         fi
     fi
 
+    check_install_dir
     install_binary "$VERSION"
 }
 
