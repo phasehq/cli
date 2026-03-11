@@ -95,12 +95,12 @@ func GetDefaultAccountID(allIDs bool) ([]string, error) {
 }
 
 func GetDefaultUserHost() (string, error) {
-	if token := os.Getenv("PHASE_SERVICE_TOKEN"); token != "" {
-		host := os.Getenv("PHASE_HOST")
-		if host == "" {
-			host = PhaseCloudAPIHost
-		}
+	if host := os.Getenv("PHASE_HOST"); host != "" {
 		return host, nil
+	}
+
+	if os.Getenv("PHASE_SERVICE_TOKEN") != "" {
+		return PhaseCloudAPIHost, nil
 	}
 
 	config, err := LoadConfig()
