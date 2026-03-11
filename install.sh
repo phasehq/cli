@@ -125,9 +125,8 @@ detect_distro() {
     fi
 
     if [ -f /etc/os-release ]; then
-        # shellcheck disable=SC1091
-        . /etc/os-release
-        case "$ID" in
+        _distro_id=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+        case "$_distro_id" in
             ubuntu|debian)              DISTRO="deb" ;;
             fedora|rhel|centos|amzn|rocky|ol|almalinux) DISTRO="rpm" ;;
             alpine)                     DISTRO="apk" ;;
