@@ -26,7 +26,7 @@ jobs:
           - { image: "alpine:3.22", name: alpine-3.22 }
           - { image: "archlinux:latest", name: archlinux-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Test install.sh in ${{ matrix.name }}
         run: |
@@ -85,7 +85,7 @@ jobs:
           - { image: "alpine:3.21", name: alpine-3.21 }
           - { image: "amazonlinux:2023", name: amazonlinux-2023 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Test install.sh in ${{ matrix.name }} (arm64)
         run: |

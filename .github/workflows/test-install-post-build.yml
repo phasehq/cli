@@ -33,7 +33,7 @@ jobs:
           - { image: "archlinux:latest", name: archlinux-latest, install: binary }
     steps:
       - name: Download release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: phase-cli-release
           path: release
@@ -97,7 +97,7 @@ jobs:
           - { image: "amazonlinux:2023", name: amazonlinux-2023, install: rpm }
     steps:
       - name: Download release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: phase-cli-release
           path: release

@@ -12,16 +12,16 @@ jobs:
     name: Rename and checksum assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: phase-cli-binaries
           path: dist
 
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: phase-cli-packages
           path: dist/pkg
@@ -35,7 +35,7 @@ jobs:
             bash scripts/process-assets.sh
 
       - name: Upload release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: phase-cli-release
           path: release/

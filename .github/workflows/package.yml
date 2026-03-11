@@ -12,7 +12,7 @@ jobs:
     name: Build packages (deb/rpm/apk)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install FPM
         run: |
@@ -21,7 +21,7 @@ jobs:
           sudo gem install fpm --no-document
 
       - name: Download binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: phase-cli-binaries
           path: dist
@@ -32,7 +32,7 @@ jobs:
           VERSION="${{ inputs.version }}" bash scripts/package.sh
 
       - name: Upload packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: phase-cli-packages
           path: dist/pkg/
