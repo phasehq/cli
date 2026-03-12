@@ -85,6 +85,46 @@ fetch_stdout() {
     fi
 }
 
+# Compute SHA-256 hash of a file (portable across OS).
+compute_sha256() {
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum > /dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    elif command -v sha256 > /dev/null 2>&1; then
+        sha256 -q "$1"
+    else
+        return 1
+    fi
+}
+
+# Verify a downloaded file against the checksums.txt from the release.
+# Usage: verify_checksum <file_path> <expected_filename> <version>
+verify_checksum() {
+    _file="$1"
+    _filename="$2"
+    _version="$3"
+
+    _checksums_url="https://github.com/${REPO}/releases/download/v${_version}/checksums.txt"
+    _expected_hash=$(fetch_stdout "$_checksums_url" | grep "  ${_filename}\$" | cut -d' ' -f1)
+
+    if [ -z "$_expected_hash" ]; then
+        info "Warning: no checksum found for ${_filename}, skipping verification."
+        return 0
+    fi
+
+    _actual_hash=$(compute_sha256 "$_file") || {
+        info "Warning: no sha256 tool available, skipping verification."
+        return 0
+    }
+
+    if [ "$_expected_hash" != "$_actual_hash" ]; then
+        die "Checksum verification failed for ${_filename} (expected: ${_expected_hash}, got: ${_actual_hash})"
+    fi
+
+    info "Checksum verified."
+}
+
 # --- Detection ---
 
 detect_platform() {
@@ -223,6 +263,7 @@ install_package() {
             download_url=$(asset_url "$version" "linux" "$ARCH" ".deb")
             info "Downloading ${pkg_file}..."
             fetch "$download_url" "${tmpdir}/${pkg_file}"
+            verify_checksum "${tmpdir}/${pkg_file}" "$pkg_file" "$version"
             info "Installing via dpkg..."
             do_install dpkg -i "${tmpdir}/${pkg_file}"
             ;;
@@ -231,6 +272,7 @@ install_package() {
             download_url=$(asset_url "$version" "linux" "$ARCH" ".rpm")
             info "Downloading ${pkg_file}..."
             fetch "$download_url" "${tmpdir}/${pkg_file}"
+            verify_checksum "${tmpdir}/${pkg_file}" "$pkg_file" "$version"
             info "Installing via rpm..."
             do_install rpm -Uvh "${tmpdir}/${pkg_file}"
             ;;
@@ -239,6 +281,7 @@ install_package() {
             download_url=$(asset_url "$version" "linux" "$ARCH" ".apk")
             info "Downloading ${pkg_file}..."
             fetch "$download_url" "${tmpdir}/${pkg_file}"
+            verify_checksum "${tmpdir}/${pkg_file}" "$pkg_file" "$version"
             info "Installing via apk..."
             do_install apk add --allow-untrusted "${tmpdir}/${pkg_file}"
             ;;
@@ -273,6 +316,7 @@ install_binary() {
 
     info "Downloading ${asset_name}..."
     fetch "$download_url" "${tmpdir}/${asset_name}"
+    verify_checksum "${tmpdir}/${asset_name}" "$asset_name" "$version"
 
     chmod +x "${tmpdir}/${asset_name}"
 
