@@ -175,7 +175,7 @@ cleanup_legacy() {
     # The old v1 binary zip installed phase + _internal/ side by side.
     # The new v2 packages install to /usr/bin/phase, so we must remove the
     # old binary from /usr/local/bin (or /usr/bin) to avoid PATH shadowing.
-    for dir in /usr/local/bin /usr/bin; do
+    for dir in /usr/local/bin /usr/local/sbin /usr/bin; do
         if [ -d "${dir}/_internal" ]; then
             info "Removing legacy ${dir}/_internal/..."
             do_install rm -rf "${dir}/_internal"
