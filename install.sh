@@ -171,11 +171,22 @@ cleanup_legacy() {
         echo ""
     fi
 
-    # Clean up binary zip leftovers (_internal/ directory)
-    for dir in "${INSTALL_DIR}/_internal" "/usr/bin/_internal"; do
-        if [ -d "$dir" ]; then
-            info "Removing legacy ${dir}..."
-            do_install rm -rf "$dir"
+    # Clean up binary zip leftovers (_internal/ directory and the old binary).
+    # The old v1 binary zip installed phase + _internal/ side by side.
+    # The new v2 packages install to /usr/bin/phase, so we must remove the
+    # old binary from /usr/local/bin (or /usr/bin) to avoid PATH shadowing.
+    for dir in /usr/local/bin /usr/bin; do
+        if [ -d "${dir}/_internal" ]; then
+            info "Removing legacy ${dir}/_internal/..."
+            do_install rm -rf "${dir}/_internal"
+
+            # The presence of _internal/ proves this is the old PyInstaller v1
+            # binary. Always remove it — the new v2 binary is installed
+            # elsewhere (e.g. /usr/bin via package manager).
+            if [ -f "${dir}/phase" ]; then
+                info "Removing old v1 binary ${dir}/phase..."
+                do_install rm -f "${dir}/phase"
+            fi
         fi
     done
 
