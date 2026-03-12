@@ -1,0 +1,117 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: phase_cli
+
+before:
+  hooks:
+    - cd src && go mod download
+    - cd src && go vet ./...
+
+builds:
+  - id: phase-cli
+    dir: src
+    binary: phase
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/phasehq/cli/pkg/version.Version={{ .Version }}
+    targets:
+      - linux_amd64
+      - linux_arm64
+      - linux_mips
+      - linux_mipsle
+      - linux_mips64
+      - linux_mips64le
+      - linux_riscv64
+      - linux_ppc64le
+      - linux_s390x
+      - darwin_amd64
+      - darwin_arm64
+      - windows_amd64
+      - windows_arm64
+      - freebsd_amd64
+      - freebsd_arm64
+      - openbsd_amd64
+      - netbsd_amd64
+
+archives:
+  - id: binaries
+    formats: [binary]
+    name_template: "phase_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+nfpms:
+  - id: linux-packages
+    package_name: phase
+    file_name_template: "phase_cli_{{ .Version }}_linux_{{ .Arch }}"
+    vendor: Phase
+    homepage: https://phase.dev
+    maintainer: "Phase <info@phase.dev>"
+    description: "Phase CLI - open-source secret manager"
+    license: GPL-3.0
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    replaces:
+      - "phase < 2.0.0"
+    provides:
+      - phase
+    ids:
+      - phase-cli
+
+brews:
+  - name: phase
+    repository:
+      owner: phasehq
+      name: homebrew-cli
+      token: "{{ .Env.CLI_RELEASE_HOMEBREW_SCOOP_TOKEN }}"
+    directory: .
+    homepage: "https://github.com/phasehq/cli"
+    description: "Securely manage your secrets and environment variables with Phase."
+    license: GPL-3.0
+    install: |
+      bin.install "phase"
+    test: |
+      system "#{bin}/phase", "--version"
+    ids:
+      - binaries
+
+scoops:
+  - name: phase
+    repository:
+      owner: phasehq
+      name: scoop-cli
+      token: "{{ .Env.CLI_RELEASE_HOMEBREW_SCOOP_TOKEN }}"
+    homepage: "https://github.com/phasehq/cli"
+    description: "Securely manage your secrets and environment variables with Phase."
+    license: GPLv3
+    shortcuts:
+      - - phase.exe
+        - Phase
+
+release:
+  github:
+    owner: phasehq
+    name: cli
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
