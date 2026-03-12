@@ -41,6 +41,17 @@ archives:
   - id: binaries
     formats: [binary]
     name_template: "phase_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: windows-zip
+    formats: [zip]
+    name_template: "phase_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      group: root
+      owner: root
+    include:
+      - src: none
+    wrap_in_directory: false
+    filter:
+      goos: windows
 
 checksum:
   name_template: checksums.txt
@@ -94,7 +105,7 @@ scoops:
     description: "Securely manage your secrets and environment variables with Phase."
     license: GPLv3
     ids:
-      - binaries
+      - windows-zip
     shortcuts:
       - - phase.exe
         - Phase
