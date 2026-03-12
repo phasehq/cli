@@ -5,8 +5,8 @@ project_name: phase_cli
 
 before:
   hooks:
-    - cd src && go mod download
-    - cd src && go vet ./...
+    - sh -c "cd src && go mod download"
+    - sh -c "cd src && go vet ./..."
 
 builds:
   - id: phase-cli
