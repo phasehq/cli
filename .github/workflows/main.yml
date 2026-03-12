@@ -1,78 +1,37 @@
-name: "Test, Build, Package the Phase CLI"
+name: "Test & Build"
 
 on:
   pull_request:
   push:
     branches:
       - main
-  release:
-    types: [created]
-
-permissions:
-  contents: write
-  pull-requests: write
 
 jobs:
-
-  # Run Go tests and vet
   test:
     uses: ./.github/workflows/test.yml
 
-  # Extract version from Go source
-  version:
-    uses: ./.github/workflows/version.yml
-
-  # Cross-compile for all platforms
   build:
-    needs: [test, version]
-    uses: ./.github/workflows/build.yml
-    with:
-      version: ${{ needs.version.outputs.version }}
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-  # Package binaries into .deb, .rpm, .apk
-  package:
-    needs: [build, version]
-    uses: ./.github/workflows/package.yml
-    with:
-      version: ${{ needs.version.outputs.version }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+          cache-dependency-path: src/go.sum
 
-  # Rename and checksum all assets into standard naming convention
-  process-assets:
-    needs: [build, package, version]
-    uses: ./.github/workflows/process-assets.yml
-    with:
-      version: ${{ needs.version.outputs.version }}
+      - name: Run GoReleaser (snapshot)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --snapshot --skip=publish --clean
 
-  # Test binaries and packages on Linux distros
-  test-install:
-    needs: [process-assets, version]
-    uses: ./.github/workflows/test-install-post-build.yml
-    with:
-      version: ${{ needs.version.outputs.version }}
-
-  # Attach release assets to GitHub release
-  attach-to-release:
-    if: github.event_name == 'release' && github.event.action == 'created'
-    needs: [process-assets, version]
-    uses: ./.github/workflows/attach-to-release.yml
-    with:
-      version: ${{ needs.version.outputs.version }}
-
-  # Build and push Docker image
-  docker:
-    if: github.event_name == 'release' && github.event.action == 'created'
-    needs: [version]
-    uses: ./.github/workflows/docker.yml
-    with:
-      version: ${{ needs.version.outputs.version }}
-    secrets:
-      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
-      DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
-
-  # Test install.sh script end-to-end after release assets are published
-  test-install-script:
-    if: github.event_name == 'release' && github.event.action == 'created'
-    needs: [attach-to-release, version]
-    uses: ./.github/workflows/test-install-script.yml
-    with:
-      version: ${{ needs.version.outputs.version }}
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: phase-cli-release
+          path: dist/
+          retention-days: 30
