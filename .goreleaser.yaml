@@ -30,28 +30,35 @@ builds:
       - linux_s390x
       - darwin_amd64
       - darwin_arm64
-      - windows_amd64
-      - windows_arm64
       - freebsd_amd64
       - freebsd_arm64
       - openbsd_amd64
       - netbsd_amd64
+  - id: phase-cli-windows
+    dir: src
+    binary: phase
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/phasehq/cli/pkg/version.Version={{ .Version }}
+    targets:
+      - windows_amd64
+      - windows_arm64
 
 archives:
   - id: binaries
+    builds:
+      - phase-cli
+      - phase-cli-windows
     formats: [binary]
     name_template: "phase_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: windows-zip
+    builds:
+      - phase-cli-windows
     formats: [zip]
     name_template: "phase_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    builds_info:
-      group: root
-      owner: root
-    include:
-      - src: none
-    wrap_in_directory: false
-    filter:
-      goos: windows
 
 checksum:
   name_template: checksums.txt
@@ -75,7 +82,7 @@ nfpms:
       - "phase < 2.0.0"
     provides:
       - phase
-    ids:
+    builds:
       - phase-cli
 
 brews:
