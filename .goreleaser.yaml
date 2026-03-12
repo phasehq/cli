@@ -93,6 +93,8 @@ scoops:
     homepage: "https://github.com/phasehq/cli"
     description: "Securely manage your secrets and environment variables with Phase."
     license: GPLv3
+    ids:
+      - binaries
     shortcuts:
       - - phase.exe
         - Phase
