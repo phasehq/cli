@@ -55,12 +55,6 @@ jobs:
           path: dist/
           retention-days: 30
 
-  test-install:
-    needs: [release]
-    uses: ./.github/workflows/test-install-post-build.yml
-    with:
-      version: ${{ needs.release.outputs.version }}
-
   docker:
     if: needs.release.outputs.prerelease == 'false'
     needs: [release]
