@@ -91,6 +91,12 @@ brews:
       owner: phasehq
       name: homebrew-cli
       token: "{{ .Env.CLI_RELEASE_HOMEBREW_SCOOP_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: phasehq
+          name: homebrew-cli
+          branch: main
     directory: .
     homepage: "https://github.com/phasehq/cli"
     description: "Securely manage your secrets and environment variables with Phase."
@@ -108,6 +114,12 @@ scoops:
       owner: phasehq
       name: scoop-cli
       token: "{{ .Env.CLI_RELEASE_HOMEBREW_SCOOP_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: phasehq
+          name: scoop-cli
+          branch: main
     homepage: "https://github.com/phasehq/cli"
     description: "Securely manage your secrets and environment variables with Phase."
     license: GPLv3
