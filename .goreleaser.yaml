@@ -49,13 +49,13 @@ builds:
 
 archives:
   - id: binaries
-    builds:
+    ids:
       - phase-cli
       - phase-cli-windows
     formats: [binary]
     name_template: "phase_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: windows-zip
-    builds:
+    ids:
       - phase-cli-windows
     formats: [zip]
     name_template: "phase_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -82,7 +82,7 @@ nfpms:
       - "phase < 2.0.0"
     provides:
       - phase
-    builds:
+    ids:
       - phase-cli
 
 brews:
