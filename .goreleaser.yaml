@@ -79,9 +79,7 @@ nfpms:
       - apk
     bindir: /usr/bin
     replaces:
-      - "phase < 2.0.0"
-    provides:
-      - phase
+      - "phase (<< 2.0.0)"
     ids:
       - phase-cli
 
@@ -90,6 +88,7 @@ brews:
     repository:
       owner: phasehq
       name: homebrew-cli
+      branch: "release-{{ .Tag }}"
       token: "{{ .Env.CLI_RELEASE_HOMEBREW_SCOOP_TOKEN }}"
       pull_request:
         enabled: true
@@ -113,6 +112,7 @@ scoops:
     repository:
       owner: phasehq
       name: scoop-cli
+      branch: "release-{{ .Tag }}"
       token: "{{ .Env.CLI_RELEASE_HOMEBREW_SCOOP_TOKEN }}"
       pull_request:
         enabled: true
