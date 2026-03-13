@@ -101,7 +101,7 @@ brews:
     description: "Securely manage your secrets and environment variables with Phase."
     license: GPL-3.0
     install: |
-      bin.install "phase"
+      bin.install Dir.glob("phase_cli_*").first => "phase"
     test: |
       system "#{bin}/phase", "--version"
     ids:
