@@ -26,13 +26,10 @@ jobs:
           - { image: "alpine:3.22", name: alpine-3.22 }
           - { image: "archlinux:latest", name: archlinux-latest }
     steps:
-      - uses: actions/checkout@v6
-
       - name: Test install.sh in ${{ matrix.name }}
         run: |
           set -e
           docker run --rm \
-            -v "${PWD}/install.sh":/install.sh:ro \
             ${{ matrix.image }} \
             /bin/sh -c "
               # Install curl or wget (needed by install.sh)
@@ -47,6 +44,9 @@ jobs:
               elif command -v pacman > /dev/null 2>&1; then
                 pacman -Sy --noconfirm curl ca-certificates > /dev/null 2>&1
               fi
+
+              # Download install.sh from preview endpoint
+              curl -fsSL https://feat-install-script-v2.phase-cli-install-script.pages.dev/install.sh -o /install.sh
 
               echo '=== Running install.sh --version ${{ inputs.version }} ==='
               sh /install.sh --version '${{ inputs.version }}'
@@ -85,13 +85,10 @@ jobs:
           - { image: "alpine:3.21", name: alpine-3.21 }
           - { image: "amazonlinux:2023", name: amazonlinux-2023 }
     steps:
-      - uses: actions/checkout@v6
-
       - name: Test install.sh in ${{ matrix.name }} (arm64)
         run: |
           set -e
           docker run --rm \
-            -v "${PWD}/install.sh":/install.sh:ro \
             ${{ matrix.image }} \
             /bin/sh -c "
               # Install curl or wget (needed by install.sh)
@@ -106,6 +103,9 @@ jobs:
               elif command -v pacman > /dev/null 2>&1; then
                 pacman -Sy --noconfirm curl ca-certificates > /dev/null 2>&1
               fi
+
+              # Download install.sh from preview endpoint
+              curl -fsSL https://feat-install-script-v2.phase-cli-install-script.pages.dev/install.sh -o /install.sh
 
               echo '=== Running install.sh --version ${{ inputs.version }} ==='
               sh /install.sh --version '${{ inputs.version }}'
