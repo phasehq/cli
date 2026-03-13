@@ -1,0 +1,20 @@
+.git
+.github
+.goreleaser.yaml
+.gitignore
+.dockerignore
+.env
+.phase.json
+.idea/
+.vscode/
+
+# Build artifacts
+bin/
+dist/
+
+# Documentation
+*.md
+LICENSE
+
+# Tests
+src/*_test.go

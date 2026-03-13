@@ -1,65 +1,66 @@
 # phase cli
 
-```fish
+```
 λ phase --help
-Securely manage application secrets and environment variables with Phase.
+Keep Secrets.
 
-           /$$
-          | $$
-  /$$$$$$ | $$$$$$$   /$$$$$$   /$$$$$$$  /$$$$$$
- /$$__  $$| $$__  $$ |____  $$ /$$_____/ /$$__  $$
-| $$  \ $$| $$  \ $$  /$$$$$$$|  $$$$$$ | $$$$$$$$
-| $$  | $$| $$  | $$ /$$__  $$ \____  $$| $$_____/
-| $$$$$$$/| $$  | $$|  $$$$$$$ /$$$$$$$/|  $$$$$$$
-| $$____/ |__/  |__/ \_______/|_______/  \_______/
-| $$
-|__/
+             /$$
+            | $$
+    /$$$$$$ | $$$$$$$   /$$$$$$   /$$$$$$$  /$$$$$$
+   /$$__  $$| $$__  $$ |____  $$ /$$_____/ /$$__  $$
+  | $$  \ $$| $$  \ $$  /$$$$$$$|  $$$$$$ | $$$$$$$$
+  | $$  | $$| $$  | $$ /$$__  $$ \____  $$| $$_____/
+  | $$$$$$$/| $$  | $$|  $$$$$$$ /$$$$$$$/|  $$$$$$$
+  | $$____/ |__/  |__/ \_______/|_______/  \_______/
+  | $$
+  |__/
 
-options:
-  -h, --help   show this help message and exit
-  --version, -v
-               show program's version number and exit
 Commands:
+  auth                              💻 Authenticate with Phase
+  init                              🔗 Link your project with your Phase app
+  run                               🚀 Run and inject secrets to your app
+  shell                             🐚 Launch a sub-shell with secrets as environment variables
+  secrets list                      📇 List all the secrets
+  secrets get                       🔍 Fetch details about a secret in JSON
+  secrets create                    💳 Create a new secret
+  secrets update                    📝 Update an existing secret
+  secrets delete                    🗑️ Delete a secret
+  secrets import                    📩 Import secrets from a .env file
+  secrets export                    🥡 Export secrets in a specific format
+  dynamic-secrets list              📇 List dynamic secrets & metadata
+  dynamic-secrets lease generate    ✨ Generate a lease (create fresh dynamic secret)
+  dynamic-secrets lease get         🔍 Get leases for a dynamic secret
+  dynamic-secrets lease renew       🔁 Renew a lease
+  dynamic-secrets lease revoke      🗑️ Revoke a lease
+  users whoami                      🙋 See details of the current user
+  users switch                      🪄 Switch between Phase users, orgs and hosts
+  users logout                      🏃 Logout from phase-cli
+  users keyring                     🔐 Display information about the Phase keyring
+  console                           🖥️ Open the Phase Console in your browser
+  docs                              📖 Open the Phase CLI Docs in your browser
+  completion                        ⌨️ Generate the autocompletion script for the specified shell
 
-    auth                             💻 Authenticate with Phase
-    init                             🔗 Link your project with your Phase app
-    run                              🚀 Run and inject secrets to your app
-    shell                            🐚 Launch a sub-shell with secrets as environment variables (BETA)
-    secrets                          🗝️ Manage your secrets
-    secrets list                     📇 List all the secrets
-    secrets get                      🔍 Get a specific secret by key
-    secrets create                   💳 Create a new secret
-    secrets update                   📝 Update an existing secret
-    secrets delete                   🗑️ Delete a secret
-    secrets import                   📩 Import secrets from a .env file
-    secrets export                   🥡 Export secrets in a dotenv format
-    dynamic-secrets                  ⚡️ Manage dynamic secrets
-    dynamic-secrets list             📇 List dynamic secrets & metadata
-    dynamic-secrets lease            📜 Manage dynamic secret leases
-    dynamic-secrets lease get        🔍 Get leases for a dynamic secret
-    dynamic-secrets lease renew      🔁 Renew a lease
-    dynamic-secrets lease revoke     🗑️ Revoke a lease
-    dynamic-secrets lease generate   ✨ Generate a lease (create fresh dynamic secrets)
-    users                            👥 Manage users and accounts
-    users whoami                     🙋 See details of the current user
-    users switch                     🪄 Switch between Phase users, orgs and hosts
-    users logout                     🏃 Logout from phase-cli
-    users keyring                    🔐 Display information about the Phase keyring
-    docs                             📖 Open the Phase CLI Docs in your browser
-    console                          🖥️ Open the Phase Console in your browser
-    update                           🆙 Update the Phase CLI to the latest version
+Flags:
+  -h, --help      help for phase
+  -v, --version   version for phase
 ```
 
 ## Features
 
-- Inject secrets to your application during runtime without any code changes
-- Import your existing .env files and encrypt them
-- Sync encrypted secrets with Phase cloud
-- Multiple environments eg. dev, testing, staging, production
-
-## See it in action
-
-[![asciicast](media/phase-cli-demo.gif)](asciinema-cli-demo)
+- **End-to-end encryption** — secrets are encrypted client-side before leaving your machine
+- **`phase run`** — inject secrets as environment variables into any command without code changes
+- **`phase shell`** — launch a sub-shell (bash, zsh, fish, etc.) with secrets preloaded
+- **Dynamic secrets** — generate short-lived credentials (e.g. database passwords) with automatic lease management (generate, renew, revoke)
+- **Secret references** — reference secrets across environments and apps, resolved automatically at runtime
+- **Personal overrides** — override shared secrets locally without affecting your team
+- **Import / Export** — import from `.env` files; export to dotenv, JSON, YAML, TOML, CSV, XML, HCL, INI, Java properties, and more
+- **Path-based organisation** — organise secrets in hierarchical paths for monorepos and microservices
+- **Tagging** — tag secrets and filter operations by tag
+- **Random secret generation** — generate hex, alphanumeric, 128-bit, or 256-bit keys on create or update
+- **Multiple auth methods** — web-based login, personal access tokens, service account tokens, and AWS IAM identity auth
+- **Multi-user & multi-org** — switch between Phase accounts, orgs, and self-hosted instances
+- **OS keyring integration** — credentials stored in macOS Keychain, GNOME Keyring, or Windows Credential Manager
+- **Multiple environments** — dev, staging, production, and custom environments with per-project defaults via `phase init`
 
 ## Installation
 
@@ -71,9 +72,11 @@ curl -fsSL https://pkg.phase.dev/install.sh | bash
 
 ## Usage
 
-### Login
+### Prerequisites
 
-Create an app in the [Phase Console](https://console.phase.dev) and copy appID and pss
+- Create an app in the [Phase Console](https://console.phase.dev)
+
+### Login
 
 ```bash
 phase auth
@@ -87,7 +90,7 @@ Link the phase cli to your project
 phase init
 ```
 
-### Import .env
+### Import .env (optional)
 
 Import and encrypt existing secrets and environment variables
 
@@ -95,7 +98,7 @@ Import and encrypt existing secrets and environment variables
 phase secrets import .env
 ```
 
-## List / view secrets
+### List / view secrets
 
 ```bash
 phase secrets list --show
@@ -119,32 +122,64 @@ phase run go run
 phase run npm start
 ```
 
-## Development:
+## Development
 
-### Create a virtualenv:
+### Prerequisites
 
-```bash
-python -m venv venv
+- [Go](https://go.dev/dl/) 1.24 or later
+
+### Project structure
+
+```
+src/
+├── main.go          # Entrypoint
+├── cmd/             # Cobra command definitions
+├── pkg/
+│   ├── config/      # Config file handling (~/.phase/, .phase.json)
+│   ├── display/     # Output formatting (tree view, tables)
+│   ├── errors/      # Error types
+│   ├── keyring/     # OS keyring integration
+│   ├── phase/       # Phase client helpers (auth, init)
+│   ├── util/        # Misc utilities (color, spinner, browser)
+│   └── version/     # Version constant
+└── go.mod
 ```
 
-### Switch to the virtualenv:
+### Run from source
 
 ```bash
-source venv/bin/activate
+cd src
+go run main.go --help
 ```
 
-### Install dependencies:
+### Build a binary
 
 ```bash
-pip install -r requirements.txt
+cd src
+go build -o phase .
+./phase --version
 ```
 
-### Install the CLI in editable mode:
+You can set the version at build time with `-ldflags`:
 
 ```bash
-pip install -e .
+go build -ldflags "-X github.com/phasehq/cli/pkg/version.Version=2.0.0" -o phase .
 ```
 
+### Run tests
+
 ```bash
+cd src
+go test ./...
+```
+
+### Install locally
+
+Build and move the binary somewhere on your `$PATH`:
+
+```bash
+cd src
+go build -o phase .
+sudo mv phase /usr/local/bin/
 phase --version
 ```
