@@ -46,7 +46,7 @@ jobs:
               fi
 
               # Download install.sh from preview endpoint
-              curl -fsSL https://feat-install-script-v2.phase-cli-install-script.pages.dev/install.sh -o /install.sh
+              curl -fsSL https://pkg.phase.dev/install.sh -o /install.sh
 
               echo '=== Running install.sh --version ${{ inputs.version }} ==='
               sh /install.sh --version '${{ inputs.version }}'
@@ -105,7 +105,7 @@ jobs:
               fi
 
               # Download install.sh from preview endpoint
-              curl -fsSL https://feat-install-script-v2.phase-cli-install-script.pages.dev/install.sh -o /install.sh
+              curl -fsSL https://pkg.phase.dev/install.sh -o /install.sh
 
               echo '=== Running install.sh --version ${{ inputs.version }} ==='
               sh /install.sh --version '${{ inputs.version }}'
