@@ -23,8 +23,7 @@ import (
 
 func runWebAuth(cmd *cobra.Command, host string) error {
 	// Pick random port
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	port := 8000 + rng.Intn(12001)
+	port := 8002 + rand.Intn(12001)
 
 	// Generate ephemeral keypair
 	kp, err := crypto.RandomKeyPair()
