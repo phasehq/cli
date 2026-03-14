@@ -1,285 +1,388 @@
-#!/bin/bash
+#!/bin/sh
+#
+#              /$$
+#             | $$
+#     /$$$$$$ | $$$$$$$   /$$$$$$   /$$$$$$$  /$$$$$$
+#    /$$__  $$| $$__  $$ |____  $$ /$$_____/ /$$__  $$
+#   | $$  \ $$| $$  \ $$  /$$$$$$$|  $$$$$$ | $$$$$$$$
+#   | $$  | $$| $$  | $$ /$$__  $$ \____  $$| $$_____/
+#   | $$$$$$$/| $$  | $$|  $$$$$$$ /$$$$$$$/|  $$$$$$$
+#   | $$____/ |__/  |__/ \_______/|_______/  \_______/
+#   | $$
+#   |__/
+#
+# Phase CLI installer.
+#
+# Usage:
+#   curl -fsSL https://pkg.phase.dev/install.sh | sh
+#   curl -fsSL https://pkg.phase.dev/install.sh | sh -s -- --version 2.0.0
+#
+# Supports: Linux, macOS, FreeBSD, OpenBSD, NetBSD
+# Architectures: x86_64, arm64, armv7, mips, mips64, riscv64, ppc64le, s390x
 
 set -e
 
 REPO="phasehq/cli"
-BASE_URL="https://github.com/$REPO/releases/download"
+INSTALL_DIR="/usr/local/bin"
+BINARY_NAME="phase"
 
-detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
+# --- Helpers ---
+
+die() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+info() {
+    echo "  $1"
+}
+
+# Run a command with elevated privileges if needed
+do_install() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo > /dev/null 2>&1; then
+        sudo "$@"
+    elif command -v doas > /dev/null 2>&1; then
+        doas "$@"
     else
-        echo "Can't detect OS type."
-        exit 1
+        die "This script must be run as root or with sudo/doas available."
     fi
 }
 
-has_sudo_access() {
-    if sudo -n true 2>/dev/null; then
-        return 0
+# Check if we can write to INSTALL_DIR (or create it) without elevated privileges.
+# If not, fall back to ~/.local/bin for rootless installs.
+check_install_dir() {
+    if [ "$(id -u)" -eq 0 ] || command -v sudo > /dev/null 2>&1 || command -v doas > /dev/null 2>&1; then
+        return
+    fi
+
+    # No privilege escalation available — use a user-local directory
+    INSTALL_DIR="${HOME}/.local/bin"
+    info "No root/sudo/doas available. Installing to ${INSTALL_DIR} instead."
+    info "Make sure ${INSTALL_DIR} is in your PATH."
+}
+
+# Download a URL to a file. Prefers curl, falls back to wget.
+fetch() {
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL -o "$2" "$1"
+    elif command -v wget > /dev/null 2>&1; then
+        wget -qO "$2" "$1"
+    else
+        die "curl or wget is required to download files."
+    fi
+}
+
+# Download a URL to stdout.
+fetch_stdout() {
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL "$1"
+    elif command -v wget > /dev/null 2>&1; then
+        wget -qO - "$1"
+    else
+        die "curl or wget is required to download files."
+    fi
+}
+
+# Compute SHA-256 hash of a file (portable across OS).
+compute_sha256() {
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum > /dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    elif command -v sha256 > /dev/null 2>&1; then
+        sha256 -q "$1"
     else
         return 1
     fi
 }
 
-can_install_without_sudo() {
-    case $OS in
-        ubuntu|debian)
-            if dpkg -l >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
-        fedora|rhel|centos|amzn|rocky)
-            if rpm -q rpm >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
-        alpine)
-            if apk --version >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
-        arch)
-            if pacman -V >/dev/null 2>&1; then
-                return 0
-            fi
-            ;;
+# Verify a downloaded file against the checksums.txt from the release.
+# Usage: verify_checksum <file_path> <expected_filename> <version>
+verify_checksum() {
+    _file="$1"
+    _filename="$2"
+    _version="$3"
+
+    _checksums_url="https://github.com/${REPO}/releases/download/v${_version}/checksums.txt"
+    _expected_hash=$(fetch_stdout "$_checksums_url" | grep "  ${_filename}\$" | cut -d' ' -f1)
+
+    if [ -z "$_expected_hash" ]; then
+        info "Warning: no checksum found for ${_filename}, skipping verification."
+        return 0
+    fi
+
+    _actual_hash=$(compute_sha256 "$_file") || {
+        info "Warning: no sha256 tool available, skipping verification."
+        return 0
+    }
+
+    if [ "$_expected_hash" != "$_actual_hash" ]; then
+        die "Checksum verification failed for ${_filename} (expected: ${_expected_hash}, got: ${_actual_hash})"
+    fi
+
+    info "Checksum verified."
+}
+
+# --- Detection ---
+
+detect_platform() {
+    OS="$(uname -s)"
+    ARCH="$(uname -m)"
+
+    case "$OS" in
+        Linux)                    OS="linux" ;;
+        Darwin)                   OS="darwin" ;;
+        FreeBSD)                  OS="freebsd" ;;
+        OpenBSD)                  OS="openbsd" ;;
+        NetBSD)                   OS="netbsd" ;;
+        MINGW*|MSYS*|CYGWIN*)     die "Windows is not supported by this script. Use Scoop instead: scoop bucket add phasehq https://github.com/phasehq/scoop-cli.git && scoop install phase" ;;
+        *)                        die "Unsupported operating system: $OS" ;;
     esac
-    return 1
+
+    case "$ARCH" in
+        x86_64|amd64)     ARCH="amd64" ;;
+        aarch64|arm64)    ARCH="arm64" ;;
+        armv7l|armv6l)    ARCH="arm" ;;
+        mips)             ARCH="mips" ;;
+        mipsel)           ARCH="mipsle" ;;
+        mips64)           ARCH="mips64" ;;
+        mips64el)         ARCH="mips64le" ;;
+        riscv64)          ARCH="riscv64" ;;
+        ppc64le)          ARCH="ppc64le" ;;
+        s390x)            ARCH="s390x" ;;
+        i386|i686)        ARCH="386" ;;
+        *)                die "Unsupported architecture: $ARCH" ;;
+    esac
 }
 
-prompt_sudo() {
-    if [ "$EUID" -ne 0 ]; then
-        if command -v sudo >/dev/null 2>&1; then
-            echo "This operation requires elevated privileges. Please enter your sudo password if prompted."
-            sudo -v
-            if [ $? -ne 0 ]; then
-                echo "Failed to obtain sudo privileges. Exiting."
-                exit 1
-            fi
-        else
-            echo "Error: This script must be run as root or with sudo privileges."
-            exit 1
-        fi
+# Detect the Linux distro family for package-based installs.
+detect_distro() {
+    DISTRO=""
+    if [ "$OS" != "linux" ]; then
+        return
     fi
-}
 
-install_tool() {
-    local TOOL=$1
-    echo "Installing $TOOL..."
-    if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-        case $OS in
-            ubuntu|debian)
-                apt-get update && apt-get install -y $TOOL
-                ;;
-            fedora|rhel|centos|amzn|rocky)
-                yum install -y $TOOL
-                ;;
-            alpine)
-                apk add $TOOL
-                ;;
-            arch)
-                pacman -Sy --noconfirm $TOOL
-                ;;
+    if [ -f /etc/os-release ]; then
+        _distro_id=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+        case "$_distro_id" in
+            ubuntu|debian)              DISTRO="deb" ;;
+            fedora|rhel|centos|amzn|rocky|ol|almalinux) DISTRO="rpm" ;;
+            alpine)                     DISTRO="apk" ;;
         esac
-    else
-        prompt_sudo
-        case $OS in
-            ubuntu|debian)
-                sudo apt-get update && sudo apt-get install -y $TOOL
-                ;;
-            fedora|rhel|centos|amzn|rocky)
-                sudo yum install -y $TOOL
-                ;;
-            alpine)
-                sudo apk add $TOOL
-                ;;
-            arch)
-                sudo pacman -Sy --noconfirm $TOOL
-                ;;
-        esac
-    fi
-}
-
-check_required_tools() {
-    for TOOL in wget curl jq unzip; do
-        if ! command -v $TOOL > /dev/null; then
-            install_tool $TOOL
-        fi
-    done
-    # sha256sum is provided by coreutils on most distros
-    if ! command -v sha256sum > /dev/null; then
-        install_tool coreutils
     fi
 }
 
 get_latest_version() {
-    curl -s "https://api.github.com/repos/$REPO/releases/latest" | jq -r .tag_name | cut -c 2-
+    fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" | \
+        sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p'
 }
 
-wget_download() {
-    if wget --help 2>&1 | grep -q '\--show-progress'; then
-        wget --show-progress "$1" -O "$2"
-    else
-        wget "$1" -O "$2"
+# --- Install ---
+
+cleanup_legacy() {
+    # Clean up remnants of the old Python CLI (v1.x).
+    #
+    # Package-managed installs (deb/rpm/apk): the v2.0 packages use
+    # --replaces, so the package manager handles the upgrade cleanly.
+    # We just nudge the user to use the package instead of this script.
+    #
+    # Binary zip installs (old arm64, Arch): clean up the leftover
+    # _internal/ directory and stale symlinks.
+
+    if command -v dpkg > /dev/null 2>&1 && dpkg -s phase > /dev/null 2>&1; then
+        echo ""
+        info "Detected Phase CLI v1 installed via DEB package."
+        info "Upgrade with the v2 package instead: dpkg -i phase_<version>_<arch>.deb"
+        info "Download from: https://github.com/${REPO}/releases"
+        echo ""
+    elif command -v rpm > /dev/null 2>&1 && rpm -q phase > /dev/null 2>&1; then
+        echo ""
+        info "Detected Phase CLI v1 installed via RPM package."
+        info "Upgrade with the v2 package instead: rpm -Uvh phase-<version>-1.<arch>.rpm"
+        info "Download from: https://github.com/${REPO}/releases"
+        echo ""
+    elif command -v apk > /dev/null 2>&1 && apk info -e phase > /dev/null 2>&1; then
+        echo ""
+        info "Detected Phase CLI v1 installed via APK package."
+        info "Upgrade with the v2 package instead: apk add --allow-untrusted phase_<version>_<arch>.apk"
+        info "Download from: https://github.com/${REPO}/releases"
+        echo ""
     fi
-}
 
-verify_checksum() {
-    local file="$1"
-    local checksum_url="$2"
-    local checksum_file="$TMPDIR/checksum.sha256"
-    
-    wget_download "$checksum_url" "$checksum_file"
-    
-    while IFS= read -r line; do
-        local expected_checksum=$(echo "$line" | awk '{print $1}')
-        local target_file=$(echo "$line" | awk '{print $2}')
+    # Clean up binary zip leftovers (_internal/ directory and the old binary).
+    # The old v1 binary zip installed phase + _internal/ side by side.
+    # The new v2 packages install to /usr/bin/phase, so we must remove the
+    # old binary from /usr/local/bin (or /usr/bin) to avoid PATH shadowing.
+    for dir in /usr/local/bin /usr/local/sbin /usr/bin; do
+        if [ -d "${dir}/_internal" ]; then
+            info "Removing legacy ${dir}/_internal/..."
+            do_install rm -rf "${dir}/_internal"
 
-        if [[ -e "$target_file" ]]; then
-            local computed_checksum=$(sha256sum "$target_file" | awk '{print $1}')
-            
-            if [[ "$expected_checksum" != "$computed_checksum" ]]; then
-                echo "Checksum verification failed for $target_file!"
-                exit 1
+            # The presence of _internal/ proves this is the old PyInstaller v1
+            # binary. Always remove it — the new v2 binary is installed
+            # elsewhere (e.g. /usr/bin via package manager).
+            if [ -f "${dir}/phase" ]; then
+                info "Removing old v1 binary ${dir}/phase..."
+                do_install rm -f "${dir}/phase"
             fi
         fi
-    done < "$checksum_file"
+    done
+
+    # Clean up stale symlinks pointing to old /usr/lib/phase/
+    if [ -L "/usr/bin/phase" ]; then
+        link_target=$(readlink "/usr/bin/phase" 2>/dev/null || true)
+        case "$link_target" in
+            *lib/phase/phase*)
+                info "Removing stale symlink /usr/bin/phase..."
+                do_install rm -f "/usr/bin/phase"
+                ;;
+        esac
+    fi
 }
 
-install_from_binary() {
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64)
-            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip"
-            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.zip.sha256"
-            EXTRACT_DIR="Linux-binary/phase"
-            ;;
-        aarch64)
-            ZIP_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip"
-            CHECKSUM_URL="$BASE_URL/v$VERSION/phase_cli_linux_arm64_$VERSION.zip.sha256"
-            EXTRACT_DIR="Linux-binary-arm64/phase"
-            ;;
-        *)
-            echo "Unsupported architecture: $ARCH. This script supports x86_64 and arm64."
-            exit 1
-            ;;
-    esac
-
-    wget_download "$ZIP_URL" "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip"
-    unzip "$TMPDIR/phase_cli_${ARCH}_$VERSION.zip" -d "$TMPDIR"
-
-    BINARY_PATH="$TMPDIR/$EXTRACT_DIR/phase"
-    INTERNAL_DIR_PATH="$TMPDIR/$EXTRACT_DIR/_internal"
-
-    verify_checksum "$BINARY_PATH" "$CHECKSUM_URL"
-    chmod +x "$BINARY_PATH"
-
-    if [ "$EUID" -eq 0 ]; then
-        # Running as root, no need for sudo
-        mv "$BINARY_PATH" /usr/local/bin/phase
-        mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
-    elif command -v sudo >/dev/null 2>&1; then
-        # Not root, but sudo is available
-        echo "This operation requires elevated privileges. Please enter your sudo password if prompted."
-        sudo mv "$BINARY_PATH" /usr/local/bin/phase
-        sudo mv "$INTERNAL_DIR_PATH" /usr/local/bin/_internal
-    else
-        echo "Error: This script must be run as root or with sudo privileges."
-        exit 1
-    fi
+# Asset naming convention: phase_cli_{version}_{os}_{arch}[.ext]
+asset_url() {
+    echo "https://github.com/${REPO}/releases/download/v${1}/phase_cli_${1}_${2}_${3}${4}"
 }
 
 install_package() {
-    ARCH=$(uname -m)
-    # For non-Alpine ARM64 systems, fall back to binary installation
-    if [ "$ARCH" = "aarch64" ] && [ "$OS" != "alpine" ]; then
-        install_from_binary
-        echo "phase-cli version $VERSION successfully installed"
-        return
-    fi
+    version="$1"
 
-    if [ "$EUID" -ne 0 ] && ! can_install_without_sudo; then
-        prompt_sudo
-    fi
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
 
-    case $OS in
-        ubuntu|debian)
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.deb"
-            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
-            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.deb" "$PACKAGE_URL.sha256"
-            if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-                dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
-            else
-                sudo dpkg -i $TMPDIR/phase_cli_linux_amd64_$VERSION.deb
-            fi
+    echo ""
+    info "Phase CLI v${version} (${OS}/${ARCH})"
+    echo ""
+
+    case "$DISTRO" in
+        deb)
+            pkg_file="phase_cli_${version}_linux_${ARCH}.deb"
+            download_url=$(asset_url "$version" "linux" "$ARCH" ".deb")
+            info "Downloading ${pkg_file}..."
+            fetch "$download_url" "${tmpdir}/${pkg_file}"
+            verify_checksum "${tmpdir}/${pkg_file}" "$pkg_file" "$version"
+            info "Installing via dpkg..."
+            do_install dpkg -i "${tmpdir}/${pkg_file}"
             ;;
-
-        fedora|rhel|centos|amzn|rocky)
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_amd64_$VERSION.rpm"
-            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            verify_checksum "$TMPDIR/phase_cli_linux_amd64_$VERSION.rpm" "$PACKAGE_URL.sha256"
-            if [ "$EUID" -eq 0 ]; then
-                rpm -Uvh $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            else
-                echo "Installing RPM package. This may require sudo privileges."
-                sudo rpm -Uvh $TMPDIR/phase_cli_linux_amd64_$VERSION.rpm
-            fi
+        rpm)
+            pkg_file="phase_cli_${version}_linux_${ARCH}.rpm"
+            download_url=$(asset_url "$version" "linux" "$ARCH" ".rpm")
+            info "Downloading ${pkg_file}..."
+            fetch "$download_url" "${tmpdir}/${pkg_file}"
+            verify_checksum "${tmpdir}/${pkg_file}" "$pkg_file" "$version"
+            info "Installing via rpm..."
+            do_install rpm -Uvh "${tmpdir}/${pkg_file}"
             ;;
-
-        alpine)
-            case $ARCH in
-                x86_64)
-                    APK_ARCH="amd64"
-                    ;;
-                aarch64)
-                    APK_ARCH="arm64"
-                    ;;
-                *)
-                    echo "Unsupported architecture for Alpine: $ARCH"
-                    exit 1
-                    ;;
-            esac
-            PACKAGE_URL="$BASE_URL/v$VERSION/phase_cli_linux_${APK_ARCH}_$VERSION.apk"
-            wget_download $PACKAGE_URL $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
-            verify_checksum "$TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk" "$PACKAGE_URL.sha256"
-            if [ "$EUID" -eq 0 ] || can_install_without_sudo; then
-                apk add --allow-untrusted $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
-            else
-                sudo apk add --allow-untrusted $TMPDIR/phase_cli_linux_${APK_ARCH}_$VERSION.apk
-            fi
+        apk)
+            pkg_file="phase_cli_${version}_linux_${ARCH}.apk"
+            download_url=$(asset_url "$version" "linux" "$ARCH" ".apk")
+            info "Downloading ${pkg_file}..."
+            fetch "$download_url" "${tmpdir}/${pkg_file}"
+            verify_checksum "${tmpdir}/${pkg_file}" "$pkg_file" "$version"
+            info "Installing via apk..."
+            do_install apk add --allow-untrusted "${tmpdir}/${pkg_file}"
             ;;
-
         *)
-            install_from_binary
+            # No supported package manager — install raw binary
+            install_binary "$version"
+            return
             ;;
     esac
-    echo "phase-cli version $VERSION successfully installed"
+
+    cleanup_legacy
+
+    echo ""
+    info "Phase CLI v${version} installed successfully."
+    echo ""
+
+    phase --version 2>/dev/null || true
 }
 
+install_binary() {
+    version="$1"
+
+    asset_name="phase_cli_${version}_${OS}_${ARCH}"
+    download_url=$(asset_url "$version" "$OS" "$ARCH" "")
+
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    echo ""
+    info "Phase CLI v${version} (${OS}/${ARCH})"
+    echo ""
+
+    info "Downloading ${asset_name}..."
+    fetch "$download_url" "${tmpdir}/${asset_name}"
+    verify_checksum "${tmpdir}/${asset_name}" "$asset_name" "$version"
+
+    chmod +x "${tmpdir}/${asset_name}"
+
+    # Ensure install directory exists
+    if [ ! -d "$INSTALL_DIR" ]; then
+        do_install mkdir -p "$INSTALL_DIR"
+    fi
+
+    info "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
+    do_install install -m 755 "${tmpdir}/${asset_name}" "${INSTALL_DIR}/${BINARY_NAME}"
+
+    cleanup_legacy
+
+    echo ""
+    info "Phase CLI v${version} installed successfully."
+    echo ""
+
+    # Show the installed version
+    "${INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null || true
+}
+
+# --- Main ---
+
 main() {
-    detect_os
-    check_required_tools
-    TMPDIR=$(mktemp -d)
+    detect_platform
 
-    # Default to the latest version unless a specific version is requested
-    VERSION=$(get_latest_version)
+    VERSION=""
 
-    # Parse command-line arguments
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --version)
                 VERSION="$2"
                 shift 2
                 ;;
+            --help|-h)
+                echo "Usage: install.sh [--version VERSION]"
+                echo ""
+                echo "Install the Phase CLI. If no version is specified, the latest release is installed."
+                echo ""
+                echo "Options:"
+                echo "  --version VERSION   Install a specific version"
+                exit 0
+                ;;
             *)
-                break
+                die "Unknown option: $1. Use --help for usage."
                 ;;
         esac
     done
 
-    install_package
+    if [ -z "$VERSION" ]; then
+        info "Fetching latest version..."
+        VERSION=$(get_latest_version)
+        if [ -z "$VERSION" ]; then
+            die "Could not determine latest version. Specify one with --version"
+        fi
+    fi
+
+    check_install_dir
+    detect_distro
+
+    # Use native package manager on supported Linux distros, raw binary elsewhere
+    if [ -n "$DISTRO" ]; then
+        install_package "$VERSION"
+    else
+        install_binary "$VERSION"
+    fi
 }
 
 main "$@"
