@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
 	github.com/manifoldco/promptui v0.9.0
-	github.com/phasehq/golang-sdk/v2 v2.0.1
+	github.com/phasehq/golang-sdk/v2 v2.1.0
 	github.com/spf13/cobra v1.8.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/term v0.39.0

@@ -28,6 +28,7 @@ func init() {
 	secretsCreateCmd.Flags().Bool("override", false, "Create with override")
 	secretsCreateCmd.Flags().String("random", "", "Random type (hex, alphanumeric, base64, base64url, key128, key256)")
 	secretsCreateCmd.Flags().Int("length", 32, "Length for random secret")
+	secretsCreateCmd.Flags().String("type", "", "Secret type: secret (default), sealed, or config")
 	secretsCmd.AddCommand(secretsCreateCmd)
 }
 
@@ -39,6 +40,11 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 	override, _ := cmd.Flags().GetBool("override")
 	randomType, _ := cmd.Flags().GetString("random")
 	randomLength, _ := cmd.Flags().GetInt("length")
+	secretType, _ := cmd.Flags().GetString("type")
+
+	if err := sdk.ValidateSecretType(secretType); err != nil {
+		return err
+	}
 
 	var key string
 	if len(args) > 0 {
@@ -109,6 +115,7 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 		AppID:         appID,
 		Path:          path,
 		OverrideValue: overrideValue,
+		Type:          secretType,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create secret: %w", err)

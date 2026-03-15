@@ -27,17 +27,15 @@ func getTerminalWidth() int {
 }
 
 // runeWidth returns the terminal column width of a single rune.
-// Only emoji with East Asian Width "W" (Wide) are counted as 2 columns.
-// Ambiguous-width characters (EAW=A/N) that need VS16 for emoji presentation
-// are avoided in our display strings; we use only EAW=W emoji for indicators.
+// Take into account the col width a char would take
 func runeWidth(r rune) int {
 	switch {
 	case r == '\uFE0F' || r == '\u200A' || r == '\u200B' || r == '\u200D':
 		return 0 // variation selectors, hair space, zero-width space, ZWJ
 	case r >= 0x1F000:
 		return 2 // Supplementary emoji (nearly all EAW=W)
-	case r >= 0x2600 && r <= 0x27BF:
-		return 2 // Misc Symbols & Dingbats (⚡ etc.)
+	case r == 0x26A1: // ⚡
+		return 2
 	default:
 		return 1
 	}
@@ -83,16 +81,21 @@ func truncateToWidth(s string, maxWidth int) string {
 
 // wrapToWidth splits s into lines that each fit within maxWidth display columns.
 func wrapToWidth(s string, maxWidth int) []string {
-	if maxWidth <= 0 || displayWidth(s) <= maxWidth {
-		return []string{s}
-	}
 	var lines []string
 	var line []byte
 	w := 0
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
+		// Handle multi line secret wrapping in the value column
+		if r == '\n' {
+			lines = append(lines, string(line))
+			line = nil
+			w = 0
+			i += size
+			continue
+		}
 		rw := runeWidth(r)
-		if rw > 0 && w+rw > maxWidth {
+		if maxWidth > 0 && rw > 0 && w+rw > maxWidth {
 			lines = append(lines, string(line))
 			line = nil
 			w = 0
@@ -101,9 +104,7 @@ func wrapToWidth(s string, maxWidth int) []string {
 		w += rw
 		i += size
 	}
-	if len(line) > 0 {
-		lines = append(lines, string(line))
-	}
+	lines = append(lines, string(line))
 	return lines
 }
 
@@ -121,6 +122,14 @@ func censorSecret(secret string, maxLength int) string {
 // renderSecretRow renders a single secret row.
 func renderSecretRow(pathPrefix string, s sdk.SecretResult, show bool, keyWidth, valueWidth int) {
 	keyDisplay := s.Key
+
+	// Secret type indicators
+	if s.Type == sdk.SecretTypeSealed {
+		keyDisplay += " 🔒"
+	} else if s.Type == sdk.SecretTypeConfig {
+		keyDisplay += " 🔧"
+	}
+
 	if len(s.Tags) > 0 {
 		keyDisplay += " 🔖"
 	}
@@ -142,7 +151,9 @@ func renderSecretRow(pathPrefix string, s sdk.SecretResult, show bool, keyWidth,
 	}
 
 	var valueDisplay string
-	if s.IsDynamic && !show {
+	if s.Type == sdk.SecretTypeSealed {
+		valueDisplay = "[sealed secret]"
+	} else if s.IsDynamic && !show {
 		valueDisplay = "****************"
 	} else if show {
 		valueDisplay = s.Value
