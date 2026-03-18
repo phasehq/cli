@@ -65,7 +65,8 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 
 	var newValue string
 	if toggleOverride {
-		// No value needed for toggle
+		// No value needed for toggle or change in secret type
+	} else if secretType != "" && randomType == "" && !override {
 	} else if randomType != "" {
 		validTypes := map[string]bool{"hex": true, "alphanumeric": true, "base64": true, "base64url": true, "key128": true, "key256": true}
 		if !validTypes[randomType] {
