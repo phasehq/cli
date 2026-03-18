@@ -186,6 +186,36 @@ func SetDefaultUser(accountID string) error {
 	return SaveConfig(config)
 }
 
+var AIConfigPath = filepath.Join(homeDir(), ".phase", "ai.json")
+
+type AIConfig struct {
+	Version          string `json:"version"`
+	MaskSecretValues bool   `json:"maskSecretValues"`
+}
+
+func LoadAIConfig() *AIConfig {
+	data, err := os.ReadFile(AIConfigPath)
+	if err != nil {
+		return nil
+	}
+	var cfg AIConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	return &cfg
+}
+
+func SaveAIConfig(cfg *AIConfig) error {
+	if err := os.MkdirAll(filepath.Dir(AIConfigPath), 0700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(AIConfigPath, data, 0600)
+}
+
 func RemoveUser(id string) error {
 	config, err := LoadConfig()
 	if err != nil {
