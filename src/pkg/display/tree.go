@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
 	"golang.org/x/term"
@@ -151,11 +152,14 @@ func renderSecretRow(pathPrefix string, s sdk.SecretResult, show bool, keyWidth,
 	}
 
 	var valueDisplay string
-	if s.Type == sdk.SecretTypeSealed {
+	if ai.ShouldRedact(s.Type) {
+		valueDisplay = "[REDACTED]"
+	} else if s.Type == sdk.SecretTypeSealed {
 		valueDisplay = "[sealed secret]"
 	} else if s.IsDynamic && !show {
 		valueDisplay = "****************"
-	} else if show {
+		// Show type configs
+	} else if show || s.Type == sdk.SecretTypeConfig {
 		valueDisplay = s.Value
 	} else {
 		censorLen := valueWidth - displayWidth(icon) - displayWidth(personalIndicator) - 2
