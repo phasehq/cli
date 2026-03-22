@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -12,9 +13,9 @@ import (
 )
 
 var secretsGetCmd = &cobra.Command{
-	Use:   "get <KEY>",
-	Short: "🔍 Fetch details about a secret in JSON",
-	Args:  cobra.ExactArgs(1),
+	Use:   "get <KEY> [KEY...]",
+	Short: "🔍 Fetch details about one or more secrets in JSON",
+	Args:  cobra.MinimumNArgs(1),
 	RunE:  runSecretsGet,
 }
 
@@ -30,7 +31,11 @@ func init() {
 }
 
 func runSecretsGet(cmd *cobra.Command, args []string) error {
-	key := strings.ToUpper(args[0])
+	keys := make([]string, len(args))
+	for i, k := range args {
+		keys[i] = strings.ToUpper(k)
+	}
+
 	envName, _ := cmd.Flags().GetString("env")
 	appName, _ := cmd.Flags().GetString("app")
 	appID, _ := cmd.Flags().GetString("app-id")
@@ -50,7 +55,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		EnvName: envName,
 		AppName: appName,
 		AppID:   appID,
-		Keys:    []string{key},
+		Keys:    keys,
 		Tag:     tags,
 		Path:    path,
 		Dynamic: true,
@@ -66,19 +71,35 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var found *sdk.SecretResult
-	for i, s := range secrets {
-		if s.Key == key {
-			found = &secrets[i]
-			break
+	// Build a lookup set for requested keys
+	keySet := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		keySet[k] = true
+	}
+
+	var results []sdk.SecretResult
+	for _, s := range secrets {
+		if keySet[s.Key] {
+			if ai.ShouldRedact(s.Type) {
+				s.Value = "[REDACTED]"
+			}
+			results = append(results, s)
 		}
 	}
 
-	if found == nil {
-		return fmt.Errorf("🔍 Secret not found")
+	if len(results) == 0 {
+		return fmt.Errorf("🔍 No matching secrets found")
 	}
 
-	data, _ := json.MarshalIndent(found, "", "    ")
+	// Single key: output the object directly (backwards compatible)
+	if len(keys) == 1 {
+		data, _ := json.MarshalIndent(results[0], "", "    ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Multiple keys: output as array
+	data, _ := json.MarshalIndent(results, "", "    ")
 	fmt.Println(string(data))
 	return nil
 }
