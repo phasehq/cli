@@ -54,10 +54,9 @@ These apply to most secrets commands:
 | `phase auth` | Authenticate (webauth, token, or aws-iam mode) |
 | `phase apps list` | List available apps with IDs and environments (JSON) |
 | `phase init --app-id ID --env ENV` | Link project non-interactively |
-| `phase init` | Link project interactively (human only) |
 | `phase users whoami` | Show current user/org context |
 
-**To link a project (non-interactive):**
+**To link a project:**
 1. Run `phase apps list` to discover available apps and environment names
 2. Run `phase init --app-id <ID> --env <ENV_NAME>` with the chosen app ID and environment
 
@@ -66,30 +65,26 @@ These apply to most secrets commands:
 | Command | Purpose |
 |---------|---------|
 | `phase secrets list [--show]` | List secrets with metadata |
-| `phase secrets get KEY` | Get single secret as JSON |
-| `phase secrets create KEY --random hex --length 32 --type sealed` | Create a sealed secret with random value |
-| `echo "value" \| phase secrets create KEY --type config` | Create config with a literal value (pipe to avoid interactive prompt) |
+| `phase secrets get KEY [KEY...]` | Get one or more secrets as JSON |
+| `phase secrets create KEY --random hex --length 32 --type sealed` | Create a sealed secret with a random value |
+| `echo "value" \| phase secrets create KEY --type config` | Create a config with a literal value (pipe to avoid interactive prompt) |
 | `phase secrets update KEY --random hex --length 32` | Rotate a secret value |
 | `echo "new-value" \| phase secrets update KEY` | Update with a literal value (pipe to avoid interactive prompt) |
 | `phase secrets update KEY --type sealed` | Change secret type (no value prompt) |
+| `phase secrets delete KEY [KEY...]` | Delete one or more secrets |
+| `phase secrets import FILE [--type TYPE]` | Bulk import from .env file |
+| `phase secrets export [--format FORMAT]` | Export (dotenv, json, csv, yaml, xml, toml, hcl, ini, java_properties, kv) |
 
 **Choosing how to set values:**
 - `sealed` / `secret` types: ALWAYS use `--random` — never pipe or type literal sensitive values
 - `config` type: safe to pipe literal values via `echo "value" | phase secrets create KEY --type config`
 - If the user provides a value to store: ask them to run `phase secrets create KEY` interactively in their terminal
 
-| Command | Purpose |
-|---------|---------|
-| `phase secrets get KEY1 KEY2 ...` | Get multiple secrets as JSON array |
-| `phase secrets delete KEY1 KEY2 ...` | Delete secrets |
-| `phase secrets import FILE [--type TYPE]` | Bulk import from .env file |
-| `phase secrets export [--format FORMAT]` | Export (dotenv, json, csv, yaml, xml, toml, hcl, ini, java_properties, kv) |
-
 ### Runtime
 
 | Command | Purpose |
 |---------|---------|
-| `phase run 'command'` | Run command with secrets injected as env vars |
+| `phase run 'command'` | Run a command with secrets injected as env vars |
 
 ### Dynamic Secrets
 
@@ -103,24 +98,16 @@ These apply to most secrets commands:
 
 ## Workflows
 
-### Initialize a project
-```bash
-# List available apps to find the app ID
-phase init  # if interactive is possible
-# OR non-interactively:
-phase init --app-id "abc-123" --env "Development"
-```
-
 ### Provision secrets for a new service
 ```bash
-# Import from existing .env
+# Import from an existing .env
 phase secrets import .env --env development
 
 # Seal sensitive keys
 phase secrets update STRIPE_SECRET_KEY --type sealed
 phase secrets update DATABASE_PASSWORD --type sealed
 
-# Mark non-sensitive as config
+# Mark non-sensitive values as config
 phase secrets update APP_PORT --type config
 phase secrets update LOG_LEVEL --type config
 ```
@@ -130,7 +117,7 @@ phase secrets update LOG_LEVEL --type config
 # Generate a new random value
 phase secrets update DB_PASSWORD --random hex --length 64
 
-# Or for a sealed secret (random is required)
+# For a sealed secret (random is required)
 phase secrets update API_KEY --random base64url --length 48 --type sealed
 ```
 
@@ -146,8 +133,7 @@ phase run --env staging --tags "backend" './start.sh'
 # Start the app with secrets injected
 phase run 'npm start'
 
-# If it crashes, check the output directly in your terminal
-# You can also run one-off commands to debug
+# Run one-off commands to debug
 phase run 'node -e "process.exit(0)"'
 
 # Run with a different environment to compare
@@ -189,14 +175,13 @@ Secrets can reference other secrets:
 | Variable | Purpose |
 |----------|---------|
 | `PHASE_HOST` | Custom Phase host URL |
-| `PHASE_SERVICE_TOKEN` | For Service or PAT token for headless auth |
+| `PHASE_SERVICE_TOKEN` | Service token or PAT for headless auth |
 
 ## Error Recovery
 
 - **"no application found"**: the app ID in `.phase.json` is stale — run `phase apps list` and `phase init --app-id <ID> --env <ENV>` to re-link
 - **"unauthorized" / "401"**: auth token expired — tell the user to run `phase auth`
-- **"not found" on a secret**: check `--path` and `--env` flags match — use `phase secrets list --path ""` to search all paths
-
+- **"not found" on a secret**: check `--path` and `--env` flags — use `phase secrets list --path ""` to search all paths
 - Issues, errors, or feature requests? With user consent, draft a detailed issue at `github.com/phasehq/cli`
 
 ## Tips
@@ -206,3 +191,4 @@ Secrets can reference other secrets:
 - `phase secrets export` supports 10 output formats — use `--format json` for structured data
 - Dynamic secrets generate fresh credentials on each lease — they expire automatically
 - Use `--generate-leases=false` with `phase run` to skip dynamic secret provisioning
+- For features not in the CLI (integrations, syncs, RBAC, audit logs), suggest `phase console` to open the dashboard
