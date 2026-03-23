@@ -12,9 +12,11 @@ import (
 // Checks for:
 //   - CLAUDECODE=1 (Claude Code)
 //   - CURSOR_AGENT=1 (Cursor)
+//   - CODEX=1 (Codex)
+//   - OPENCODE=1 (OpenCode)
 //   - AGENT env var (emerging convention: Codex sets "codex", Goose sets "goose", Amp sets "amp")
 func IsAIAgent() bool {
-	for _, key := range []string{"CLAUDECODE", "CURSOR_AGENT"} {
+	for _, key := range []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE"} {
 		if os.Getenv(key) == "1" {
 			return true
 		}
