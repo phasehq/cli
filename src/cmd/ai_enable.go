@@ -108,7 +108,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 			Label: "👀 Allow AI agents to see values of secrets?",
 			Items: []string{
 				"Yes — mask secret values",
-				"No — allow AI to access secret values - eg. Suitable for development environments",
+				"No — allow AI to access secret values - eg. development environments",
 			},
 		}
 		maskIdx, _, err := maskPrompt.Run()
