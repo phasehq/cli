@@ -12,7 +12,7 @@ import (
 
 var aiEnableCmd = &cobra.Command{
 	Use:   "enable",
-	Short: "🪄 Enable AI integrations and configure secret visibility",
+	Short: "🪄  Enable AI integrations and configure secret visibility",
 	Long:  "Configure how AI tools interact with your Phase secrets. Sealed secret values are always hidden from AI regardless of settings.",
 	RunE:  runAIEnable,
 }
@@ -93,11 +93,22 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	} else if noMaskFlag {
 		maskSecretValues = false
 	} else {
+		fmt.Println()
+		fmt.Println("   Secret visibility for AI agents:")
+		fmt.Println("   ┌─────────────┬────────────────────┬──────────────────────────┐")
+		fmt.Println("   │ Secret type │ Example            │ AI Visibility            │")
+		fmt.Println("   ├─────────────┼────────────────────┼──────────────────────────┤")
+		fmt.Println("   │ config      │ REDIS_PORT=6379    │ always visible           │")
+		fmt.Println(util.BoldMagenta("   │ secret      │ REDIS_HOST=?.?.?.? │ 👈 mask secret value?    │"))
+		fmt.Println("   │ sealed      │ REDIS_PASSWORD=███ │ never visible!           │")
+		fmt.Println("   └─────────────┴────────────────────┴──────────────────────────┘")
+		fmt.Println()
+
 		maskPrompt := promptui.Select{
-			Label: "👀 Allow AI agents to view secret values? Sealed secrets are never revealed!",
+			Label: "👀 Allow AI agents to see values of secrets?",
 			Items: []string{
-				"No — mask secret values eg. API_KEY=[REDACTED]",
-				"Yes — let AI see secret values eg. API_KEY=sk_live_abc123...",
+				"Yes — mask secret values",
+				"No — allow AI to access secret values - eg. Suitable for development environments",
 			},
 		}
 		maskIdx, _, err := maskPrompt.Run()
