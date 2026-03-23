@@ -6,7 +6,7 @@ import (
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",
-	Short: "🥷  AI integrations for Phase",
+	Short: "🥷  Integrate Phase with AI Agents",
 	Long:  "Configure how AI coding agents interact with your Phase secrets.",
 }
 
