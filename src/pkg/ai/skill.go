@@ -119,6 +119,9 @@ func UninstallSkill() []string {
 	for _, t := range targets {
 		// Remove the entire skill directory (e.g. ~/.claude/skills/phase-cli/)
 		skillDir := filepath.Dir(t.Path)
+		if _, err := os.Stat(skillDir); err != nil {
+			continue // skip if doesn't exist
+		}
 		if err := os.RemoveAll(skillDir); err == nil {
 			removed = append(removed, skillDir)
 		}
