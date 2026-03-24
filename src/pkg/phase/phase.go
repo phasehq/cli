@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/version"
@@ -50,6 +51,11 @@ func setUserAgent() {
 	}
 	ua := fmt.Sprintf("phase-cli/%s %s %s %s@%s",
 		version.Version, runtime.GOOS, runtime.GOARCH, username, hostname)
+
+	if agent := ai.DetectAIAgent(); agent != "" {
+		ua += fmt.Sprintf(" (ai-agent/%s)", agent)
+	}
+
 	network.SetUserAgent(ua)
 }
 

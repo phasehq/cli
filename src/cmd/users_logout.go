@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
@@ -32,8 +33,9 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		for _, id := range ids {
 			keyring.DeleteCredentials(id)
 		}
-		if _, err := os.Stat(config.PhaseSecretsDir); err == nil {
-			if err := os.RemoveAll(config.PhaseSecretsDir); err != nil {
+		phaseHomeDir := filepath.Dir(config.PhaseSecretsDir)
+		if _, err := os.Stat(phaseHomeDir); err == nil {
+			if err := os.RemoveAll(phaseHomeDir); err != nil {
 				return fmt.Errorf("failed to purge local data: %w", err)
 			}
 			fmt.Println("Logged out and purged all local data.")
