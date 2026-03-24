@@ -16,17 +16,35 @@ import (
 //   - OPENCODE=1 (OpenCode)
 //   - AGENT env var (emerging convention: Codex sets "codex", Goose sets "goose", Amp sets "amp")
 func IsAIAgent() bool {
-	for _, key := range []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE"} {
-		if os.Getenv(key) == "1" {
-			return true
+	return DetectAIAgent() != ""
+}
+
+// DetectAIAgent returns the name of the AI coding agent invoking the CLI,
+// or an empty string if none is detected.
+func DetectAIAgent() string {
+	agentEnvVars := []struct {
+		key  string
+		name string
+	}{
+		{"CLAUDECODE", "claude-code"},
+		{"CURSOR_AGENT", "cursor"},
+		{"CODEX", "codex"},
+		{"OPENCODE", "opencode"},
+	}
+
+	for _, a := range agentEnvVars {
+		if os.Getenv(a.key) == "1" {
+			return a.name
 		}
 	}
+
 	// AGENT=<name> is the emerging cross-tool convention
 	// (Codex, Goose, Amp, etc.)
-	if os.Getenv("AGENT") != "" {
-		return true
+	if agent := os.Getenv("AGENT"); agent != "" {
+		return agent
 	}
-	return false
+
+	return ""
 }
 
 // ShouldRedact returns whether a secret of the given type should have its value
