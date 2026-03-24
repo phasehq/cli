@@ -47,8 +47,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/manifoldco/promptui v0.9.0 h1:3V4HzJk1TtXW1MTZMP7mdlwbBpIinw3HztaIlYthEiA=
 github.com/manifoldco/promptui v0.9.0/go.mod h1:ka04sppxSGFAtxX0qhlYQjISsg9mR4GWtQEhdbn6Pgg=
-github.com/phasehq/golang-sdk/v2 v2.1.0 h1:0x5zxfOZrJ+rMy2ZCbwd1ZJbNBNLeTQ1+ZQGPuRbwSQ=
-github.com/phasehq/golang-sdk/v2 v2.1.0/go.mod h1:CDdiWynCzC3k6nMuDr+PXcQ6UAMV+NnDeDwHQVi8xSw=
+github.com/phasehq/golang-sdk/v2 v2.1.1 h1:mhI1rOQNf4eIeAzS1gM61BNKMfIUIPfqXsMTExEYLLU=
+github.com/phasehq/golang-sdk/v2 v2.1.1/go.mod h1:CDdiWynCzC3k6nMuDr+PXcQ6UAMV+NnDeDwHQVi8xSw=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
