@@ -20,7 +20,7 @@ var aiEnableCmd = &cobra.Command{
 func init() {
 	aiEnableCmd.Flags().Bool("mask", false, "Mask secret values from AI (non-interactive)")
 	aiEnableCmd.Flags().Bool("no-mask", false, "Allow AI to read secret values (non-interactive)")
-	aiEnableCmd.Flags().String("target", "", "Install skill doc to a specific path (non-interactive)")
+	aiEnableCmd.Flags().String("path", "", "Install skill doc to a specific path (non-interactive)")
 	aiCmd.AddCommand(aiEnableCmd)
 }
 
@@ -31,7 +31,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 
 	maskFlag, _ := cmd.Flags().GetBool("mask")
 	noMaskFlag, _ := cmd.Flags().GetBool("no-mask")
-	targetFlag, _ := cmd.Flags().GetString("target")
+	targetFlag, _ := cmd.Flags().GetString("path")
 
 	// Step 1: Select where to install the skill doc
 	var installPath string
@@ -105,10 +105,10 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 
 		maskPrompt := promptui.Select{
-			Label: "👀 Allow AI agents to see values of secrets?",
+			Label: "🔒 Mask secret values from AI agents?",
 			Items: []string{
 				"Yes — mask secret values",
-				"No — allow AI to access secret values - eg. development environments",
+				"No — allow AI to read secret values (e.g. development environments)",
 			},
 		}
 		maskIdx, _, err := maskPrompt.Run()
