@@ -21,6 +21,7 @@ func init() {
 	secretsImportCmd.Flags().String("app", "", "Application name")
 	secretsImportCmd.Flags().String("app-id", "", "Application ID")
 	secretsImportCmd.Flags().String("path", "/", "Path for imported secrets")
+	secretsImportCmd.Flags().String("type", "", "Secret type: secret (default), sealed, or config")
 	secretsCmd.AddCommand(secretsImportCmd)
 }
 
@@ -30,6 +31,11 @@ func runSecretsImport(cmd *cobra.Command, args []string) error {
 	appName, _ := cmd.Flags().GetString("app")
 	appID, _ := cmd.Flags().GetString("app-id")
 	path, _ := cmd.Flags().GetString("path")
+	secretType, _ := cmd.Flags().GetString("type")
+
+	if err := sdk.ValidateSecretType(secretType); err != nil {
+		return err
+	}
 
 	// Parse env file
 	pairs, err := util.ParseEnvFile(envFile)
@@ -50,6 +56,7 @@ func runSecretsImport(cmd *cobra.Command, args []string) error {
 		AppName:       appName,
 		AppID:         appID,
 		Path:          path,
+		Type:          secretType,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to import secrets: %w", err)

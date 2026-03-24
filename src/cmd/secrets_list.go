@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/display"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
@@ -16,6 +18,8 @@ var secretsListCmd = &cobra.Command{
 	Long: `📇 List all the secrets
 
 Icon legend:
+  🔒  Sealed secret (write-only, value cannot be read back)
+  🔧  Config secret (non-sensitive configuration value)
   🔗  Secret references another secret in the same environment
   🌐  Cross-environment reference (secret from another environment in the same or different application)
   🔖  Tag associated with the secret
@@ -40,15 +44,15 @@ func init() {
 // listSecrets fetches and displays secrets. Used by list, create, update, and delete commands.
 func listSecrets(p *sdk.Phase, envName, appName, appID, tags, path string, show, dynamic, lease bool, leaseTTL *int) error {
 	opts := sdk.GetOptions{
-		EnvName:     envName,
-		AppName:     appName,
-		AppID:       appID,
-		Tag:         tags,
-		Path:        path,
-		Dynamic:     dynamic,
-		Lease:       lease,
-		LeaseTTL:    leaseTTL,
-		Raw: true,
+		EnvName:  envName,
+		AppName:  appName,
+		AppID:    appID,
+		Tag:      tags,
+		Path:     path,
+		Dynamic:  dynamic,
+		Lease:    lease,
+		LeaseTTL: leaseTTL,
+		Raw:      true,
 	}
 
 	spinner := util.NewSpinner("Fetching secrets...")
@@ -94,6 +98,10 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 
 	if err := listSecrets(p, envName, appName, appID, tags, path, show, true, lease, leaseTTLPtr); err != nil {
 		return err
+	}
+
+	if ai.IsAIAgent() {
+		fmt.Fprintf(os.Stderr, "🤖 AI mode: some values may be [REDACTED] based on secret type. To view, the user should run this command directly in their terminal.\n")
 	}
 
 	fmt.Println("🔬 To view a secret, use: phase secrets get <key>")
