@@ -13,8 +13,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/phasehq/golang-sdk/v2 => ../../golang-sdk
-
 require (
 	al.essio.dev/pkg/shellescape v1.5.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.0 // indirect
