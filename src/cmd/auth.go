@@ -24,10 +24,11 @@ var authCmd = &cobra.Command{
 var authMode string
 
 func init() {
-	authCmd.Flags().StringVar(&authMode, "mode", "webauth", "Authentication mode (webauth, token, aws-iam)")
-	authCmd.Flags().String("service-account-id", "", "Service account ID (required for aws-iam mode)")
-	authCmd.Flags().Int("ttl", 0, "Token TTL in seconds (for aws-iam mode)")
-	authCmd.Flags().Bool("no-store", false, "Print token to stdout instead of storing (for aws-iam mode)")
+	authCmd.Flags().StringVar(&authMode, "mode", "webauth", "Authentication mode (webauth, token, aws-iam, azure)")
+	authCmd.Flags().String("service-account-id", "", "Service account ID (required for aws-iam and azure modes)")
+	authCmd.Flags().Int("ttl", 0, "Token TTL in seconds (for external identity modes)")
+	authCmd.Flags().Bool("no-store", false, "Print token to stdout instead of storing (for external identity modes)")
+	authCmd.Flags().String("azure-resource", "", "Azure AD resource/audience for token request (for azure mode, default: https://management.azure.com/)")
 	rootCmd.AddCommand(authCmd)
 }
 
@@ -71,10 +72,12 @@ func runAuth(cmd *cobra.Command, args []string) error {
 		return runWebAuth(cmd, host)
 	case "aws-iam":
 		return runAWSIAMAuth(cmd, host)
+	case "azure":
+		return runAzureAuth(cmd, host)
 	case "token":
 		return runTokenAuth(cmd, host)
 	default:
-		return fmt.Errorf("unsupported auth mode: %s. Supported modes: token, webauth, aws-iam", authMode)
+		return fmt.Errorf("unsupported auth mode: %s. Supported modes: token, webauth, aws-iam, azure", authMode)
 	}
 }
 
