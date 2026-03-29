@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/phasehq/cli/pkg/ai"
+	"github.com/phasehq/cli/pkg/offline"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -66,7 +67,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		opts.LeaseTTL = &leaseTTL
 	}
 
-	secrets, err := p.Get(opts)
+	secrets, err := offline.GetWithCache(p, opts, phase.GetCacheDir())
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/phasehq/cli/pkg/ai"
+	"github.com/phasehq/cli/pkg/offline"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -72,7 +73,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	spinner := util.NewSpinner("Fetching secrets...")
 	spinner.Start()
-	allSecrets, err := p.Get(opts)
+	allSecrets, err := offline.GetWithCache(p, opts, phase.GetCacheDir())
 	spinner.Stop()
 	if err != nil {
 		return err

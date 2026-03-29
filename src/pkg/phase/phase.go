@@ -10,6 +10,7 @@ import (
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
+	"github.com/phasehq/cli/pkg/offline"
 	"github.com/phasehq/cli/pkg/version"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
 	"github.com/phasehq/golang-sdk/v2/phase/misc"
@@ -123,6 +124,16 @@ func GetConfig(appName, envName, appID string) (string, string, string) {
 		envName = "Development"
 	}
 	return appName, envName, appID
+}
+
+// GetCacheDir returns the offline cache directory for the current default user.
+// Returns empty string if no user is configured (e.g. service token without config).
+func GetCacheDir() string {
+	user, err := config.GetDefaultUser()
+	if err != nil || user == nil {
+		return ""
+	}
+	return offline.CacheDir(config.PhaseSecretsDir, user.ID)
 }
 
 func coalesce(a, b string) string {
