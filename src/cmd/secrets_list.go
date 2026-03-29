@@ -6,7 +6,6 @@ import (
 
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/display"
-	"github.com/phasehq/cli/pkg/offline"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -58,7 +57,7 @@ func listSecrets(p *sdk.Phase, envName, appName, appID, tags, path string, show,
 
 	spinner := util.NewSpinner("Fetching secrets...")
 	spinner.Start()
-	secrets, err := offline.GetWithCache(p, opts, phase.GetCacheDir())
+	secrets, err := p.Get(opts)
 	spinner.Stop()
 	if err != nil {
 		return err

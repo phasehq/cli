@@ -38,7 +38,20 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 
 	setUserAgent()
 
-	return sdk.New(pss, host, false)
+	p, err := sdk.New(pss, host, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Configure offline caching
+	if cacheDir := getCacheDir(); cacheDir != "" {
+		p.SetOfflineConfig(&sdk.OfflineConfig{
+			CacheDir: cacheDir,
+			Offline:  offline.IsOffline(),
+		})
+	}
+
+	return p, nil
 }
 
 func setUserAgent() {
@@ -126,9 +139,9 @@ func GetConfig(appName, envName, appID string) (string, string, string) {
 	return appName, envName, appID
 }
 
-// GetCacheDir returns the offline cache directory for the current default user.
+// getCacheDir returns the offline cache directory for the current default user.
 // Returns empty string if no user is configured (e.g. service token without config).
-func GetCacheDir() string {
+func getCacheDir() string {
 	user, err := config.GetDefaultUser()
 	if err != nil || user == nil {
 		return ""
