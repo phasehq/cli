@@ -12,15 +12,16 @@ import (
 func FormatSDKError(err error) string {
 	var netErr *network.NetworkError
 	if errors.As(err, &netErr) {
+		const offlineHint = ". Please set PHASE_OFFLINE=1 to use previously available cached data."
 		switch netErr.Kind {
 		case "dns":
-			return fmt.Sprintf("🗿 Network error: Could not resolve host '%s'. Please check the Phase host URL and your connection", netErr.Host)
+			return fmt.Sprintf("🗿 Network error: Could not resolve host '%s'%s", netErr.Host, offlineHint)
 		case "connection":
-			return "🗿 Network error: Could not connect to the Phase host. Please check that the server is running and the host URL is correct"
+			return "🗿 Network error: Could not connect to the Phase host" + offlineHint
 		case "timeout":
-			return "🗿 Network error: Request timed out. Please check your connection and try again"
+			return "🗿 Network error: Request timed out" + offlineHint
 		default:
-			return fmt.Sprintf("🗿 Network error: %s", netErr.Detail)
+			return fmt.Sprintf("🗿 Network error: %s%s", netErr.Detail, offlineHint)
 		}
 	}
 
