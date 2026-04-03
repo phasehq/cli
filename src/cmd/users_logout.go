@@ -7,6 +7,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
+	"github.com/phasehq/cli/pkg/offline"
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +55,10 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 
 		accountID := ids[0]
 		keyring.DeleteCredentials(accountID)
+
+		// Clean up offline cache for this user
+		cacheDir := offline.CacheDir(config.PhaseSecretsDir, accountID)
+		os.RemoveAll(cacheDir)
 
 		if err := config.RemoveUser(accountID); err != nil {
 			return fmt.Errorf("failed to update config: %w", err)
