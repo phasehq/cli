@@ -140,8 +140,13 @@ func GetConfig(appName, envName, appID string) (string, string, string) {
 }
 
 // getCacheDir returns the offline cache directory for the current default user.
-// Returns empty string if no user is configured (e.g. service token without config).
+// Returns empty string if no user is configured or if ad-hoc env var auth is
+// active (PHASE_SERVICE_TOKEN), since the token identity may differ from the
+// config user and would pollute their cache.
 func getCacheDir() string {
+	if os.Getenv("PHASE_SERVICE_TOKEN") != "" {
+		return ""
+	}
 	user, err := config.GetDefaultUser()
 	if err != nil || user == nil {
 		return ""
