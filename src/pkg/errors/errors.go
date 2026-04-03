@@ -12,7 +12,7 @@ import (
 func FormatSDKError(err error) string {
 	var netErr *network.NetworkError
 	if errors.As(err, &netErr) {
-		const offlineHint = ". Please set PHASE_OFFLINE=1 to use previously available cached data."
+		const offlineHint = ". Set PHASE_OFFLINE=1 to use cached data if available."
 		switch netErr.Kind {
 		case "dns":
 			return fmt.Sprintf("🗿 Network error: Could not resolve host '%s'%s", netErr.Host, offlineHint)
