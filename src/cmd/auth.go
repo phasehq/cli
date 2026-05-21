@@ -86,7 +86,7 @@ func runTokenAuth(cmd *cobra.Command, host string) error {
 
 	token := os.Getenv("PHASE_SERVICE_TOKEN")
 
-	if host == "" {
+	if token == "" {
 		fmt.Print("Please enter Personal Access Token (PAT) or Service Account Token (hidden): ")
 		tokenBytes, err := term.ReadPassword(int(syscall.Stdin))
 		if err != nil {
