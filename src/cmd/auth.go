@@ -83,15 +83,23 @@ func runAuth(cmd *cobra.Command, args []string) error {
 
 func runTokenAuth(cmd *cobra.Command, host string) error {
 	// Get token
-	fmt.Print("Please enter Personal Access Token (PAT) or Service Account Token (hidden): ")
-	tokenBytes, err := term.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		return fmt.Errorf("failed to read token: %w", err)
-	}
-	fmt.Println()
-	authToken := strings.TrimSpace(string(tokenBytes))
-	if authToken == "" {
-		return fmt.Errorf("token is required")
+
+	token := os.Getenv("PHASE_SERVICE_TOKEN")
+
+	if host == "" {
+		fmt.Print("Please enter Personal Access Token (PAT) or Service Account Token (hidden): ")
+		tokenBytes, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			return fmt.Errorf("failed to read token: %w", err)
+		}
+		fmt.Println()
+		authToken := strings.TrimSpace(string(tokenBytes))
+		if authToken == "" {
+			return fmt.Errorf("token is required")
+		}
+	}else{
+		authToken = token
+		fmt.Fprintf(os.Stderr, "Using PHASE_SERVICE_TOKEN environment variable for authentication\n")
 	}
 
 	isPersonalToken := strings.HasPrefix(authToken, "pss_user:")
