@@ -20,6 +20,7 @@ var secretsListCmd = &cobra.Command{
 Icon legend:
   🔒  Sealed secret (write-only, value cannot be read back)
   🔧  Config secret (non-sensitive configuration value)
+  🔄  Rotating secret (value is automatically rotated on a schedule)
   🔗  Secret references another secret in the same environment
   🌐  Cross-environment reference (secret from another environment in the same or different application)
   🔖  Tag associated with the secret
