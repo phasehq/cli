@@ -129,7 +129,8 @@ func renderSecretRow(pathPrefix string, s sdk.SecretResult, show bool, keyWidth,
 		keyDisplay += " 🔒"
 	} else if s.Type == sdk.SecretTypeConfig {
 		keyDisplay += " 🔧"
-	} else if s.Type == "rotating" {
+	}
+	if s.Lifecycle == sdk.SecretLifecycleRotating {
 		keyDisplay += " 🔄"
 	}
 
