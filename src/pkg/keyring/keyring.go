@@ -47,3 +47,27 @@ func DeleteCredentials(accountID string) error {
 	}
 	return err
 }
+
+// Egress proxy CA private key. This is the "forge-anything" key: a CA that can
+// mint trusted leaf certs for any host. It is kept in the OS keyring, never on
+// disk, and never shipped in the binary.
+const (
+	proxyCAService = "phase-cli-proxy"
+	proxyCAKeyName = "ca-private-key"
+)
+
+func SetProxyCAKey(pemKey string) error {
+	return gokeyring.Set(proxyCAService, proxyCAKeyName, pemKey)
+}
+
+func GetProxyCAKey() (string, error) {
+	return gokeyring.Get(proxyCAService, proxyCAKeyName)
+}
+
+func DeleteProxyCAKey() error {
+	err := gokeyring.Delete(proxyCAService, proxyCAKeyName)
+	if err == gokeyring.ErrNotFound {
+		return nil
+	}
+	return err
+}
