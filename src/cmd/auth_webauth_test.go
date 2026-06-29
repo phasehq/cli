@@ -18,6 +18,39 @@ func TestResolveTokenName(t *testing.T) {
 	}
 }
 
+func TestResolveWebAuthPort(t *testing.T) {
+	// Neither flag nor env set: caller should fall back to a random port.
+	if port, ok, err := resolveWebAuthPort(false, 0, ""); ok || err != nil || port != 0 {
+		t.Fatalf("unset: got (%d, %v, %v), want (0, false, nil)", port, ok, err)
+	}
+
+	// Flag set: takes precedence and is returned.
+	if port, ok, err := resolveWebAuthPort(true, 8002, "9000"); !ok || err != nil || port != 8002 {
+		t.Fatalf("flag set: got (%d, %v, %v), want (8002, true, nil)", port, ok, err)
+	}
+
+	// Env set, flag unset: env is used (whitespace trimmed).
+	if port, ok, err := resolveWebAuthPort(false, 0, "  9000 "); !ok || err != nil || port != 9000 {
+		t.Fatalf("env set: got (%d, %v, %v), want (9000, true, nil)", port, ok, err)
+	}
+
+	// Out-of-range flag is an error.
+	if _, ok, err := resolveWebAuthPort(true, 70000, ""); ok || err == nil {
+		t.Fatalf("out-of-range flag: got (ok=%v, err=%v), want (false, error)", ok, err)
+	}
+	if _, ok, err := resolveWebAuthPort(true, 0, ""); ok || err == nil {
+		t.Fatalf("zero flag: got (ok=%v, err=%v), want (false, error)", ok, err)
+	}
+
+	// Non-numeric and out-of-range env values are errors.
+	if _, ok, err := resolveWebAuthPort(false, 0, "abc"); ok || err == nil {
+		t.Fatalf("non-numeric env: got (ok=%v, err=%v), want (false, error)", ok, err)
+	}
+	if _, ok, err := resolveWebAuthPort(false, 0, "70000"); ok || err == nil {
+		t.Fatalf("out-of-range env: got (ok=%v, err=%v), want (false, error)", ok, err)
+	}
+}
+
 func TestEncodeWebAuthPayload(t *testing.T) {
 	// With a lifetime: all fields present, name with hyphens preserved.
 	encoded, err := encodeWebAuthPayload(8002, "abc123", "ci-prod-api", 604800)

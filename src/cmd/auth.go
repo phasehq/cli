@@ -31,6 +31,7 @@ func init() {
 	authCmd.Flags().String("azure-resource", "", "Azure AD resource/audience for token request (for azure mode, default: https://management.azure.com/)")
 	authCmd.Flags().String("token-name", "", "Name for the personal access token (webauth mode, default: username@hostname)")
 	authCmd.Flags().String("token-lifetime", "", "Lifetime for the personal access token, e.g. 7d, 12h, 30m (webauth mode, default: never expires)")
+	authCmd.Flags().Int("webauth-port", 0, "Fixed local callback port for the browser login flow (webauth mode, also PHASE_WEBAUTH_PORT, default: random)")
 	rootCmd.AddCommand(authCmd)
 }
 

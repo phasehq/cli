@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,28 @@ func resolveTokenName(flagValue, username, hostname string) string {
 	return fmt.Sprintf("%s@%s", username, hostname)
 }
 
+// resolveWebAuthPort determines an explicit callback-server port for webauth mode from
+// the --webauth-port flag (flagSet/flagPort), then the PHASE_WEBAUTH_PORT env value, in
+// that order of precedence. ok is false when neither is supplied, signalling the caller
+// to fall back to a random port (preserving the historical default behavior). A flag or
+// env value outside 1-65535, or a non-numeric env value, is an error.
+func resolveWebAuthPort(flagSet bool, flagPort int, envValue string) (port int, ok bool, err error) {
+	if flagSet {
+		if flagPort < 1 || flagPort > 65535 {
+			return 0, false, fmt.Errorf("invalid --webauth-port %d: must be a port between 1 and 65535", flagPort)
+		}
+		return flagPort, true, nil
+	}
+	if env := strings.TrimSpace(envValue); env != "" {
+		p, convErr := strconv.Atoi(env)
+		if convErr != nil || p < 1 || p > 65535 {
+			return 0, false, fmt.Errorf("invalid PHASE_WEBAUTH_PORT %q: must be a port between 1 and 65535", env)
+		}
+		return p, true, nil
+	}
+	return 0, false, nil
+}
+
 // encodeWebAuthPayload serializes the webauth request payload as base64(JSON).
 func encodeWebAuthPayload(port int, pubKeyHex, name string, lifetimeSeconds int64) (string, error) {
 	rawData, err := json.Marshal(webAuthPayload{
@@ -55,8 +78,16 @@ func encodeWebAuthPayload(port int, pubKeyHex, name string, lifetimeSeconds int6
 }
 
 func runWebAuth(cmd *cobra.Command, host string) error {
-	// Pick random port
-	port := 8002 + rand.Intn(12001)
+	// Resolve the callback port: --webauth-port flag, then PHASE_WEBAUTH_PORT, else random.
+	// A fixed port lets webauth work inside containers where the port must be published ahead of time.
+	flagPort, _ := cmd.Flags().GetInt("webauth-port")
+	port, ok, err := resolveWebAuthPort(cmd.Flags().Changed("webauth-port"), flagPort, os.Getenv("PHASE_WEBAUTH_PORT"))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		port = 8002 + rand.Intn(12001)
+	}
 
 	// Generate ephemeral keypair
 	kp, err := crypto.RandomKeyPair()
