@@ -1,8 +1,9 @@
 package proxy
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -19,7 +20,7 @@ import (
 // OS keyring (see pkg/keyring), never on disk or in the binary.
 type CA struct {
 	cert   *x509.Certificate
-	key    *rsa.PrivateKey
+	key    *ecdsa.PrivateKey
 	der    []byte
 	mu     sync.Mutex
 	leaves map[string]*tls.Certificate
@@ -29,7 +30,7 @@ type CA struct {
 // private key. The cert PEM is public (distributed to agents); the key PEM must
 // go straight into the keyring.
 func GenerateCA(validity time.Duration) (ca *CA, certPEM, keyPEM []byte, err error) {
-	key, err := rsa.GenerateKey(rand.Reader, 4096)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -57,7 +58,11 @@ func GenerateCA(validity time.Duration) (ca *CA, certPEM, keyPEM []byte, err err
 	}
 	ca = &CA{cert: cert, key: key, der: der, leaves: map[string]*tls.Certificate{}}
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	return ca, certPEM, keyPEM, nil
 }
 
@@ -75,7 +80,7 @@ func LoadCA(certPEM, keyPEM []byte) (*CA, error) {
 	if keyBlock == nil {
 		return nil, fmt.Errorf("invalid CA private key PEM")
 	}
-	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse CA private key: %w", err)
 	}
@@ -90,7 +95,7 @@ func (ca *CA) leafFor(host string) (*tls.Certificate, error) {
 	if c, ok := ca.leaves[host]; ok {
 		return c, nil
 	}
-	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
