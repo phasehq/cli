@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -63,10 +64,11 @@ func runProxyStart(cmd *cobra.Command, args []string) error {
 	// Resolve app/env and fetch provider config + credentials from Phase. The
 	// proxy is the only holder of Phase auth; the agent never gets a token.
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
-	cfg, secrets, err := fetchProxyConfig(appName, envName, appID)
+	cfg, secrets, dynKeys, leases, err := fetchProxyConfigEx(appName, envName, appID, true)
 	if err != nil {
 		return err
 	}
+	dynamicSnapshot := snapshotDynamic(secrets, dynKeys)
 
 	// Write the agent provisioning file (routing + CA bundle + dummy creds only).
 	// Use the combined bundle so passthrough hosts (real certs) validate too.
@@ -88,11 +90,13 @@ func runProxyStart(cmd *cobra.Command, args []string) error {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "  agent env → %s\n", envPath)
-	fmt.Fprintf(os.Stderr, "  agents pick it up with:  %s\n\n", util.BoldWhite("source "+envPath))
+	fmt.Fprintf(os.Stderr, "  agents pick it up with:  %s\n", util.BoldWhite("source "+envPath))
+	logLeaseExpiry(os.Stderr, leases)
+	fmt.Fprintln(os.Stderr)
 
 	srv := proxy.NewServer(cfg, ca, secrets, listen, lockdown)
 	if refresh > 0 {
-		go refreshProxy(srv, appName, envName, appID, refresh)
+		go refreshProxy(srv, appName, envName, appID, refresh, dynamicSnapshot)
 	}
 	// One L4 listener serves both explicit-proxy (CONNECT) and transparently
 	// redirected (raw TLS/Postgres) clients — classification handles both.
@@ -100,34 +104,118 @@ func runProxyStart(cmd *cobra.Command, args []string) error {
 }
 
 func fetchProxyConfig(appName, envName, appID string) (*proxy.Config, map[string]string, error) {
+	cfg, secrets, _, _, err := fetchProxyConfigEx(appName, envName, appID, true)
+	return cfg, secrets, err
+}
+
+// leaseInfo is the expiry metadata for one dynamic-secret group's active lease.
+type leaseInfo struct {
+	Group     string
+	ID        string
+	ExpiresAt string // RFC3339
+	TTL       int    // seconds
+}
+
+// fetchProxyConfigEx fetches the provider config + secret snapshot. When
+// generateLeases is true, dynamic-secret providers (e.g. an AWS IAM group)
+// materialize live values via a freshly generated lease; it also returns the set
+// of dynamic keys (so the caller can preserve them across refreshes instead of
+// minting a new lease every time) and the lease expiry metadata. When false, only
+// static secrets are fetched (no dynamic API call, no lease churn, no leases).
+func fetchProxyConfigEx(appName, envName, appID string, generateLeases bool) (*proxy.Config, map[string]string, map[string]bool, []leaseInfo, error) {
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	// Path "" fetches every folder (the per-provider layout).
-	all, err := p.Get(sdk.GetOptions{EnvName: envName, AppName: appName, AppID: appID, Path: ""})
+	all, err := p.Get(sdk.GetOptions{
+		EnvName: envName, AppName: appName, AppID: appID, Path: "",
+		Dynamic: generateLeases, Lease: generateLeases,
+	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	m := make(map[string]string, len(all))
+	dyn := map[string]bool{}
+	leasesByID := map[string]leaseInfo{}
 	for _, s := range all {
 		m[s.Key] = s.Value
+		if s.IsDynamic {
+			dyn[s.Key] = true
+			// One lease backs several keys (AKID/secret/username); dedupe by lease id.
+			if s.LeaseID != "" {
+				leasesByID[s.LeaseID] = leaseInfo{Group: s.DynamicGroup, ID: s.LeaseID, ExpiresAt: s.LeaseExpiresAt, TTL: s.LeaseTTL}
+			}
+		}
 	}
 	cfg, err := proxy.BuildConfig(m)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return cfg, m, nil
+	leases := make([]leaseInfo, 0, len(leasesByID))
+	for _, li := range leasesByID {
+		leases = append(leases, li)
+	}
+	return cfg, m, dyn, leases, nil
 }
 
-func refreshProxy(srv *proxy.Server, appName, envName, appID string, every time.Duration) {
+// logLeaseExpiry prints, per dynamic lease, when it expires and how long that is
+// from now. There is NO auto-renew (yet): when a lease expires the proxy's creds
+// go dead and it must be restarted to mint a fresh one.
+func logLeaseExpiry(w io.Writer, leases []leaseInfo) {
+	for _, li := range leases {
+		if li.ExpiresAt == "" {
+			fmt.Fprintf(w, "  🔑 %s: lease %s (no expiry reported)\n", li.Group, shortID(li.ID))
+			continue
+		}
+		when := li.ExpiresAt
+		remaining := ""
+		if t, err := time.Parse(time.RFC3339, li.ExpiresAt); err == nil {
+			when = t.Local().Format("15:04:05 MST")
+			d := time.Until(t).Round(time.Second)
+			if d > 0 {
+				remaining = fmt.Sprintf(" (in %s)", d)
+			} else {
+				remaining = " (EXPIRED)"
+			}
+		}
+		fmt.Fprintf(w, "  🔑 %s: lease %s expires %s%s — no auto-renew; restart the proxy to rotate\n",
+			li.Group, shortID(li.ID), when, remaining)
+	}
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// snapshotDynamic captures the current values of the dynamic keys so a refresh
+// can re-overlay them instead of minting a new lease.
+func snapshotDynamic(secrets map[string]string, dynKeys map[string]bool) map[string]string {
+	out := make(map[string]string, len(dynKeys))
+	for k := range dynKeys {
+		out[k] = secrets[k]
+	}
+	return out
+}
+
+// refreshProxy keeps STATIC secrets current (e.g. a rotated GitHub token) without
+// re-minting dynamic leases: it re-fetches static-only and re-overlays the
+// dynamic values captured at startup, so a dynamic AWS lease lives for the
+// proxy's lifetime rather than churning a new IAM user every interval.
+func refreshProxy(srv *proxy.Server, appName, envName, appID string, every time.Duration, dynamicSecrets map[string]string) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for range t.C {
-		cfg, secrets, err := fetchProxyConfig(appName, envName, appID)
+		cfg, secrets, _, _, err := fetchProxyConfigEx(appName, envName, appID, false)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  proxy secret refresh failed (keeping previous): %v\n", err)
 			continue
+		}
+		for k, v := range dynamicSecrets { // preserve the startup lease
+			secrets[k] = v
 		}
 		srv.UpdateSecrets(cfg, secrets)
 	}

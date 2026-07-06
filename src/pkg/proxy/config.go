@@ -114,20 +114,63 @@ type Binding struct {
 	DenyStatements []string `json:"denyStatements,omitempty"` // DB statement deny list (DB protocols)
 }
 
-// Inject is the pluggable credential scheme. SecretKey/Dummy are NAMES of other
-// secrets in the same app/environment, resolved by the proxy at request time.
+// Inject is the pluggable credential scheme. SecretKey/Dummy/AccessKeyID/... are
+// NAMES of other secrets in the same app/environment, resolved by the proxy at
+// request time.
 type Inject struct {
-	Scheme    string `json:"scheme"`             // bearer | basic | x-api-key | pg-handshake
+	Scheme    string `json:"scheme"`             // bearer | basic | x-api-key | pg-handshake | aws-sigv4
 	SecretKey string `json:"secretKey"`          // secret holding the live credential
 	Dummy     string `json:"dummy,omitempty"`    // secret holding the dummy placeholder the agent uses
 	Header    string `json:"header,omitempty"`   // header name for x-api-key (default X-Api-Key)
 	User      string `json:"user,omitempty"`     // DB user (DB protocols)
 	Database  string `json:"database,omitempty"` // DB name (DB protocols)
+
+	// AWS SigV4 (scheme "aws-sigv4"): NAMES of the secrets holding the live IAM
+	// credential. All optional — they default to the conventional key names
+	// (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_IAM_USERNAME).
+	AccessKeyID     string `json:"accessKeyId,omitempty"`     // live access key id
+	SecretAccessKey string `json:"secretAccessKey,omitempty"` // live secret access key
+	Username        string `json:"username,omitempty"`        // IAM username (informational; injected as-is)
+	SessionToken    string `json:"sessionToken,omitempty"`    // live session token (only for STS/temporary creds; omit for IAM-user keys)
 }
 
 type Rule struct {
 	Methods []string `json:"methods,omitempty"`
 	Paths   []string `json:"paths,omitempty"`
+}
+
+// AgentEnv returns the environment entries an agent needs to USE this binding —
+// the dummy placeholder(s) it should hold. The proxy swaps/re-signs them for the
+// live credential upstream, so nothing here is sensitive. Scheme-aware so every
+// caller (run/connect/get config/start) emits the same, correct variables.
+func (b *Binding) AgentEnv(secrets map[string]string) map[string]string {
+	env := map[string]string{}
+	if isAWSSigV4(b.Inject.Scheme) {
+		// Only the SECRET access key is actually secret and must be faked; the proxy
+		// re-signs with the live key upstream. The access key id and IAM username are
+		// NON-secret identifiers (they appear in ARNs, sts get-caller-identity,
+		// CloudTrail) — inject the REAL values so tools don't choke on a bogus id and
+		// the agent isn't misled about the identity it's acting as.
+		akidName, _, userName, _ := awsSecretNames(b.Inject)
+		akid := secrets[akidName]
+		if akid == "" {
+			akid = awsDummyAccessKeyID // fallback keeps the client on env creds, not ambient ~/.aws
+		}
+		env["AWS_ACCESS_KEY_ID"] = akid
+		env["AWS_SECRET_ACCESS_KEY"] = awsDummySecretAccessKey // the only real secret — always a dummy
+		if u := secrets[userName]; u != "" {
+			env["AWS_IAM_USERNAME"] = u
+		}
+		return env
+	}
+	// Default (bearer/basic/x-api-key): the agent holds the dummy under the same
+	// env var name the tool expects the live credential in.
+	if b.Inject.Dummy != "" && b.Inject.SecretKey != "" {
+		if d := secrets[b.Inject.Dummy]; d != "" {
+			env[b.Inject.SecretKey] = d
+		}
+	}
+	return env
 }
 
 // BuildConfig discovers provider bindings from the fetched secret map.
@@ -222,12 +265,9 @@ func AgentEnviron(cfg *Config, secrets map[string]string, proxyURL, caPath strin
 		"AWS_CA_BUNDLE="+caPath,        // AWS SDKs / CLI
 		"CODEX_CA_CERTIFICATE="+caPath, // Codex CLI (Rust/rustls)
 	)
-	for _, b := range cfg.Bindings {
-		if b.Inject.Dummy == "" || b.Inject.SecretKey == "" {
-			continue
-		}
-		if d := secrets[b.Inject.Dummy]; d != "" {
-			env = append(env, b.Inject.SecretKey+"="+d)
+	for i := range cfg.Bindings {
+		for k, v := range cfg.Bindings[i].AgentEnv(secrets) {
+			env = append(env, k+"="+v)
 		}
 	}
 	return env

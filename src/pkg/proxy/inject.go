@@ -17,6 +17,12 @@ import (
 // the dummy). Otherwise it INJECTS the live value into the configured slot.
 // Returns an audit label + whether a credential was applied.
 func applyCredential(req *http.Request, b *Binding, secrets map[string]string) (string, bool) {
+	// AWS SigV4 is not a header swap — the request is signed with the secret key,
+	// so the proxy must re-sign it with the live credential (see sigv4.go).
+	if isAWSSigV4(b.Inject.Scheme) {
+		return resignAWS(req, b, secrets)
+	}
+
 	live := secrets[b.Inject.SecretKey]
 	if live == "" {
 		return "live " + b.Inject.SecretKey + " missing", false

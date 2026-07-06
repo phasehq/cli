@@ -30,12 +30,18 @@ var proxyRunCmd = &cobra.Command{
 	RunE: runProxyRun,
 }
 
+// addProxyRunFlags registers the flags for the run command. Shared so the same
+// command can live under both `phase proxy run` and `phase ai run`.
+func addProxyRunFlags(c *cobra.Command) {
+	c.Flags().String("proxy-url", "http://127.0.0.1:8080", "URL of the running proxy")
+	c.Flags().String("env", "", "Environment name")
+	c.Flags().String("app", "", "Application name")
+	c.Flags().String("app-id", "", "Application ID")
+	c.Flags().String("log-file", "", "Where to write proxy audit logs (default ~/.phase/proxy/proxy.log; '-' = stderr)")
+}
+
 func init() {
-	proxyRunCmd.Flags().String("proxy-url", "http://127.0.0.1:8080", "URL of the running proxy")
-	proxyRunCmd.Flags().String("env", "", "Environment name")
-	proxyRunCmd.Flags().String("app", "", "Application name")
-	proxyRunCmd.Flags().String("app-id", "", "Application ID")
-	proxyRunCmd.Flags().String("log-file", "", "Where to write proxy audit logs (default ~/.phase/proxy/proxy.log; '-' = stderr)")
+	addProxyRunFlags(proxyRunCmd)
 	proxyCmd.AddCommand(proxyRunCmd)
 }
 
@@ -116,7 +122,7 @@ func runProxyRun(cmd *cobra.Command, args []string) error {
 		envSlice = append(envSlice, k+"="+v)
 	}
 
-	fmt.Fprintf(os.Stderr, "🛡  routing %s through the Phase proxy (%s, %d dummy cred(s), CA trusted)\n",
+	fmt.Fprintf(os.Stderr, "🛡  routing %s through the Phase proxy (%s, %d cred var(s), CA trusted)\n",
 		util.BoldWhite(strings.Join(args, " ")), proxyURL, countDummies(cfg, secrets))
 	if logFile != "-" {
 		fmt.Fprintf(os.Stderr, "   audit log → %s  (tail -f to watch)\n", logFile)
@@ -164,13 +170,11 @@ func proxyEnv(proxyURL, caPath string, cfg *proxy.Config, secrets map[string]str
 	if h, p, err := net.SplitHostPort(hostOf(proxyURL)); err == nil {
 		env["JAVA_TOOL_OPTIONS"] = fmt.Sprintf("-Dhttp.proxyHost=%s -Dhttp.proxyPort=%s -Dhttps.proxyHost=%s -Dhttps.proxyPort=%s", h, p, h, p)
 	}
-	// The dummy placeholder each tool sends; the proxy swaps it for the live value.
+	// The dummy placeholder(s) each tool sends; the proxy swaps or re-signs them
+	// for the live value. Scheme-aware (bearer swap, AWS SigV4 re-sign, ...).
 	for i := range cfg.Bindings {
-		b := &cfg.Bindings[i]
-		if b.Inject.Dummy != "" && b.Inject.SecretKey != "" {
-			if d := secrets[b.Inject.Dummy]; d != "" {
-				env[b.Inject.SecretKey] = d
-			}
+		for k, v := range cfg.Bindings[i].AgentEnv(secrets) {
+			env[k] = v
 		}
 	}
 	// Database bindings (explicit per-port capture): point the agent's DB client
@@ -209,10 +213,7 @@ func hostOf(rawurl string) string {
 func countDummies(cfg *proxy.Config, secrets map[string]string) int {
 	n := 0
 	for i := range cfg.Bindings {
-		b := &cfg.Bindings[i]
-		if b.Inject.Dummy != "" && secrets[b.Inject.Dummy] != "" {
-			n++
-		}
+		n += len(cfg.Bindings[i].AgentEnv(secrets))
 	}
 	return n
 }

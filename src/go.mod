@@ -48,3 +48,8 @@ require (
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 )
+
+// TEMP (feat/egress-proxy): builds against the local SDK for the lease-expiry
+// fields (LeaseID/LeaseExpiresAt/LeaseTTL on SecretResult). Before merging:
+// release golang-sdk v2.4.0, bump the require above to it, and DROP this replace.
+replace github.com/phasehq/golang-sdk/v2 => ../../golang-sdk
