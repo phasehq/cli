@@ -192,12 +192,15 @@ cleanup_legacy() {
     # The old v1 binary zip installed phase + _internal/ side by side. Remove the
     # stale _internal/, and the sibling v1 binary too (it would otherwise shadow
     # a /usr/bin package install on PATH) — but never the v2 binary at $keep.
+    # Compare inodes (-ef), not strings: on a host where one of these dirs is a
+    # symlink onto another, ${dir}/phase and $keep can be the same physical file
+    # reached by two different paths, which a string compare would miss.
     for dir in /usr/local/bin /usr/local/sbin /usr/bin; do
         if [ -d "${dir}/_internal" ]; then
             info "Removing legacy ${dir}/_internal/..."
             do_install rm -rf "${dir}/_internal"
 
-            if [ -f "${dir}/phase" ] && [ "${dir}/phase" != "$keep" ]; then
+            if [ -f "${dir}/phase" ] && ! [ "${dir}/phase" -ef "$keep" ]; then
                 info "Removing old v1 binary ${dir}/phase..."
                 do_install rm -f "${dir}/phase"
             fi
@@ -205,9 +208,8 @@ cleanup_legacy() {
     done
 
     # Clean up stale symlinks pointing to old /usr/lib/phase/ — but never the
-    # binary we just installed (on the package path $keep is /usr/bin/phase, so
-    # guard against deleting it if the pkg manager ever left it symlink-shaped).
-    if [ -L "/usr/bin/phase" ] && [ "/usr/bin/phase" != "$keep" ]; then
+    # binary we just installed (same-file guard, as above).
+    if [ -L "/usr/bin/phase" ] && ! [ "/usr/bin/phase" -ef "$keep" ]; then
         link_target=$(readlink "/usr/bin/phase" 2>/dev/null || true)
         case "$link_target" in
             *lib/phase/phase*)
@@ -215,6 +217,13 @@ cleanup_legacy() {
                 do_install rm -f "/usr/bin/phase"
                 ;;
         esac
+    fi
+
+    # Safety net: legacy cleanup must never remove the binary we just installed.
+    # If some unusual layout defeated the guards above, fail loudly instead of
+    # printing "installed successfully" over a now-broken install.
+    if [ ! -e "$keep" ]; then
+        die "Legacy cleanup removed the just-installed binary at ${keep}. Aborting — please report this."
     fi
 }
 
