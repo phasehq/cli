@@ -182,56 +182,34 @@ get_latest_version() {
 # --- Install ---
 
 cleanup_legacy() {
-    # Clean up remnants of the old Python CLI (v1.x).
-    #
-    # Package-managed installs (deb/rpm/apk): the v2.0 packages use
-    # --replaces, so the package manager handles the upgrade cleanly.
-    # We just nudge the user to use the package instead of this script.
-    #
-    # Binary zip installs (old arm64, Arch): clean up the leftover
-    # _internal/ directory and stale symlinks.
+    # Clean up remnants of the old Python CLI (v1.x). $1 is the absolute path of
+    # the v2 binary we just installed; it must be preserved. The old v1
+    # binary-zip layout (`phase` + `_internal/`) lived in /usr/local/bin — which
+    # is also where a v2 *binary* install lands — so we must not delete the
+    # freshly-installed binary while clearing the leftovers.
+    keep="$1"
 
-    if command -v dpkg > /dev/null 2>&1 && dpkg -s phase > /dev/null 2>&1; then
-        echo ""
-        info "Detected Phase CLI v1 installed via DEB package."
-        info "Upgrade with the v2 package instead: dpkg -i phase_<version>_<arch>.deb"
-        info "Download from: https://github.com/${REPO}/releases"
-        echo ""
-    elif command -v rpm > /dev/null 2>&1 && rpm -q phase > /dev/null 2>&1; then
-        echo ""
-        info "Detected Phase CLI v1 installed via RPM package."
-        info "Upgrade with the v2 package instead: rpm -Uvh phase-<version>-1.<arch>.rpm"
-        info "Download from: https://github.com/${REPO}/releases"
-        echo ""
-    elif command -v apk > /dev/null 2>&1 && apk info -e phase > /dev/null 2>&1; then
-        echo ""
-        info "Detected Phase CLI v1 installed via APK package."
-        info "Upgrade with the v2 package instead: apk add --allow-untrusted phase_<version>_<arch>.apk"
-        info "Download from: https://github.com/${REPO}/releases"
-        echo ""
-    fi
-
-    # Clean up binary zip leftovers (_internal/ directory and the old binary).
-    # The old v1 binary zip installed phase + _internal/ side by side.
-    # The new v2 packages install to /usr/bin/phase, so we must remove the
-    # old binary from /usr/local/bin (or /usr/bin) to avoid PATH shadowing.
+    # The old v1 binary zip installed phase + _internal/ side by side. Remove the
+    # stale _internal/, and the sibling v1 binary too (it would otherwise shadow
+    # a /usr/bin package install on PATH) — but never the v2 binary at $keep.
+    # Compare inodes (-ef), not strings: on a host where one of these dirs is a
+    # symlink onto another, ${dir}/phase and $keep can be the same physical file
+    # reached by two different paths, which a string compare would miss.
     for dir in /usr/local/bin /usr/local/sbin /usr/bin; do
         if [ -d "${dir}/_internal" ]; then
             info "Removing legacy ${dir}/_internal/..."
             do_install rm -rf "${dir}/_internal"
 
-            # The presence of _internal/ proves this is the old PyInstaller v1
-            # binary. Always remove it — the new v2 binary is installed
-            # elsewhere (e.g. /usr/bin via package manager).
-            if [ -f "${dir}/phase" ]; then
+            if [ -f "${dir}/phase" ] && ! [ "${dir}/phase" -ef "$keep" ]; then
                 info "Removing old v1 binary ${dir}/phase..."
                 do_install rm -f "${dir}/phase"
             fi
         fi
     done
 
-    # Clean up stale symlinks pointing to old /usr/lib/phase/
-    if [ -L "/usr/bin/phase" ]; then
+    # Clean up stale symlinks pointing to old /usr/lib/phase/ — but never the
+    # binary we just installed (same-file guard, as above).
+    if [ -L "/usr/bin/phase" ] && ! [ "/usr/bin/phase" -ef "$keep" ]; then
         link_target=$(readlink "/usr/bin/phase" 2>/dev/null || true)
         case "$link_target" in
             *lib/phase/phase*)
@@ -239,6 +217,13 @@ cleanup_legacy() {
                 do_install rm -f "/usr/bin/phase"
                 ;;
         esac
+    fi
+
+    # Safety net: legacy cleanup must never remove the binary we just installed.
+    # If some unusual layout defeated the guards above, fail loudly instead of
+    # printing "installed successfully" over a now-broken install.
+    if [ ! -e "$keep" ]; then
+        die "Legacy cleanup removed the just-installed binary at ${keep}. Aborting — please report this."
     fi
 }
 
@@ -292,7 +277,8 @@ install_package() {
             ;;
     esac
 
-    cleanup_legacy
+    # v2 package installs the binary to /usr/bin/phase (nfpm bindir).
+    cleanup_legacy "/usr/bin/${BINARY_NAME}"
 
     echo ""
     info "Phase CLI v${version} installed successfully."
@@ -328,7 +314,7 @@ install_binary() {
     info "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
     do_install install -m 755 "${tmpdir}/${asset_name}" "${INSTALL_DIR}/${BINARY_NAME}"
 
-    cleanup_legacy
+    cleanup_legacy "${INSTALL_DIR}/${BINARY_NAME}"
 
     echo ""
     info "Phase CLI v${version} installed successfully."
