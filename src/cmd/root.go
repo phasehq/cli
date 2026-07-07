@@ -7,6 +7,7 @@ import (
 	phaseerrors "github.com/phasehq/cli/pkg/errors"
 	"github.com/phasehq/cli/pkg/version"
 	"github.com/spf13/cobra"
+	"github.com/phasehq/cli/pkg/config"
 )
 
 const phaseASCii = `
@@ -40,6 +41,13 @@ func Execute() {
 }
 
 func init() {
+	// Honor PHASE_VERIFY_SSL=False before any command runs so it applies to
+	// every network call — including pre-auth flows like
+	// `phase auth --mode aws-iam` / `--mode azure` that don't go through
+	// NewPhase(). The SDK caches its HTTP client on first use, so this must
+	// happen before any request is made.
+	config.ConfigureSSLVerification()
+
 	rootCmd.Version = version.Version
 	rootCmd.SetVersionTemplate("{{ .Version }}\n")
 
