@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/phasehq/cli/pkg/config"
 	phaseerrors "github.com/phasehq/cli/pkg/errors"
 	"github.com/phasehq/cli/pkg/version"
 	"github.com/spf13/cobra"
-	"github.com/phasehq/cli/pkg/config"
 )
 
 const phaseASCii = `
@@ -26,9 +26,9 @@ const phaseASCii = `
 const description = "Keep Secrets."
 
 var rootCmd = &cobra.Command{
-	Use:          "phase",
-	Short:        description,
-	Long:         description + "\n" + phaseASCii,
+	Use:           "phase",
+	Short:         description,
+	Long:          description + "\n" + phaseASCii,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
