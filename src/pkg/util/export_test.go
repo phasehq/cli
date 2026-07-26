@@ -174,6 +174,98 @@ func TestExportDotenvAndKVLikeFormats(t *testing.T) {
 	}
 }
 
+func TestExportDotenv_Escaping(t *testing.T) {
+	secrets := []KeyValue{
+		{Key: "SIMPLE", Value: "hello"},
+		{Key: "WITH_QUOTES", Value: `he said "hello"`},
+		{Key: "WITH_BACKSLASH", Value: `path\to\file`},
+		{Key: "WITH_NEWLINE", Value: "line1\nline2"},
+		{Key: "WITH_ALL", Value: "say \"hi\"\nand \\go"},
+	}
+	out := captureStdout(t, func() { ExportDotenv(secrets) })
+
+	if !strings.Contains(out, `SIMPLE="hello"`) {
+		t.Fatalf("simple value wrong: %s", out)
+	}
+	if !strings.Contains(out, `WITH_QUOTES="he said \"hello\""`) {
+		t.Fatalf("quoted value not escaped: %s", out)
+	}
+	if !strings.Contains(out, `WITH_BACKSLASH="path\\to\\file"`) {
+		t.Fatalf("backslash not escaped: %s", out)
+	}
+	if !strings.Contains(out, `WITH_NEWLINE="line1\nline2"`) {
+		t.Fatalf("newline not escaped: %s", out)
+	}
+	if !strings.Contains(out, `WITH_ALL="say \"hi\"\nand \\go"`) {
+		t.Fatalf("combined escaping wrong: %s", out)
+	}
+}
+
+func TestExportTOML_Escaping(t *testing.T) {
+	secrets := []KeyValue{
+		{Key: "SIMPLE", Value: "hello"},
+		{Key: "WITH_QUOTES", Value: `he said "hello"`},
+		{Key: "WITH_BACKSLASH", Value: `path\to\file`},
+		{Key: "WITH_BOTH", Value: `say "hi" and \ go`},
+	}
+	out := captureStdout(t, func() { ExportTOML(secrets) })
+
+	if !strings.Contains(out, `SIMPLE = "hello"`) {
+		t.Fatalf("simple value wrong: %s", out)
+	}
+	if !strings.Contains(out, `WITH_QUOTES = "he said \"hello\""`) {
+		t.Fatalf("quoted value not escaped: %s", out)
+	}
+	if !strings.Contains(out, `WITH_BACKSLASH = "path\\to\\file"`) {
+		t.Fatalf("backslash not escaped: %s", out)
+	}
+	if !strings.Contains(out, `WITH_BOTH = "say \"hi\" and \\ go"`) {
+		t.Fatalf("combined escaping wrong: %s", out)
+	}
+}
+
+func TestExportXML_KeyEscaping(t *testing.T) {
+	secrets := []KeyValue{
+		{Key: `key"with"quotes`, Value: "val1"},
+		{Key: "key&amp", Value: "val2"},
+		{Key: "key<angle>", Value: "val3"},
+	}
+	out := captureStdout(t, func() { ExportXML(secrets) })
+
+	var parsed xmlSecrets
+	if err := xml.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("xml with special key chars should parse, got: %v\noutput: %s", err, out)
+	}
+	got := map[string]string{}
+	for _, e := range parsed.Entries {
+		got[e.Name] = e.Value
+	}
+	for _, kv := range secrets {
+		if got[kv.Key] != kv.Value {
+			t.Fatalf("xml roundtrip for key %q: got %q want %q", kv.Key, got[kv.Key], kv.Value)
+		}
+	}
+}
+
+func TestExportHCL_Escaping(t *testing.T) {
+	secrets := []KeyValue{
+		{Key: "SIMPLE", Value: "hello"},
+		{Key: "WITH_QUOTES", Value: `he said "hello"`},
+		{Key: "WITH_BACKSLASH", Value: `path\to\file`},
+	}
+	out := captureStdout(t, func() { ExportHCL(secrets) })
+
+	if !strings.Contains(out, `default = "hello"`) {
+		t.Fatalf("simple value wrong: %s", out)
+	}
+	if !strings.Contains(out, `default = "he said \"hello\""`) {
+		t.Fatalf("quoted value not escaped: %s", out)
+	}
+	if !strings.Contains(out, `default = "path\\to\\file"`) {
+		t.Fatalf("backslash not escaped: %s", out)
+	}
+}
+
 func TestExportINI_EscapesPercent(t *testing.T) {
 	out := captureStdout(t, func() { ExportINI(sampleSecrets) })
 	if !strings.HasPrefix(out, "[DEFAULT]\n") {
