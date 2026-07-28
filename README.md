@@ -139,7 +139,7 @@ This installs the Phase skill to your chosen AI tool (Claude Code, Cursor, VS Co
 
 ### Prerequisites
 
-- [Go](https://go.dev/dl/) 1.24 or later
+- [Go](https://go.dev/dl/) 1.25 or later
 
 ### Project structure
 
