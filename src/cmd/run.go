@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -39,6 +40,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 	path, _ := cmd.Flags().GetString("path")
 	generateLeases, _ := cmd.Flags().GetString("generate-leases")
 	leaseTTL, _ := cmd.Flags().GetInt("lease-ttl")
+
+	// Block commands that dump env vars when invoked by AI agents
+	command := strings.Join(args, " ")
+	if ai.IsAIAgent() {
+		if blocked, ok := ai.IsBlockedCommand(command); ok {
+			return fmt.Errorf("command '%s' is blocked in AI mode to prevent secret exposure via environment variables. Use 'phase secrets get <key>' instead", blocked)
+		}
+	}
 
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
@@ -109,7 +118,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Execute command
-	command := strings.Join(args, " ")
 	shell := util.GetDefaultShell()
 	var c *exec.Cmd
 	if len(shell) > 0 {

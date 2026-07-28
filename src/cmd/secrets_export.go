@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -70,12 +71,14 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Build a map of all secrets for key filtering
+	// Build maps for key filtering and AI redaction
 	allSecretsMap := make(map[string]string)
 	allSecretsKeySet := make(map[string]bool)
+	typeMap := make(map[string]string)
 	for _, secret := range allSecrets {
 		allSecretsMap[secret.Key] = secret.Value
 		allSecretsKeySet[secret.Key] = true
+		typeMap[secret.Key] = secret.Type
 	}
 
 	var secretsList []util.KeyValue
@@ -92,11 +95,19 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		}
 		// Export only the requested keys (in the order they were specified)
 		for _, key := range filterKeys {
-			secretsList = append(secretsList, util.KeyValue{Key: key, Value: allSecretsMap[key]})
+			value := allSecretsMap[key]
+			if ai.ShouldRedact(typeMap[key]) {
+				value = "[REDACTED]"
+			}
+			secretsList = append(secretsList, util.KeyValue{Key: key, Value: value})
 		}
 	} else {
 		for _, secret := range allSecrets {
-			secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: secret.Value})
+			value := secret.Value
+			if ai.ShouldRedact(typeMap[secret.Key]) {
+				value = "[REDACTED]"
+			}
+			secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: value})
 		}
 	}
 

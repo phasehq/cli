@@ -4,25 +4,34 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/manifoldco/promptui"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 	"github.com/spf13/cobra"
 )
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "🔗 Link your project with your Phase app",
+	Short: "🔗 Link local project with Phase app",
 	RunE:  runInit,
 }
 
 func init() {
+	initCmd.Flags().String("app-id", "", "Application ID (skips app selection prompt)")
+	initCmd.Flags().String("env", "", "Environment name (skips environment selection prompt)")
+	initCmd.Flags().Bool("monorepo", false, "Enable monorepo support (skips prompt)")
 	rootCmd.AddCommand(initCmd)
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	appIDFlag, _ := cmd.Flags().GetString("app-id")
+	envFlag, _ := cmd.Flags().GetString("env")
+	monorepoFlag, _ := cmd.Flags().GetBool("monorepo")
+
 	p, err := phase.NewPhase(true, "", "")
 	if err != nil {
 		return err
@@ -37,6 +46,44 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no applications found")
 	}
 
+	// Non-interactive mode: both --app-id and --env provided
+	if appIDFlag != "" && envFlag != "" {
+		return initNonInteractive(data, appIDFlag, envFlag, monorepoFlag)
+	}
+
+	return initInteractive(data, cmd)
+}
+
+func initNonInteractive(data *misc.AppKeyResponse, appID, envName string, monorepo bool) error {
+	// Find the app by ID
+	var selectedApp *misc.App
+	for i, app := range data.Apps {
+		if app.ID == appID {
+			selectedApp = &data.Apps[i]
+			break
+		}
+	}
+	if selectedApp == nil {
+		return fmt.Errorf("application with ID '%s' not found", appID)
+	}
+
+	// Find the environment by name (case-insensitive)
+	var envID, resolvedEnvName string
+	for _, ek := range selectedApp.EnvironmentKeys {
+		if strings.EqualFold(ek.Environment.Name, envName) {
+			envID = ek.Environment.ID
+			resolvedEnvName = ek.Environment.Name
+			break
+		}
+	}
+	if envID == "" {
+		return fmt.Errorf("environment '%s' not found in app '%s'", envName, selectedApp.Name)
+	}
+
+	return writePhaseConfig(selectedApp.Name, selectedApp.ID, resolvedEnvName, envID, monorepo)
+}
+
+func initInteractive(data *misc.AppKeyResponse, cmd *cobra.Command) error {
 	// Build app choice labels
 	appItems := make([]string, len(data.Apps)+1)
 	for i, app := range data.Apps {
@@ -111,21 +158,23 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	monorepoSupport := monorepoIdx == 1
 
-	// Write .phase.json
+	return writePhaseConfig(selectedApp.Name, selectedApp.ID, selectedEnvKey.Environment.Name, selectedEnvKey.Environment.ID, monorepoSupport)
+}
+
+func writePhaseConfig(appName, appID, envName, envID string, monorepo bool) error {
 	phaseConfig := &config.PhaseJSONConfig{
 		Version:         "2",
-		PhaseApp:        selectedApp.Name,
-		AppID:           selectedApp.ID,
-		DefaultEnv:      selectedEnvKey.Environment.Name,
-		EnvID:           selectedEnvKey.Environment.ID,
-		MonorepoSupport: monorepoSupport,
+		PhaseApp:        appName,
+		AppID:           appID,
+		DefaultEnv:      envName,
+		EnvID:           envID,
+		MonorepoSupport: monorepo,
 	}
 
 	if err := config.WritePhaseConfig(phaseConfig); err != nil {
 		return fmt.Errorf("failed to write .phase.json: %w", err)
 	}
 
-	// Set file permissions
 	os.Chmod(config.PhaseEnvConfig, 0600)
 
 	fmt.Println(util.BoldGreen("✅ Initialization completed successfully."))

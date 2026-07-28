@@ -161,7 +161,7 @@ func runAWSIAMAuth(cmd *cobra.Command, host string) error {
 	}
 
 	var wrappedKeyShare *string
-	if userData.OfflineEnabled && userData.WrappedKeyShare != "" {
+	if userData.WrappedKeyShare != "" {
 		wrappedKeyShare = &userData.WrappedKeyShare
 	}
 

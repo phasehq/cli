@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -31,6 +32,10 @@ func init() {
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
+	if ai.IsAIAgent() {
+		return fmt.Errorf("phase shell is not available in AI mode — it would give unrestricted access to injected secrets. Use 'phase run <command>' instead")
+	}
+
 	envName, _ := cmd.Flags().GetString("env")
 	appName, _ := cmd.Flags().GetString("app")
 	appID, _ := cmd.Flags().GetString("app-id")
