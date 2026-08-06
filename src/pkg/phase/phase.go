@@ -124,6 +124,22 @@ func PhaseGetContext(userData *misc.AppKeyResponse, appName, envName, appID stri
 	return misc.PhaseGetContext(userData, appName, envName, appID)
 }
 
+// ResolveNames resolves the canonical application and environment names for the
+// given selectors. Display code needs these even when a fetch returns no
+// secrets, since there is no result row to read the names off in that case.
+// Falls back to the supplied selectors if the lookup fails.
+func ResolveNames(p *sdk.Phase, appName, envName, appID string) (string, string) {
+	userData, err := Init(p)
+	if err != nil {
+		return appName, envName
+	}
+	app, _, env, _, _, err := misc.PhaseGetContext(userData, appName, envName, appID)
+	if err != nil {
+		return appName, envName
+	}
+	return app, env
+}
+
 // GetConfig fills in appName/envName/appID from .phase.json when not provided via flags.
 func GetConfig(appName, envName, appID string) (string, string, string) {
 	if appID == "" && appName == "" {

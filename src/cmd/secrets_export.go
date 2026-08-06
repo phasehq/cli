@@ -111,6 +111,13 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// An export that produces nothing is otherwise silent; say why on stderr so
+	// it can't be mistaken for a broken app or environment. stderr keeps the
+	// exported document on stdout intact for piping.
+	if len(secretsList) == 0 {
+		fmt.Fprint(os.Stderr, emptyPathHint(path, "export"))
+	}
+
 	switch format {
 	case "json":
 		util.ExportJSON(secretsList)

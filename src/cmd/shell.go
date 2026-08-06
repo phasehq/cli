@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/phase"
@@ -79,18 +78,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	}
 
 	// Collect env/app info for display
-	apps := map[string]bool{}
-	envs := map[string]bool{}
-	for _, s := range allSecrets {
-		if _, ok := resolvedSecrets[s.Key]; ok {
-			if s.Application != "" {
-				apps[s.Application] = true
-			}
-			envs[s.Environment] = true
-		}
-	}
-	appNames := mapKeys(apps)
-	envNames := mapKeys(envs)
+	appLabel, envLabel := contextNames(p, allSecrets, appName, envName, appID)
 
 	// Build environment: inherit current env, add secrets and shell markers
 	envSlice := os.Environ()
@@ -98,11 +86,11 @@ func runShell(cmd *cobra.Command, args []string) error {
 		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
 	}
 	envSlice = append(envSlice, "PHASE_SHELL=true")
-	if len(envNames) > 0 {
-		envSlice = append(envSlice, fmt.Sprintf("PHASE_ENV=%s", envNames[0]))
+	if envLabel != "" {
+		envSlice = append(envSlice, fmt.Sprintf("PHASE_ENV=%s", envLabel))
 	}
-	if len(appNames) > 0 {
-		envSlice = append(envSlice, fmt.Sprintf("PHASE_APP=%s", appNames[0]))
+	if appLabel != "" {
+		envSlice = append(envSlice, fmt.Sprintf("PHASE_APP=%s", appLabel))
 	}
 	if os.Getenv("TERM") == "" {
 		envSlice = append(envSlice, "TERM=xterm-256color")
@@ -128,15 +116,18 @@ func runShell(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "🐚 Initialized %s with %s secrets from Application: %s, Environment: %s, Path: %s\n",
 			util.BoldGreenErr(shellName),
 			util.BoldMagentaErr(fmt.Sprintf("%d", secretCount)),
-			util.BoldCyanErr(strings.Join(appNames, ", ")),
-			util.BoldGreenErr(strings.Join(envNames, ", ")),
+			util.BoldCyanErr(appLabel),
+			util.BoldGreenErr(envLabel),
 			util.BoldYellowErr(path))
 	} else {
 		fmt.Fprintf(os.Stderr, "🐚 Initialized %s with %s secrets from Application: %s, Environment: %s\n",
 			util.BoldGreenErr(shellName),
 			util.BoldMagentaErr(fmt.Sprintf("%d", secretCount)),
-			util.BoldCyanErr(strings.Join(appNames, ", ")),
-			util.BoldGreenErr(strings.Join(envNames, ", ")))
+			util.BoldCyanErr(appLabel),
+			util.BoldGreenErr(envLabel))
+	}
+	if secretCount == 0 {
+		fmt.Fprint(os.Stderr, emptyPathHint(path, "load"))
 	}
 	fmt.Fprintf(os.Stderr, "%s Secrets are only available in this session. Type %s or press %s to exit.\n",
 		util.BoldYellowErr("Remember:"),

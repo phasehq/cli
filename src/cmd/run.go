@@ -85,30 +85,22 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Print injection stats to stderr (matches Python CLI behavior)
 	secretCount := len(resolvedSecrets)
-	apps := map[string]bool{}
-	envs := map[string]bool{}
-	for _, s := range allSecrets {
-		if _, ok := resolvedSecrets[s.Key]; ok {
-			if s.Application != "" {
-				apps[s.Application] = true
-			}
-			envs[s.Environment] = true
-		}
-	}
-	appNames := mapKeys(apps)
-	envNames := mapKeys(envs)
+	appLabel, envLabel := contextNames(p, allSecrets, appName, envName, appID)
 
 	if path != "" && path != "/" {
 		fmt.Fprintf(os.Stderr, "🚀 Injected %s secrets from Application: %s, Environment: %s, Path: %s\n",
 			util.BoldMagentaErr(fmt.Sprintf("%d", secretCount)),
-			util.BoldCyanErr(strings.Join(appNames, ", ")),
-			util.BoldGreenErr(strings.Join(envNames, ", ")),
+			util.BoldCyanErr(appLabel),
+			util.BoldGreenErr(envLabel),
 			util.BoldYellowErr(path))
 	} else {
 		fmt.Fprintf(os.Stderr, "🚀 Injected %s secrets from Application: %s, Environment: %s\n",
 			util.BoldMagentaErr(fmt.Sprintf("%d", secretCount)),
-			util.BoldCyanErr(strings.Join(appNames, ", ")),
-			util.BoldGreenErr(strings.Join(envNames, ", ")))
+			util.BoldCyanErr(appLabel),
+			util.BoldGreenErr(envLabel))
+	}
+	if secretCount == 0 {
+		fmt.Fprint(os.Stderr, emptyPathHint(path, "inject"))
 	}
 
 	// Build environment: inherit current env and append secrets
@@ -137,12 +129,4 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
-}
-
-func mapKeys(m map[string]bool) []string {
-	var keys []string
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
 }
