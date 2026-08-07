@@ -91,7 +91,17 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if len(missingKeys) > 0 {
-			return fmt.Errorf("🥡 failed to export — the following secret(s) do not exist: %s", strings.Join(missingKeys, ", "))
+			missing := strings.Join(missingKeys, ", ")
+			switch {
+			case tags != "" && path != "":
+				return fmt.Errorf("🥡 failed to export — the following secret(s) were not found at path %s with tag filter %s: %s. Adjust --tags, or pass --path \"\" to export from all paths", path, tags, missing)
+			case tags != "":
+				return fmt.Errorf("🥡 failed to export — the following secret(s) did not match tag filter %s: %s. Adjust or drop --tags", tags, missing)
+			case path != "":
+				return fmt.Errorf("🥡 failed to export — the following secret(s) were not found at path %s: %s. Secrets under other paths are not searched — pass --path \"\" to export from all paths", path, missing)
+			default:
+				return fmt.Errorf("🥡 failed to export — the following secret(s) do not exist: %s", missing)
+			}
 		}
 		// Export only the requested keys (in the order they were specified)
 		for _, key := range filterKeys {
@@ -115,7 +125,7 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 	// it can't be mistaken for a broken app or environment. stderr keeps the
 	// exported document on stdout intact for piping.
 	if len(secretsList) == 0 {
-		fmt.Fprint(os.Stderr, emptyPathHint(path, "export"))
+		fmt.Fprint(os.Stderr, emptyResultHint(path, tags, "export", false))
 	}
 
 	switch format {

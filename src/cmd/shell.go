@@ -127,7 +127,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 			util.BoldGreenErr(envLabel))
 	}
 	if secretCount == 0 {
-		fmt.Fprint(os.Stderr, emptyPathHint(path, "load"))
+		fmt.Fprint(os.Stderr, emptyResultHint(path, tags, "load", false))
 	}
 	fmt.Fprintf(os.Stderr, "%s Secrets are only available in this session. Type %s or press %s to exit.\n",
 		util.BoldYellowErr("Remember:"),

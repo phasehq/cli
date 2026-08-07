@@ -100,7 +100,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			util.BoldGreenErr(envLabel))
 	}
 	if secretCount == 0 {
-		fmt.Fprint(os.Stderr, emptyPathHint(path, "inject"))
+		fmt.Fprint(os.Stderr, emptyResultHint(path, tags, "inject", false))
 	}
 
 	// Build environment: inherit current env and append secrets

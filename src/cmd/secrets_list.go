@@ -65,7 +65,7 @@ func listSecrets(p *sdk.Phase, envName, appName, appID, tags, path string, show,
 	}
 
 	appLabel, envLabel := contextNames(p, secrets, appName, envName, appID)
-	display.RenderSecretsTree(secrets, show, appLabel, envLabel, path)
+	display.RenderSecretsTree(secrets, show, appLabel, envLabel, emptyResultHint(path, tags, "list", true))
 	return nil
 }
 

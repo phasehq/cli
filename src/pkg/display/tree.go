@@ -202,17 +202,17 @@ func renderSecretRow(pathPrefix string, s sdk.SecretResult, show bool, keyWidth,
 // RenderSecretsTree renders secrets in a tree view with path hierarchy.
 // appName and envName are the resolved context the secrets were fetched for;
 // they are rendered even when nothing matched, so an empty result is clearly a
-// filter miss rather than an unresolved app or environment. path is the path
-// filter that was applied, or "" if none was.
-func RenderSecretsTree(secrets []sdk.SecretResult, show bool, appName, envName, path string) {
+// filter miss rather than an unresolved app or environment. emptyHint is an
+// optional newline-terminated line explaining why the result is empty, printed
+// only when there are no secrets; pass "" for none.
+func RenderSecretsTree(secrets []sdk.SecretResult, show bool, appName, envName, emptyHint string) {
 	bold, cyan, green, magenta, reset := util.AnsiCodes()
 
 	if len(secrets) == 0 {
 		fmt.Printf("  %s No secrets found for Application: %s%s%s%s, Environment: %s%s%s%s\n",
 			"🔮", bold, cyan, appName, reset, bold, green, envName, reset)
-		if path != "" {
-			fmt.Printf("  💡 Nothing at path %s%s%s. Secrets under other paths are not listed — pass %s--path \"\"%s to list secrets from all paths.\n",
-				bold, path, reset, bold, reset)
+		if emptyHint != "" {
+			fmt.Printf("  %s", emptyHint)
 		}
 		return
 	}

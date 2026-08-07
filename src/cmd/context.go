@@ -41,13 +41,29 @@ func contextNames(p *sdk.Phase, secrets []sdk.SecretResult, appName, envName, ap
 	return phase.ResolveNames(p, appName, envName, appID)
 }
 
-// emptyPathHint explains why a path filter matched nothing. Secrets are filtered
-// by exact path, so secrets kept in folders are invisible at the default '/'.
-// Returns "" when no path filter was applied, since every path was searched.
-func emptyPathHint(path, verb string) string {
-	if path == "" {
+// emptyResultHint explains why a fetch matched nothing. Secrets are filtered by
+// exact path, so secrets kept in folders are invisible at the default '/'; a
+// --tags filter can also empty the result, in which case suggesting a broader
+// path alone would misdirect. Returns "" when neither filter was applied —
+// the environment is then genuinely empty and there is nothing to suggest.
+// Set forStdout when the hint is printed to stdout so ANSI styling is gated on
+// the right stream.
+func emptyResultHint(path, tags, verb string, forStdout bool) string {
+	bold, yellow := util.BoldErr, util.BoldYellowErr
+	if forStdout {
+		bold, yellow = util.Bold, util.BoldYellow
+	}
+	switch {
+	case tags != "" && path != "":
+		return fmt.Sprintf("💡 No secrets matched tag filter %s at path %s. Adjust %s, or pass %s to %s secrets from all paths.\n",
+			yellow(tags), yellow(path), bold("--tags"), bold(`--path ""`), verb)
+	case tags != "":
+		return fmt.Sprintf("💡 No secrets matched tag filter %s. Adjust or drop %s to %s all secrets.\n",
+			yellow(tags), bold("--tags"), verb)
+	case path != "":
+		return fmt.Sprintf("💡 No secrets found at path %s. Secrets under other paths are not included — pass %s to %s secrets from all paths.\n",
+			yellow(path), bold(`--path ""`), verb)
+	default:
 		return ""
 	}
-	return fmt.Sprintf("💡 No secrets found at path %s. Secrets under other paths are not included — pass %s to %s secrets from all paths.\n",
-		util.BoldYellowErr(path), util.BoldErr(`--path ""`), verb)
 }

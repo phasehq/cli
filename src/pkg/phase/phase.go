@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -127,17 +128,61 @@ func PhaseGetContext(userData *misc.AppKeyResponse, appName, envName, appID stri
 // ResolveNames resolves the canonical application and environment names for the
 // given selectors. Display code needs these even when a fetch returns no
 // secrets, since there is no result row to read the names off in that case.
-// Falls back to the supplied selectors if the lookup fails.
+//
+// The SDK refreshes its on-disk user-data cache on every successful online
+// fetch, so by the time display code runs the cache is normally fresh and no
+// extra request is needed. The network is consulted only when no cache is
+// available, and never in offline mode. If nothing resolves, falls back to the
+// supplied selectors, with the app ID standing in for a missing app name.
 func ResolveNames(p *sdk.Phase, appName, envName, appID string) (string, string) {
-	userData, err := Init(p)
-	if err != nil {
-		return appName, envName
+	return resolveNames(p, appName, envName, appID, getCacheDir())
+}
+
+func resolveNames(p *sdk.Phase, appName, envName, appID, cacheDir string) (string, string) {
+	userData := readCachedUserData(cacheDir)
+	if userData == nil {
+		if offline.IsOffline() {
+			return fallbackNames(appName, envName, appID)
+		}
+		var err error
+		userData, err = Init(p)
+		if err != nil {
+			return fallbackNames(appName, envName, appID)
+		}
 	}
 	app, _, env, _, _, err := misc.PhaseGetContext(userData, appName, envName, appID)
 	if err != nil {
-		return appName, envName
+		return fallbackNames(appName, envName, appID)
 	}
 	return app, env
+}
+
+// readCachedUserData reads the AppKeyResponse the SDK caches at
+// {cacheDir}/userdata.json on every successful online fetch. Returns nil when
+// the cache is absent or unreadable.
+func readCachedUserData(cacheDir string) *misc.AppKeyResponse {
+	if cacheDir == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(cacheDir, "userdata.json"))
+	if err != nil {
+		return nil
+	}
+	var userData misc.AppKeyResponse
+	if err := json.Unmarshal(data, &userData); err != nil {
+		return nil
+	}
+	return &userData
+}
+
+// fallbackNames is the degraded label set when no lookup is possible: the raw
+// selectors, with the app ID standing in for a missing app name so callers
+// never render a blank Application label.
+func fallbackNames(appName, envName, appID string) (string, string) {
+	if appName == "" {
+		appName = appID
+	}
+	return appName, envName
 }
 
 // GetConfig fills in appName/envName/appID from .phase.json when not provided via flags.
