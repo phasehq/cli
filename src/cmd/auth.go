@@ -29,6 +29,8 @@ func init() {
 	authCmd.Flags().Int("ttl", 0, "Token TTL in seconds (for external identity modes)")
 	authCmd.Flags().Bool("no-store", false, "Print token to stdout instead of storing (for external identity modes)")
 	authCmd.Flags().String("azure-resource", "", "Azure AD resource/audience for token request (for azure mode, default: https://management.azure.com/)")
+	authCmd.Flags().String("token-name", "", "Name for the personal access token (webauth mode, default: username@hostname)")
+	authCmd.Flags().String("token-lifetime", "", "Lifetime for the personal access token, e.g. 7d, 12h, 30m (webauth mode, default: never expires)")
 	rootCmd.AddCommand(authCmd)
 }
 
