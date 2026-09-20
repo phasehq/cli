@@ -19,7 +19,10 @@ type KeyValue struct {
 
 func ExportDotenv(secrets []KeyValue) {
 	for _, kv := range secrets {
-		fmt.Printf("%s=\"%s\"\n", kv.Key, kv.Value)
+		escaped := strings.ReplaceAll(kv.Value, "\\", "\\\\")
+		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+		escaped = strings.ReplaceAll(escaped, "\n", "\\n")
+		fmt.Printf("%s=\"%s\"\n", kv.Key, escaped)
 	}
 }
 
@@ -79,22 +82,28 @@ func ExportYAML(secrets []KeyValue) {
 func ExportXML(secrets []KeyValue) {
 	fmt.Println("<Secrets>")
 	for _, kv := range secrets {
-		var escaped strings.Builder
-		xml.EscapeText(&escaped, []byte(kv.Value))
-		fmt.Printf("  <secret name=\"%s\">%s</secret>\n", kv.Key, escaped.String())
+		var escapedKey strings.Builder
+		xml.EscapeText(&escapedKey, []byte(kv.Key))
+		nameAttr := strings.ReplaceAll(escapedKey.String(), "\"", "&quot;")
+		var escapedVal strings.Builder
+		xml.EscapeText(&escapedVal, []byte(kv.Value))
+		fmt.Printf("  <secret name=\"%s\">%s</secret>\n", nameAttr, escapedVal.String())
 	}
 	fmt.Println("</Secrets>")
 }
 
 func ExportTOML(secrets []KeyValue) {
 	for _, kv := range secrets {
-		fmt.Printf("%s = \"%s\"\n", kv.Key, kv.Value)
+		escaped := strings.ReplaceAll(kv.Value, "\\", "\\\\")
+		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+		fmt.Printf("%s = \"%s\"\n", kv.Key, escaped)
 	}
 }
 
 func ExportHCL(secrets []KeyValue) {
 	for _, kv := range secrets {
-		escaped := strings.ReplaceAll(kv.Value, "\"", "\\\"")
+		escaped := strings.ReplaceAll(kv.Value, "\\", "\\\\")
+		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
 		fmt.Printf("variable \"%s\" {\n", kv.Key)
 		fmt.Printf("  default = \"%s\"\n", escaped)
 		fmt.Println("}")
