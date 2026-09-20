@@ -50,6 +50,35 @@ func TestParseBoolFlag(t *testing.T) {
 	}
 }
 
+func TestParseTokenLifetime(t *testing.T) {
+	valid := map[string]int64{
+		"":      0,
+		"60s":   60,
+		"30m":   1800,
+		"12h":   43200,
+		"7d":    604800,
+		"2w":    1209600,
+		"  7D ": 604800, // trimmed and case-insensitive
+		"0d":    0,
+	}
+	for in, want := range valid {
+		got, err := ParseTokenLifetime(in)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("ParseTokenLifetime(%q) = %d, want %d", in, got, want)
+		}
+	}
+
+	invalid := []string{"7", "d", "7x", "-7d", "abc", "1.5h", "7 d"}
+	for _, in := range invalid {
+		if _, err := ParseTokenLifetime(in); err == nil {
+			t.Fatalf("expected error for %q", in)
+		}
+	}
+}
+
 func TestParseEnvFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
