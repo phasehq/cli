@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
@@ -94,6 +95,45 @@ func GetShellCommand(shellType string) ([]string, error) {
 		return nil, fmt.Errorf("shell '%s' not found in PATH: %w", shell, err)
 	}
 	return []string{path}, nil
+}
+
+// ParseTokenLifetime parses a token lifetime string such as "7d", "12h", "30m", "60s"
+// or "2w" into a number of seconds. Supported units are s (seconds), m (minutes),
+// h (hours), d (days) and w (weeks). An empty string returns 0, meaning the token
+// never expires.
+func ParseTokenLifetime(lifetime string) (int64, error) {
+	lifetime = strings.TrimSpace(strings.ToLower(lifetime))
+	if lifetime == "" {
+		return 0, nil
+	}
+
+	invalid := fmt.Errorf("invalid token lifetime %q (expected a number and a unit, e.g. 7d, 12h, 30m, 60s, 2w)", lifetime)
+	if len(lifetime) < 2 {
+		return 0, invalid
+	}
+
+	value, err := strconv.ParseInt(lifetime[:len(lifetime)-1], 10, 64)
+	if err != nil || value < 0 {
+		return 0, invalid
+	}
+
+	var perUnit int64
+	switch lifetime[len(lifetime)-1] {
+	case 's':
+		perUnit = 1
+	case 'm':
+		perUnit = 60
+	case 'h':
+		perUnit = 3600
+	case 'd':
+		perUnit = 86400
+	case 'w':
+		perUnit = 604800
+	default:
+		return 0, invalid
+	}
+
+	return value * perUnit, nil
 }
 
 // ValidateURL checks that a URL has both a scheme (e.g. https) and a host (e.g. example.com).
