@@ -88,6 +88,9 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(results) == 0 {
+		if path != "" {
+			return fmt.Errorf("🔍 No matching secrets found at path %s — secrets under other paths are not searched. Pass --path \"\" to search all paths", path)
+		}
 		return fmt.Errorf("🔍 No matching secrets found")
 	}
 
