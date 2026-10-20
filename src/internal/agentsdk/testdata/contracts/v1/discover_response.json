@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "sessionUid": "session-123",
+  "configGeneration": 1,
+  "configEnv": {
+    "AWS_REGION": "us-east-1",
+    "AWS_DEFAULT_REGION": "us-east-1"
+  },
+  "connections": [
+    {
+      "grantId": "grant-aws",
+      "connectionId": "connection-aws",
+      "connectionName": "Production AWS",
+      "credentialId": "credential-aws",
+      "credentialName": "AWS - EC2, RDS, S3 full access",
+      "credentialProvider": "aws",
+      "credentialRevision": "credential-revision-1",
+      "materialGeneration": "material-generation-1",
+      "serviceType": "aws",
+      "protocol": "http",
+      "hosts": [
+        {"match": "suffix", "value": ".amazonaws.com", "port": 443}
+      ],
+      "connectionConfig": {
+        "region": "us-east-1"
+      },
+      "configEnv": {
+        "AWS_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "us-east-1"
+      },
+      "injection": {
+        "action": "aws_sigv4",
+        "valueFrom": {
+          "source": "credential",
+          "fields": {
+            "accessKeyId": "access_key_id",
+            "secretAccessKey": "secret_access_key",
+            "sessionToken": "session_token"
+          }
+        },
+        "serviceFrom": "host",
+        "regionFrom": "host"
+      },
+      "onRefresh": "none",
+      "identifiers": {
+        "accessKeyId": "AKIAPHASEDECOY000000"
+      },
+      "decoyMaterial": {
+        "secretAccessKey": "PHX_REDACTED_DECOY",
+        "sessionToken": "phx_aws_session_REDACTED_DECOY"
+      },
+      "agentEnv": {
+        "AWS_ACCESS_KEY_ID": "AKIAPHASEDECOY000000",
+        "AWS_SECRET_ACCESS_KEY": "PHX_REDACTED_DECOY",
+        "AWS_SESSION_TOKEN": "phx_aws_session_REDACTED_DECOY"
+      },
+      "environmentBindings": [
+        {"name": "AWS_ACCESS_KEY_ID", "action": "set", "source": "identifier", "sourceField": "access_key_id", "sensitive": false, "systemManaged": true},
+        {"name": "AWS_SECRET_ACCESS_KEY", "action": "set", "source": "decoy", "sourceField": "secret_access_key", "sensitive": true, "systemManaged": true},
+        {"name": "AWS_REGION", "action": "set", "source": "connection_config", "sourceField": "region", "sensitive": false, "systemManaged": true},
+        {"name": "AWS_DEFAULT_REGION", "action": "set", "source": "connection_config", "sourceField": "region", "sensitive": false, "systemManaged": true},
+        {"name": "AWS_SESSION_TOKEN", "action": "set", "source": "decoy", "sourceField": "session_token", "sensitive": true, "systemManaged": true},
+        {"name": "AWS_SECURITY_TOKEN", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": true, "systemManaged": true},
+        {"name": "AWS_PROFILE", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": false, "systemManaged": true},
+        {"name": "AWS_DEFAULT_PROFILE", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": false, "systemManaged": true},
+        {"name": "AWS_ROLE_ARN", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": false, "systemManaged": true},
+        {"name": "AWS_ROLE_SESSION_NAME", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": false, "systemManaged": true},
+        {"name": "AWS_WEB_IDENTITY_TOKEN_FILE", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": true, "systemManaged": true},
+        {"name": "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": true, "systemManaged": true},
+        {"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": true, "systemManaged": true},
+        {"name": "AWS_CONTAINER_AUTHORIZATION_TOKEN", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": true, "systemManaged": true},
+        {"name": "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "action": "unset", "source": "runtime", "sourceField": "secret_access_key", "sensitive": true, "systemManaged": true}
+      ],
+      "authorization": {
+        "version": 1,
+        "mode": "connection",
+        "accessMode": "allow",
+        "state": "allowed"
+      }
+    }
+  ]
+}
