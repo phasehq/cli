@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/md5" // PostgreSQL's legacy wire authentication requires MD5.
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -19,8 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/phasehq/cli/internal/agentapi"
 )
@@ -589,7 +588,10 @@ func (s *pgSCRAMState) continueChallenge(data []byte) ([]byte, error) {
 	}
 	s.clientFinal = "c=biws,r=" + nonce
 	authMessage := s.clientFirst + "," + s.serverFirst + "," + s.clientFinal
-	salted := pbkdf2.Key([]byte(s.password), salt, iterations, 32, sha256.New)
+	salted, err := pbkdf2.Key(sha256.New, s.password, salt, iterations, 32)
+	if err != nil {
+		return nil, err
+	}
 	clientKey := hmacSHA256(salted, "Client Key")
 	stored := sha256.Sum256(clientKey)
 	signature := hmacSHA256(stored[:], authMessage)
