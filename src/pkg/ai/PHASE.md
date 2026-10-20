@@ -24,7 +24,7 @@ When the Phase hook or plugin is installed for Claude Code or OpenCode, the huma
 - Never inspect, print, log, persist, or transmit decoys, the authenticated proxy URL, the full manifest, or credential-like environment values.
 - Never run `phase ai enable` or `phase ai disable`; those are human setup commands.
 
-The durable Phase login token and backend session credential stay inside the Phase CLI. The proxy URL password authenticates only to the active `phase ai run`, `phase ai exec`, or `phase ai serve` process.
+The durable Phase login token and backend session credential stay inside the Phase CLI. The proxy URL password authenticates only to the active `phase ai run`, `phase ai exec`, hook daemon or relay process.
 
 ## Discover Phase capabilities dynamically
 
@@ -125,7 +125,7 @@ curl --fail --silent --show-error 'http://phase.invalid/v1/requests/request-456?
 
 Keep using the same request while it is pending. A denied response may include `resolutionNote`; surface it to the user. Resume pending work with `GET http://phase.invalid/v1/requests`. Cancel only when the user explicitly asks, using an empty JSON object at `POST http://phase.invalid/v1/requests/{requestId}/cancel`.
 
-An approved `setup` returns `credentialId`, `connectionId`, `grantId`, and normally `runtimeAction: "restart_required"`. The lifecycle helper can recycle its proxy runtime; retry the explicit `phase ai exec` operation as a new tool call. With `phase ai run` or `phase ai serve`, ask the human to relaunch it.
+An approved `setup` returns `credentialId`, `connectionId`, `grantId`, and normally `runtimeAction: "restart_required"`. The lifecycle helper can recycle its proxy runtime; retry the explicit `phase ai exec` operation as a new tool call. With `phase ai run`, ask the human to relaunch it.
 
 An approved `credential_update` hot-swaps live material and revision when the Agent-visible plan is unchanged and returns `runtimeAction: "retry"`. If identifiers, decoys, routes, or process environment changed, it returns `restart_required`. Do not call the refresh endpoint or re-inject environment values yourself.
 

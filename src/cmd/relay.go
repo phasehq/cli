@@ -195,7 +195,7 @@ func runRelayLoop(parent context.Context, in io.Reader, out, errOut io.Writer, r
 			}
 			handoff := relayHandoffLine(endpoints)
 			_, _ = io.WriteString(out, formatRelayReady(endpoints, handoff))
-			if aiServeClipboardSupported() && !copyListener {
+			if clipboardCopySupported() && !copyListener {
 				copyListener = true
 				_, _ = fmt.Fprintln(out, "Type c and press Enter to copy the handoff line. Press Ctrl+C to stop.")
 				go listenForRelayCopy(ctx, in, out, errOut, handoff)
@@ -320,7 +320,7 @@ func listenForRelayCopy(ctx context.Context, in io.Reader, out, errOut io.Writer
 		if strings.ToLower(strings.TrimSpace(scanner.Text())) != "c" {
 			continue
 		}
-		if err := copyAIServeHandoff(handoff); err != nil {
+		if err := copyToClipboard(handoff); err != nil {
 			_, _ = fmt.Fprintf(errOut, "Could not copy the handoff line: %v\n", err)
 			continue
 		}

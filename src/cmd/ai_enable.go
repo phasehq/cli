@@ -285,7 +285,7 @@ func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principa
 	case cfg != nil && strings.TrimSpace(cfg.DefaultWorkflowID) != "":
 		out.WriteString("   Default Workflow: " + strings.TrimSpace(cfg.DefaultWorkflowID) + "\n")
 	default:
-		out.WriteString("   No default Workflow yet: rerun `phase ai enable --workflow <id>`, or pass --workflow to phase ai serve/run.\n")
+		out.WriteString("   No default Workflow yet: rerun `phase ai enable --workflow <id>`, or pass --workflow to phase ai run/exec.\n")
 	}
 
 	steps := aiEnableNextSteps(target.ID)

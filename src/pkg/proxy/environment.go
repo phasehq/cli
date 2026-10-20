@@ -236,7 +236,7 @@ func PrepareProcessCABundle(baseBundlePath string, environment []string, credent
 
 // PrepareStableProcessCABundle prepares the same certificate-only merged root
 // set as PrepareProcessCABundle, then atomically publishes it at a predictable
-// path beside the installation CA. phase ai run, phase ai exec, and phase ai serve therefore
+// path beside the installation CA. phase ai run, phase ai exec and the hook daemons therefore
 // expose the same PHASE_AI_CA_BUNDLE path for the full proxy lifetime instead
 // of handing clients an ephemeral /tmp file. The published files contain only
 // public certificates (and, for Java, a public trust store) and intentionally
@@ -614,7 +614,7 @@ func planProcessEnvironment(configEnv, agentEnv map[string]string, bindings []En
 // It contains backend configuration/decoys, adapter variables, proxy aliases,
 // CA compatibility variables, and explicit removals. It never copies unrelated
 // inherited values into Set, so it is safe to show through the authenticated
-// manifest or the phase ai serve handoff.
+// manifest or the relay handoff.
 func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPlan, error) {
 	proxyURL, err := validateProxyEnvironmentOptions(options)
 	if err != nil {

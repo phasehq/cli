@@ -43,7 +43,6 @@ Commands:
   ai skill                          📄 Print the Phase AI skill document
   ai run                            🚀 Launch an AI Agent behind the Phase AI credential proxy
   ai exec                           ⚡ Execute one command behind a transient Phase AI credential proxy
-  ai serve                          🛡️ Serve the Phase AI credential proxy for an externally managed Agent harness
   relay start                       🛰️ Run a Phase AI relay for remote Agent sandboxes
   console                           🖥️ Open the Phase Console in your browser
   docs                              📖 Open the Phase CLI Docs in your browser

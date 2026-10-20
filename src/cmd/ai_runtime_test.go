@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/internal/aiproxy"
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
@@ -25,23 +22,23 @@ import (
 )
 
 func TestAIRuntimeCommandsAreRegistered(t *testing.T) {
-	for _, name := range []string{"serve", "run", "exec"} {
+	for _, name := range []string{"run", "exec"} {
 		command, _, err := aiCmd.Find([]string{name})
 		if err != nil || command == nil || command.Name() != name {
 			t.Fatalf("phase ai %s is not registered: command=%v err=%v", name, command, err)
 		}
 	}
-	for _, removed := range []string{"context", "request"} {
+	for _, removed := range []string{"context", "request", "serve"} {
 		for _, command := range aiCmd.Commands() {
 			if command.Name() == removed {
-				t.Fatalf("phase ai %s must remain a proxy API, not a CLI command", removed)
+				t.Fatalf("phase ai %s must not be a CLI command", removed)
 			}
 		}
 	}
 }
 
 func TestRemoteModeLivesOnlyUnderRelayStart(t *testing.T) {
-	for _, command := range []*cobra.Command{aiServeCmd, aiRunCmd, aiExecCmd} {
+	for _, command := range []*cobra.Command{aiRunCmd, aiExecCmd} {
 		for _, name := range []string{"remote", "advertise-host", "tls-cert", "tls-key", "postgres-listen"} {
 			if command.Flags().Lookup(name) != nil {
 				t.Fatalf("phase ai %s unexpectedly exposes --%s; remote mode is phase relay start", command.Name(), name)
@@ -59,7 +56,7 @@ func TestRemoteModeLivesOnlyUnderRelayStart(t *testing.T) {
 }
 
 func TestAIRuntimeUsesFixedDefaultProxyPort(t *testing.T) {
-	for _, command := range []*cobra.Command{aiRunCmd, aiServeCmd, aiExecCmd} {
+	for _, command := range []*cobra.Command{aiRunCmd, aiExecCmd} {
 		flag := command.Flags().Lookup("listen")
 		if flag == nil || flag.DefValue != aiproxy.DefaultProxyListenAddress {
 			t.Fatalf("phase ai %s listen default = %v", command.Name(), flag)
@@ -224,48 +221,6 @@ func writeHealthyManualHandoffState(t *testing.T, directory string) claudeRuntim
 		t.Fatal(err)
 	}
 	return state
-}
-
-func TestAIServeHandoffPrintsExactCompiledEnvironmentAndAuthenticatedManifest(t *testing.T) {
-	const proxyURL = "https://phase:runtime-capability@agent.example:9543"
-	handoff := formatAIServeHandoff(aiproxy.Endpoints{
-		ProxyURL: agentapi.SensitiveString(proxyURL),
-		ProcessEnvironment: phaseproxy.ProcessEnvironmentPlan{
-			Set: map[string]string{
-				"HTTP_PROXY": proxyURL, "HTTPS_PROXY": proxyURL, "http_proxy": proxyURL, "https_proxy": proxyURL,
-				"PHASE_AI_CA_BUNDLE": "/stable/phase ca.pem", "AWS_SECRET_ACCESS_KEY": "decoy```'$(touch /tmp/never)",
-			},
-			Unset: []string{"AWS_SESSION_TOKEN", "AWS_PROFILE"},
-		},
-	})
-	for _, required := range []string{
-		"## Sensitive harness environment",
-		"Do not paste this block into a chat",
-		"export HTTP_PROXY='" + proxyURL + "'",
-		"export HTTPS_PROXY='" + proxyURL + "'",
-		"export http_proxy='" + proxyURL + "'",
-		"export https_proxy='" + proxyURL + "'",
-		"export PHASE_AI_CA_BUNDLE='/stable/phase ca.pem'",
-		"export AWS_SECRET_ACCESS_KEY='decoy```'\"'\"'$(touch /tmp/never)'",
-		"````sh\n",
-		"unset AWS_PROFILE AWS_SESSION_TOKEN",
-		"http://phase.invalid/.well-known/agents",
-		"## Safe Agent context",
-		"http://phase.invalid/v1/status",
-		"credential-free block may be pasted",
-	} {
-		if !strings.Contains(handoff, required) {
-			t.Fatalf("handoff missing %q: %s", required, handoff)
-		}
-	}
-	for _, forbidden := range []string{
-		"ALL_PROXY=", "PHASE_AI_PROXY_URL=", "PHASE_AI_SESSION_UID=",
-		"PHASE_AI_SESSION_CREDENTIAL=", "PGPASSWORD=", "UNRELATED=",
-	} {
-		if strings.Contains(handoff, forbidden) {
-			t.Fatalf("handoff contains redundant or unsafe key %q: %s", forbidden, handoff)
-		}
-	}
 }
 
 func TestPrepareAIChildCommandInjectsClaudeContext(t *testing.T) {
@@ -613,62 +568,6 @@ type testProcessExitError struct{ code int }
 
 func (e testProcessExitError) Error() string { return "exit status" }
 func (e testProcessExitError) ExitCode() int { return e.code }
-
-func TestAIServeClipboardSeparatesSafeContextFromSensitiveEnvironment(t *testing.T) {
-	originalCopy := copyAIServeHandoff
-	t.Cleanup(func() { copyAIServeHandoff = originalCopy })
-
-	var copied []string
-	copyAIServeHandoff = func(content string) error {
-		copied = append(copied, content)
-		return nil
-	}
-	command := &cobra.Command{}
-	command.SetIn(strings.NewReader("c\ne\n"))
-	var output bytes.Buffer
-	command.SetOut(&output)
-	command.SetErr(&bytes.Buffer{})
-	listenForAIServeCopy(command, "safe context", "export HTTPS_PROXY='sensitive'\n")
-	want := []string{"safe context", "export HTTPS_PROXY='sensitive'\n"}
-	if len(copied) != len(want) {
-		t.Fatalf("copied %d values, want %d: %#v", len(copied), len(want), copied)
-	}
-	for index := range want {
-		if copied[index] != want[index] {
-			t.Fatalf("copy %d = %q, want %q", index, copied[index], want[index])
-		}
-	}
-	for _, message := range []string{"Safe Phase AI Agent context copied.", "Sensitive Phase AI launcher environment copied."} {
-		if !strings.Contains(output.String(), message) {
-			t.Fatalf("clipboard output missing %q: %s", message, output.String())
-		}
-	}
-}
-
-func TestAIServeClipboardListenerStopsOnContextCancellation(t *testing.T) {
-	reader, writer := io.Pipe()
-	t.Cleanup(func() {
-		_ = reader.Close()
-		_ = writer.Close()
-	})
-	ctx, cancel := context.WithCancel(context.Background())
-	command := &cobra.Command{}
-	command.SetContext(ctx)
-	command.SetIn(reader)
-	command.SetOut(&bytes.Buffer{})
-	command.SetErr(&bytes.Buffer{})
-	done := make(chan struct{})
-	go func() {
-		listenForAIServeCopy(command, "safe context", "sensitive environment")
-		close(done)
-	}()
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("clipboard listener did not stop after context cancellation")
-	}
-}
 
 func TestRefreshConfiguredAISkillPreservesUnrecognizedTarget(t *testing.T) {
 	originalConfigPath := config.AIConfigPath

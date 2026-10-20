@@ -20,7 +20,7 @@ import (
 
 func TestUnavailableEngineFailsBeforeOpeningSession(t *testing.T) {
 	runtime := &Runtime{Client: nil, WorkflowID: "workflow-123"}
-	err := runtime.Serve(context.Background(), UnavailableEngine{})
+	err := runtime.ServeManaged(context.Background(), UnavailableEngine{})
 	if !errors.Is(err, ErrProxyEngineNotReady) {
 		t.Fatalf("got %v, want ErrProxyEngineNotReady", err)
 	}
@@ -71,7 +71,7 @@ func TestAgentTokenRequiredEngineFailsBeforeSessionProvisioning(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Runtime{Client: client, WorkflowID: "workflow-1"}
-	if err := runtime.Serve(context.Background(), requiresAgentTokenEngine{}); err == nil || !strings.Contains(err.Error(), "Agent-token") {
+	if err := runtime.ServeManaged(context.Background(), requiresAgentTokenEngine{}); err == nil || !strings.Contains(err.Error(), "Agent-token") {
 		t.Fatalf("remote auth error=%v", err)
 	}
 	if opened.Load() != 0 {
@@ -135,7 +135,7 @@ func TestRuntimeRejectsUnsafeOpenSessionBeforeEngineHandoff(t *testing.T) {
 	}
 	var calls atomic.Int32
 	runtime := &Runtime{Client: client, WorkflowID: "workflow-1"}
-	err = runtime.Serve(context.Background(), countingServeEngine{calls: &calls})
+	err = runtime.ServeManaged(context.Background(), countingServeEngine{calls: &calls})
 	if err == nil || calls.Load() != 0 || strings.Contains(err.Error(), live) {
 		t.Fatalf("unsafe open session handoff: calls=%d err=%v", calls.Load(), err)
 	}
@@ -158,7 +158,10 @@ func (engine countingServeEngine) Serve(context.Context, *ProxySession) error {
 }
 func (countingServeEngine) Run(context.Context, *ProxySession, []string) error { return nil }
 
-func TestServeRequiresHarnessRelaunchWhenSessionExpires(t *testing.T) {
+// A managed serve drains exactly one session: on hard expiry it returns the
+// lifecycle error to its supervisor instead of reopening a session behind the
+// harness's back.
+func TestManagedServeReturnsExpiryWithoutReopeningSession(t *testing.T) {
 	var opens atomic.Int32
 	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions/") {
@@ -188,9 +191,9 @@ func TestServeRequiresHarnessRelaunchWhenSessionExpires(t *testing.T) {
 		Client: client, WorkflowID: "workflow-1",
 		CAStore: proxy.CAStore{Directory: t.TempDir(), Keyring: &memoryPrivateKeyStore{values: map[string]string{}}},
 	}
-	err = runtime.Serve(context.Background(), engine)
-	if !errors.Is(err, ErrSessionExpired) || !strings.Contains(err.Error(), "relaunch the harness") {
-		t.Fatalf("serve expiry error = %v", err)
+	err = runtime.ServeManaged(context.Background(), engine)
+	if !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("managed serve expiry error = %v", err)
 	}
 	if opens.Load() != 1 {
 		t.Fatalf("opened sessions=%d, want 1", opens.Load())

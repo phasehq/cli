@@ -237,7 +237,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	if e.Remote {
 		if command != nil {
-			return errors.New("remote Phase AI mode is available only through phase ai serve")
+			return errors.New("remote Phase AI mode runs only under phase relay start, without a child command")
 		}
 		if session == nil || session.Client == nil || session.Client.TokenType() != agentapi.TokenAgent {
 			return errors.New("remote Phase AI mode requires Agent-token login")

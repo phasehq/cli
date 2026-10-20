@@ -171,20 +171,12 @@ func (r *Runtime) open(ctx context.Context, capabilities EngineCapabilities) (*a
 	return session, nil
 }
 
-func (r *Runtime) Serve(ctx context.Context, engine Engine) error {
-	err := r.withSession(ctx, engine, nil)
-	if errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrSessionReprovisionRequired) {
-		return fmt.Errorf("%w; phase ai serve stopped because an external harness environment cannot be replaced atomically; restart phase ai serve and relaunch the harness", err)
-	}
-	return err
-}
-
 // ServeManaged runs one backend session without translating lifecycle errors
-// into foreground-harness restart guidance. Hook-owned daemons use this narrow
-// entry point to drain one proxy engine completely before opening a successor
-// session in the same supervising process. Public Serve, Run, and Exec retain
-// their existing terminal semantics because their child environments are
-// immutable after launch.
+// into foreground-harness restart guidance. Hook-owned daemons and the relay
+// use this entry point to drain one proxy engine completely before opening a
+// successor session in the same supervising process. Run and Exec retain
+// their terminal semantics because their child environments are immutable
+// after launch.
 func (r *Runtime) ServeManaged(ctx context.Context, engine Engine) error {
 	return r.withSession(ctx, engine, nil)
 }
@@ -264,7 +256,7 @@ func (r *Runtime) withSession(ctx context.Context, engine Engine, command []stri
 }
 
 // CompileProcessEnvironment is the single session-to-process compiler used by
-// phase ai run, phase ai exec, and phase ai serve. It resolves only Phase-owned changes;
+// phase ai run, phase ai exec, the hook daemons and phase relay start. It resolves only Phase-owned changes;
 // ApplyProcessEnvironment is the separate child-launch boundary which retains
 // unrelated inherited variables.
 func (s *ProxySession) CompileProcessEnvironment(proxyURL string, base []string, adapterEnv map[string]string) (proxy.ProcessEnvironmentPlan, error) {
