@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -205,6 +206,12 @@ func (s *eventSpool) Acknowledge(events []agentapi.Event) error {
 }
 
 func syncDirectory(directory string) error {
+	// Windows cannot flush a directory handle opened for reading (FlushFileBuffers
+	// needs write access and NTFS has no directory-entry fsync); the renamed file
+	// itself was already synced, which is the durability Windows offers.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	handle, err := os.Open(directory)
 	if err != nil {
 		return err

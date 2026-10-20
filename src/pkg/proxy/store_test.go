@@ -83,7 +83,7 @@ func TestCAStorePersistsPrivateMaterialOnlyInKeyring(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
 		}
 		data, err := os.ReadFile(path)

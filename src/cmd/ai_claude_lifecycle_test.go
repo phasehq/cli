@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ func TestClaudeLifecycleLogAcceptsOnlyBoundedAllowlistedRecords(t *testing.T) {
 	}
 	if info, err := os.Stat(path); err != nil {
 		t.Fatal(err)
-	} else if info.Mode().Perm() != 0o600 {
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("lifecycle log mode = %o, want 600", info.Mode().Perm())
 	}
 }

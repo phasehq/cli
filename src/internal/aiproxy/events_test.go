@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,7 +74,7 @@ func TestDenialAuditSpoolRetriesAcrossProxyRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("spool mode=%#o, want 0600", info.Mode().Perm())
 	}
 	payload, err := os.ReadFile(files[0])
