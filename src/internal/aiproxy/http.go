@@ -38,9 +38,13 @@ type httpProxy struct {
 	events           *eventBuffer
 	manifest         *manifestHandler
 	control          *controlHandler
-	mu               sync.Mutex
-	hijacked         map[net.Conn]struct{}
-	wg               sync.WaitGroup
+	// lifecycle ends with the engine run. Requests read off a hijacked CONNECT
+	// tunnel have no context of their own, so they borrow this one and their
+	// upstream round trips stop when the proxy does.
+	lifecycle context.Context
+	mu        sync.Mutex
+	hijacked  map[net.Conn]struct{}
+	wg        sync.WaitGroup
 }
 
 type requestFailure struct {
@@ -405,8 +409,13 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 	if buffered.Flush() != nil {
 		return
 	}
+	tunnelContext, stopTunnel := context.WithCancel(req.Context())
+	defer stopTunnel()
+	if p.lifecycle != nil {
+		defer context.AfterFunc(p.lifecycle, stopTunnel)()
+	}
 	tlsClient := tls.Server(client, &tls.Config{Certificates: []tls.Certificate{*certificate}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
-	if err := tlsClient.HandshakeContext(req.Context()); err != nil {
+	if err := tlsClient.HandshakeContext(tunnelContext); err != nil {
 		return
 	}
 	reader := bufio.NewReader(tlsClient)
@@ -415,6 +424,7 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 		if err != nil {
 			return
 		}
+		inner = inner.WithContext(tunnelContext)
 		innerHost, innerPort, authorityErr := phaseproxy.ParseAuthority(inner.Host, port)
 		if authorityErr != nil || innerHost != host || innerPort != port {
 			_ = writeFailureResponse(tlsClient, inner, &requestFailure{status: http.StatusForbidden, code: "connect_authority_mismatch", message: "The tunneled request target differs from CONNECT."})
@@ -451,7 +461,7 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 			continue
 		}
 		if result.response.StatusCode == http.StatusSwitchingProtocols {
-			p.handleWebSocket(req.Context(), tlsClient, reader, inner, result)
+			p.handleWebSocket(tunnelContext, tlsClient, reader, inner, result)
 			return
 		}
 		if result.event.EventID != "" {

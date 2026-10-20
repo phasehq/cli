@@ -395,7 +395,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	httpHandler := &httpProxy{
 		state: state, ca: session.CA, transport: transport, unboundTransport: unboundTransport,
 		dial: dial, unboundDial: unboundDial, lockdown: e.Lockdown,
-		remote: e.Remote, events: events, manifest: manifest, control: control,
+		remote: e.Remote, events: events, manifest: manifest, control: control, lifecycle: ctx,
 	}
 	trackedHandler := &drainingHandler{handler: httpHandler}
 	proxyServer := &http.Server{
@@ -465,6 +465,11 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	<-serverDone
 	<-monitorDone
 	if err := events.Stop(); err != nil {
+		// The flush failure is reported, but the lifecycle error stays visible
+		// so callers still recognise an expired or revoked session and recycle.
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			return errors.Join(runErr, err)
+		}
 		return err
 	}
 	if errors.Is(runErr, context.Canceled) {
