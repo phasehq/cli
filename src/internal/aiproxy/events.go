@@ -17,9 +17,15 @@ import (
 const (
 	maxBufferedEvents = 1000
 	eventBatchSize    = 50
-	// Console refuses longer paths; a denial must never be stuck behind one.
-	maxEventPathLength = 4096
+	// Console's limits for the request-derived fields. A denial that Console
+	// refuses would block every later batch, so the fields are clamped here.
+	maxEventMethodLength = 32
+	maxEventHostLength   = 512
+	maxEventPathLength   = 4096
 )
+
+// eventIdentifier mirrors Console's identifier rule for method and reason.
+var eventIdentifier = regexp.MustCompile(`^[A-Za-z0-9._:/-]+$`)
 
 var credentialShape = regexp.MustCompile(`(?i)(?:pss_(?:user|service|agent):v\d+:[^\s]+|psx_sess_[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-(?:proj-|admin-)?[A-Za-z0-9_-]{16,})`)
 
@@ -113,15 +119,27 @@ func (b *eventBuffer) safe(event *agentapi.Event) bool {
 // treated as a redaction failure; every other field is written by the proxy,
 // and an unsafe value there still fails closed in safe().
 func redactRequestFields(event *agentapi.Event, secrets []string) {
-	if !safeEventText(event.Method, secrets) {
+	if event.Method == "" || len(event.Method) > maxEventMethodLength ||
+		!eventIdentifier.MatchString(event.Method) || !safeEventText(event.Method, secrets) {
 		event.Method = "UNKNOWN"
 	}
-	if !safeEventText(event.Host, secrets) {
+	if event.Host == "" || len(event.Host) > maxEventHostLength ||
+		containsControlCharacter(event.Host) || !safeEventText(event.Host, secrets) {
 		event.Host = "redacted.invalid"
 	}
-	if !safeEventText(event.Path, secrets) || len(event.Path) > maxEventPathLength {
+	if len(event.Path) > maxEventPathLength || containsControlCharacter(event.Path) ||
+		!safeEventText(event.Path, secrets) {
 		event.Path = "/redacted"
 	}
+}
+
+func containsControlCharacter(value string) bool {
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x20 || value[index] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func durableAuditEvent(event agentapi.Event) bool {

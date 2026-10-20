@@ -158,7 +158,12 @@ func awsScopeService(req *http.Request) string {
 // refused, so a decoy selector cannot hide the one the service will act on.
 func awsOperations(req *http.Request) ([]string, error) {
 	var operations []string
-	if target, present, err := singleHeader(req.Header, "X-Amz-Target"); err == nil && present {
+	if target, present, err := singleHeader(req.Header, "X-Amz-Target"); present {
+		if err != nil {
+			// A repeated or malformed target cannot be classified; refuse rather
+			// than let the service pick one the proxy never saw.
+			return nil, ErrMintingInspectionUnavailable
+		}
 		target = strings.TrimSpace(target)
 		if index := strings.LastIndex(target, "."); index >= 0 {
 			target = strings.TrimSpace(target[index+1:])
@@ -168,8 +173,15 @@ func awsOperations(req *http.Request) ([]string, error) {
 	for _, action := range req.URL.Query()["Action"] {
 		operations = appendOperation(operations, action)
 	}
+	if req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
+		return operations, nil
+	}
+	// JSON-protocol bodies name their operation in X-Amz-Target, checked
+	// above. Every other body on a guarded service is read as a form: the
+	// query protocol takes its Action from the body, and a missing or odd
+	// Content-Type must not hide it.
 	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
-	if mediaType != "application/x-www-form-urlencoded" || req.Body == nil || req.Body == http.NoBody {
+	if mediaType == "application/json" || strings.HasPrefix(mediaType, "application/x-amz-json-") {
 		return operations, nil
 	}
 	if req.ContentLength < 0 || req.ContentLength > maximumMintingInspectionBytes {

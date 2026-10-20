@@ -178,3 +178,41 @@ func TestCredentialMintingBlocksECRPublicAuthorizationTokens(t *testing.T) {
 		t.Fatalf("ecr-public describe: blocked=%#v err=%v", blocked, err)
 	}
 }
+
+func TestCredentialMintingFailsClosedOnAmbiguousTargetAndOddBodies(t *testing.T) {
+	connection := mintingAWSConnection(nil)
+	duplicate, _ := http.NewRequest(http.MethodPost, "https://api.ecr.eu-central-1.amazonaws.com/", strings.NewReader("{}"))
+	duplicate.Header.Set("Content-Type", "application/x-amz-json-1.1")
+	duplicate.Header.Add("X-Amz-Target", "AmazonEC2ContainerRegistry_V20150921.DescribeRepositories")
+	duplicate.Header.Add("X-Amz-Target", "AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken")
+	if blocked, err := CredentialMintingBlocked(duplicate, connection); !errors.Is(err, ErrMintingInspectionUnavailable) || blocked != nil {
+		t.Fatalf("duplicate target: blocked=%#v err=%v", blocked, err)
+	}
+	for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded,"} {
+		body := "Action=AssumeRole&RoleArn=arn%3Aaws%3Aiam%3A%3A123%3Arole%2Fx&RoleSessionName=s&Version=2011-06-15"
+		req, _ := http.NewRequest(http.MethodPost, "https://sts.amazonaws.com/", strings.NewReader(body))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		blocked, err := CredentialMintingBlocked(req, connection)
+		if err != nil || blocked == nil || blocked.Operation != "sts:AssumeRole" {
+			t.Fatalf("content type %q: blocked=%#v err=%v", contentType, blocked, err)
+		}
+		restored, _ := io.ReadAll(req.Body)
+		if string(restored) != body {
+			t.Fatalf("content type %q: body not restored: %q", contentType, restored)
+		}
+	}
+	large := strings.Repeat("x", int(maximumMintingInspectionBytes)+1)
+	jsonBody, _ := http.NewRequest(http.MethodPost, "https://api.ecr.eu-central-1.amazonaws.com/", strings.NewReader(`{"layerPartBlob":"`+large+`"}`))
+	jsonBody.Header.Set("Content-Type", "application/x-amz-json-1.1")
+	jsonBody.Header.Set("X-Amz-Target", "AmazonEC2ContainerRegistry_V20150921.UploadLayerPart")
+	if blocked, err := CredentialMintingBlocked(jsonBody, connection); err != nil || blocked != nil {
+		t.Fatalf("large JSON-protocol body must not be inspected: blocked=%#v err=%v", blocked, err)
+	}
+	unknownLength, _ := http.NewRequest(http.MethodPost, "https://sts.amazonaws.com/", strings.NewReader("Action=GetSessionToken"))
+	unknownLength.ContentLength = -1
+	if _, err := CredentialMintingBlocked(unknownLength, connection); !errors.Is(err, ErrMintingInspectionUnavailable) {
+		t.Fatalf("unknown-length body without a content type: err=%v", err)
+	}
+}

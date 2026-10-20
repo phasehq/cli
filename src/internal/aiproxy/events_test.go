@@ -311,3 +311,47 @@ func TestUnauthenticatedRequestFieldsAreRedactedInsteadOfStoppingTheRelay(t *tes
 		t.Fatal("the denial was not delivered")
 	}
 }
+
+func TestRedactRequestFieldsMirrorsConsoleFieldRules(t *testing.T) {
+	secrets := []string{"live-secret-value"}
+	long := strings.Repeat("a", 513)
+	for name, tc := range map[string]struct {
+		in   agentapi.Event
+		want agentapi.Event
+	}{
+		"clean request is untouched": {
+			in:   agentapi.Event{Method: "GET", Host: "api.example.test", Path: "/repos/o/r"},
+			want: agentapi.Event{Method: "GET", Host: "api.example.test", Path: "/repos/o/r"},
+		},
+		"token method characters and length": {
+			in:   agentapi.Event{Method: "GET!", Host: "api.example.test", Path: "/"},
+			want: agentapi.Event{Method: "UNKNOWN", Host: "api.example.test", Path: "/"},
+		},
+		"over-long method": {
+			in:   agentapi.Event{Method: strings.Repeat("M", 33), Host: "api.example.test", Path: "/"},
+			want: agentapi.Event{Method: "UNKNOWN", Host: "api.example.test", Path: "/"},
+		},
+		"empty method and host": {
+			in:   agentapi.Event{Method: "", Host: "", Path: "/"},
+			want: agentapi.Event{Method: "UNKNOWN", Host: "redacted.invalid", Path: "/"},
+		},
+		"over-long host and control character": {
+			in:   agentapi.Event{Method: "GET", Host: long, Path: "/a\x01b"},
+			want: agentapi.Event{Method: "UNKNOWN"[:0] + "GET", Host: "redacted.invalid", Path: "/redacted"},
+		},
+		"credential-shaped and secret-bearing fields": {
+			in:   agentapi.Event{Method: "GET", Host: "psx_sess_forged", Path: "/AKIA0123456789ABCDEF/live-secret-value"},
+			want: agentapi.Event{Method: "GET", Host: "redacted.invalid", Path: "/redacted"},
+		},
+		"over-long path": {
+			in:   agentapi.Event{Method: "GET", Host: "api.example.test", Path: "/" + strings.Repeat("p", 4096)},
+			want: agentapi.Event{Method: "GET", Host: "api.example.test", Path: "/redacted"},
+		},
+	} {
+		event := tc.in
+		redactRequestFields(&event, secrets)
+		if event.Method != tc.want.Method || event.Host != tc.want.Host || event.Path != tc.want.Path {
+			t.Fatalf("%s: got method=%q host=%q path=%q, want method=%q host=%q path=%q", name, event.Method, event.Host, event.Path, tc.want.Method, tc.want.Host, tc.want.Path)
+		}
+	}
+}
