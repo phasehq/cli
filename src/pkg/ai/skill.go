@@ -782,9 +782,3 @@ func validSkillVersionValue(value string) bool {
 	}
 	return true
 }
-
-// UninstallSkill is the previous entry point kept only until the commands move to UninstallSkills.
-func UninstallSkill() []string {
-	removed, _ := UninstallSkills()
-	return removed
-}

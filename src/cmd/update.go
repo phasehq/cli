@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/util"
 	"github.com/spf13/cobra"
 )
@@ -61,7 +63,30 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
+	updatedExecutable, err := claudeHookExecutablePath()
+	if err != nil {
+		return fmt.Errorf("resolve updated Phase CLI for Agent hooks: %w", err)
+	}
+	if err := refreshSharedAIHookAfterUpdate(updatedExecutable); err != nil {
+		return fmt.Errorf("refresh shared Agent hook after CLI update: %w", err)
+	}
 
 	fmt.Println(util.BoldGreen("✅ Update completed successfully."))
 	return nil
+}
+
+// refreshSharedAIHookAfterUpdate updates only the stable helper implementation.
+// Harness manifests remain untouched while adapter protocol v1 is compatible.
+func refreshSharedAIHookAfterUpdate(executable string) error {
+	hookPath, err := ai.DefaultSharedHookExecutablePath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(hookPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	_, err = ai.InstallSharedHookExecutable(executable)
+	return err
 }

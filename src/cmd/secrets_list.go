@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/phasehq/cli/pkg/ai"
@@ -102,13 +103,17 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if ai.IsAIAgent() {
-		fmt.Fprintf(os.Stderr, "🤖 AI mode: some values may be [REDACTED] based on secret type. To view, the user should run this command directly in their terminal.\n")
+	writeSecretsListGuidance(os.Stdout, os.Stderr, show, ai.IsAIAgent())
+	return nil
+}
+
+func writeSecretsListGuidance(stdout, stderr io.Writer, show, aiMode bool) {
+	if aiMode {
+		fmt.Fprintln(stderr, "🤖 AI mode: some values may be [REDACTED] based on secret type. To view, the user should run this command directly in their terminal.")
 	}
 
-	fmt.Println("🔬 To view a secret, use: phase secrets get <key>")
+	fmt.Fprintln(stdout, "🔬 To view a secret, use: phase secrets get <key>")
 	if !show {
-		fmt.Println("🥽 To uncover the secrets, use: phase secrets list --show")
+		fmt.Fprintln(stdout, "🥽 To uncover the secrets, use: phase secrets list --show")
 	}
-	return nil
 }
