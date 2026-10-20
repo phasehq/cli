@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ type plaintextPostgresObservation struct {
 	startupReceived   bool
 	identityMatched   bool
 	credentialMatched bool
+	forwarded         map[string]string
 	error             error
 }
 
@@ -79,6 +81,7 @@ func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword
 			return
 		}
 		observation.identityMatched = params["user"] == expectedUser && params["database"] == expectedDatabase
+		observation.forwarded = params
 		if writeErr := writePGAuth(connection, 3, nil); writeErr != nil {
 			observation.error = writeErr
 			observed <- observation
@@ -96,6 +99,12 @@ func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword
 			observed <- observation
 			return
 		}
+		// A real server announces its session parameters and backend key
+		// before ReadyForQuery; the adapter must relay the former and hide the
+		// latter.
+		_ = writePGParameter(connection, "server_version", "16.3")
+		_ = writePGParameter(connection, "client_encoding", params["client_encoding"])
+		_ = writePGMessage(connection, 'K', []byte{1, 2, 3, 4, 5, 6, 7, 8})
 		if writeErr := writePGMessage(connection, 'Z', []byte{'I'}); writeErr != nil {
 			observation.error = writeErr
 		}
@@ -116,7 +125,12 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 		adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
 		}}
-		connection, err := adapters.connectPostgresUpstream(context.Background(), binding, user, password, database)
+		params := map[string]string{
+			"user": "agent-decoy-user", "database": database, "application_name": "psql",
+			"options": "-c search_path=tenant", "client_encoding": "LATIN1", "DateStyle": "ISO, DMY",
+			"replication": "off", "_pq_.protocol": "x",
+		}
+		connection, statuses, err := adapters.connectPostgresUpstream(context.Background(), binding, user, password, params)
 		if err != nil {
 			t.Fatalf("loopback plaintext PostgreSQL was rejected: %v", err)
 		}
@@ -124,6 +138,28 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 		observation := <-observed
 		if observation.error != nil || !observation.startupReceived || !observation.identityMatched || !observation.credentialMatched {
 			t.Fatalf("loopback plaintext handshake failed: %+v", observation)
+		}
+		for key, want := range map[string]string{
+			"application_name": "psql", "options": "-c search_path=tenant", "client_encoding": "LATIN1", "DateStyle": "ISO, DMY",
+		} {
+			if got := observation.forwarded[key]; got != want {
+				t.Fatalf("startup %s forwarded as %q, want %q (all: %v)", key, got, want, observation.forwarded)
+			}
+		}
+		for _, dropped := range []string{"replication", "_pq_.protocol"} {
+			if _, present := observation.forwarded[dropped]; present {
+				t.Fatalf("startup %s must not reach the upstream: %v", dropped, observation.forwarded)
+			}
+		}
+		got := map[string]string{}
+		for _, status := range statuses {
+			parts := bytesSplitNUL(status)
+			if len(parts) >= 2 {
+				got[parts[0]] = parts[1]
+			}
+		}
+		if got["server_version"] != "16.3" || got["client_encoding"] != "LATIN1" {
+			t.Fatalf("upstream parameter statuses were not collected: %v", got)
 		}
 	})
 
@@ -139,7 +175,7 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 				remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 5432},
 			}, nil
 		}}
-		connection, err := adapters.connectPostgresUpstream(context.Background(), binding, user, password, database)
+		connection, _, err := adapters.connectPostgresUpstream(context.Background(), binding, user, password, map[string]string{"user": user, "database": database})
 		if connection != nil || !errors.Is(err, errPostgresUpstreamTLSRequired) {
 			t.Fatalf("non-loopback plaintext result=(%v,%v), want TLS-required failure", connection, err)
 		}
@@ -272,4 +308,25 @@ func postgresRefreshSession(t *testing.T, client *agentapi.Client, generation in
 		t.Fatal(err)
 	}
 	return &airuntime.ProxySession{Config: session, Client: client, CA: ca}
+}
+
+func TestPGStartupPacketForwardsClientSettingsDeterministically(t *testing.T) {
+	packet := pgStartupPacket("managed", "appdb", map[string]string{
+		"options": "-c search_path=tenant", "DateStyle": "ISO", "user": "ignored", "database": "ignored",
+	})
+	if binary.BigEndian.Uint32(packet[:4]) != uint32(len(packet)) || binary.BigEndian.Uint32(packet[4:8]) != 196608 {
+		t.Fatalf("startup header=%x", packet[:8])
+	}
+	if got, want := string(packet[8:]), "user\x00managed\x00database\x00appdb\x00application_name\x00phase-ai-proxy\x00DateStyle\x00ISO\x00options\x00-c search_path=tenant\x00\x00"; got != want {
+		t.Fatalf("startup payload=%q, want %q", got, want)
+	}
+	named := string(pgStartupPacket("managed", "appdb", map[string]string{"application_name": "psql"})[8:])
+	if strings.Contains(named, "phase-ai-proxy") || !strings.Contains(named, "application_name\x00psql\x00") {
+		t.Fatalf("client application_name was not kept: %q", named)
+	}
+	for value, want := range map[string]bool{"": false, "off": false, "0": false, "false": false, "true": true, "database": true, "1": true} {
+		if got := postgresReplicationRequested(value); got != want {
+			t.Fatalf("replication=%q requested=%v, want %v", value, got, want)
+		}
+	}
 }

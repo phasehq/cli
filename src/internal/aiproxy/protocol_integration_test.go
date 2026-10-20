@@ -1,6 +1,7 @@
 package aiproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -254,7 +255,13 @@ func TestOneSessionHTTPAndPostgres(t *testing.T) {
 		t.Fatalf("WebSocket request was not re-signed with live material: %q", value)
 	}
 
-	runPostgresClient(t, endpoints.PostgresAddress, roots, pgUser, pgDecoy, "appdb", "SELECT * FROM reports")
+	pgStatuses, pgBackendKey := runPostgresClient(t, endpoints.PostgresAddress, roots, pgUser, pgDecoy, "appdb", "SELECT * FROM reports")
+	if pgStatuses["server_version"] != "16.3" {
+		t.Fatalf("client did not see the upstream server_version: %v", pgStatuses)
+	}
+	if !bytes.Equal(pgBackendKey, make([]byte, 8)) {
+		t.Fatalf("upstream backend key reached the client: %x", pgBackendKey)
+	}
 	select {
 	case value := <-pgPasswordSeen:
 		if value != pgPassword {
@@ -326,6 +333,8 @@ func startFakePostgres(t *testing.T, certificate *tls.Certificate) (net.Listener
 		}
 		passwords <- strings.TrimSuffix(string(payload), "\x00")
 		_ = writePGAuth(secure, 0, nil)
+		_ = writePGParameter(secure, "server_version", "16.3")
+		_ = writePGMessage(secure, 'K', []byte{9, 9, 9, 9, 9, 9, 9, 9})
 		_ = writePGMessage(secure, 'Z', []byte{'I'})
 		kind, payload, err = readPGMessage(secure)
 		if err != nil || kind != 'Q' {
@@ -339,12 +348,16 @@ func startFakePostgres(t *testing.T, certificate *tls.Certificate) (net.Listener
 	return listener, passwords, queries
 }
 
-func runPostgresClient(t *testing.T, address string, roots *x509.CertPool, user, password, database, query string) {
-	runPostgresClientWithServerName(t, address, "127.0.0.1", roots, user, password, database, query)
+// runPostgresClient drives a session through the adapter and returns the
+// ParameterStatus values and BackendKeyData the client was shown.
+func runPostgresClient(t *testing.T, address string, roots *x509.CertPool, user, password, database, query string) (map[string]string, []byte) {
+	return runPostgresClientWithServerName(t, address, "127.0.0.1", roots, user, password, database, query)
 }
 
-func runPostgresClientWithServerName(t *testing.T, address, serverName string, roots *x509.CertPool, user, password, database, query string) {
+func runPostgresClientWithServerName(t *testing.T, address, serverName string, roots *x509.CertPool, user, password, database, query string) (map[string]string, []byte) {
 	t.Helper()
+	statuses := map[string]string{}
+	var backendKey []byte
 	connection, err := net.Dial("tcp", address)
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +376,7 @@ func runPostgresClientWithServerName(t *testing.T, address, serverName string, r
 	if err = secure.Handshake(); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = secure.Write(pgStartupPacket(user, database))
+	_, _ = secure.Write(pgStartupPacket(user, database, nil))
 	for {
 		kind, payload, err := readPGMessage(secure)
 		if err != nil {
@@ -371,6 +384,14 @@ func runPostgresClientWithServerName(t *testing.T, address, serverName string, r
 		}
 		if kind == 'R' && binary.BigEndian.Uint32(payload) == 3 {
 			_ = writePGMessage(secure, 'p', []byte(password+"\x00"))
+		}
+		if kind == 'S' {
+			if parts := bytesSplitNUL(payload); len(parts) >= 2 {
+				statuses[parts[0]] = parts[1]
+			}
+		}
+		if kind == 'K' {
+			backendKey = append([]byte(nil), payload...)
 		}
 		if kind == 'E' {
 			t.Fatalf("PG auth error: %q", payload)
@@ -392,4 +413,5 @@ func runPostgresClientWithServerName(t *testing.T, address, serverName string, r
 			break
 		}
 	}
+	return statuses, backendKey
 }

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -98,6 +99,10 @@ func (a *protocolAdapters) handlePostgres(ctx context.Context, client net.Conn, 
 		_ = writePGError(tlsClient, "invalid PostgreSQL startup message")
 		return
 	}
+	if postgresReplicationRequested(params["replication"]) {
+		_ = writePGError(tlsClient, "replication connections are not supported by the Phase PostgreSQL proxy")
+		return
+	}
 	if err := writePGAuth(tlsClient, 3, nil); err != nil {
 		return
 	}
@@ -128,7 +133,7 @@ func (a *protocolAdapters) handlePostgres(ctx context.Context, client net.Conn, 
 	}
 	go a.watchProtocolRoute(ctx, client, grantID, initialIdentity.route, 5432, watchDone)
 
-	upstream, err := a.connectPostgresUpstream(ctx, snapshot.binding, identity.username, password, params["database"])
+	upstream, statuses, err := a.connectPostgresUpstream(ctx, snapshot.binding, identity.username, password, params)
 	if err != nil {
 		message, sqlState, reason := postgresUpstreamClientFailure(err)
 		_ = writePGErrorCode(tlsClient, sqlState, message)
@@ -150,8 +155,15 @@ func (a *protocolAdapters) handlePostgres(ctx context.Context, client net.Conn, 
 	if err := writePGAuth(tlsClient, 0, nil); err != nil {
 		return
 	}
-	_ = writePGParameter(tlsClient, "client_encoding", "UTF8")
-	_ = writePGParameter(tlsClient, "server_version", "14")
+	// The client sees the server's own ParameterStatus set (server_version,
+	// client_encoding, DateStyle, ...) so drivers negotiate against the real
+	// session. The backend key stays zeroed: cancellation is not relayed, and
+	// the upstream key must not reach the Agent.
+	for _, status := range statuses {
+		if err := writePGMessage(tlsClient, 'S', status); err != nil {
+			return
+		}
+	}
 	_ = writePGMessage(tlsClient, 'K', make([]byte, 8))
 	_ = writePGMessage(tlsClient, 'Z', []byte{'I'})
 	_ = client.SetDeadline(time.Time{})
@@ -260,16 +272,19 @@ func writePGErrorResponse(writer io.Writer, severity, sqlState, message, detail,
 	return writePGMessage(writer, 'E', payload)
 }
 
-func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding *binding, username, password, database string) (net.Conn, error) {
+// connectPostgresUpstream authenticates to the upstream as the managed
+// identity and returns the established connection together with the
+// ParameterStatus payloads the server announced, for replay to the client.
+func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding *binding, username, password string, params map[string]string) (net.Conn, [][]byte, error) {
 	host, address, err := upstreamAddress(binding.connection, 5432)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	connection, err := a.dial(ctx, "tcp", address)
 	if err != nil {
-		return nil, errPostgresUpstreamUnavailable
+		return nil, nil, errPostgresUpstreamUnavailable
 	}
-	fail := func(err error) (net.Conn, error) { connection.Close(); return nil, err }
+	fail := func(err error) (net.Conn, [][]byte, error) { connection.Close(); return nil, nil, err }
 	_ = connection.SetDeadline(time.Now().Add(30 * time.Second))
 	ssl := make([]byte, 8)
 	binary.BigEndian.PutUint32(ssl, 8)
@@ -304,17 +319,20 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 	default:
 		return fail(errPostgresUpstreamProtocol)
 	}
-	startup := pgStartupPacket(username, database)
+	startup := pgStartupPacket(username, params["database"], postgresForwardedStartupParams(params))
 	if _, err = connection.Write(startup); err != nil {
 		return fail(errPostgresUpstreamUnavailable)
 	}
 	scram := pgSCRAMState{}
+	var statuses [][]byte
 	for {
 		kind, payload, readErr := readPGMessage(connection)
 		if readErr != nil {
 			return fail(errPostgresUpstreamUnavailable)
 		}
 		switch kind {
+		case 'S':
+			statuses = append(statuses, append([]byte(nil), payload...))
 		case 'R':
 			if len(payload) < 4 {
 				return fail(errPostgresUpstreamProtocol)
@@ -368,9 +386,34 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 				return fail(errPostgresUpstreamRejected)
 			}
 		case 'Z':
-			return connection, nil
+			return connection, statuses, nil
 		}
 	}
+}
+
+// postgresForwardedStartupParams keeps the client's session settings (options,
+// application_name, client_encoding, DateStyle, ...) for the upstream startup
+// while dropping what the proxy owns or does not relay.
+func postgresForwardedStartupParams(params map[string]string) map[string]string {
+	forwarded := map[string]string{}
+	for key, value := range params {
+		switch {
+		case key == "", key == "user", key == "database", key == "replication":
+			continue
+		case strings.HasPrefix(key, "_pq_."):
+			continue
+		}
+		forwarded[key] = value
+	}
+	return forwarded
+}
+
+func postgresReplicationRequested(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "false", "off", "no", "f", "n":
+		return false
+	}
+	return true
 }
 
 func postgresUpstreamIsLoopback(connection net.Conn) bool {
@@ -423,8 +466,26 @@ func postgresUpstreamClientFailure(err error) (message, sqlState, reason string)
 	}
 }
 
-func pgStartupPacket(user, database string) []byte {
-	payload := []byte("user\x00" + user + "\x00database\x00" + database + "\x00application_name\x00phase-ai-proxy\x00\x00")
+// pgStartupPacket builds the upstream StartupMessage for the managed identity.
+// Client settings in extra follow user and database in a stable order; the
+// application_name defaults to the proxy's own when the client sent none.
+func pgStartupPacket(user, database string, extra map[string]string) []byte {
+	keys := make([]string, 0, len(extra))
+	for key := range extra {
+		if key != "user" && key != "database" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	var payload []byte
+	payload = append(payload, "user\x00"+user+"\x00database\x00"+database+"\x00"...)
+	if _, named := extra["application_name"]; !named {
+		payload = append(payload, "application_name\x00phase-ai-proxy\x00"...)
+	}
+	for _, key := range keys {
+		payload = append(payload, key+"\x00"+extra[key]+"\x00"...)
+	}
+	payload = append(payload, 0)
 	packet := make([]byte, 8+len(payload))
 	binary.BigEndian.PutUint32(packet, uint32(len(packet)))
 	binary.BigEndian.PutUint32(packet[4:], 196608)
