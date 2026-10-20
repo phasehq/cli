@@ -294,11 +294,20 @@ func TestUnauthenticatedRequestFieldsAreRedactedInsteadOfStoppingTheRelay(t *tes
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(received) != 1 {
-		t.Fatalf("events delivered=%d, want 1", len(received))
+	// A durable event may be re-sent from the spool on a later tick before its
+	// acknowledgement lands; delivery is idempotent by EventID, so every copy
+	// must carry the redacted fields and none the original ones.
+	delivered := 0
+	for _, event := range received {
+		if event.EventID != "event-auth-deny" {
+			t.Fatalf("unexpected event delivered: %+v", event)
+		}
+		delivered++
+		if event.Method != "UNKNOWN" || event.Host != "redacted.invalid" || event.Path != "/redacted" || event.ProxyDecision != "auth_deny" {
+			t.Fatalf("request fields were not redacted: %+v", event)
+		}
 	}
-	event := received[0]
-	if event.Method != "UNKNOWN" || event.Host != "redacted.invalid" || event.Path != "/redacted" || event.ProxyDecision != "auth_deny" {
-		t.Fatalf("request fields were not redacted: %+v", event)
+	if delivered == 0 {
+		t.Fatal("the denial was not delivered")
 	}
 }
