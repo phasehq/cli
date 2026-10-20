@@ -17,6 +17,8 @@ import (
 const (
 	maxBufferedEvents = 1000
 	eventBatchSize    = 50
+	// Console refuses longer paths; a denial must never be stuck behind one.
+	maxEventPathLength = 4096
 )
 
 var credentialShape = regexp.MustCompile(`(?i)(?:pss_(?:user|service|agent):v\d+:[^\s]+|psx_sess_[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-(?:proj-|admin-)?[A-Za-z0-9_-]{16,})`)
@@ -60,6 +62,7 @@ func newEventBuffer(state *runtimeState, interval time.Duration, spoolDirectory 
 }
 
 func (b *eventBuffer) Emit(event agentapi.Event) {
+	redactRequestFields(&event, b.state.eventSecrets())
 	durable := durableAuditEvent(event)
 	if !b.safe(&event) {
 		if durable {
@@ -102,6 +105,23 @@ func (b *eventBuffer) safe(event *agentapi.Event) bool {
 	}
 	event.Detail = safeEventDetail(event.Detail, secrets)
 	return true
+}
+
+// Request-derived fields are the only part of an event the Agent controls, and
+// an unauthenticated client can put anything in them before it is refused. A
+// denial still has to be recorded, so an unsafe value is replaced instead of
+// treated as a redaction failure; every other field is written by the proxy,
+// and an unsafe value there still fails closed in safe().
+func redactRequestFields(event *agentapi.Event, secrets []string) {
+	if !safeEventText(event.Method, secrets) {
+		event.Method = "UNKNOWN"
+	}
+	if !safeEventText(event.Host, secrets) {
+		event.Host = "redacted.invalid"
+	}
+	if !safeEventText(event.Path, secrets) || len(event.Path) > maxEventPathLength {
+		event.Path = "/redacted"
+	}
 }
 
 func durableAuditEvent(event agentapi.Event) bool {

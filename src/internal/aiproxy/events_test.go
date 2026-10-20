@@ -246,3 +246,59 @@ func stringContainsAny(value string, candidates ...string) bool {
 	}
 	return false
 }
+
+func TestUnauthenticatedRequestFieldsAreRedactedInsteadOfStoppingTheRelay(t *testing.T) {
+	var mu sync.Mutex
+	var received []agentapi.Event
+	var calls atomic.Int32
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var batch agentapi.EventBatchRequest
+		_ = json.Unmarshal(body, &batch)
+		mu.Lock()
+		received = append(received, batch.Events...)
+		mu.Unlock()
+		calls.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"schemaVersion":1,"accepted":1,"duplicates":0}`))
+	}))
+	defer console.Close()
+	client, err := agentapi.NewClient(console.URL, durableTestToken(), console.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := newRuntimeStateWithCapability(emptyProxySession(t, client, "spool-capability"), "spool-runtime-capability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.destroy()
+	buffer, err := newEventBuffer(state, 10*time.Millisecond, t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buffer.Stop()
+
+	// Anyone can send a request without a capability; its path and authority
+	// are theirs to choose, and a credential-shaped value there must neither
+	// be recorded nor take the relay down.
+	buffer.Emit(agentapi.Event{
+		EventID: "event-auth-deny", CreatedAt: time.Now().UTC(), EventType: "request", Protocol: "http",
+		Method: "G\x00ET", Host: "psx_sess_forged_host", Path: "/AKIA0123456789ABCDEF/spool-capability",
+		ProxyDecision: "auth_deny", Outcome: "denied", Reason: "invalid_runtime_capability",
+	})
+	waitForAtomic(t, &calls, 1)
+	select {
+	case err := <-state.fatal:
+		t.Fatalf("an unauthenticated request stopped the relay: %v", err)
+	default:
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("events delivered=%d, want 1", len(received))
+	}
+	event := received[0]
+	if event.Method != "UNKNOWN" || event.Host != "redacted.invalid" || event.Path != "/redacted" || event.ProxyDecision != "auth_deny" {
+		t.Fatalf("request fields were not redacted: %+v", event)
+	}
+}
