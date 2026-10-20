@@ -158,7 +158,6 @@ func TestOneSessionHTTPAndPostgres(t *testing.T) {
 	caDirectory := t.TempDir()
 	certificatePath := filepath.Join(caDirectory, "ca.pem")
 	bundlePath := filepath.Join(caDirectory, "ca-bundle.pem")
-	javaTrustStorePath := filepath.Join(caDirectory, "java-truststore.p12")
 	if err := os.WriteFile(certificatePath, certPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +165,7 @@ func TestOneSessionHTTPAndPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() {
-		done <- engine.Serve(ctx, &airuntime.ProxySession{Config: session, Client: client, CA: ca, CAPaths: phaseproxy.CAPaths{Certificate: certificatePath, Bundle: bundlePath, JavaTrustStore: javaTrustStorePath}})
+		done <- engine.Serve(ctx, &airuntime.ProxySession{Config: session, Client: client, CA: ca, CAPaths: phaseproxy.CAPaths{Certificate: certificatePath, Bundle: bundlePath}})
 	}()
 	var endpoints Endpoints
 	select {

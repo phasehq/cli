@@ -1,8 +1,6 @@
 package proxy
 
 import (
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -12,7 +10,6 @@ import (
 	"time"
 
 	gokeyring "github.com/zalando/go-keyring"
-	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
 const (
@@ -23,8 +20,7 @@ const (
 	// proxy start and session recycle passes through Ensure, so a long-running
 	// relay renews on its own; clients bootstrapped from the old CA must be
 	// re-bootstrapped and user trust stores re-trusted.
-	caRenewalWindow   = 14 * 24 * time.Hour
-	javaStorePassword = pkcs12.DefaultPassword
+	caRenewalWindow = 14 * 24 * time.Hour
 )
 
 type PrivateKeyStore interface {
@@ -45,7 +41,6 @@ func (OSKeyring) Set(service, user, value string) error {
 type CAPaths struct {
 	Certificate    string
 	Bundle         string
-	JavaTrustStore string
 	BundleComplete bool
 	// Renewed reports that Ensure replaced an existing CA that was expired or
 	// within its renewal window. Callers surface it so users re-trust the CA.
@@ -106,9 +101,8 @@ func (s CAStore) Ensure() (*CA, CAPaths, error) {
 		return nil, CAPaths{}, fmt.Errorf("secure Phase AI directory: %w", err)
 	}
 	paths := CAPaths{
-		Certificate:    filepath.Join(directory, "ca.pem"),
-		Bundle:         filepath.Join(directory, "ca-bundle.pem"),
-		JavaTrustStore: filepath.Join(directory, "java-truststore.p12"),
+		Certificate: filepath.Join(directory, "ca.pem"),
+		Bundle:      filepath.Join(directory, "ca-bundle.pem"),
 	}
 	privateKeyPath := filepath.Join(directory, "ca-key.pem")
 
@@ -210,52 +204,7 @@ func writePublicCAFiles(paths CAPaths, certPEM []byte) error {
 	if err := writeFileAtomic0600(paths.Bundle, bundle); err != nil {
 		return fmt.Errorf("write proxy CA bundle: %w", err)
 	}
-	certificates, err := parseCertificateBundle(bundle)
-	if err != nil {
-		return fmt.Errorf("build Java proxy CA trust store: %w", err)
-	}
-	javaStore, err := pkcs12.Legacy.EncodeTrustStore(certificates, javaStorePassword)
-	if err != nil {
-		return fmt.Errorf("build Java proxy CA trust store: %w", err)
-	}
-	if err := writeFileAtomic0600(paths.JavaTrustStore, javaStore); err != nil {
-		return fmt.Errorf("write Java proxy CA trust store: %w", err)
-	}
 	return nil
-}
-
-func parseCertificateBundle(bundle []byte) ([]*x509.Certificate, error) {
-	certificates := make([]*x509.Certificate, 0)
-	seen := make(map[string]struct{})
-	rest := bundle
-	for {
-		block, remaining := pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		rest = remaining
-		if block.Type != "CERTIFICATE" {
-			continue
-		}
-		certificate, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			// Some platform bundles retain legacy roots that the current Go
-			// parser intentionally rejects (for example, negative serials).
-			// They cannot be represented safely in the generated PKCS#12 store;
-			// retain the usable roots and the separately validated Phase CA.
-			continue
-		}
-		fingerprint := string(certificate.Raw)
-		if _, duplicate := seen[fingerprint]; duplicate {
-			continue
-		}
-		seen[fingerprint] = struct{}{}
-		certificates = append(certificates, certificate)
-	}
-	if len(certificates) == 0 {
-		return nil, errors.New("CA bundle contains no certificates")
-	}
-	return certificates, nil
 }
 
 func writeFileAtomic0600(destination string, data []byte) error {

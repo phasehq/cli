@@ -350,7 +350,6 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	session.CAPaths.Bundle = preparedCABundle.BundlePath
 	session.CAPaths.BundleComplete = preparedCABundle.Complete
-	session.CAPaths.JavaTrustStore = preparedCABundle.JavaTrustStorePath
 	processEnvironment, environmentErr := session.CompileProcessEnvironment(proxyURL, baseEnvironment, adapters.environment)
 	if environmentErr != nil {
 		return environmentErr

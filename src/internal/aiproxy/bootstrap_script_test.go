@@ -23,7 +23,7 @@ func testBootstrapMaterial(t *testing.T) *bootstrapMaterial {
 	return &bootstrapMaterial{
 		proxyURL: "https://phase:relay-capability@relay.example.test:9543",
 		caPEM:    caPEM,
-		caPaths:  phaseproxy.CAPaths{Certificate: "/relay/.phase/ai/ca.pem", Bundle: "/relay/.phase/ai/ca-bundle.pem", JavaTrustStore: "/relay/.phase/ai/java-truststore.p12"},
+		caPaths:  phaseproxy.CAPaths{Certificate: "/relay/.phase/ai/ca.pem", Bundle: "/relay/.phase/ai/ca-bundle.pem"},
 		plan: phaseproxy.ProcessEnvironmentPlan{
 			Set: map[string]string{
 				"PHASE_AI_ENABLED":      "1",

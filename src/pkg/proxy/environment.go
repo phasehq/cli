@@ -14,8 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
 const (
@@ -35,7 +33,6 @@ type EnvironmentOptions struct {
 	CertificatePath    string
 	CABundlePath       string
 	CABundleComplete   bool
-	JavaTrustStorePath string
 	ConfigEnv          map[string]string
 	AgentEnv           map[string]string
 	AdapterEnv         map[string]string
@@ -63,9 +60,8 @@ type EnvironmentBinding struct {
 // means the bundle contains a normal base root set in addition to Phase's CA,
 // and is therefore safe for variables which replace a client's default roots.
 type PreparedCABundle struct {
-	BundlePath         string
-	JavaTrustStorePath string
-	Complete           bool
+	BundlePath string
+	Complete   bool
 }
 
 // ProcessEnvironmentPlan is safe to expose through the authenticated Agent
@@ -263,16 +259,6 @@ func PrepareStableProcessCABundle(baseBundlePath string, environment []string, c
 	if err := writeStableTrustFile(stable.BundlePath, bundle, runtime.GOOS); err != nil {
 		return PreparedCABundle{}, fmt.Errorf("publish stable Phase AI CA bundle: %w", err)
 	}
-	if prepared.JavaTrustStorePath != "" {
-		javaStore, readErr := os.ReadFile(prepared.JavaTrustStorePath)
-		if readErr != nil {
-			return PreparedCABundle{}, fmt.Errorf("read prepared Phase AI Java trust store: %w", readErr)
-		}
-		stable.JavaTrustStorePath = filepath.Join(directory, "runtime-java-truststore.p12")
-		if writeErr := writeStableTrustFile(stable.JavaTrustStorePath, javaStore, runtime.GOOS); writeErr != nil {
-			return PreparedCABundle{}, fmt.Errorf("publish stable Phase AI Java trust store: %w", writeErr)
-		}
-	}
 	return stable, nil
 }
 
@@ -397,25 +383,6 @@ func prepareProcessCABundle(baseBundlePath string, environment []string, credent
 	}
 	cleanupPaths := []string{bundlePath}
 	prepared := PreparedCABundle{BundlePath: bundlePath, Complete: complete}
-	if complete {
-		parsed, parseErr := parseCertificateBundle(merged)
-		if parseErr != nil {
-			_ = os.Remove(bundlePath)
-			return PreparedCABundle{}, func() {}, fmt.Errorf("build merged Java trust store: %w", parseErr)
-		}
-		javaStore, encodeErr := pkcs12.Legacy.EncodeTrustStore(parsed, javaStorePassword)
-		if encodeErr != nil {
-			_ = os.Remove(bundlePath)
-			return PreparedCABundle{}, func() {}, fmt.Errorf("build merged Java trust store: %w", encodeErr)
-		}
-		javaPath, writeErr := writeTemporaryTrustFile("phase-ai-java-truststore-*.p12", javaStore)
-		if writeErr != nil {
-			_ = os.Remove(bundlePath)
-			return PreparedCABundle{}, func() {}, writeErr
-		}
-		prepared.JavaTrustStorePath = javaPath
-		cleanupPaths = append(cleanupPaths, javaPath)
-	}
 	cleanup := func() {
 		for _, path := range cleanupPaths {
 			_ = os.Remove(path)

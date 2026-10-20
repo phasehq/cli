@@ -177,7 +177,7 @@ func renderBootstrapEnvironment(material *bootstrapMaterial) (string, error) {
 		case isReplacementRootKey(key):
 			// Appended by the bootstrap only when the sandbox has system roots.
 			continue
-		case key == "JAVA_TOOL_OPTIONS" || (material.caPaths.JavaTrustStore != "" && value == material.caPaths.JavaTrustStore):
+		case key == "JAVA_TOOL_OPTIONS":
 			out.WriteString("# JAVA_TOOL_OPTIONS is not set: import " + bootstrapCAFile + " into the JVM trust store to use Java clients.\n")
 			continue
 		case material.caPaths.Bundle != "" && value == material.caPaths.Bundle:

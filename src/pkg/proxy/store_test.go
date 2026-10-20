@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
 type memoryKeyring struct {
@@ -78,7 +76,7 @@ func TestCAStorePersistsPrivateMaterialOnlyInKeyring(t *testing.T) {
 	if first == nil {
 		t.Fatal("expected CA")
 	}
-	for _, path := range []string{paths.Certificate, paths.Bundle, paths.JavaTrustStore} {
+	for _, path := range []string{paths.Certificate, paths.Bundle} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -93,24 +91,6 @@ func TestCAStorePersistsPrivateMaterialOnlyInKeyring(t *testing.T) {
 		if strings.Contains(string(data), "PRIVATE KEY") {
 			t.Fatalf("private key was written to %s", path)
 		}
-	}
-	javaStore, err := os.ReadFile(paths.JavaTrustStore)
-	if err != nil {
-		t.Fatal(err)
-	}
-	trustedCertificates, err := pkcs12.DecodeTrustStore(javaStore, javaStorePassword)
-	if err != nil {
-		t.Fatalf("decode Java trust store: %v", err)
-	}
-	foundPhaseCA := false
-	for _, certificate := range trustedCertificates {
-		if certificate.Equal(first.cert) {
-			foundPhaseCA = true
-			break
-		}
-	}
-	if !foundPhaseCA {
-		t.Fatal("Java trust store does not contain the Phase proxy CA")
 	}
 	privatePEM := keyring.values[caKeyringService+"/"+caKeyringUser]
 	if !strings.Contains(privatePEM, "PRIVATE KEY") {
@@ -225,13 +205,12 @@ func TestComposeEnvironmentExcludesDurableTokensAndIncludesCompatibilityVariable
 			"AWS_SESSION_TOKEN=ambient-session-token",
 			"AWS_REGION=old-region",
 		},
-		ProxyURL:           "http://phase:runtime-capability@127.0.0.1:7777",
-		CertificatePath:    "/tmp/phase-ca.pem",
-		CABundlePath:       "/tmp/phase-ca-bundle.pem",
-		CABundleComplete:   true,
-		JavaTrustStorePath: "/tmp/phase-java-truststore.p12",
-		ConfigEnv:          map[string]string{"AWS_REGION": "us-east-1"},
-		AgentEnv:           map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLEIDENTIFIER", "AWS_SECRET_ACCESS_KEY": "decoy-only"},
+		ProxyURL:         "http://phase:runtime-capability@127.0.0.1:7777",
+		CertificatePath:  "/tmp/phase-ca.pem",
+		CABundlePath:     "/tmp/phase-ca-bundle.pem",
+		CABundleComplete: true,
+		ConfigEnv:        map[string]string{"AWS_REGION": "us-east-1"},
+		AgentEnv:         map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLEIDENTIFIER", "AWS_SECRET_ACCESS_KEY": "decoy-only"},
 		EnvironmentBindings: []EnvironmentBinding{
 			{Name: "AWS_ACCESS_KEY_ID", Action: "set", Source: "identifier", SourceField: "access_key_id"},
 			{Name: "AWS_SECRET_ACCESS_KEY", Action: "set", Source: "decoy", SourceField: "secret_access_key"},
@@ -272,7 +251,7 @@ func TestComposeEnvironmentExcludesDurableTokensAndIncludesCompatibilityVariable
 
 func TestComposeEnvironmentRejectsProtectedOrCollidingAgentKeys(t *testing.T) {
 	base := EnvironmentOptions{
-		ProxyURL: "http://phase:capability@127.0.0.1:7777", CertificatePath: "/ca.pem", CABundlePath: "/bundle.pem", JavaTrustStorePath: "/java.p12",
+		ProxyURL: "http://phase:capability@127.0.0.1:7777", CertificatePath: "/ca.pem", CABundlePath: "/bundle.pem",
 	}
 	base.AgentEnv = map[string]string{"PHASE_SERVICE_TOKEN": "live"}
 	if _, err := composeTestEnvironment(base); err == nil {
@@ -297,7 +276,7 @@ func TestComposeEnvironmentReservedPrecedenceAndPreservesUserJavaOptions(t *test
 			"JAVA_TOOL_OPTIONS=-Xmx256m -Djavax.net.ssl.trustStore=/attacker", "GITHUB_TOKEN=ambient-live-token",
 		},
 		ProxyURL:        "http://phase:capability@127.0.0.1:7777",
-		CertificatePath: "/tmp/phase ca.pem", CABundlePath: "/tmp/phase bundle.pem", CABundleComplete: true, JavaTrustStorePath: "/tmp/phase java.p12",
+		CertificatePath: "/tmp/phase ca.pem", CABundlePath: "/tmp/phase bundle.pem", CABundleComplete: true,
 		ConfigEnv: map[string]string{"AWS_REGION": "configured"}, AgentEnv: map[string]string{"GITHUB_TOKEN": "decoy"},
 		EnvironmentBindings: []EnvironmentBinding{
 			{Name: "AWS_REGION", Action: "set", Source: "connection_config", SourceField: "region"},
@@ -341,7 +320,7 @@ func TestComposeEnvironmentReservedPrecedenceAndPreservesUserJavaOptions(t *test
 func TestComposeEnvironmentPreservesUnrelatedProviderCAConfiguration(t *testing.T) {
 	options := EnvironmentOptions{
 		Base:     []string{"AWS_CA_BUNDLE=/user/aws-ca.pem", "PGSSLROOTCERT=/user/postgres-ca.pem"},
-		ProxyURL: "http://phase:capability@127.0.0.1:7777", CertificatePath: "/ca.pem", CABundlePath: "/phase-bundle.pem", JavaTrustStorePath: "/java.p12",
+		ProxyURL: "http://phase:capability@127.0.0.1:7777", CertificatePath: "/ca.pem", CABundlePath: "/phase-bundle.pem",
 	}
 	environment, err := composeTestEnvironment(options)
 	if err != nil {
@@ -372,7 +351,7 @@ func TestComposeEnvironmentPreservesUnrelatedProviderCAConfiguration(t *testing.
 func TestComposeEnvironmentRequiresAuthenticatedProxyAndTLSOffLoopback(t *testing.T) {
 	options := EnvironmentOptions{
 		ProxyURL:        "http://127.0.0.1:7777",
-		CertificatePath: "/ca", CABundlePath: "/bundle", JavaTrustStorePath: "/java.p12",
+		CertificatePath: "/ca", CABundlePath: "/bundle",
 	}
 	if _, err := composeTestEnvironment(options); err == nil {
 		t.Fatal("expected unauthenticated proxy URL rejection")
@@ -598,7 +577,7 @@ func TestPreparedCABundleWindowsFallbackPreservesEnterpriseTrustConfiguration(t 
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if prepared.Complete || prepared.JavaTrustStorePath != "" {
+	if prepared.Complete {
 		t.Fatalf("Windows additive-only roots were treated as a complete replacement bundle: %+v", prepared)
 	}
 	environment, err := composeTestEnvironment(EnvironmentOptions{
@@ -650,7 +629,7 @@ func TestPreparedCABundleWindowsMergesAndDeduplicatesInheritedCompleteBundle(t *
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if !prepared.Complete || prepared.JavaTrustStorePath == "" {
+	if !prepared.Complete {
 		t.Fatalf("inherited complete bundle was not usable on Windows: %+v", prepared)
 	}
 	certificates, err := readBoundedPublicCertificates(prepared.BundlePath)
@@ -729,11 +708,10 @@ func TestPrepareStableProcessCABundlePublishesPredictablePublicPath(t *testing.T
 
 func TestComposeRemoteEnvironmentRequiresHTTPSAndOmitsBackendSessionCredential(t *testing.T) {
 	options := EnvironmentOptions{
-		Base:               []string{"PHASE_SERVICE_TOKEN=durable-token", "PATH=/usr/bin"},
-		ProxyURL:           "https://phase:scoped-capability@remote.phase.test:8443",
-		CertificatePath:    "/remote/ca.pem",
-		CABundlePath:       "/remote/ca-bundle.pem",
-		JavaTrustStorePath: "/remote/java-truststore.p12",
+		Base:            []string{"PHASE_SERVICE_TOKEN=durable-token", "PATH=/usr/bin"},
+		ProxyURL:        "https://phase:scoped-capability@remote.phase.test:8443",
+		CertificatePath: "/remote/ca.pem",
+		CABundlePath:    "/remote/ca-bundle.pem",
 	}
 	environment, err := composeTestEnvironment(options)
 	if err != nil {
