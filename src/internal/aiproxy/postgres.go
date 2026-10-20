@@ -35,6 +35,7 @@ var (
 	errPostgresUpstreamDatabaseUnavailable = errors.New("PostgreSQL upstream database is unavailable")
 	errPostgresUpstreamRejected            = errors.New("PostgreSQL upstream rejected the connection")
 	errPostgresUpstreamProtocol            = errors.New("PostgreSQL upstream protocol is unsupported")
+	errPostgresUpstreamStartupSetting      = errors.New("PostgreSQL upstream rejected a client startup setting")
 )
 
 type pgSessionIdentity struct {
@@ -382,6 +383,12 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 				return fail(errPostgresUpstreamCredentialRejected)
 			case sqlState == "3D000":
 				return fail(errPostgresUpstreamDatabaseUnavailable)
+			case sqlState == "42704", sqlState == "22023", sqlState == "22P02", sqlState == "42501":
+				// The forwarded client settings were refused (unknown parameter,
+				// invalid value, or a privileged option); tell the client why.
+				return fail(&postgresStartupSettingError{
+					sqlState: sqlState, message: postgresErrorField(payload, 'M'),
+				})
 			default:
 				return fail(errPostgresUpstreamRejected)
 			}
@@ -432,6 +439,12 @@ func postgresUpstreamIsLoopback(connection net.Conn) bool {
 }
 
 func postgresErrorSQLState(payload []byte) string {
+	return postgresErrorField(payload, 'C')
+}
+
+// postgresErrorField returns one field of an ErrorResponse payload ('C' for
+// the SQLSTATE, 'M' for the message), or "" when it is absent.
+func postgresErrorField(payload []byte, wanted byte) string {
 	for len(payload) > 0 && payload[0] != 0 {
 		field := payload[0]
 		payload = payload[1:]
@@ -439,7 +452,7 @@ func postgresErrorSQLState(payload []byte) string {
 		if end < 0 {
 			return ""
 		}
-		if field == 'C' {
+		if field == wanted {
 			return string(payload[:end])
 		}
 		payload = payload[end+1:]
@@ -447,8 +460,43 @@ func postgresErrorSQLState(payload []byte) string {
 	return ""
 }
 
+// postgresSafeErrorText bounds an upstream message before it is relayed to
+// the client: printable characters only, at most 200 of them.
+func postgresSafeErrorText(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		if builder.Len() >= 200 {
+			break
+		}
+		builder.WriteRune(r)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+// postgresStartupSettingError carries the upstream's own explanation of a
+// refused client startup setting, so the Agent can correct it.
+type postgresStartupSettingError struct {
+	sqlState string
+	message  string
+}
+
+func (e *postgresStartupSettingError) Error() string {
+	return errPostgresUpstreamStartupSetting.Error()
+}
+func (e *postgresStartupSettingError) Unwrap() error { return errPostgresUpstreamStartupSetting }
+
 func postgresUpstreamClientFailure(err error) (message, sqlState, reason string) {
+	var setting *postgresStartupSettingError
 	switch {
+	case errors.As(err, &setting):
+		message = errPostgresUpstreamStartupSetting.Error()
+		if detail := postgresSafeErrorText(setting.message); detail != "" {
+			message += ": " + detail
+		}
+		return message, setting.sqlState, "upstream_rejected_startup_setting"
 	case errors.Is(err, errPostgresUpstreamCredentialRejected):
 		return "PostgreSQL upstream rejected the configured credential", "28P01", "upstream_credential_rejected"
 	case errors.Is(err, errPostgresUpstreamDatabaseUnavailable):

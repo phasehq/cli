@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -206,6 +207,15 @@ func TestPostgresUpstreamErrorsAreSafelyClassified(t *testing.T) {
 		if message != test.message || sqlState != test.sqlState || reason != test.reason {
 			t.Fatalf("classification for %v = (%q,%q,%q)", test.err, message, sqlState, reason)
 		}
+	}
+	setting := &postgresStartupSettingError{sqlState: "42704", message: "unrecognized configuration parameter \"bogus\"\x01\n" + strings.Repeat("z", 300)}
+	message, sqlState, reason := postgresUpstreamClientFailure(fmt.Errorf("wrapped: %w", setting))
+	if !strings.HasPrefix(message, "PostgreSQL upstream rejected a client startup setting: unrecognized configuration parameter \"bogus\"") ||
+		strings.ContainsAny(message, "\x01\n") || len(message) > 260 || sqlState != "42704" || reason != "upstream_rejected_startup_setting" {
+		t.Fatalf("setting rejection classified as (%q,%q,%q)", message, sqlState, reason)
+	}
+	if postgresErrorField([]byte("SFATAL\x00C42704\x00Munrecognized configuration parameter\x00\x00"), 'M') != "unrecognized configuration parameter" {
+		t.Fatal("message field was not extracted")
 	}
 }
 

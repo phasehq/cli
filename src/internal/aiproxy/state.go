@@ -618,12 +618,15 @@ func (s *runtimeState) applyTrustedDiscoverAuthorization(discover *agentapi.Disc
 	return nil
 }
 
+// discoverConnectionMatchesRuntime checks the Agent-visible shape of a
+// Connection. The credential expiry is left out: assumed-role credentials get
+// a fresh expiry on every refresh without the environment changing.
 func discoverConnectionMatchesRuntime(discover agentapi.DiscoverConnection, runtime agentapi.Connection) bool {
 	return discover.ConnectionID == runtime.ConnectionID &&
 		discover.ConnectionName == runtime.ConnectionName &&
 		discover.ServiceType == runtime.ServiceType && discover.Protocol == runtime.Protocol &&
 		reflect.DeepEqual(discover.Hosts, runtime.Hosts) &&
-		reflect.DeepEqual(discover.ConnectionConfig, runtime.ConnectionConfig) && reflect.DeepEqual(discover.ConfigEnv, runtime.ConfigEnv) && discover.CredentialID == runtime.CredentialID && discover.CredentialName == runtime.CredentialName && discover.CredentialProvider == runtime.CredentialProvider && discover.CredentialRevision == runtime.CredentialRevision && discover.MaterialGeneration == runtime.MaterialGeneration && reflect.DeepEqual(discover.CredentialExpiresAt, runtime.CredentialExpiresAt) &&
+		reflect.DeepEqual(discover.ConnectionConfig, runtime.ConnectionConfig) && reflect.DeepEqual(discover.ConfigEnv, runtime.ConfigEnv) && discover.CredentialID == runtime.CredentialID && discover.CredentialName == runtime.CredentialName && discover.CredentialProvider == runtime.CredentialProvider && discover.CredentialRevision == runtime.CredentialRevision && discover.MaterialGeneration == runtime.MaterialGeneration &&
 		reflect.DeepEqual(discover.Injection, runtime.Injection) && discover.OnRefresh == runtime.OnRefresh &&
 		equalStringMap(discover.Identifiers, runtime.Identifiers) &&
 		equalStringMap(discover.DecoyMaterial, runtime.DecoyMaterial) &&

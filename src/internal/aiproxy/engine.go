@@ -465,9 +465,9 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	<-serverDone
 	<-monitorDone
 	if err := events.Stop(); err != nil {
-		// The flush failure is reported, but the lifecycle error stays visible
-		// so callers still recognise an expired or revoked session and recycle.
-		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		// The flush failure is reported, but a session lifecycle error stays
+		// visible so callers still recognise it and recycle the session.
+		if errors.Is(runErr, airuntime.ErrSessionExpired) || errors.Is(runErr, airuntime.ErrSessionReprovisionRequired) {
 			return errors.Join(runErr, err)
 		}
 		return err
