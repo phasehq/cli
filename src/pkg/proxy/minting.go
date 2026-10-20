@@ -23,9 +23,11 @@ import (
 //
 // Rules are data, keyed by the Connection's serviceType. To cover another
 // service, add an entry to credentialMintingRules:
-//   - Operations (AWS): SigV4 scope service -> operation names. The operation
-//     is resolved from X-Amz-Target, the Action query parameter, or the Action
-//     field of a form-encoded body, which the proxy buffers and restores.
+//   - Operations (AWS): SigV4 scope service -> operation names. Every operation
+//     selector the request carries is checked: X-Amz-Target, the Action query
+//     parameter and the Action field of a form-encoded body, which the proxy
+//     buffers and restores. AWS services differ in which selector they honour,
+//     so a request is refused when any of them names a blocked operation.
 //   - Paths (any HTTP API): method plus path pattern, matched with path.Match.
 //
 // A Connection whose connectionConfig carries allowCredentialMinting: true is
@@ -57,6 +59,7 @@ var credentialMintingRules = map[string]MintingRules{
 			"sts":              {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity", "AssumeRoot", "GetFederationToken", "GetSessionToken"},
 			"iam":              {"CreateAccessKey", "CreateLoginProfile", "UpdateLoginProfile", "CreateServiceSpecificCredential", "ResetServiceSpecificCredential", "UploadSSHPublicKey", "UploadSigningCertificate"},
 			"ecr":              {"GetAuthorizationToken"},
+			"ecr-public":       {"GetAuthorizationToken"},
 			"redshift":         {"GetClusterCredentials", "GetClusterCredentialsWithIAM"},
 			"cognito-identity": {"GetCredentialsForIdentity", "GetOpenIdToken", "GetOpenIdTokenForDeveloperIdentity"},
 		},
@@ -118,13 +121,15 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 	if !guarded {
 		return nil, nil
 	}
-	operation, err := awsOperation(req)
+	operations, err := awsOperations(req)
 	if err != nil {
 		return nil, err
 	}
-	for _, candidate := range blocked {
-		if strings.EqualFold(candidate, operation) {
-			return &CredentialMintingBlock{Operation: service + ":" + candidate}, nil
+	for _, operation := range operations {
+		for _, candidate := range blocked {
+			if strings.EqualFold(candidate, operation) {
+				return &CredentialMintingBlock{Operation: service + ":" + candidate}, nil
+			}
 		}
 	}
 	return nil, nil
@@ -146,34 +151,48 @@ func awsScopeService(req *http.Request) string {
 	return service
 }
 
-// awsOperation resolves the operation name for JSON (X-Amz-Target), query
-// (Action parameter), and form-encoded query-protocol requests.
-func awsOperation(req *http.Request) (string, error) {
+// awsOperations resolves every operation selector the request carries: the
+// JSON X-Amz-Target header, the Action query parameter and the Action field of
+// a form-encoded body. The selectors are not reconciled against the service's
+// protocol; a request that names a blocked operation through any of them is
+// refused, so a decoy selector cannot hide the one the service will act on.
+func awsOperations(req *http.Request) ([]string, error) {
+	var operations []string
 	if target, present, err := singleHeader(req.Header, "X-Amz-Target"); err == nil && present {
+		target = strings.TrimSpace(target)
 		if index := strings.LastIndex(target, "."); index >= 0 {
-			return strings.TrimSpace(target[index+1:]), nil
+			target = strings.TrimSpace(target[index+1:])
 		}
-		return strings.TrimSpace(target), nil
+		operations = appendOperation(operations, target)
 	}
-	if action := req.URL.Query().Get("Action"); action != "" {
-		return action, nil
+	for _, action := range req.URL.Query()["Action"] {
+		operations = appendOperation(operations, action)
 	}
 	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
 	if mediaType != "application/x-www-form-urlencoded" || req.Body == nil || req.Body == http.NoBody {
-		return "", nil
+		return operations, nil
 	}
 	if req.ContentLength < 0 || req.ContentLength > maximumMintingInspectionBytes {
-		return "", ErrMintingInspectionUnavailable
+		return nil, ErrMintingInspectionUnavailable
 	}
 	data, err := io.ReadAll(io.LimitReader(req.Body, maximumMintingInspectionBytes+1))
 	_ = req.Body.Close()
 	if err != nil || int64(len(data)) > maximumMintingInspectionBytes {
-		return "", ErrMintingInspectionUnavailable
+		return nil, ErrMintingInspectionUnavailable
 	}
 	req.Body = io.NopCloser(bytes.NewReader(data))
-	form, err := url.ParseQuery(string(data))
-	if err != nil {
-		return "", nil
+	// A malformed body still yields the pairs that parsed; those are checked too.
+	form, _ := url.ParseQuery(string(data))
+	for _, action := range form["Action"] {
+		operations = appendOperation(operations, action)
 	}
-	return form.Get("Action"), nil
+	return operations, nil
+}
+
+func appendOperation(operations []string, operation string) []string {
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		return operations
+	}
+	return append(operations, operation)
 }

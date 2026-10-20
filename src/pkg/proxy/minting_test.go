@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -128,5 +129,52 @@ func TestCredentialMintingHonoursConnectionExemptionAndFailsClosedWhenUninspecta
 	unknownLength.ContentLength = -1
 	if _, err := CredentialMintingBlocked(unknownLength, mintingAWSConnection(nil)); !errors.Is(err, ErrMintingInspectionUnavailable) {
 		t.Fatalf("unknown-length form body error = %v", err)
+	}
+}
+
+func TestCredentialMintingChecksEveryOperationSelector(t *testing.T) {
+	connection := mintingAWSConnection(nil)
+	// Query-protocol services act on the form body; a JSON-style target header
+	// naming a harmless operation must not mask the one STS will execute.
+	masked := signedQueryRequest(t, "sts.eu-central-1.amazonaws.com", "Action=AssumeRole&RoleArn=arn%3Aaws%3Aiam%3A%3A123%3Arole%2Fx&RoleSessionName=s&Version=2011-06-15")
+	masked.Header.Set("X-Amz-Target", "AWSSecurityTokenServiceV20110615.GetCallerIdentity")
+	blocked, err := CredentialMintingBlocked(masked, connection)
+	if err != nil || blocked == nil || blocked.Operation != "sts:AssumeRole" {
+		t.Fatalf("target-masked body: blocked=%#v err=%v", blocked, err)
+	}
+	body, _ := io.ReadAll(masked.Body)
+	if !strings.HasPrefix(string(body), "Action=AssumeRole") {
+		t.Fatalf("body was not restored after inspection: %q", body)
+	}
+	// A harmless query-string Action must not mask the form-body Action either.
+	shadowed := signedQueryRequest(t, "iam.amazonaws.com", "Action=CreateAccessKey&UserName=bob&Version=2010-05-08")
+	shadowed.URL.RawQuery = "Action=GetUser"
+	if blocked, err = CredentialMintingBlocked(shadowed, connection); err != nil || blocked == nil || blocked.Operation != "iam:CreateAccessKey" {
+		t.Fatalf("query-shadowed body: blocked=%#v err=%v", blocked, err)
+	}
+	// And the reverse: a harmless body with a minting query Action.
+	reverse := signedQueryRequest(t, "sts.amazonaws.com", "Action=GetCallerIdentity&Version=2011-06-15")
+	reverse.URL.RawQuery = "Action=GetSessionToken"
+	if blocked, err = CredentialMintingBlocked(reverse, connection); err != nil || blocked == nil || blocked.Operation != "sts:GetSessionToken" {
+		t.Fatalf("minting query with harmless body: blocked=%#v err=%v", blocked, err)
+	}
+	harmless := signedQueryRequest(t, "sts.amazonaws.com", "Action=GetCallerIdentity&Version=2011-06-15")
+	harmless.Header.Set("X-Amz-Target", "AWSSecurityTokenServiceV20110615.GetCallerIdentity")
+	if blocked, err = CredentialMintingBlocked(harmless, connection); err != nil || blocked != nil {
+		t.Fatalf("consistent harmless selectors: blocked=%#v err=%v", blocked, err)
+	}
+}
+
+func TestCredentialMintingBlocksECRPublicAuthorizationTokens(t *testing.T) {
+	connection := mintingAWSConnection(nil)
+	req, _ := http.NewRequest(http.MethodPost, "https://api.ecr-public.us-east-1.amazonaws.com/", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
+	req.Header.Set("X-Amz-Target", "SpencerFrontendService.GetAuthorizationToken")
+	if blocked, err := CredentialMintingBlocked(req, connection); err != nil || blocked == nil || blocked.Operation != "ecr-public:GetAuthorizationToken" {
+		t.Fatalf("ecr-public token: blocked=%#v err=%v", blocked, err)
+	}
+	req.Header.Set("X-Amz-Target", "SpencerFrontendService.DescribeRepositories")
+	if blocked, err := CredentialMintingBlocked(req, connection); err != nil || blocked != nil {
+		t.Fatalf("ecr-public describe: blocked=%#v err=%v", blocked, err)
 	}
 }
