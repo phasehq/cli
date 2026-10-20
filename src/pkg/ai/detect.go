@@ -2,6 +2,8 @@ package ai
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/phasehq/cli/pkg/config"
 )
@@ -47,20 +49,59 @@ func DetectAIAgent() string {
 	return ""
 }
 
+// DetectAIAgentCommand identifies a supported Agent harness from the child
+// executable launched by `phase ai run`. The explicit child wins over ambient
+// detection because users commonly start Phase from an ordinary terminal.
+func DetectAIAgentCommand(command []string) string {
+	if detected := DetectAIAgentExecutable(command); detected != "" {
+		return detected
+	}
+	return DetectAIAgent()
+}
+
+// DetectAIAgentExecutable identifies only the explicitly launched executable.
+// Callers that mutate harness arguments must use this stricter form so an
+// ambient Agent marker never causes flags to be added to an unrelated child.
+func DetectAIAgentExecutable(command []string) string {
+	if len(command) > 0 {
+		executable := strings.ReplaceAll(strings.TrimSpace(command[0]), `\`, "/")
+		name := strings.ToLower(filepath.Base(executable))
+		name = strings.TrimSuffix(name, ".exe")
+		switch name {
+		case "claude", "claude-code":
+			return "claude-code"
+		case "cursor", "cursor-agent":
+			return "cursor"
+		case "codex":
+			return "codex"
+		case "opencode":
+			return "opencode"
+		case "devin":
+			return "devin"
+		case "goose":
+			return "goose"
+		case "amp":
+			return "amp"
+		}
+	}
+	return ""
+}
+
 // ShouldRedact returns whether a secret of the given type should have its value
-// redacted from CLI output. Requires both AI agent detection AND ai.json config.
+// redacted from CLI output. Requires both AI agent detection AND an enabled
+// ai.json config.
 //
 // Rules:
-//   - sealed: ALWAYS redacted when AI detected + ai.json exists
+//   - sealed: ALWAYS redacted when AI detected + AI mode enabled
 //   - secret: redacted when ai.json maskSecretValues is true
 //   - config: NEVER redacted
-//   - no ai.json: no redaction (AI feature not enabled)
+//   - no ai.json or AI mode disabled: no redaction
 func ShouldRedact(secretType string) bool {
 	if !IsAIAgent() {
 		return false
 	}
 	cfg := config.LoadAIConfig()
-	if cfg == nil {
+	if cfg == nil || !cfg.Enabled {
 		return false
 	}
 	switch secretType {
