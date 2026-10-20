@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,7 +25,14 @@ import (
 func TestUnauthenticatedRequestsProduceDenialsConsoleAccepts(t *testing.T) {
 	identifier := regexp.MustCompile(`^[A-Za-z0-9._:/-]+$`)
 	control := regexp.MustCompile(`[\x00-\x1f\x7f]`)
-	var accepted, rejected atomic.Int32
+	var rejected atomic.Int32
+	var mu sync.Mutex
+	accepted := map[string]struct{}{}
+	acceptedCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(accepted)
+	}
 	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var batch agentapi.EventBatchRequest
@@ -40,7 +48,13 @@ func TestUnauthenticatedRequestsProduceDenialsConsoleAccepts(t *testing.T) {
 				return
 			}
 		}
-		accepted.Add(int32(len(batch.Events)))
+		// Delivery is idempotent by EventID: the spool may re-send a durable
+		// event before its acknowledgement lands, so count distinct events.
+		mu.Lock()
+		for _, event := range batch.Events {
+			accepted[event.EventID] = struct{}{}
+		}
+		mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"schemaVersion":1,"accepted":1,"duplicates":0}`))
 	}))
@@ -86,11 +100,11 @@ func TestUnauthenticatedRequestsProduceDenialsConsoleAccepts(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
-	for accepted.Load() < int32(len(requests)) && time.Now().Before(deadline) {
+	for acceptedCount() < len(requests) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := accepted.Load(); got != int32(len(requests)) {
-		t.Fatalf("Console accepted %d denials, want %d (rejected batches: %d)", got, len(requests), rejected.Load())
+	if got := acceptedCount(); got != len(requests) {
+		t.Fatalf("Console accepted %d distinct denials, want %d (rejected batches: %d)", got, len(requests), rejected.Load())
 	}
 	if rejected.Load() != 0 {
 		t.Fatalf("Console rejected %d batches", rejected.Load())
