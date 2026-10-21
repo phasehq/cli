@@ -2,6 +2,8 @@ module github.com/phasehq/cli
 
 go 1.25.0
 
+toolchain go1.27.3
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
