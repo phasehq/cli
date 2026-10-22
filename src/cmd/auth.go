@@ -7,11 +7,13 @@ import (
 	"syscall"
 
 	"github.com/manifoldco/promptui"
+	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/blake2b"
 	"golang.org/x/term"
 )
 
@@ -83,7 +85,7 @@ func runAuth(cmd *cobra.Command, args []string) error {
 
 func runTokenAuth(cmd *cobra.Command, host string) error {
 	// Get token
-	fmt.Print("Please enter Personal Access Token (PAT) or Service Account Token (hidden): ")
+	fmt.Print("Please enter Personal Access Token (PAT), Service Account Token, or Agent Token (hidden): ")
 	tokenBytes, err := term.ReadPassword(int(syscall.Stdin))
 	if err != nil {
 		return fmt.Errorf("failed to read token: %w", err)
@@ -92,6 +94,10 @@ func runTokenAuth(cmd *cobra.Command, host string) error {
 	authToken := strings.TrimSpace(string(tokenBytes))
 	if authToken == "" {
 		return fmt.Errorf("token is required")
+	}
+
+	if strings.HasPrefix(authToken, "pss_agent:") {
+		return runAgentTokenAuth(cmd, host, authToken)
 	}
 
 	isPersonalToken := strings.HasPrefix(authToken, "pss_user:")
@@ -170,4 +176,63 @@ func runTokenAuth(cmd *cobra.Command, host string) error {
 
 	fmt.Println(util.BoldGreen("✅ Authentication successful."))
 	return nil
+}
+
+func runAgentTokenAuth(cmd *cobra.Command, host, authToken string) error {
+	tokenType, lookup, err := agentapi.ParseDurableToken(authToken)
+	if err != nil || tokenType != agentapi.TokenAgent {
+		return fmt.Errorf("invalid Agent token")
+	}
+	client, err := agentapi.NewClient(host, authToken, nil)
+	if err != nil {
+		return fmt.Errorf("invalid Agent token: %w", err)
+	}
+	identity, err := client.Identity(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("resolve Agent identity: %w", err)
+	}
+
+	accountID := agentLocalAccountID(lookup)
+	// Agent tokens are never written to config.json as a fallback. If the OS
+	// keyring is unavailable, fail closed and leave no plaintext credential.
+	if err := keyring.SetCredentials(accountID, authToken); err != nil {
+		return fmt.Errorf("store Agent token securely in OS keyring: %w", err)
+	}
+	userConfig := agentUserConfig(host, accountID, identity)
+	if err := config.AddUser(userConfig); err != nil {
+		_ = keyring.DeleteCredentials(accountID)
+		return fmt.Errorf("save Agent login metadata: %w", err)
+	}
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"%s\n",
+		util.BoldGreen(fmt.Sprintf(
+			"✅ AI Agent authentication successful: %s / %s (%s). This login can use only phase ai commands.",
+			agentDisplayName(userConfig),
+			agentWorkflowDisplay(userConfig),
+			organizationDisplayName(userConfig),
+		)),
+	)
+	return nil
+}
+
+func agentUserConfig(host, accountID string, identity *agentapi.AgentIdentity) config.UserConfig {
+	organizationID := identity.Organization.ID
+	organizationName := identity.Organization.Name
+	return config.UserConfig{
+		Host:             host,
+		ID:               accountID,
+		PrincipalType:    config.PrincipalAgent,
+		PrincipalID:      identity.Agent.ID,
+		PrincipalName:    identity.Agent.Name,
+		WorkflowID:       identity.Workflow.ID,
+		WorkflowName:     identity.Workflow.Name,
+		OrganizationID:   &organizationID,
+		OrganizationName: &organizationName,
+	}
+}
+
+func agentLocalAccountID(lookup string) string {
+	digest := blake2b.Sum256([]byte("phase-agent-login:" + lookup))
+	return fmt.Sprintf("agent-%x", digest[:12])
 }

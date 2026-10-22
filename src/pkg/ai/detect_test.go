@@ -36,3 +36,28 @@ func TestDetectAIAgent(t *testing.T) {
 		})
 	}
 }
+
+func TestDetectAIAgentCommandPrefersChildExecutable(t *testing.T) {
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("CURSOR_AGENT", "")
+	t.Setenv("CODEX", "1")
+	t.Setenv("OPENCODE", "")
+	t.Setenv("AGENT", "")
+
+	for _, test := range []struct {
+		command []string
+		want    string
+	}{
+		{[]string{"/usr/local/bin/claude", "--print"}, "claude-code"},
+		{[]string{"/usr/local/bin/devin"}, "devin"},
+		{[]string{`C:\\Tools\\codex.exe`}, "codex"},
+		{[]string{"cursor-agent"}, "cursor"},
+		{[]string{"opencode"}, "opencode"},
+		{[]string{"unknown-harness"}, "codex"},
+		{nil, "codex"},
+	} {
+		if got := DetectAIAgentCommand(test.command); got != test.want {
+			t.Fatalf("DetectAIAgentCommand(%q) = %q, want %q", test.command, got, test.want)
+		}
+	}
+}

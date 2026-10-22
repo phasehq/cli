@@ -7,7 +7,7 @@ import (
 var aiCmd = &cobra.Command{
 	Use:   "ai",
 	Short: "🥷  Integrate Phase with AI Agents",
-	Long:  "Configure how AI coding agents interact with your Phase secrets.",
+	Long:  "Run AI coding agents through Phase's workflow-scoped local credential proxy.",
 }
 
 func init() {

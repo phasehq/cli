@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "agent_session_revoked",
+    "message": "The Agent session has been revoked.",
+    "retryable": false,
+    "details": {}
+  }
+}
