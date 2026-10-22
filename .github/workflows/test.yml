@@ -96,7 +96,7 @@ jobs:
           - image: alpine:3.20
             install: apk add -q nss-tools
           - image: archlinux:latest
-            install: pacman -Sy --noconfirm nss
+            install: pacman -Sy --noconfirm --disable-sandbox nss
     env:
       CGO_ENABLED: "0"
     steps:
