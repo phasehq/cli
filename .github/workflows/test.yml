@@ -71,14 +71,10 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq libnss3-tools
           ./.github/scripts/ai-enable-smoke.sh ./phase-cli trust-nss
 
-      # The user trust stores on macOS and Windows need a consent dialog, which
-      # a headless runner cannot show. This step only records what happens.
-      - name: Attempt the current-user trust store (informational)
-        if: runner.os != 'Linux'
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: bash
-        run: ./phase-cli${{ runner.os == 'Windows' && '.exe' || '' }} ai enable --harness claude-code --mask --trust-ca
+      # The macOS keychain and the Windows user Root store need a consent
+      # dialog that a headless runner cannot show (the command blocks until
+      # the job times out), so those two trust paths are covered by the unit
+      # tests with a recorded command runner and by manual QA.
 
   enable-containers:
     name: phase ai enable (${{ matrix.image }})

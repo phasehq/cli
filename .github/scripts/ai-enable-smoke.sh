@@ -20,7 +20,8 @@ case "$MODE" in
     echo "$output" | grep -q "trusted in the Linux current-user NSS database" || fail "CA was not trusted in the NSS database"
     certutil -L -d "sql:$HOME_DIR/.pki/nssdb" | grep -q "Phase AI Proxy CA" || fail "NSS database does not list the Phase CA"
     # A second run must be idempotent.
-    "$PHASE" ai enable --harness claude-code --mask --trust-ca </dev/null | grep -q "already trusted" || fail "second trust run was not idempotent"
+    second="$("$PHASE" ai enable --harness claude-code --mask --trust-ca </dev/null 2>&1)" || fail "second enable --trust-ca exited non-zero: $second"
+    echo "$second" | grep -q "already trusted" || fail "second trust run was not idempotent: $second"
     ;;
   *) fail "unknown mode $MODE" ;;
 esac
