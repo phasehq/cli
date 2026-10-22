@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeLifecycleLogAcceptsOnlyBoundedAllowlistedRecords(t *testing.T) {
@@ -76,5 +77,69 @@ func TestClaudeLifecycleLogRotatesBeforeExceedingBound(t *testing.T) {
 	}
 	if record.Event != "session_ready" || record.Reason != "recycled" {
 		t.Fatalf("post-rotation lifecycle record = %#v", record)
+	}
+}
+
+func TestLastClaudeSessionRefreshReadsTheLatestRecycle(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Date(2026, 10, 22, 11, 20, 0, 0, time.UTC)
+	write := func(records ...claudeLifecycleRecord) {
+		var out []byte
+		for _, record := range records {
+			line, _ := json.Marshal(record)
+			out = append(out, append(line, '\n')...)
+		}
+		if err := os.WriteFile(filepath.Join(directory, claudeLifecycleLogFile), out, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := func(seconds int) time.Time { return now.Add(-time.Duration(seconds) * time.Second) }
+
+	if refreshed, _ := lastClaudeSessionRefresh(directory, now, claudeRefreshNoticeWindow); !refreshed.IsZero() {
+		t.Fatal("a missing log must not report a refresh")
+	}
+	write(
+		claudeLifecycleRecord{Time: at(600), Event: "daemon_started"},
+		claudeLifecycleRecord{Time: at(599), Event: "session_ready", Reason: "initial"},
+	)
+	if refreshed, _ := lastClaudeSessionRefresh(directory, now, claudeRefreshNoticeWindow); !refreshed.IsZero() {
+		t.Fatal("an initial session is not a refresh")
+	}
+	write(
+		claudeLifecycleRecord{Time: at(600), Event: "daemon_started"},
+		claudeLifecycleRecord{Time: at(599), Event: "session_ready", Reason: "initial"},
+		claudeLifecycleRecord{Time: at(40), Event: "session_recycle", Reason: "environment_changed"},
+		claudeLifecycleRecord{Time: at(39), Event: "session_ready", Reason: "recycled"},
+	)
+	refreshed, reason := lastClaudeSessionRefresh(directory, now, claudeRefreshNoticeWindow)
+	if !refreshed.Equal(at(39)) || reason != "environment_changed" {
+		t.Fatalf("refresh = %v %q", refreshed, reason)
+	}
+	if notice := claudeSessionRefreshNotice(refreshed, reason); !strings.Contains(notice, "11:19:21Z") || !strings.Contains(notice, "changed in the Console") || !strings.Contains(notice, "keep working") {
+		t.Fatalf("notice = %q", notice)
+	}
+	if refreshed, _ := lastClaudeSessionRefresh(directory, now, 30*time.Second); !refreshed.IsZero() {
+		t.Fatal("a recycle outside the window must not be reported")
+	}
+	write(
+		claudeLifecycleRecord{Time: at(40), Event: "session_recycle", Reason: "hard_expiry"},
+		claudeLifecycleRecord{Time: at(39), Event: "session_ready", Reason: "recycled"},
+		claudeLifecycleRecord{Time: at(10), Event: "daemon_stopped", Reason: "shutdown"},
+		claudeLifecycleRecord{Time: at(5), Event: "daemon_started"},
+		claudeLifecycleRecord{Time: at(4), Event: "session_ready", Reason: "initial"},
+	)
+	if refreshed, _ := lastClaudeSessionRefresh(directory, now, claudeRefreshNoticeWindow); !refreshed.IsZero() {
+		t.Fatal("a recycle before a daemon restart must not be reported")
+	}
+	write(
+		claudeLifecycleRecord{Time: at(40), Event: "session_recycle", Reason: "hard_expiry"},
+		claudeLifecycleRecord{Time: at(39), Event: "session_ready", Reason: "recycled"},
+	)
+	refreshed, reason = lastClaudeSessionRefresh(directory, now, claudeRefreshNoticeWindow)
+	if refreshed.IsZero() || reason != "hard_expiry" || !strings.Contains(claudeSessionRefreshNotice(refreshed, reason), "renewed at") {
+		t.Fatalf("expiry refresh = %v %q", refreshed, reason)
+	}
+	if claudeSessionRefreshNotice(time.Time{}, "") != "" {
+		t.Fatal("no refresh must add no notice")
 	}
 }

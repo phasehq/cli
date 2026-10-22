@@ -1,13 +1,82 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// claudeRefreshNoticeWindow bounds how long after a session recycle the hook
+// keeps telling the Agent that its proxy session was refreshed.
+const claudeRefreshNoticeWindow = 3 * time.Minute
+
+// lastClaudeSessionRefresh reads the tail of the lifecycle log and returns when
+// the running daemon last reopened its session and why: "environment_changed"
+// when the Workflow's Connections or credentials changed in the Console,
+// "hard_expiry" for a scheduled renewal. A zero time means no recycle within
+// the window, a daemon restart since, or an unreadable log.
+func lastClaudeSessionRefresh(directory string, now time.Time, window time.Duration) (time.Time, string) {
+	file, err := os.Open(filepath.Join(directory, claudeLifecycleLogFile))
+	if err != nil {
+		return time.Time{}, ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return time.Time{}, ""
+	}
+	const tail = 64 << 10
+	offset := int64(0)
+	if info.Size() > tail {
+		offset = info.Size() - tail
+	}
+	payload, err := io.ReadAll(io.NewSectionReader(file, offset, info.Size()-offset))
+	if err != nil {
+		return time.Time{}, ""
+	}
+	lines := bytes.Split(payload, []byte("\n"))
+	for index := len(lines) - 1; index >= 0; index-- {
+		var record claudeLifecycleRecord
+		if json.Unmarshal(bytes.TrimSpace(lines[index]), &record) != nil {
+			continue
+		}
+		switch record.Event {
+		case "daemon_started", "daemon_stopped", "startup_failed":
+			return time.Time{}, ""
+		case "session_ready":
+			if record.Reason != "recycled" || now.Sub(record.Time) > window || record.Time.After(now.Add(time.Minute)) {
+				return time.Time{}, ""
+			}
+			reason := ""
+			for back := index - 1; back >= 0 && back >= index-3; back-- {
+				var previous claudeLifecycleRecord
+				if json.Unmarshal(bytes.TrimSpace(lines[back]), &previous) == nil && previous.Event == "session_recycle" {
+					reason = previous.Reason
+					break
+				}
+			}
+			return record.Time, reason
+		}
+	}
+	return time.Time{}, ""
+}
+
+// claudeSessionRefreshNotice phrases a recent recycle for the Agent.
+func claudeSessionRefreshNotice(refreshedAt time.Time, reason string) string {
+	if refreshedAt.IsZero() {
+		return ""
+	}
+	when := refreshedAt.UTC().Format("15:04:05Z")
+	if reason == "environment_changed" {
+		return " The proxy session was refreshed at " + when + " because this Workflow's Connections or credentials changed in the Console: retry a Phase-managed command that failed around then as is; processes started earlier keep working."
+	}
+	return " The proxy session was renewed at " + when + "; processes started earlier keep working."
+}
 
 var errClaudeRuntimeAuthenticationRequired = errors.New("Phase AI authentication is invalid or no longer active")
 

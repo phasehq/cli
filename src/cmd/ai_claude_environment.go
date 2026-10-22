@@ -62,6 +62,10 @@ type claudeRuntimeHealth struct {
 	starting    bool
 	reason      string
 	connections []aiproxy.EndpointConnection
+	// A recent session recycle of the running daemon, so the Agent learns why
+	// a command may have failed and that a retry is enough.
+	refreshedAt   time.Time
+	refreshReason string
 }
 
 // renderClaudeEnvironment produces the POSIX shell a harness sources before each
@@ -288,6 +292,7 @@ func inspectClaudeRuntime(directory string) claudeRuntimeHealth {
 		if readOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), &status) == nil && status.PID == state.PID && status.ProxyLive {
 			health.connections = status.Connections
 		}
+		health.refreshedAt, health.refreshReason = lastClaudeSessionRefresh(directory, time.Now(), claudeRefreshNoticeWindow)
 		return health
 	}
 	lock, lockErr := readClaudeRuntimeLock(filepath.Join(directory, claudeRuntimeLockFile))
@@ -375,7 +380,7 @@ func claudeEnvironmentStatusLine(health claudeRuntimeHealth) string {
 			}
 			names = append(names, label+" ("+connection.ServiceType+")")
 		}
-		return "Phase AI: proxy ready. Shell commands automatically use Phase-managed credentials for: " + strings.Join(names, ", ") + ". Run provider tools directly; no wrapper or phase ai exec is needed."
+		return "Phase AI: proxy ready. Shell commands automatically use Phase-managed credentials for: " + strings.Join(names, ", ") + ". Run provider tools directly; no wrapper or phase ai exec is needed." + claudeSessionRefreshNotice(health.refreshedAt, health.refreshReason)
 	case health.starting:
 		return "Phase AI: proxy is starting. A Phase-managed provider command issued before it is ready fails with a credential error; retry it. Other work is unaffected."
 	case health.reason == "authentication":

@@ -222,7 +222,7 @@ func TestRequestClaudeRuntimeShutdownRejectsInvalidAcknowledgement(t *testing.T)
 	}
 }
 
-func TestClaudeDaemonRecyclesSameProcessAndGenerationWithFreshEngine(t *testing.T) {
+func TestClaudeDaemonRecyclesSameProcessAndGenerationOnOneEngine(t *testing.T) {
 	directory := withClaudeHookRuntimeDirectory(t)
 	const generation = "generation-one"
 	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
@@ -263,16 +263,19 @@ func TestClaudeDaemonRecyclesSameProcessAndGenerationWithFreshEngine(t *testing.
 	if runtimeCreations != 1 || len(managed.engines) != 2 || len(managed.states) != 2 {
 		t.Fatalf("runtime creations=%d engines=%d states=%d", runtimeCreations, len(managed.engines), len(managed.states))
 	}
-	if managed.engines[0] == managed.engines[1] {
-		t.Fatal("managed recycle reused the old proxy Engine and runtime capability")
+	// One Engine serves every cycle: it keeps the proxy capability and the
+	// memory of earlier decoy generations, so shells and processes provisioned
+	// before a recycle keep working through the new session.
+	if managed.engines[0] != managed.engines[1] {
+		t.Fatal("managed recycle replaced the proxy Engine and lost the decoy history")
 	}
 	for index, state := range managed.states {
 		if state.Generation != generation || state.PID != os.Getpid() || state.RuntimeFingerprint != "binding-one" || state.RuntimeScopeFingerprint != "scope-one" {
 			t.Fatalf("cycle %d state = %#v", index+1, state)
 		}
 	}
-	if managed.states[0].ProxyURL == managed.states[1].ProxyURL {
-		t.Fatalf("managed recycle republished the old proxy capability: %q", managed.states[0].ProxyURL)
+	if !managed.states[1].StartedAt.After(managed.states[0].StartedAt) {
+		t.Fatalf("managed recycle did not publish a newer cycle start: %v then %v", managed.states[0].StartedAt, managed.states[1].StartedAt)
 	}
 	for index, environment := range managed.environments {
 		if !strings.Contains(environment, fmt.Sprintf("if kill -0 %d 2>/dev/null; then", os.Getpid())) ||

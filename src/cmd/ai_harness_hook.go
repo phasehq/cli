@@ -830,10 +830,13 @@ func waitForHarnessRuntimeCycle(ctx context.Context, binding harnessRuntimeBindi
 			if !harnessStateMatchesBinding(state, binding) {
 				return phaseproxy.ProcessEnvironmentPlan{}, initialErr
 			}
+			// A new cycle of the same daemon publishes a newer start time. The
+			// proxy capability itself is stable across cycles (one Engine serves
+			// them all), so it cannot tell cycles apart.
 			refreshed := previous == nil
 			if previous != nil {
 				refreshed = state.RuntimeFingerprint == previous.RuntimeFingerprint &&
-					state.StartedAt.After(previous.StartedAt) && state.ProxyURL != previous.ProxyURL
+					state.StartedAt.After(previous.StartedAt)
 			}
 			if refreshed {
 				return loadAndConfirmHarnessRuntimePlan(waitContext, binding, state)

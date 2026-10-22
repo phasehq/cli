@@ -495,15 +495,19 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 	var lastPlan phaseproxy.ProcessEnvironmentPlan
 	var lastConnections []aiproxy.EndpointConnection
 
+	// One Engine serves every session cycle of this daemon. It keeps the proxy
+	// capability and the memory of earlier decoy generations, so a shell or a
+	// long-running process provisioned before a recycle (a Connection or
+	// credential edit in the Console) keeps working through the new session.
+	engine := claudeHookNewProxyEngine()
+	engine.Stdout = io.Discard
+	engine.Stderr = io.Discard
 	for {
 		if serveContext.Err() != nil {
 			stopReason = "shutdown"
 			return nil
 		}
 		cycleContext, cycleCancel := context.WithCancel(serveContext)
-		engine := claudeHookNewProxyEngine()
-		engine.Stdout = io.Discard
-		engine.Stderr = io.Discard
 		cycleStarted := false
 		var publishErr error
 		engine.OnStarted = func(endpoints aiproxy.Endpoints) {

@@ -117,6 +117,13 @@ func renderAIStatus(ctx context.Context) string {
 					out.WriteString("             " + line + "\n")
 				}
 			}
+			if refreshedAt, reason := lastClaudeSessionRefresh(directory, time.Now(), 24*time.Hour); !refreshedAt.IsZero() {
+				why := "scheduled renewal"
+				if reason == "environment_changed" {
+					why = "Connections or credentials changed in the Console"
+				}
+				out.WriteString("Refreshed:   " + refreshedAt.UTC().Format("2006-01-02 15:04:05Z") + " (" + why + ")\n")
+			}
 		case health.starting:
 			out.WriteString("Proxy:       starting\n")
 		case health.reason == "authentication":
