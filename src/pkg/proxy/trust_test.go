@@ -23,9 +23,13 @@ type trustCommand struct {
 type recordingTrustRunner struct {
 	commands []trustCommand
 	run      func(name string, args ...string) ([]byte, error)
+	lookPath func(file string) (string, error)
 }
 
 func (r *recordingTrustRunner) LookPath(file string) (string, error) {
+	if r.lookPath != nil {
+		return r.lookPath(file)
+	}
 	return "/usr/bin/" + file, nil
 }
 
@@ -280,5 +284,72 @@ func TestUserCATrustNoticeDescribesTheSystemDialog(t *testing.T) {
 	}
 	if notice := UserCATrustNotice("linux"); notice != "" {
 		t.Fatalf("linux must not announce a dialog: %q", notice)
+	}
+}
+
+func TestUserCATrustAvailabilityNamesTheMissingPackage(t *testing.T) {
+	missing := func(string) (string, error) { return "", errors.New("not found") }
+	osRelease := func(content string) func(string) ([]byte, error) {
+		return func(path string) ([]byte, error) {
+			if path != "/etc/os-release" {
+				return nil, os.ErrNotExist
+			}
+			return []byte(content), nil
+		}
+	}
+	for name, tc := range map[string]struct {
+		goos    string
+		release string
+		want    string
+	}{
+		"fedora":         {"linux", "ID=fedora\nVERSION_ID=41\n", "package nss-tools"},
+		"rocky via like": {"linux", "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n", "package nss-tools"},
+		"mint via like":  {"linux", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", "package libnss3-tools"},
+		"alpine":         {"linux", "ID=alpine\n", "package nss-tools"},
+		"arch":           {"linux", "ID=arch\n", "package nss)"},
+		"opensuse":       {"linux", "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n", "package mozilla-nss-tools"},
+		"unknown":        {"linux", "ID=somethingelse\n", "libnss3-tools on Debian/Ubuntu"},
+		"no os-release":  {"linux", "", "libnss3-tools on Debian/Ubuntu"},
+		"darwin":         {"darwin", "", "macOS security tool"},
+		"windows":        {"windows", "", "Windows powershell.exe"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			installer := userCATrustInstaller{GOOS: tc.goos, Runner: &recordingTrustRunner{lookPath: missing}, ReadFile: osRelease(tc.release)}
+			if tc.release == "" {
+				installer.ReadFile = func(string) ([]byte, error) { return nil, os.ErrNotExist }
+			}
+			err := installer.withDefaults().availability()
+			if !errors.Is(err, ErrUserCATrustToolMissing) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("availability = %v, want ErrUserCATrustToolMissing mentioning %q", err, tc.want)
+			}
+			if hint := UserCATrustToolHint(err); strings.HasPrefix(hint, ErrUserCATrustToolMissing.Error()) || !strings.Contains(hint, tc.want) {
+				t.Fatalf("hint = %q", hint)
+			}
+		})
+	}
+	present := userCATrustInstaller{GOOS: "linux", Runner: &recordingTrustRunner{}}.withDefaults()
+	if err := present.availability(); err != nil {
+		t.Fatalf("certutil present reported %v", err)
+	}
+	if err := (userCATrustInstaller{GOOS: "plan9", Runner: &recordingTrustRunner{}}).withDefaults().availability(); !errors.Is(err, ErrUserCATrustUnsupported) {
+		t.Fatalf("unsupported platform = %v", err)
+	}
+}
+
+func TestUserCATrustLinuxMissingCertutilIsAMissingToolError(t *testing.T) {
+	certificatePath, _, _ := writeTrustTestCA(t)
+	runner := &recordingTrustRunner{lookPath: func(string) (string, error) { return "", errors.New("not found") }}
+	installer := userCATrustInstaller{GOOS: "linux", Home: t.TempDir(), Runner: runner, ReadFile: func(path string) ([]byte, error) {
+		if path == "/etc/os-release" {
+			return []byte("ID=debian\n"), nil
+		}
+		return os.ReadFile(path)
+	}}
+	_, err := installer.Trust(certificatePath)
+	if !errors.Is(err, ErrUserCATrustToolMissing) || !strings.Contains(err.Error(), "libnss3-tools") {
+		t.Fatalf("missing certutil error = %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("commands ran without certutil: %v", runner.commands)
 	}
 }

@@ -25,6 +25,102 @@ const windowsPhaseCARotationScript = `$ErrorActionPreference='Stop'; $desired='_
 // process-scoped CA environment variables instead.
 var ErrUserCATrustUnsupported = errors.New("current-user CA trust is not supported on this platform")
 
+// ErrUserCATrustToolMissing means the operating system tool Phase drives to
+// edit the current user's trust store is not installed. Its message names
+// the package that provides it where Phase can tell.
+var ErrUserCATrustToolMissing = errors.New("current-user CA trust tool is not installed")
+
+// UserCATrustAvailability reports whether the trust store can be edited on
+// this platform right now: nil when the tool is present, an error wrapping
+// ErrUserCATrustToolMissing (with an install hint) when it is not, and
+// ErrUserCATrustUnsupported elsewhere. Callers use it to skip the trust
+// offer instead of failing after the user accepted it.
+func UserCATrustAvailability(goos string) error {
+	return (userCATrustInstaller{GOOS: goos}).withDefaults().availability()
+}
+
+func (i userCATrustInstaller) availability() error {
+	switch i.GOOS {
+	case "darwin":
+		if _, err := i.Runner.LookPath("security"); err != nil {
+			return fmt.Errorf("%w: the macOS security tool was not found", ErrUserCATrustToolMissing)
+		}
+	case "windows":
+		for _, tool := range []string{"powershell.exe", "certutil"} {
+			if _, err := i.Runner.LookPath(tool); err != nil {
+				return fmt.Errorf("%w: Windows %s was not found", ErrUserCATrustToolMissing, tool)
+			}
+		}
+	case "linux":
+		if _, err := i.Runner.LookPath("certutil"); err != nil {
+			return fmt.Errorf("%w: %s", ErrUserCATrustToolMissing, linuxNSSToolHint(i.ReadFile))
+		}
+	default:
+		return fmt.Errorf("%w: %s", ErrUserCATrustUnsupported, i.GOOS)
+	}
+	return nil
+}
+
+// UserCATrustToolHint returns the install hint carried by an
+// ErrUserCATrustToolMissing error, or the whole message otherwise.
+func UserCATrustToolHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimPrefix(err.Error(), ErrUserCATrustToolMissing.Error()+": ")
+}
+
+// linuxNSSToolHint names the package providing NSS certutil on this
+// distribution, read from /etc/os-release. Stock images of every common
+// distribution ship without it.
+func linuxNSSToolHint(readFile func(string) ([]byte, error)) string {
+	id, like := linuxOSRelease(readFile)
+	pkg := ""
+	for _, candidate := range append([]string{id}, like...) {
+		switch candidate {
+		case "debian", "ubuntu", "linuxmint", "pop", "raspbian", "kali", "elementary", "zorin":
+			pkg = "libnss3-tools"
+		case "fedora", "rhel", "centos", "rocky", "almalinux", "amzn", "ol", "alpine":
+			pkg = "nss-tools"
+		case "arch", "archlinux", "manjaro", "endeavouros":
+			pkg = "nss"
+		case "opensuse", "opensuse-tumbleweed", "opensuse-leap", "sles", "suse":
+			pkg = "mozilla-nss-tools"
+		case "nixos":
+			pkg = "nss.tools"
+		}
+		if pkg != "" {
+			break
+		}
+	}
+	if pkg == "" {
+		return "NSS certutil is not installed (package libnss3-tools on Debian/Ubuntu, nss-tools on Fedora/RHEL/Alpine, nss on Arch, mozilla-nss-tools on openSUSE)"
+	}
+	return "NSS certutil is not installed (package " + pkg + ")"
+}
+
+func linuxOSRelease(readFile func(string) ([]byte, error)) (string, []string) {
+	payload, err := readFile("/etc/os-release")
+	if err != nil {
+		return "", nil
+	}
+	id, like := "", []string(nil)
+	for _, line := range strings.Split(string(payload), "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found {
+			continue
+		}
+		value = strings.ToLower(strings.Trim(strings.TrimSpace(value), `"'`))
+		switch key {
+		case "ID":
+			id = value
+		case "ID_LIKE":
+			like = strings.Fields(value)
+		}
+	}
+	return id, like
+}
+
 // UserCATrustNotice tells the user, before Phase touches the trust store, which
 // system dialog to expect and why. It is empty where no dialog appears.
 func UserCATrustNotice(goos string) string {
@@ -139,7 +235,7 @@ func (i userCATrustInstaller) withDefaults() userCATrustInstaller {
 func (i userCATrustInstaller) trustDarwin(certificatePath string, certificate *x509.Certificate) (UserCATrustResult, error) {
 	security, err := i.Runner.LookPath("security")
 	if err != nil {
-		return UserCATrustResult{}, fmt.Errorf("find macOS security tool: %w", err)
+		return UserCATrustResult{}, fmt.Errorf("%w: the macOS security tool was not found: %v", ErrUserCATrustToolMissing, err)
 	}
 	keychain := filepath.Join(i.Home, "Library", "Keychains", "login.keychain-db")
 	if output, runErr := i.Runner.Run(security, "default-keychain", "-d", "user"); runErr == nil {
@@ -192,11 +288,11 @@ func (i userCATrustInstaller) trustDarwin(certificatePath string, certificate *x
 func (i userCATrustInstaller) trustWindows(certificatePath string, certificate *x509.Certificate) (UserCATrustResult, error) {
 	powershell, err := i.Runner.LookPath("powershell.exe")
 	if err != nil {
-		return UserCATrustResult{}, fmt.Errorf("find Windows PowerShell for safe Phase CA rotation: %w", err)
+		return UserCATrustResult{}, fmt.Errorf("%w: Windows PowerShell was not found: %v", ErrUserCATrustToolMissing, err)
 	}
 	certutil, err := i.Runner.LookPath("certutil")
 	if err != nil {
-		return UserCATrustResult{}, fmt.Errorf("find Windows certutil: %w", err)
+		return UserCATrustResult{}, fmt.Errorf("%w: Windows certutil was not found: %v", ErrUserCATrustToolMissing, err)
 	}
 	fingerprint := sha256.Sum256(certificate.Raw)
 	fingerprintHex := strings.ToUpper(hex.EncodeToString(fingerprint[:]))
@@ -258,7 +354,7 @@ func isPhaseOwnedRoot(certificate *x509.Certificate) bool {
 func (i userCATrustInstaller) trustLinuxNSS(certificatePath string, certificate *x509.Certificate) (UserCATrustResult, error) {
 	certutil, err := i.Runner.LookPath("certutil")
 	if err != nil {
-		return UserCATrustResult{}, fmt.Errorf("find NSS certutil (install your distribution's libnss3-tools/nss-tools package, or decline CA trust): %w", err)
+		return UserCATrustResult{}, fmt.Errorf("%w: %s", ErrUserCATrustToolMissing, linuxNSSToolHint(i.ReadFile))
 	}
 	databaseDirectory := filepath.Join(i.Home, ".pki", "nssdb")
 	if err := i.MkdirAll(databaseDirectory, 0o700); err != nil {

@@ -67,27 +67,37 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	}
 
 	trustFlag, _ := cmd.Flags().GetBool("trust-ca")
+	trustFlagChanged := cmd.Flags().Changed("trust-ca")
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	if trustAttemptPossible(cmd.Flags().Changed("trust-ca"), trustFlag, interactive) {
+	// Stock Linux installs ship without NSS certutil; macOS and Windows always
+	// have their tools. Find out before offering trust, so a missing tool skips
+	// the offer with an install hint instead of failing the whole enable after
+	// the user accepted it.
+	trustTool := phaseproxy.UserCATrustAvailability(goruntime.GOOS)
+	if trustTool == nil && trustAttemptPossible(trustFlagChanged, trustFlag, interactive) {
 		if notice := phaseproxy.UserCATrustNotice(goruntime.GOOS); notice != "" {
 			fmt.Println("   If the CA is not trusted yet: " + notice)
 		}
 	}
 	trustCA, prompted, err := resolveAIEnableCATrust(
-		cmd.Flags().Changed("trust-ca"),
+		trustFlagChanged,
 		trustFlag,
 		interactive,
+		trustTool == nil,
 		promptForAIEnableCATrust,
 	)
 	if err != nil {
 		return err
 	}
-	if trustCA {
+	switch {
+	case trustCA && trustTool != nil:
+		if errors.Is(trustTool, phaseproxy.ErrUserCATrustUnsupported) {
+			return fmt.Errorf("trust Phase AI CA: %w; rerun with --trust-ca=false to use process-scoped CA settings", trustTool)
+		}
+		return fmt.Errorf("trust Phase AI CA for current user: %s; install it and rerun, or pass --trust-ca=false", phaseproxy.UserCATrustToolHint(trustTool))
+	case trustCA:
 		result, err := phaseproxy.TrustCAForCurrentUser(caPaths.Certificate)
 		if err != nil {
-			if errors.Is(err, phaseproxy.ErrUserCATrustUnsupported) {
-				return fmt.Errorf("trust Phase AI CA: %w; rerun with --trust-ca=false to use process-scoped CA settings", err)
-			}
 			return fmt.Errorf("trust Phase AI CA for current user: %w", err)
 		}
 		if result.AlreadyTrusted {
@@ -95,9 +105,13 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		} else {
 			fmt.Printf("🔐 Phase AI CA trusted in the %s.\n", result.Store)
 		}
-	} else if prompted || cmd.Flags().Changed("trust-ca") {
-		fmt.Println("   Phase AI CA trust unchanged. run/serve will use process-scoped CA settings.")
-	} else {
+	case errors.Is(trustTool, phaseproxy.ErrUserCATrustToolMissing) && !trustFlagChanged:
+		fmt.Println("   Browser CA trust skipped: " + phaseproxy.UserCATrustToolHint(trustTool) + ".")
+		fmt.Println("   Command-line tools and SDKs trust the Phase AI CA through the proxy environment regardless;")
+		fmt.Println("   install the package and rerun `phase ai enable --trust-ca` to cover Chrome and Chromium.")
+	case prompted || trustFlagChanged:
+		fmt.Println("   Phase AI CA trust unchanged. run/exec will use process-scoped CA settings.")
+	default:
 		fmt.Println("   Phase AI CA trust unchanged in non-interactive mode; pass --trust-ca to opt in.")
 	}
 	fmt.Println()
@@ -468,11 +482,14 @@ func codexHookReviewRequired(installations map[string]string) bool {
 	return installations[ai.HarnessCodex] != ""
 }
 
-func resolveAIEnableCATrust(flagChanged, flagValue, interactive bool, prompt func() (bool, error)) (trust, prompted bool, err error) {
+// resolveAIEnableCATrust decides whether to edit the user's trust store. An
+// explicit flag always wins; otherwise the user is asked only when the
+// session is interactive and the platform's trust tool is installed.
+func resolveAIEnableCATrust(flagChanged, flagValue, interactive, toolAvailable bool, prompt func() (bool, error)) (trust, prompted bool, err error) {
 	if flagChanged {
 		return flagValue, false, nil
 	}
-	if !interactive {
+	if !interactive || !toolAvailable {
 		return false, false, nil
 	}
 	trust, err = prompt()

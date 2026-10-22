@@ -144,7 +144,7 @@ phase ai disable
 - **Remote sandboxes** that cannot run the CLI use a relay: `phase relay start --advertise-host <host> --tls-cert <pem> --tls-key <pem>` on a machine logged in with an Agent token prints one line that bootstraps a sandbox over curl.
 - Two skills are installed per harness: `phase-cli-ai-relay` (the proxy, Connections and requests) and `phase-cli-app-secrets` (Phase app secrets). Agents reach the proxy's control API at `http://phase.invalid` and can request new Connections, which a human approves in the Console.
 
-`phase ai enable` creates a per-installation CA (valid 90 days, renewed automatically) and offers to trust it for the current user; it never changes system-wide trust or requires sudo.
+`phase ai enable` creates a per-installation CA (valid 90 days, renewed automatically) and offers to trust it for the current user; it never changes system-wide trust or requires sudo. Command-line tools and SDKs trust the CA through the proxy environment either way; the user trust store matters for browsers and for Go programs on macOS and Windows. On Linux the offer needs NSS certutil (`libnss3-tools` on Debian/Ubuntu, `nss-tools` on Fedora/RHEL/Alpine, `nss` on Arch, `mozilla-nss-tools` on openSUSE) and is skipped with a hint when it is missing.
 
 ## Development
 

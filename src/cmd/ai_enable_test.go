@@ -20,6 +20,7 @@ func TestResolveAIEnableCATrust(t *testing.T) {
 		flagChanged bool
 		flagValue   bool
 		interactive bool
+		toolMissing bool
 		promptValue bool
 		wantTrust   bool
 		wantPrompt  bool
@@ -29,11 +30,17 @@ func TestResolveAIEnableCATrust(t *testing.T) {
 		{name: "noninteractive does not mutate trust", interactive: false},
 		{name: "explicit noninteractive opt in", flagChanged: true, flagValue: true, wantTrust: true},
 		{name: "explicit decline suppresses prompt", flagChanged: true, interactive: true},
+		// A stock Linux install has no certutil: the offer is skipped, the
+		// user is never asked, and enable continues.
+		{name: "missing tool skips the prompt", interactive: true, toolMissing: true, promptValue: true},
+		// An explicit opt-in still asks for trust; the caller then fails with
+		// the install hint instead of silently skipping.
+		{name: "missing tool keeps an explicit opt in", flagChanged: true, flagValue: true, toolMissing: true, wantTrust: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			promptCalls := 0
-			trust, prompted, err := resolveAIEnableCATrust(test.flagChanged, test.flagValue, test.interactive, func() (bool, error) {
+			trust, prompted, err := resolveAIEnableCATrust(test.flagChanged, test.flagValue, test.interactive, !test.toolMissing, func() (bool, error) {
 				promptCalls++
 				return test.promptValue, nil
 			})
@@ -56,7 +63,7 @@ func TestResolveAIEnableCATrust(t *testing.T) {
 
 func TestResolveAIEnableCATrustPropagatesPromptFailure(t *testing.T) {
 	want := errors.New("prompt failed")
-	_, prompted, err := resolveAIEnableCATrust(false, false, true, func() (bool, error) {
+	_, prompted, err := resolveAIEnableCATrust(false, false, true, true, func() (bool, error) {
 		return false, want
 	})
 	if !prompted || !errors.Is(err, want) {
