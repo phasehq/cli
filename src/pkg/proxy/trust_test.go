@@ -189,10 +189,81 @@ func TestUserCATrustWindowsUsesUserStore(t *testing.T) {
 	if !reflect.DeepEqual(runner.commands[1].Args, want) {
 		t.Fatalf("certutil args = %v, want %v", runner.commands[1].Args, want)
 	}
-	rotationArgs := strings.Join(runner.commands[0].Args, " ")
-	for _, required := range []string{"Cert:\\CurrentUser\\Root", "CN=Phase AI Proxy CA", "O=Phase", "Subject -eq $_.Issuer", "2.5.29.19", "Remove-Item -LiteralPath"} {
-		if !strings.Contains(rotationArgs, required) {
-			t.Fatalf("Windows rotation is not scoped to Phase-owned current-user roots; missing %q in %s", required, rotationArgs)
+	inspectionArgs := strings.Join(runner.commands[0].Args, " ")
+	for _, required := range []string{"Cert:\\CurrentUser\\Root", "CN=Phase AI Proxy CA", "O=Phase", "Subject -eq $_.Issuer", "2.5.29.19", "PHASE_CA_OBSOLETE"} {
+		if !strings.Contains(inspectionArgs, required) {
+			t.Fatalf("Windows inspection is not scoped to Phase-owned current-user roots; missing %q in %s", required, inspectionArgs)
+		}
+	}
+	// PowerShell runs -NonInteractive, where the Cert: drive refuses every
+	// removal from the current-user Root store.
+	if strings.Contains(inspectionArgs, "Remove-Item") {
+		t.Fatalf("Windows inspection must not delete through the Cert: drive: %s", inspectionArgs)
+	}
+}
+
+func TestUserCATrustWindowsRemovesObsoletePhaseRootsWithCertutilBeforeTrusting(t *testing.T) {
+	certificatePath, _, _ := writeTrustTestCA(t)
+	obsolete := []string{strings.Repeat("A1", 20), strings.Repeat("0F", 20)}
+	runner := &recordingTrustRunner{run: func(_ string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "-NoLogo" {
+			return []byte("PHASE_CA_OBSOLETE " + obsolete[0] + "\r\nPHASE_CA_OBSOLETE " + obsolete[1] + "\r\n"), nil
+		}
+		return nil, nil
+	}}
+	result, err := (userCATrustInstaller{GOOS: "windows", Home: `C:\\Users\\phase`, Runner: runner}).Trust(certificatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AlreadyTrusted || len(runner.commands) != 4 {
+		t.Fatalf("unexpected result=%+v commands=%v", result, runner.commands)
+	}
+	for index, thumbprint := range obsolete {
+		command := runner.commands[index+1]
+		want := []string{"-user", "-delstore", "Root", thumbprint}
+		if command.Name != "/usr/bin/certutil" || !reflect.DeepEqual(command.Args, want) {
+			t.Fatalf("removal %d = %s %v, want certutil %v", index, command.Name, command.Args, want)
+		}
+	}
+	want := []string{"-user", "-addstore", "-f", "Root", certificatePath}
+	if !reflect.DeepEqual(runner.commands[3].Args, want) {
+		t.Fatalf("certutil args = %v, want %v", runner.commands[3].Args, want)
+	}
+}
+
+func TestUserCATrustWindowsRejectsMalformedObsoleteThumbprint(t *testing.T) {
+	certificatePath, _, _ := writeTrustTestCA(t)
+	// certutil -delstore also accepts store indexes: "0" is the first root.
+	runner := &recordingTrustRunner{run: func(_ string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "-NoLogo" {
+			return []byte("PHASE_CA_OBSOLETE 0\r\n"), nil
+		}
+		return nil, nil
+	}}
+	_, err := (userCATrustInstaller{GOOS: "windows", Home: `C:\\Users\\phase`, Runner: runner}).Trust(certificatePath)
+	if err == nil || len(runner.commands) != 1 {
+		t.Fatalf("malformed thumbprint err=%v commands=%v", err, runner.commands)
+	}
+}
+
+func TestUserCATrustWindowsStopsWhenObsoleteRootRemovalFails(t *testing.T) {
+	certificatePath, _, _ := writeTrustTestCA(t)
+	runner := &recordingTrustRunner{run: func(_ string, args ...string) ([]byte, error) {
+		switch {
+		case len(args) > 0 && args[0] == "-NoLogo":
+			return []byte("PHASE_CA_OBSOLETE " + strings.Repeat("AB", 20) + "\r\n"), nil
+		case len(args) > 1 && args[1] == "-delstore":
+			return []byte("CertUtil: -delstore command FAILED: 0x800704c7 (WIN32: 1223 ERROR_CANCELLED)"), errors.New("exit status 2")
+		}
+		return nil, nil
+	}}
+	_, err := (userCATrustInstaller{GOOS: "windows", Home: `C:\\Users\\phase`, Runner: runner}).Trust(certificatePath)
+	if err == nil || !strings.Contains(err.Error(), "ERROR_CANCELLED") {
+		t.Fatalf("removal failure err = %v", err)
+	}
+	for _, command := range runner.commands {
+		if len(command.Args) > 1 && command.Args[1] == "-addstore" {
+			t.Fatalf("new CA was added after an obsolete root could not be removed: %v", runner.commands)
 		}
 	}
 }
