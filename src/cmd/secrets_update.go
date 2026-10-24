@@ -33,6 +33,7 @@ func init() {
 	secretsUpdateCmd.Flags().String("random", "", "Random type (hex, alphanumeric, base64, base64url, key128, key256)")
 	secretsUpdateCmd.Flags().Int("length", 32, "Length for random secret")
 	secretsUpdateCmd.Flags().String("type", "", "Secret type: secret, sealed, or config")
+	secretsUpdateCmd.Flags().String("comment", "", "New comment for the secret (empty string clears it)")
 	secretsCmd.AddCommand(secretsUpdateCmd)
 }
 
@@ -47,6 +48,11 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 	randomType, _ := cmd.Flags().GetString("random")
 	randomLength, _ := cmd.Flags().GetInt("length")
 	secretType, _ := cmd.Flags().GetString("type")
+	var comment *string
+	if cmd.Flags().Changed("comment") {
+		c, _ := cmd.Flags().GetString("comment")
+		comment = &c
+	}
 
 	if err := sdk.ValidateSecretType(secretType); err != nil {
 		return err
@@ -66,7 +72,8 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 	var newValue string
 	if toggleOverride {
 		// No value needed for toggle or change in secret type
-	} else if secretType != "" && randomType == "" && !override {
+	} else if (secretType != "" || comment != nil) && randomType == "" && !override {
+		// Changing only the type or comment keeps the current value
 	} else if randomType != "" {
 		validTypes := map[string]bool{"hex": true, "alphanumeric": true, "base64": true, "base64url": true, "key128": true, "key256": true}
 		if !validTypes[randomType] {
@@ -122,6 +129,7 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 		Override:        override,
 		ToggleOverride:  toggleOverride,
 		Type:            secretType,
+		Comment:         comment,
 	})
 	if err != nil {
 		var notFound *sdk.ErrSecretNotFound

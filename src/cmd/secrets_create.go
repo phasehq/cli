@@ -29,6 +29,7 @@ func init() {
 	secretsCreateCmd.Flags().String("random", "", "Random type (hex, alphanumeric, base64, base64url, key128, key256)")
 	secretsCreateCmd.Flags().Int("length", 32, "Length for random secret")
 	secretsCreateCmd.Flags().String("type", "", "Secret type: secret (default), sealed, or config")
+	secretsCreateCmd.Flags().String("comment", "", "Comment for the secret")
 	secretsCmd.AddCommand(secretsCreateCmd)
 }
 
@@ -41,6 +42,7 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 	randomType, _ := cmd.Flags().GetString("random")
 	randomLength, _ := cmd.Flags().GetInt("length")
 	secretType, _ := cmd.Flags().GetString("type")
+	comment, _ := cmd.Flags().GetString("comment")
 
 	if err := sdk.ValidateSecretType(secretType); err != nil {
 		return err
@@ -109,7 +111,7 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	err = p.Create(sdk.CreateOptions{
-		KeyValuePairs: []sdk.KeyValuePair{{Key: key, Value: value}},
+		KeyValuePairs: []sdk.KeyValuePair{{Key: key, Value: value, Comment: comment}},
 		EnvName:       envName,
 		AppName:       appName,
 		AppID:         appID,
