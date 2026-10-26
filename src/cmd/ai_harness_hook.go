@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -689,11 +690,11 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 }
 
 // harnessWrapperCommandLine quotes the wrapper for the shell the harness runs
-// it in. Codex and Cursor use PowerShell on Windows, which needs the call
-// operator to run a quoted executable path.
+// it in. On Windows, Codex uses PowerShell, which needs the call operator to
+// run a quoted executable path; Cursor uses its default terminal profile.
 func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
 	if goos == "windows" {
-		if harness == ai.HarnessCodex || harness == ai.HarnessCursor {
+		if harness == ai.HarnessCodex || (harness == ai.HarnessCursor && !cursorWindowsProfileIsBashOrCmd(cursorWindowsTerminalProfile())) {
 			return quotePowerShellCommand(arguments)
 		}
 		return quoteWindowsCommand(arguments)
@@ -703,6 +704,32 @@ func harnessWrapperCommandLine(goos, harness string, arguments []string) string 
 		quoted[index] = quotePOSIXShellValue(argument)
 	}
 	return strings.Join(quoted, " ")
+}
+
+var cursorDefaultProfilePattern = regexp.MustCompile(`"terminal\.integrated\.defaultProfile\.windows"\s*:\s*"([^"]*)"`)
+
+// cursorWindowsTerminalProfile returns the name of Cursor's default Windows
+// terminal profile, or "" when unset or unreadable (PowerShell is the default).
+var cursorWindowsTerminalProfile = func() string {
+	directory, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	settings, err := os.ReadFile(filepath.Join(directory, "Cursor", "User", "settings.json"))
+	if err != nil {
+		return ""
+	}
+	if match := cursorDefaultProfilePattern.FindSubmatch(settings); match != nil {
+		return string(match[1])
+	}
+	return ""
+}
+
+// cursorWindowsProfileIsBashOrCmd reports profiles that cannot parse the
+// PowerShell call operator; the double-quoted form works in both.
+func cursorWindowsProfileIsBashOrCmd(profile string) bool {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	return strings.Contains(profile, "bash") || profile == "command prompt" || profile == "cmd"
 }
 
 // quotePowerShellCommand renders `& 'exe' 'arg' ...`. PowerShell treats the

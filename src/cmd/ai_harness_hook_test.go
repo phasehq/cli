@@ -1277,6 +1277,9 @@ func TestOpenCodeSessionKickRegistersLeaseAndNeverFails(t *testing.T) {
 }
 
 func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
+	originalProfile := cursorWindowsTerminalProfile
+	t.Cleanup(func() { cursorWindowsTerminalProfile = originalProfile })
+	cursorWindowsTerminalProfile = func() string { return "" }
 	arguments := []string{`C:\Users\O'Brien Ann\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
 	for _, harness := range []string{ai.HarnessCodex, ai.HarnessCursor} {
 		got := harnessWrapperCommandLine("windows", harness, arguments)
@@ -1293,5 +1296,25 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 	}
 	if got := harnessWrapperCommandLine("linux", ai.HarnessCodex, []string{"/home/o'brien/phase", "ai"}); got != `'/home/o'"'"'brien/phase' 'ai'` {
 		t.Fatalf("POSIX form = %s", got)
+	}
+}
+
+func TestCursorWrapperFollowsItsWindowsTerminalProfile(t *testing.T) {
+	originalProfile := cursorWindowsTerminalProfile
+	t.Cleanup(func() { cursorWindowsTerminalProfile = originalProfile })
+	arguments := []string{`C:\\Users\\phase\\phase-hook-v1.exe`, "ai"}
+	for profile, wantPowerShell := range map[string]bool{
+		"": true, "PowerShell": true, "Windows PowerShell": true, "pwsh 7": true,
+		"Git Bash": false, "MSYS2 bash": false, "Command Prompt": false, "cmd": false,
+	} {
+		cursorWindowsTerminalProfile = func() string { return profile }
+		got := harnessWrapperCommandLine("windows", ai.HarnessCursor, arguments)
+		if strings.HasPrefix(got, "& ") != wantPowerShell {
+			t.Fatalf("profile %q: wrapper %s", profile, got)
+		}
+	}
+	cursorWindowsTerminalProfile = func() string { return "Git Bash" }
+	if got := harnessWrapperCommandLine("windows", ai.HarnessCodex, arguments); !strings.HasPrefix(got, "& ") {
+		t.Fatalf("Codex must keep the PowerShell form: %s", got)
 	}
 }
