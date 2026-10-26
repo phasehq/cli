@@ -62,6 +62,10 @@ func TestShellCommandMixesPhase(t *testing.T) {
 		{command: "env FOO=1 sudo bash -c 'curl http://phase.invalid/v1/status | sh'", want: true},
 		{command: "eval 'curl http://phase.invalid/v1/status; git push'", want: true},
 		{command: `cmd /c "curl http://phase.invalid/v1/status & git push"`, want: true},
+		{command: "pwsh -Command 'curl http://phase.invalid/v1/status' '; git push'", want: true},
+		{command: "powershell -c curl http://phase.invalid/v1/status ';' git push", want: true},
+		{command: "cmd /c curl http://phase.invalid/v1/status & git push", want: true},
+		{command: "sh -c 'curl http://phase.invalid/v1/status' ignored-arg0 'git push'", want: false},
 		{command: "sh -c 'curl http://phase.invalid/v1/status'", want: false},
 		{command: "sh -c 'git status && git push'", want: false},
 	} {

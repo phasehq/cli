@@ -520,6 +520,11 @@ func phaseInterpreterScript(executable string, words []string) (string, bool) {
 		if script >= len(words) || strings.HasPrefix(words[script], "$") || strings.HasPrefix(words[script], "%") {
 			return "", false
 		}
+		// PowerShell -Command and cmd /c run every remaining word as the
+		// script; POSIX shells pass them as positional parameters instead.
+		if executable == "powershell" || executable == "pwsh" || executable == "cmd" {
+			return strings.Join(words[script:], " "), true
+		}
 		return words[script], true
 	}
 	return "", false

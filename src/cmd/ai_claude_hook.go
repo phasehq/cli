@@ -538,6 +538,14 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 				cycleCancel()
 				return
 			}
+			// disable may have run while the file was written; it removes
+			// the files after saving the config, so a second look is enough.
+			if claudeHookPhaseAIDisabled() {
+				_ = removeClaudeEnvironmentFiles()
+				publishErr = errClaudeHookPhaseAIDisabled
+				cycleCancel()
+				return
+			}
 			cycleStarted = true
 			started = true
 			readyCycles++
@@ -568,6 +576,10 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 				// The listener is gone while this cycle recycles or the daemon exits.
 				// Retire proxy routing immediately; decoys stay (see renderClaudeEnvironment).
 				_ = writeClaudeEnvironment(directory, os.Getpid(), generation, time.Time{}, lastPlan, lastConnections, false)
+				if claudeHookPhaseAIDisabled() {
+					disabled = true
+					_ = removeClaudeEnvironmentFiles()
+				}
 			}
 		}
 		if publishErr != nil {
