@@ -1275,3 +1275,23 @@ func TestOpenCodeSessionKickRegistersLeaseAndNeverFails(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
+	arguments := []string{`C:\Users\O'Brien Ann\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
+	for _, harness := range []string{ai.HarnessCodex, ai.HarnessCursor} {
+		got := harnessWrapperCommandLine("windows", harness, arguments)
+		want := `& 'C:\Users\O''Brien Ann\.phase\ai\bin\phase-hook-v1.exe' 'ai' '__harness-exec' '--lease' 'Y29kZXg6YQ'`
+		if got != want {
+			t.Fatalf("%s on Windows:\n got %s\nwant %s", harness, got, want)
+		}
+	}
+	if got := quotePowerShellCommand([]string{"a\u2019b"}); got != "& 'a\u2019\u2019b'" {
+		t.Fatalf("typographic quote not doubled: %s", got)
+	}
+	if got := harnessWrapperCommandLine("windows", ai.HarnessDevin, arguments); !strings.HasPrefix(got, `"C:\Users`) {
+		t.Fatalf("Devin on Windows keeps the cmd form: %s", got)
+	}
+	if got := harnessWrapperCommandLine("linux", ai.HarnessCodex, []string{"/home/o'brien/phase", "ai"}); got != `'/home/o'"'"'brien/phase' 'ai'` {
+		t.Fatalf("POSIX form = %s", got)
+	}
+}

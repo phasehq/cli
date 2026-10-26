@@ -685,14 +685,43 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 	encodedLease := base64.RawURLEncoding.EncodeToString([]byte(leaseID))
 	encodedCommand := base64.RawURLEncoding.EncodeToString([]byte(original))
 	arguments := []string{executable, "ai", "__harness-exec", "--harness", harness, "--lease", encodedLease, "--command", encodedCommand}
-	if runtime.GOOS == "windows" {
-		return quoteWindowsCommand(arguments), nil
+	return harnessWrapperCommandLine(runtime.GOOS, harness, arguments), nil
+}
+
+// harnessWrapperCommandLine quotes the wrapper for the shell the harness runs
+// it in. Codex and Cursor use PowerShell on Windows, which needs the call
+// operator to run a quoted executable path.
+func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
+	if goos == "windows" {
+		if harness == ai.HarnessCodex || harness == ai.HarnessCursor {
+			return quotePowerShellCommand(arguments)
+		}
+		return quoteWindowsCommand(arguments)
 	}
 	quoted := make([]string, len(arguments))
 	for index, argument := range arguments {
 		quoted[index] = quotePOSIXShellValue(argument)
 	}
-	return strings.Join(quoted, " "), nil
+	return strings.Join(quoted, " ")
+}
+
+// quotePowerShellCommand renders `& 'exe' 'arg' ...`. PowerShell treats the
+// typographic single quotes as quote characters too, so each is doubled.
+func quotePowerShellCommand(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		var builder strings.Builder
+		builder.WriteByte('\'')
+		for _, character := range argument {
+			if character == '\'' || character == '\u2018' || character == '\u2019' || character == '\u201A' || character == '\u201B' {
+				builder.WriteRune(character)
+			}
+			builder.WriteRune(character)
+		}
+		builder.WriteByte('\'')
+		quoted[index] = builder.String()
+	}
+	return "& " + strings.Join(quoted, " ")
 }
 
 func quoteWindowsCommand(arguments []string) string {
