@@ -216,3 +216,22 @@ func TestCredentialMintingFailsClosedOnAmbiguousTargetAndOddBodies(t *testing.T)
 		t.Fatalf("unknown-length body without a content type: err=%v", err)
 	}
 }
+
+func TestCredentialMintingPathRulesStayWithinTheirService(t *testing.T) {
+	connection := mintingAWSConnection(nil)
+	// An S3 multipart upload whose object key is the CodeArtifact token path.
+	upload := signedQueryRequest(t, "examplebucket.s3.us-east-1.amazonaws.com", "")
+	upload.URL.Path = "/v1/authorization-token"
+	upload.URL.RawQuery = "uploads"
+	if blocked, err := CredentialMintingBlocked(upload, connection); err != nil || blocked != nil {
+		t.Fatalf("S3 upload under the CodeArtifact path: blocked=%#v err=%v", blocked, err)
+	}
+	token, _ := http.NewRequest(http.MethodPost, "https://codeartifact.us-east-1.amazonaws.com/v1/authorization-token?domain=d", nil)
+	if blocked, err := CredentialMintingBlocked(token, connection); err != nil || blocked == nil || blocked.Operation != "codeartifact:GetAuthorizationToken" {
+		t.Fatalf("CodeArtifact token: blocked=%#v err=%v", blocked, err)
+	}
+	unknown, _ := http.NewRequest(http.MethodPost, "https://vpce-0abc.example.internal/v1/authorization-token?domain=d", nil)
+	if blocked, err := CredentialMintingBlocked(unknown, connection); err != nil || blocked == nil {
+		t.Fatalf("an unidentifiable service must still be blocked: blocked=%#v err=%v", blocked, err)
+	}
+}
