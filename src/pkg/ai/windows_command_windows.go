@@ -1,12 +1,12 @@
 //go:build windows
 
-package cmd
+package ai
 
 import "syscall"
 
 // windowsShortPathName returns the 8.3 short form of an existing path. It has
-// no spaces when the volume keeps short names, so harness wrapper commands can
-// name the hook executable without quoting.
+// no spaces when the volume keeps short names, so commands can name the hook
+// executable without quoting.
 func windowsShortPathName(path string) (string, error) {
 	long, err := syscall.UTF16PtrFromString(path)
 	if err != nil {

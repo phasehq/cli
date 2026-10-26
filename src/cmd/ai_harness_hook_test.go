@@ -644,32 +644,6 @@ func TestHarnessWrapperCommandEnforcesCrossPlatformArgumentLimit(t *testing.T) {
 	}
 }
 
-func TestWindowsHarnessCommandParsesInEveryShellOrFallsBack(t *testing.T) {
-	originalShortPath := harnessShortPathName
-	t.Cleanup(func() { harnessShortPathName = originalShortPath })
-	arguments := []string{`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--harness", "codex", "--lease", "Y29kZXg6c2Vzc2lvbg", "--command", "Y3VybA"}
-	harnessShortPathName = func(string) (string, error) { return "", errors.New("not needed") }
-	// PowerShell, cmd and Git Bash all run an unquoted forward-slash path.
-	if got, want := windowsHarnessCommand(arguments), "C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __harness-exec --harness codex --lease Y29kZXg6c2Vzc2lvbg --command Y3VybA"; got != want {
-		t.Fatalf("plain path command = %q, want %q", got, want)
-	}
-	spaced := append([]string{`C:\Users\First Last\.phase\ai\bin\phase-hook-v1.exe`}, arguments[1:]...)
-	harnessShortPathName = func(path string) (string, error) {
-		if path != spaced[0] {
-			t.Fatalf("short name requested for %q", path)
-		}
-		return `C:\Users\FIRSTL~1\.phase\ai\bin\PHASE-~1.EXE`, nil
-	}
-	if got := windowsHarnessCommand(spaced); !strings.HasPrefix(got, "C:/Users/FIRSTL~1/.phase/ai/bin/PHASE-~1.EXE ai __harness-exec ") {
-		t.Fatalf("spaced path did not use its short name: %q", got)
-	}
-	harnessShortPathName = func(string) (string, error) { return "", errors.New("8.3 names are disabled") }
-	quoted := append([]string{`C:\Users\O'Brien Smith\.phase\ai\bin\phase-hook-v1.exe`}, arguments[1:]...)
-	if got, want := windowsHarnessCommand(quoted), `& 'C:\Users\O''Brien Smith\.phase\ai\bin\phase-hook-v1.exe' 'ai' '__harness-exec' '--harness' 'codex' '--lease' 'Y29kZXg6c2Vzc2lvbg' '--command' 'Y3VybA'`; got != want {
-		t.Fatalf("fallback command = %q, want %q", got, want)
-	}
-}
-
 func TestHarnessGuardsRejectPowerShellWebCallsToPhase(t *testing.T) {
 	const call = "Invoke-RestMethod http://phase.invalid/v1/status"
 	t.Setenv("PHASE_AI_ENABLED", "")

@@ -61,7 +61,7 @@ func InstallDevinHooks(configPath, phaseExecutable string) (DevinHooksInstall, e
 	if err != nil {
 		return installation, err
 	}
-	removePhaseDevinGroups(hooks, helperPath)
+	removePhaseDevinGroups(hooks, windowsExecutableForms(helperPath)...)
 	for event, groups := range phaseDevinHooks(helperPath) {
 		for _, group := range groups {
 			payload, err := json.Marshal(group)
@@ -99,7 +99,7 @@ func UninstallDevinHooks(configPath string) error {
 	if err != nil {
 		return err
 	}
-	removePhaseDevinGroups(hooks, helperPath)
+	removePhaseDevinGroups(hooks, windowsExecutableForms(helperPath)...)
 	hooksPayload, err := json.Marshal(hooks)
 	if err != nil {
 		return err
@@ -156,13 +156,12 @@ func phaseDevinHooks(helperPath string) map[string][]devinHookGroup {
 }
 
 func shellCommand(arguments []string) string {
+	if runtime.GOOS == "windows" {
+		return WindowsShellCommand(arguments)
+	}
 	quoted := make([]string, len(arguments))
 	for index, argument := range arguments {
-		if runtime.GOOS == "windows" {
-			quoted[index] = quoteWindowsCommandArgument(argument)
-		} else {
-			quoted[index] = quotePOSIXCommandArgument(argument)
-		}
+		quoted[index] = quotePOSIXCommandArgument(argument)
 	}
 	return strings.Join(quoted, " ")
 }
