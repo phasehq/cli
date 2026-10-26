@@ -157,7 +157,35 @@ func (osTrustCommandRunner) LookPath(file string) (string, error) {
 }
 
 func (osTrustCommandRunner) Run(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	command := exec.Command(name, args...)
+	if strings.EqualFold(filepath.Base(name), "powershell.exe") {
+		command.Env = windowsPowerShellEnvironment(os.Environ())
+	}
+	return command.CombinedOutput()
+}
+
+// windowsPowerShellEnvironment gives Windows PowerShell its own module path.
+// Launched from PowerShell 7 it inherits that shell's PSModulePath, cannot
+// auto-load the certificate provider, and reports that the Cert: drive does
+// not exist.
+func windowsPowerShellEnvironment(base []string) []string {
+	systemRoot := os.Getenv("SystemRoot")
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles == "" {
+		programFiles = `C:\Program Files`
+	}
+	modulePath := "PSModulePath=" + programFiles + `\WindowsPowerShell\Modules;` + systemRoot + `\System32\WindowsPowerShell\v1.0\Modules`
+	environment := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if key, _, _ := strings.Cut(entry, "="); strings.EqualFold(key, "PSModulePath") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment, modulePath)
 }
 
 type userCATrustInstaller struct {

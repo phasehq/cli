@@ -423,3 +423,19 @@ func TestUserCATrustLinuxMissingCertutilIsAMissingToolError(t *testing.T) {
 		t.Fatalf("commands ran without certutil: %v", runner.commands)
 	}
 }
+
+func TestWindowsPowerShellEnvironmentReplacesTheInheritedModulePath(t *testing.T) {
+	environment := windowsPowerShellEnvironment([]string{`PATH=C:\bin`, `PSModulePath=C:\Program Files\PowerShell\7\Modules`, `HOME=C:\Users\phase`})
+	var modulePaths []string
+	for _, entry := range environment {
+		if strings.HasPrefix(strings.ToLower(entry), "psmodulepath=") {
+			modulePaths = append(modulePaths, entry)
+		}
+	}
+	if len(modulePaths) != 1 || !strings.Contains(modulePaths[0], `\WindowsPowerShell\v1.0\Modules`) || strings.Contains(modulePaths[0], `PowerShell\7`) {
+		t.Fatalf("module path = %v", modulePaths)
+	}
+	if len(environment) != 3 {
+		t.Fatalf("environment = %v", environment)
+	}
+}
