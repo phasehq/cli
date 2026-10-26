@@ -3,11 +3,26 @@ package cmd
 import (
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 )
 
 const phaseShellRedirect = "\x00redirect"
+
+// powerShellWebCmdlet matches PowerShell's web cmdlets and their aliases as
+// whole words, not inside names such as "confirm" or "$irm".
+var powerShellWebCmdlet = regexp.MustCompile(`(?i)(^|[\s;|&({=])(invoke-webrequest|invoke-restmethod|iwr|irm)($|[\s;|)}])`)
+
+// shellCommandUsesPowerShellWeb reports a PowerShell web cmdlet in a command
+// that names phase.invalid. Invoke-WebRequest and Invoke-RestMethod ignore
+// HTTP(S)_PROXY in Windows PowerShell, so such a call can never reach the Phase
+// proxy and only fails to resolve the host; hooks reject it and point the Agent
+// at curl, which they route. The check spans the whole command so a URL held
+// in a variable ($u = "http://phase.invalid/..."; irm $u) is caught too.
+func shellCommandUsesPowerShellWeb(command string) bool {
+	return strings.Contains(strings.ToLower(command), "phase.invalid") && powerShellWebCmdlet.MatchString(command)
+}
 
 type phaseShellWord struct {
 	value   string

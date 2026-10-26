@@ -239,6 +239,9 @@ func runAICodexEvent(cmd *cobra.Command, args []string) error {
 		if err != nil || strings.TrimSpace(original) == "" {
 			return denyCodexShell(cmd)
 		}
+		if shellCommandUsesPowerShellWeb(original) {
+			return denyCodexShellWithReason(cmd, harnessPowerShellWebMessage())
+		}
 		if !shellCommandRequiresPhase(original) {
 			return nil
 		}
@@ -366,6 +369,9 @@ func runAICursorEvent(cmd *cobra.Command, args []string) error {
 			strings.TrimSpace(original) == "" {
 			return denyCursorShell(cmd)
 		}
+		if shellCommandUsesPowerShellWeb(original) {
+			return denyCursorShellWithReason(cmd, harnessPowerShellWebMessage())
+		}
 		if !shellCommandRequiresPhase(original) {
 			return nil
 		}
@@ -488,6 +494,9 @@ func runAIDevinEvent(cmd *cobra.Command, args []string) error {
 		original, err = input.ToolInput.command()
 		if err != nil || strings.TrimSpace(original) == "" {
 			return denyDevin(cmd, harnessFailureMessage("Devin"))
+		}
+		if shellCommandUsesPowerShellWeb(original) {
+			return denyDevin(cmd, harnessPowerShellWebMessage())
 		}
 		if !shellCommandRequiresPhase(original) {
 			return nil
@@ -614,6 +623,10 @@ func harnessMixedCommandMessage() string {
 	return "This shell call mixes a proxy-local Phase control request with ordinary work. Split it into separate tool calls so the Phase control request can be handled independently."
 }
 
+func harnessPowerShellWebMessage() string {
+	return "PowerShell's Invoke-WebRequest and Invoke-RestMethod do not use the Phase AI proxy, so they cannot reach phase.invalid. Send the same Phase control request with curl in its own tool call instead, for example: curl.exe -sS http://phase.invalid/v1/status"
+}
+
 func harnessUnavailableContext(name string) string {
 	return "Phase AI credentials are currently unavailable in this " + name + " session. Ordinary tools, including git and gh, remain available. Commands that need Phase-managed credentials stay blocked until the authenticated proxy recovers."
 }
@@ -686,7 +699,7 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 	encodedCommand := base64.RawURLEncoding.EncodeToString([]byte(original))
 	arguments := []string{executable, "ai", "__harness-exec", "--harness", harness, "--lease", encodedLease, "--command", encodedCommand}
 	if runtime.GOOS == "windows" {
-		return quoteWindowsCommand(arguments), nil
+		return windowsHarnessCommand(arguments), nil
 	}
 	quoted := make([]string, len(arguments))
 	for index, argument := range arguments {
@@ -695,12 +708,48 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 	return strings.Join(quoted, " "), nil
 }
 
-func quoteWindowsCommand(arguments []string) string {
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		quoted[index] = `"` + strings.ReplaceAll(argument, `"`, `\"`) + `"`
+// harnessShortPathName resolves a path's 8.3 short name; tests replace it.
+var harnessShortPathName = windowsShortPathName
+
+// windowsHarnessCommand renders the wrapper call for whichever shell a harness
+// runs it in on Windows: PowerShell (Codex and Cursor by default), cmd, or Git
+// Bash. Only an unquoted path with forward slashes followed by plain words
+// parses as a command in all of them: PowerShell reads a leading quoted string
+// as an expression, while cmd and bash reject PowerShell's & call operator. A
+// path with spaces or shell characters uses its 8.3 short name, and failing
+// that the PowerShell call-operator form.
+func windowsHarnessCommand(arguments []string) string {
+	words := append([]string{strings.ReplaceAll(arguments[0], `\`, "/")}, arguments[1:]...)
+	if !windowsShellPlainWord(words[0]) {
+		if short, err := harnessShortPathName(arguments[0]); err == nil && windowsShellPlainWord(strings.ReplaceAll(short, `\`, "/")) {
+			words[0] = strings.ReplaceAll(short, `\`, "/")
+		}
 	}
-	return strings.Join(quoted, " ")
+	for _, word := range words {
+		if !windowsShellPlainWord(word) {
+			quoted := make([]string, len(arguments))
+			for index, argument := range arguments {
+				quoted[index] = "'" + strings.ReplaceAll(argument, "'", "''") + "'"
+			}
+			return "& " + strings.Join(quoted, " ")
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// windowsShellPlainWord reports a word that PowerShell, cmd, and POSIX shells
+// all pass through unquoted and unexpanded.
+func windowsShellPlainWord(word string) bool {
+	if word == "" || word[0] == '~' {
+		return false
+	}
+	for _, character := range word {
+		if (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') &&
+			(character < '0' || character > '9') && !strings.ContainsRune(":/._-~", character) {
+			return false
+		}
+	}
+	return true
 }
 
 type harnessRuntimeBinding struct {
@@ -1037,6 +1086,11 @@ func startHarnessCommandLeaseRenewal(done <-chan struct{}, interval time.Duratio
 	return renewal.Wait
 }
 
+// windowsPowerShellPrelude makes curl and wget run the real executables.
+// Windows PowerShell aliases both to Invoke-WebRequest, which ignores
+// HTTP(S)_PROXY, so a wrapped phase.invalid call would miss the Phase proxy.
+const windowsPowerShellPrelude = "Remove-Item -Path Alias:curl, Alias:wget -Force -ErrorAction SilentlyContinue; "
+
 func executeHarnessShell(ctx context.Context, command string, environment []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	shell := util.GetDefaultShell()
 	if len(shell) == 0 {
@@ -1046,7 +1100,7 @@ func executeHarnessShell(ctx context.Context, command string, environment []stri
 	if runtime.GOOS == "windows" {
 		base := strings.ToLower(shell[0])
 		if strings.Contains(base, "powershell") || strings.Contains(base, "pwsh") {
-			arguments = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command}
+			arguments = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsPowerShellPrelude + command}
 		} else {
 			arguments = []string{"/D", "/S", "/C", command}
 		}
@@ -1082,6 +1136,11 @@ func runAIOpenCodeCommand(cmd *cobra.Command, _ []string) error {
 		})
 	}
 	original := string(commandBytes)
+	if shellCommandUsesPowerShellWeb(original) {
+		return emitOpenCodeCommandResponse(cmd, openCodeCommandResponse{
+			SchemaVersion: 1, Managed: true, Error: harnessPowerShellWebMessage(),
+		})
+	}
 	if shellCommandMixesPhase(original) {
 		return emitOpenCodeCommandResponse(cmd, openCodeCommandResponse{
 			SchemaVersion: 1, Managed: true, Error: harnessMixedCommandMessage(),
