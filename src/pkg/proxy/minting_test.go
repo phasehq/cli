@@ -92,7 +92,7 @@ func TestCredentialMintingResolvesTargetHeaderQueryAndPathRules(t *testing.T) {
 	if blocked, err := CredentialMintingBlocked(query, connection); err != nil || blocked == nil || blocked.Operation != "sts:GetFederationToken" {
 		t.Fatalf("query action: blocked=%#v err=%v", blocked, err)
 	}
-	codeartifact, _ := http.NewRequest(http.MethodPost, "https://codeartifact.eu-central-1.amazonaws.com/v1/authorization/token?domain=d", nil)
+	codeartifact, _ := http.NewRequest(http.MethodPost, "https://codeartifact.eu-central-1.amazonaws.com/v1/authorization-token?domain=d", nil)
 	if blocked, err := CredentialMintingBlocked(codeartifact, connection); err != nil || blocked == nil || blocked.Operation != "codeartifact:GetAuthorizationToken" {
 		t.Fatalf("codeartifact path: blocked=%#v err=%v", blocked, err)
 	}

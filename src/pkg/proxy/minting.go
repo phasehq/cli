@@ -64,7 +64,7 @@ var credentialMintingRules = map[string]MintingRules{
 			"cognito-identity": {"GetCredentialsForIdentity", "GetOpenIdToken", "GetOpenIdTokenForDeveloperIdentity"},
 		},
 		Paths: []MintingPathRule{
-			{Method: http.MethodPost, Pattern: "/v1/authorization/token", Operation: "codeartifact:GetAuthorizationToken"},
+			{Method: http.MethodPost, Pattern: "/v1/authorization-token", Operation: "codeartifact:GetAuthorizationToken"},
 		},
 	},
 	"github": {
