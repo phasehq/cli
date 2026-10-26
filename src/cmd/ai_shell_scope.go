@@ -514,7 +514,9 @@ func phaseInterpreterScript(executable string, words []string) (string, bool) {
 		}
 		return "", false
 	case "fish":
-		// fish runs every -c / --command and -C / --init-command value.
+		// fish runs every -c / --command and -C / --init-command value as its
+		// own script. Newlines keep a trailing # comment in one from hiding
+		// the next.
 		var scripts []string
 		for index := 0; index < len(arguments); index++ {
 			argument := arguments[index]
@@ -526,17 +528,31 @@ func phaseInterpreterScript(executable string, words []string) (string, bool) {
 				scripts = append(scripts, value)
 				continue
 			}
-			takesScript := argument == "--command" || argument == "--init-command" ||
-				(strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") && strings.ContainsAny(argument[1:], "cC"))
-			if takesScript && index+1 < len(arguments) {
-				index++
-				scripts = append(scripts, arguments[index])
+			if argument == "--command" || argument == "--init-command" {
+				if index+1 < len(arguments) {
+					index++
+					scripts = append(scripts, arguments[index])
+				}
+				continue
+			}
+			if !strings.HasPrefix(argument, "-") || strings.HasPrefix(argument, "--") {
+				continue
+			}
+			// Short options may be grouped (-ic) and the value may be
+			// attached (-c'git push').
+			if flag := strings.IndexAny(argument[1:], "cC"); flag >= 0 {
+				if attached := argument[flag+2:]; attached != "" {
+					scripts = append(scripts, attached)
+				} else if index+1 < len(arguments) {
+					index++
+					scripts = append(scripts, arguments[index])
+				}
 			}
 		}
 		if len(scripts) == 0 {
 			return "", false
 		}
-		return phaseLiteralScript(strings.Join(scripts, "; "))
+		return phaseLiteralScript(strings.Join(scripts, "\n"))
 	}
 	// POSIX shells: the first non-option word after -c is the script; later
 	// words are positional parameters.
