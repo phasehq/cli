@@ -103,9 +103,15 @@ func shellCommandMixesPhase(command string) bool {
 		return false
 	}
 	segment := make([]string, 0, 8)
+	nestedMix := false
 	classify := func() {
 		if !phaseShellSegmentHasCommand(segment) {
 			return
+		}
+		// A script handed to sh -c, eval, or a wrapper such as env must not
+		// smuggle ordinary work alongside a Phase control call.
+		if script, nested := phaseNestedShellScript(segment); nested && shellCommandMixesPhase(script) {
+			nestedMix = true
 		}
 		if phaseSimpleCommandRequiresPhase(segment) {
 			hasManaged = true
@@ -122,7 +128,7 @@ func shellCommandMixesPhase(command string) bool {
 		}
 	}
 	classify()
-	return hasManaged && hasOrdinary
+	return nestedMix || (hasManaged && hasOrdinary)
 }
 
 type phaseHeredoc struct {
@@ -460,7 +466,9 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 	return words, quote == 0 && !escaped
 }
 
-func phaseSimpleCommandRequiresPhase(words []string) bool {
+// phaseCommandWords drops redirections, leading assignments, and command
+// prefixes, leaving the executable and its arguments.
+func phaseCommandWords(words []string) []string {
 	cleaned := make([]string, 0, len(words))
 	for index := 0; index < len(words); index++ {
 		if words[index] == phaseShellRedirect {
@@ -469,47 +477,85 @@ func phaseSimpleCommandRequiresPhase(words []string) bool {
 			cleaned = append(cleaned, words[index])
 		}
 	}
-	words = cleaned
-	for len(words) > 0 && (phaseAssignment(words[0]) || phaseCommandPrefix(words[0])) {
-		words = words[1:]
+	for len(cleaned) > 0 && (phaseAssignment(cleaned[0]) || phaseCommandPrefix(cleaned[0])) {
+		cleaned = cleaned[1:]
 	}
+	return cleaned
+}
+
+func phaseExecutableName(word string) string {
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(word, `\`, "/"))), ".exe")
+}
+
+func phaseWrapperExecutable(executable string) bool {
+	return executable == "env" || executable == "sudo" || executable == "command" || executable == "exec" ||
+		executable == "nice" || executable == "nohup" || executable == "time" || executable == "timeout"
+}
+
+// phaseInterpreterScript returns the script a shell interpreter (-c, -Command,
+// /c) or eval runs. ok is false when there is none or it is only known at run
+// time (a variable).
+func phaseInterpreterScript(executable string, words []string) (string, bool) {
+	if executable == "eval" {
+		if len(words) == 1 {
+			return "", false
+		}
+		script := strings.Join(words[1:], " ")
+		if strings.Contains(script, "$") || strings.Contains(script, "%") {
+			return "", false
+		}
+		return script, true
+	}
+	for index, argument := range words[1:] {
+		argument = strings.ToLower(argument)
+		isCommand := argument == "/c" || argument == "-command" ||
+			(strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") && strings.Contains(argument[1:], "c"))
+		if !isCommand {
+			continue
+		}
+		script := index + 2
+		if script < len(words) && words[script] == "--" {
+			script++
+		}
+		if script >= len(words) || strings.HasPrefix(words[script], "$") || strings.HasPrefix(words[script], "%") {
+			return "", false
+		}
+		return words[script], true
+	}
+	return "", false
+}
+
+// phaseNestedShellScript returns the script a command hands to another shell,
+// looking through wrappers such as env or sudo.
+func phaseNestedShellScript(words []string) (string, bool) {
+	words = phaseCommandWords(words)
+	if len(words) == 0 {
+		return "", false
+	}
+	executable := phaseExecutableName(words[0])
+	switch {
+	case phaseShellInterpreter(executable) || executable == "eval":
+		return phaseInterpreterScript(executable, words)
+	case phaseWrapperExecutable(executable):
+		return phaseNestedShellScript(phaseUnwrapCommand(executable, words[1:]))
+	}
+	return "", false
+}
+
+func phaseSimpleCommandRequiresPhase(words []string) bool {
+	words = phaseCommandWords(words)
 	if len(words) == 0 {
 		return false
 	}
-	executable := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(words[0], `\`, "/"))), ".exe")
+	executable := phaseExecutableName(words[0])
 	if executable == "phase" || executable == "phase-dev" || executable == "phase-hook" {
 		return false
 	}
-	if phaseShellInterpreter(executable) {
-		for index, argument := range words[1:] {
-			argument = strings.ToLower(argument)
-			isCommand := argument == "/c" || argument == "-command" ||
-				(strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") && strings.Contains(argument[1:], "c"))
-			if !isCommand {
-				continue
-			}
-			payload := index + 2
-			if payload < len(words) && words[payload] == "--" {
-				payload++
-			}
-			if payload >= len(words) || strings.HasPrefix(words[payload], "$") || strings.HasPrefix(words[payload], "%") {
-				return false
-			}
-			return shellCommandRequiresPhase(words[payload])
-		}
+	if phaseShellInterpreter(executable) || executable == "eval" {
+		script, ok := phaseInterpreterScript(executable, words)
+		return ok && shellCommandRequiresPhase(script)
 	}
-	if executable == "eval" {
-		if len(words) == 1 {
-			return false
-		}
-		payload := strings.Join(words[1:], " ")
-		if strings.Contains(payload, "$") || strings.Contains(payload, "%") {
-			return false
-		}
-		return shellCommandRequiresPhase(payload)
-	}
-	if executable == "env" || executable == "sudo" || executable == "command" || executable == "exec" ||
-		executable == "nice" || executable == "nohup" || executable == "time" || executable == "timeout" {
+	if phaseWrapperExecutable(executable) {
 		return phaseSimpleCommandRequiresPhase(phaseUnwrapCommand(executable, words[1:]))
 	}
 	if phaseNetworkExecutable(executable) {

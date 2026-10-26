@@ -56,6 +56,14 @@ func TestShellCommandMixesPhase(t *testing.T) {
 		{command: "git status && curl http://phase.invalid/v1/capabilities", want: true},
 		{command: `echo "$(curl http://phase.invalid/v1/status)"`, want: true},
 		{command: "phase ai exec -- aws sts get-caller-identity && git status", want: false},
+		// A Phase call and ordinary work hidden in one nested script.
+		{command: "sh -c 'curl http://phase.invalid/v1/status && git push'", want: true},
+		{command: "bash -lc 'curl -s http://phase.invalid/v1/status; rm -rf ./build'", want: true},
+		{command: "env FOO=1 sudo bash -c 'curl http://phase.invalid/v1/status | sh'", want: true},
+		{command: "eval 'curl http://phase.invalid/v1/status; git push'", want: true},
+		{command: `cmd /c "curl http://phase.invalid/v1/status & git push"`, want: true},
+		{command: "sh -c 'curl http://phase.invalid/v1/status'", want: false},
+		{command: "sh -c 'git status && git push'", want: false},
 	} {
 		if got := shellCommandMixesPhase(test.command); got != test.want {
 			t.Errorf("shellCommandMixesPhase(%q) = %v, want %v", test.command, got, test.want)
