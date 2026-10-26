@@ -18,7 +18,11 @@ import (
 
 const phaseAITrustNickname = "Phase AI Proxy CA"
 
-const windowsPhaseCARotationScript = `$ErrorActionPreference='Stop'; $desired='__PHASE_SHA256__'; $phaseRoots=Get-ChildItem -Path Cert:\CurrentUser\Root | Where-Object { $_.Subject -eq $_.Issuer -and $_.Subject -match '(^|,\s*)CN=Phase AI Proxy CA(,|$)' -and $_.Subject -match '(^|,\s*)O=Phase(,|$)' -and ($_.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' -and $_.CertificateAuthority }) }; if ($phaseRoots | Where-Object { $_.GetCertHashString('SHA256').ToUpperInvariant() -eq $desired }) { Write-Output 'PHASE_CA_CURRENT'; exit 0 }; $phaseRoots | ForEach-Object { Remove-Item -LiteralPath $_.PSPath -Force }`
+// windowsPhaseRootInspectionScript only reads the current-user Root store. It
+// prints PHASE_CA_CURRENT when the CA being trusted is already there, otherwise
+// one PHASE_CA_OBSOLETE line per older Phase-owned root. Deleting through the
+// Cert: drive fails under -NonInteractive, so trustWindows removes them with certutil.
+const windowsPhaseRootInspectionScript = `$ErrorActionPreference='Stop'; $desired='__PHASE_SHA256__'; $phaseRoots=Get-ChildItem -Path Cert:\CurrentUser\Root | Where-Object { $_.Subject -eq $_.Issuer -and $_.Subject -match '(^|,\s*)CN=Phase AI Proxy CA(,|$)' -and $_.Subject -match '(^|,\s*)O=Phase(,|$)' -and ($_.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' -and $_.CertificateAuthority }) }; if ($phaseRoots | Where-Object { $_.GetCertHashString('SHA256').ToUpperInvariant() -eq $desired }) { Write-Output 'PHASE_CA_CURRENT'; exit 0 }; $phaseRoots | ForEach-Object { Write-Output ('PHASE_CA_OBSOLETE ' + $_.Thumbprint) }`
 
 // ErrUserCATrustUnsupported means Phase cannot safely modify a trust store for
 // only the current user on this operating system. Callers can continue with
@@ -128,7 +132,7 @@ func UserCATrustNotice(goos string) string {
 	case "darwin":
 		return "macOS asks for your login password or Touch ID once: the public Phase AI CA is added to your login keychain's trust settings. No sudo, nothing system-wide."
 	case "windows":
-		return "Windows shows one security warning to confirm adding the public Phase AI CA to your user Root store. Nothing system-wide."
+		return "Windows shows a security warning to confirm adding the public Phase AI CA to your user Root store, plus one for each older Phase AI CA it removes. Nothing system-wide."
 	default:
 		return ""
 	}
@@ -153,7 +157,35 @@ func (osTrustCommandRunner) LookPath(file string) (string, error) {
 }
 
 func (osTrustCommandRunner) Run(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	command := exec.Command(name, args...)
+	if strings.EqualFold(filepath.Base(name), "powershell.exe") {
+		command.Env = windowsPowerShellEnvironment(os.Environ())
+	}
+	return command.CombinedOutput()
+}
+
+// windowsPowerShellEnvironment gives Windows PowerShell its own module path.
+// Launched from PowerShell 7 it inherits that shell's PSModulePath, cannot
+// auto-load the certificate provider, and reports that the Cert: drive does
+// not exist.
+func windowsPowerShellEnvironment(base []string) []string {
+	systemRoot := os.Getenv("SystemRoot")
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles == "" {
+		programFiles = `C:\Program Files`
+	}
+	modulePath := "PSModulePath=" + programFiles + `\WindowsPowerShell\Modules;` + systemRoot + `\System32\WindowsPowerShell\v1.0\Modules`
+	environment := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if key, _, _ := strings.Cut(entry, "="); strings.EqualFold(key, "PSModulePath") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment, modulePath)
 }
 
 type userCATrustInstaller struct {
@@ -296,16 +328,28 @@ func (i userCATrustInstaller) trustWindows(certificatePath string, certificate *
 	}
 	fingerprint := sha256.Sum256(certificate.Raw)
 	fingerprintHex := strings.ToUpper(hex.EncodeToString(fingerprint[:]))
-	rotationScript := strings.Replace(windowsPhaseCARotationScript, "__PHASE_SHA256__", fingerprintHex, 1)
-	rotationOutput, rotationErr := i.Runner.Run(
+	inspectionScript := strings.Replace(windowsPhaseRootInspectionScript, "__PHASE_SHA256__", fingerprintHex, 1)
+	inspectionOutput, inspectionErr := i.Runner.Run(
 		powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
-		"-Command", rotationScript,
+		"-Command", inspectionScript,
 	)
-	if rotationErr != nil {
-		return UserCATrustResult{}, trustCommandError("inspect and rotate Phase AI CA in Windows current-user Root store", rotationErr, rotationOutput)
+	if inspectionErr != nil {
+		return UserCATrustResult{}, trustCommandError("inspect Phase AI CA in Windows current-user Root store", inspectionErr, inspectionOutput)
 	}
-	if strings.Contains(string(rotationOutput), "PHASE_CA_CURRENT") {
+	if strings.Contains(string(inspectionOutput), "PHASE_CA_CURRENT") {
 		return UserCATrustResult{Store: "Windows current-user Root store", AlreadyTrusted: true}, nil
+	}
+	obsoleteThumbprints, err := parseWindowsObsoletePhaseRoots(inspectionOutput)
+	if err != nil {
+		return UserCATrustResult{}, fmt.Errorf("inspect Phase AI CA in Windows current-user Root store: %w", err)
+	}
+	// Remove obsolete roots first so a rotation never leaves an old Phase root
+	// trusted. Windows confirms each removal, as it does the add below.
+	for _, thumbprint := range obsoleteThumbprints {
+		deleteOutput, deleteErr := i.Runner.Run(certutil, "-user", "-delstore", "Root", thumbprint)
+		if deleteErr != nil {
+			return UserCATrustResult{}, trustCommandError("remove obsolete Phase AI CA from Windows current-user Root store", deleteErr, deleteOutput)
+		}
 	}
 	// -user is the security boundary: without it certutil targets the local
 	// machine store and may elevate. -f makes re-enabling idempotent.
@@ -314,6 +358,24 @@ func (i userCATrustInstaller) trustWindows(certificatePath string, certificate *
 		return UserCATrustResult{}, trustCommandError("trust Phase AI CA in Windows current-user Root store", err, output)
 	}
 	return UserCATrustResult{Store: "Windows current-user Root store"}, nil
+}
+
+// parseWindowsObsoletePhaseRoots returns the SHA-1 thumbprints the inspection
+// script printed. certutil -delstore also matches store indexes and common
+// names, so anything but a 40-hex thumbprint is rejected.
+func parseWindowsObsoletePhaseRoots(output []byte) ([]string, error) {
+	thumbprints := make([]string, 0)
+	for _, line := range strings.Split(string(output), "\n") {
+		thumbprint, found := strings.CutPrefix(strings.TrimSpace(line), "PHASE_CA_OBSOLETE ")
+		if !found {
+			continue
+		}
+		if raw, err := hex.DecodeString(thumbprint); err != nil || len(raw) != 20 {
+			return nil, fmt.Errorf("unexpected certificate thumbprint %q", thumbprint)
+		}
+		thumbprints = append(thumbprints, thumbprint)
+	}
+	return thumbprints, nil
 }
 
 func parsePEMCertificates(payload []byte) []*x509.Certificate {
