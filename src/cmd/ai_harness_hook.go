@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -694,7 +693,7 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 // run a quoted executable path; Cursor uses its default terminal profile.
 func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
 	if goos == "windows" {
-		if harness == ai.HarnessCodex || (harness == ai.HarnessCursor && !cursorWindowsProfileIsBashOrCmd(cursorWindowsTerminalProfile())) {
+		if harness == ai.HarnessCodex || (harness == ai.HarnessCursor && !cursorWindowsShellIsBashOrCmd(cursorWindowsSettings())) {
 			return quotePowerShellCommand(arguments)
 		}
 		return quoteWindowsCommand(arguments)
@@ -706,30 +705,103 @@ func harnessWrapperCommandLine(goos, harness string, arguments []string) string 
 	return strings.Join(quoted, " ")
 }
 
-var cursorDefaultProfilePattern = regexp.MustCompile(`"terminal\.integrated\.defaultProfile\.windows"\s*:\s*"([^"]*)"`)
-
-// cursorWindowsTerminalProfile returns the name of Cursor's default Windows
-// terminal profile, or "" when unset or unreadable (PowerShell is the default).
-var cursorWindowsTerminalProfile = func() string {
+// cursorWindowsSettings returns Cursor's user settings.json, or nil.
+var cursorWindowsSettings = func() []byte {
 	directory, err := os.UserConfigDir()
 	if err != nil {
-		return ""
+		return nil
 	}
 	settings, err := os.ReadFile(filepath.Join(directory, "Cursor", "User", "settings.json"))
 	if err != nil {
-		return ""
+		return nil
 	}
-	if match := cursorDefaultProfilePattern.FindSubmatch(settings); match != nil {
-		return string(match[1])
-	}
-	return ""
+	return settings
 }
 
-// cursorWindowsProfileIsBashOrCmd reports profiles that cannot parse the
-// PowerShell call operator; the double-quoted form works in both.
-func cursorWindowsProfileIsBashOrCmd(profile string) bool {
-	profile = strings.ToLower(strings.TrimSpace(profile))
-	return strings.Contains(profile, "bash") || profile == "command prompt" || profile == "cmd"
+// cursorWindowsShellIsBashOrCmd reports whether Cursor's default Windows
+// terminal profile is a POSIX shell or cmd, which cannot parse the PowerShell
+// call operator; the double-quoted form works in both. Unset or unreadable
+// settings mean PowerShell, Cursor's default.
+func cursorWindowsShellIsBashOrCmd(settings []byte) bool {
+	var parsed map[string]json.RawMessage
+	if len(settings) == 0 || json.Unmarshal(stripJSONComments(settings), &parsed) != nil {
+		return false
+	}
+	var name string
+	if json.Unmarshal(parsed["terminal.integrated.defaultProfile.windows"], &name) != nil || name == "" {
+		return false
+	}
+	var profiles map[string]struct {
+		Path   json.RawMessage `json:"path"`
+		Source string          `json:"source"`
+	}
+	_ = json.Unmarshal(parsed["terminal.integrated.profiles.windows"], &profiles)
+	if profile, defined := profiles[name]; defined {
+		var path string
+		var paths []string
+		if json.Unmarshal(profile.Path, &path) != nil && json.Unmarshal(profile.Path, &paths) == nil && len(paths) > 0 {
+			path = paths[0]
+		}
+		if path != "" {
+			shell := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(path, `\`, "/"))), ".exe")
+			return shell != "pwsh" && shell != "powershell"
+		}
+		switch strings.ToLower(strings.TrimSpace(profile.Source)) {
+		case "git bash":
+			return true
+		case "powershell":
+			return false
+		}
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(name, "bash") || name == "command prompt" || name == "cmd"
+}
+
+// stripJSONComments turns JSONC (comments, trailing commas) into JSON.
+func stripJSONComments(source []byte) []byte {
+	out := make([]byte, 0, len(source))
+	inString := false
+	for index := 0; index < len(source); index++ {
+		character := source[index]
+		if inString {
+			out = append(out, character)
+			if character == '\\' && index+1 < len(source) {
+				index++
+				out = append(out, source[index])
+			} else if character == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch {
+		case character == '"':
+			inString = true
+			out = append(out, character)
+		case character == '/' && index+1 < len(source) && source[index+1] == '/':
+			for index < len(source) && source[index] != '\n' {
+				index++
+			}
+			index--
+		case character == '/' && index+1 < len(source) && source[index+1] == '*':
+			index += 2
+			for index+1 < len(source) && !(source[index] == '*' && source[index+1] == '/') {
+				index++
+			}
+			index++
+		case character == ',':
+			next := index + 1
+			for next < len(source) && (source[next] == ' ' || source[next] == '\t' || source[next] == '\n' || source[next] == '\r') {
+				next++
+			}
+			if next < len(source) && (source[next] == '}' || source[next] == ']') {
+				continue
+			}
+			out = append(out, character)
+		default:
+			out = append(out, character)
+		}
+	}
+	return out
 }
 
 // quotePowerShellCommand renders `& 'exe' 'arg' ...`. PowerShell treats the

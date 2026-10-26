@@ -1277,9 +1277,9 @@ func TestOpenCodeSessionKickRegistersLeaseAndNeverFails(t *testing.T) {
 }
 
 func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
-	originalProfile := cursorWindowsTerminalProfile
-	t.Cleanup(func() { cursorWindowsTerminalProfile = originalProfile })
-	cursorWindowsTerminalProfile = func() string { return "" }
+	originalSettings := cursorWindowsSettings
+	t.Cleanup(func() { cursorWindowsSettings = originalSettings })
+	cursorWindowsSettings = func() []byte { return nil }
 	arguments := []string{`C:\Users\O'Brien Ann\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
 	for _, harness := range []string{ai.HarnessCodex, ai.HarnessCursor} {
 		got := harnessWrapperCommandLine("windows", harness, arguments)
@@ -1300,21 +1300,55 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 }
 
 func TestCursorWrapperFollowsItsWindowsTerminalProfile(t *testing.T) {
-	originalProfile := cursorWindowsTerminalProfile
-	t.Cleanup(func() { cursorWindowsTerminalProfile = originalProfile })
-	arguments := []string{`C:\\Users\\phase\\phase-hook-v1.exe`, "ai"}
-	for profile, wantPowerShell := range map[string]bool{
-		"": true, "PowerShell": true, "Windows PowerShell": true, "pwsh 7": true,
-		"Git Bash": false, "MSYS2 bash": false, "Command Prompt": false, "cmd": false,
+	for name, test := range map[string]struct {
+		settings  string
+		bashOrCmd bool
+	}{
+		"unset":          {``, false},
+		"powershell":     {`{"terminal.integrated.defaultProfile.windows": "PowerShell"}`, false},
+		"git bash":       {`{"terminal.integrated.defaultProfile.windows": "Git Bash"}`, true},
+		"command prompt": {`{"terminal.integrated.defaultProfile.windows": "Command Prompt"}`, true},
+		"commented default": {`{
+			// "terminal.integrated.defaultProfile.windows": "Git Bash",
+			/* "terminal.integrated.defaultProfile.windows": "Command Prompt", */
+			"terminal.integrated.defaultProfile.windows": "PowerShell",
+		}`, false},
+		"custom bash source": {`{
+			"terminal.integrated.profiles.windows": {"Development": {"source": "Git Bash"}},
+			"terminal.integrated.defaultProfile.windows": "Development"
+		}`, true},
+		"misleading name, PowerShell source": {`{
+			"terminal.integrated.profiles.windows": {"Bash Migration": {"source": "PowerShell"}},
+			"terminal.integrated.defaultProfile.windows": "Bash Migration"
+		}`, false},
+		"custom path": {`{
+			"terminal.integrated.profiles.windows": {"Work": {"path": ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"]}},
+			"terminal.integrated.defaultProfile.windows": "Work"
+		}`, false},
+		"custom bash path": {`{
+			"terminal.integrated.profiles.windows": {"MSYS": {"path": "C:\\msys64\\usr\\bin\\bash.exe", "args": ["--login"]}},
+			"terminal.integrated.defaultProfile.windows": "MSYS",
+		}`, true},
+		"escaped value":   {`{"terminal.integrated.defaultProfile.windows": "Git \u0042ash"}`, true},
+		"url in a string": {`{"a": "http://x/y", "terminal.integrated.defaultProfile.windows": "Git Bash"}`, true},
 	} {
-		cursorWindowsTerminalProfile = func() string { return profile }
-		got := harnessWrapperCommandLine("windows", ai.HarnessCursor, arguments)
-		if strings.HasPrefix(got, "& ") != wantPowerShell {
-			t.Fatalf("profile %q: wrapper %s", profile, got)
+		if got := cursorWindowsShellIsBashOrCmd([]byte(test.settings)); got != test.bashOrCmd {
+			t.Errorf("%s: bash or cmd = %v, want %v", name, got, test.bashOrCmd)
 		}
 	}
-	cursorWindowsTerminalProfile = func() string { return "Git Bash" }
+
+	originalSettings := cursorWindowsSettings
+	t.Cleanup(func() { cursorWindowsSettings = originalSettings })
+	arguments := []string{`C:\\Users\\phase\\phase-hook-v1.exe`, "ai"}
+	cursorWindowsSettings = func() []byte { return []byte(`{"terminal.integrated.defaultProfile.windows": "Git Bash"}`) }
+	if got := harnessWrapperCommandLine("windows", ai.HarnessCursor, arguments); strings.HasPrefix(got, "& ") {
+		t.Fatalf("Cursor on Git Bash got the PowerShell form: %s", got)
+	}
 	if got := harnessWrapperCommandLine("windows", ai.HarnessCodex, arguments); !strings.HasPrefix(got, "& ") {
 		t.Fatalf("Codex must keep the PowerShell form: %s", got)
+	}
+	cursorWindowsSettings = func() []byte { return nil }
+	if got := harnessWrapperCommandLine("windows", ai.HarnessCursor, arguments); !strings.HasPrefix(got, "& ") {
+		t.Fatalf("Cursor defaults to the PowerShell form: %s", got)
 	}
 }
