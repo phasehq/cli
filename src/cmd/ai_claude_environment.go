@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +38,10 @@ const (
 	// so a slow or unreachable Console never stalls ordinary work.
 	claudeHookKickBudget = 1500 * time.Millisecond
 )
+
+// claudeEnvironmentGOOS selects the liveness guard renderClaudeEnvironment
+// writes; tests override it to render another platform's file.
+var claudeEnvironmentGOOS = runtime.GOOS
 
 type claudeEnvironmentStatus struct {
 	Schema      int                          `json:"schema"`
@@ -70,14 +78,21 @@ type claudeRuntimeHealth struct {
 
 // renderClaudeEnvironment produces the POSIX shell a harness sources before each
 // command. Proxy routing, Phase runtime markers, and trust overrides live inside
-// a liveness guard on the issuing proxy PID, so a crashed proxy can never strand
-// a shell behind a dead port. Decoys, adapter endpoints, and explicit unsets
-// stay outside the guard: while Phase AI is enabled, provider tools either reach
-// the Phase proxy or fail on the decoy. They never fall through to an ambient
-// credential by accident.
+// a liveness guard on the issuing proxy (see claudeProxyLivenessGuard), so a
+// crashed proxy can never strand a shell behind a dead port. Decoys, adapter
+// endpoints, and explicit unsets stay outside the guard: while Phase AI is
+// enabled, provider tools either reach the Phase proxy or fail on the decoy.
+// They never fall through to an ambient credential by accident.
 func renderClaudeEnvironment(pid int, plan phaseproxy.ProcessEnvironmentPlan, proxyLive bool) (string, error) {
 	if proxyLive && pid <= 0 {
 		return "", errors.New("Phase AI proxy PID is required for a live environment")
+	}
+	var guard string
+	if proxyLive {
+		var err error
+		if guard, err = claudeProxyLivenessGuard(pid, plan); err != nil {
+			return "", err
+		}
 	}
 	keys := make([]string, 0, len(plan.Set))
 	for key, value := range plan.Set {
@@ -115,7 +130,7 @@ func renderClaudeEnvironment(pid int, plan phaseproxy.ProcessEnvironmentPlan, pr
 	}
 	if proxyLive {
 		out.WriteString(claudeProxyBlockBegin + "\n")
-		fmt.Fprintf(&out, "if kill -0 %d 2>/dev/null; then\n", pid)
+		out.WriteString("if " + guard + "; then\n")
 		for _, key := range keys {
 			if !phaseproxy.RuntimeControlEnvironmentKey(key) {
 				continue
@@ -131,6 +146,42 @@ func renderClaudeEnvironment(pid int, plan phaseproxy.ProcessEnvironmentPlan, pr
 	// command (`. file && command`) is never blocked by this file.
 	out.WriteString(":\n")
 	return out.String(), nil
+}
+
+// claudeProxyLivenessGuard returns the shell condition that keeps proxy routing
+// on only while the issuing proxy is alive. POSIX shells signal its PID. On
+// Windows the sourcing shell is Git Bash (MSYS2), whose kill cannot see native
+// Windows PIDs, so the guard checks that the proxy still accepts connections
+// instead; hooks retire routing for a dead daemon through the Win32 liveness
+// check in reconcileClaudeEnvironment.
+func claudeProxyLivenessGuard(pid int, plan phaseproxy.ProcessEnvironmentPlan) (string, error) {
+	if claudeEnvironmentGOOS != "windows" {
+		return fmt.Sprintf("kill -0 %d 2>/dev/null", pid), nil
+	}
+	raw := ""
+	for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+		if raw = plan.Set[key]; raw != "" {
+			break
+		}
+	}
+	if raw == "" {
+		// Nothing in this plan routes through the proxy.
+		return "false", nil
+	}
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("Phase AI proxy URL is invalid")
+	}
+	host, port := proxyURL.Hostname(), proxyURL.Port()
+	if address := net.ParseIP(host); address == nil || address.To4() == nil {
+		return "", fmt.Errorf("Phase AI proxy host %q is not an IPv4 address", host)
+	}
+	if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+		return "", fmt.Errorf("Phase AI proxy port %q is invalid", port)
+	}
+	// `true` is a regular builtin: a refused connection only fails the test, it
+	// never ends a non-interactive shell, and the probe needs no subshell.
+	return fmt.Sprintf("true 2>/dev/null </dev/tcp/%s/%s", host, port), nil
 }
 
 // stripClaudeProxyBlock removes the proxy-routing block from rendered content.
