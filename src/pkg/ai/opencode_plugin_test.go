@@ -14,6 +14,7 @@ import (
 func TestInstallOpenCodePluginIsDependencyFreeAndIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	first := filepath.Join(home, "first-phase")
 	if err := os.WriteFile(first, []byte("first"), 0o700); err != nil {
@@ -97,6 +98,7 @@ func TestInstalledOpenCodeOnlyDelegatesExplicitPhaseControlCalls(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	pluginPath := filepath.Join(home, OpenCodePluginName+".js")
 	helper := filepath.Join(home, "phase-hook-v1")
 	helperSource := "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":1,\"managed\":true,\"command\":\"phase-rewritten\"}'\n"
@@ -179,6 +181,7 @@ func TestInstalledOpenCodePluginAppliesPublishedEnvironmentOnlyWhileProxyIsAlive
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	pluginPath := filepath.Join(home, OpenCodePluginName+".js")
 	helper := filepath.Join(home, "phase-hook-v1")
 	kickLog := filepath.Join(home, "kicks.log")
@@ -258,6 +261,7 @@ check(Object.keys(missing.env).length === 1 && missing.env.ONLY === "1", "missin
 func TestUninstallOpenCodePluginPreservesForeignFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -276,6 +280,7 @@ func TestUninstallOpenCodePluginPreservesForeignFile(t *testing.T) {
 func TestUninstallOpenCodePluginRemovesOwnedFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	executable := filepath.Join(home, "phase")
 	if err := os.WriteFile(executable, []byte("phase"), 0o700); err != nil {
@@ -306,6 +311,7 @@ func TestInstalledOpenCodePluginExportsOneDefaultDefinition(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	if _, err := InstallOpenCodePlugin(pluginPath, filepath.Join(home, "phase-hook-v1"), filepath.Join(home, ".phase", "ai", "env.json")); err != nil {
 		t.Fatal(err)
@@ -321,5 +327,59 @@ func TestInstalledOpenCodePluginExportsOneDefaultDefinition(t *testing.T) {
 	}
 	if output, err := exec.Command(node, probe).CombinedOutput(); err != nil {
 		t.Fatalf("OpenCode plugin module shape: %v\n%s", err, output)
+	}
+}
+
+func TestDefaultOpenCodePluginPathSitsBesideTheSkillOnEveryOS(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	pluginPath, err := DefaultOpenCodePluginPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// OpenCode reads ~/.config/opencode on Windows too; %AppData% is never loaded.
+	if want := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"); pluginPath != want {
+		t.Fatalf("plugin path = %s, want %s", pluginPath, want)
+	}
+	for _, target := range SkillTargets() {
+		if target.ID == HarnessOpenCode && filepath.Dir(filepath.Dir(filepath.Dir(target.Path))) != filepath.Dir(filepath.Dir(pluginPath)) {
+			t.Fatalf("OpenCode skill %s and plugin %s are in different config directories", target.Path, pluginPath)
+		}
+	}
+}
+
+func TestRemoveLegacyOpenCodePluginsRemovesOnlyOwnedWindowsCopies(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("earlier builds used %AppData% only on Windows")
+	}
+	appData := t.TempDir()
+	t.Setenv("APPDATA", appData)
+	legacy := filepath.Join(appData, "opencode", "plugins", OpenCodePluginName+".js")
+	if removed, err := RemoveLegacyOpenCodePlugins(); err != nil || len(removed) != 0 {
+		t.Fatalf("missing legacy plugin: removed=%v err=%v", removed, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("// a user's own plugin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := RemoveLegacyOpenCodePlugins(); err != nil || len(removed) != 0 {
+		t.Fatalf("foreign legacy plugin: removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("foreign plugin was not preserved: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte(openCodeOwnershipMarker+"\nexport default {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := RemoveLegacyOpenCodePlugins()
+	if err != nil || len(removed) != 1 || removed[0] != legacy {
+		t.Fatalf("owned legacy plugin: removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("owned legacy plugin still exists: %v", err)
 	}
 }

@@ -77,6 +77,13 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 		} else if statErr == nil {
 			fmt.Printf("   Removed OpenCode Phase plugin: %s\n", pluginPath)
 		}
+		removed, err := ai.RemoveLegacyOpenCodePlugins()
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove legacy OpenCode Phase plugin: %w", err))
+		}
+		for _, path := range removed {
+			fmt.Printf("   Removed OpenCode Phase plugin: %s\n", path)
+		}
 	}
 	if configPath, err := ai.DefaultDevinConfigPath(); err == nil && cfg != nil && cfg.HarnessConfigured(ai.HarnessDevin) {
 		if _, statErr := os.Stat(configPath); statErr == nil {

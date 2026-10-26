@@ -22,21 +22,37 @@ type OpenCodePluginInstall struct {
 	AdapterProtocol string
 }
 
-// DefaultOpenCodePluginPath returns OpenCode's documented global local-plugin
-// path. Local JavaScript plugins are loaded automatically on the next start.
+// DefaultOpenCodePluginPath returns OpenCode's global local-plugin path. OpenCode
+// resolves its global config directory with xdg-basedir, which is
+// ~/.config/opencode on every OS, Windows included, so the plugin sits beside
+// the skill OpenCode loads from the same directory. Local JavaScript plugins
+// are loaded automatically on the next start.
 func DefaultOpenCodePluginPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	if runtime.GOOS == "windows" {
-		configDirectory, err := os.UserConfigDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve user config directory: %w", err)
-		}
-		return filepath.Join(configDirectory, "opencode", "plugins", OpenCodePluginName+".js"), nil
-	}
 	return filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"), nil
+}
+
+// RemoveLegacyOpenCodePlugins removes Phase-owned copies of the plugin that
+// earlier builds installed where OpenCode never loads them (%AppData% on
+// Windows). Missing and foreign files are left alone. It returns the paths it
+// removed.
+func RemoveLegacyOpenCodePlugins() ([]string, error) {
+	if runtime.GOOS != "windows" {
+		return nil, nil
+	}
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		return nil, nil
+	}
+	legacy := filepath.Join(configDirectory, "opencode", "plugins", OpenCodePluginName+".js")
+	removed, err := removeOwnedOpenCodePluginFile(legacy, false)
+	if err != nil || !removed {
+		return nil, err
+	}
+	return []string{legacy}, nil
 }
 
 // InstallOpenCodePlugin installs a dependency-free, provider-agnostic plugin.

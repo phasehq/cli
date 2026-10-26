@@ -459,6 +459,11 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 				return nil, fmt.Errorf("install OpenCode Phase plugin: %w", err)
 			}
 			installed[harness] = "OpenCode Phase plugin installed to: " + installation.PluginPath
+			if removed, err := ai.RemoveLegacyOpenCodePlugins(); err != nil {
+				installed[harness] += fmt.Sprintf(" (could not remove an older copy OpenCode never loads: %v)", err)
+			} else if len(removed) > 0 {
+				installed[harness] += " (removed an older copy OpenCode never loads: " + strings.Join(removed, ", ") + ")"
+			}
 		case ai.HarnessDevin:
 			path, err := ai.DefaultDevinConfigPath()
 			if err != nil {
