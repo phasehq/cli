@@ -195,8 +195,7 @@ func TestUserCATrustWindowsUsesUserStore(t *testing.T) {
 			t.Fatalf("Windows inspection is not scoped to Phase-owned current-user roots; missing %q in %s", required, inspectionArgs)
 		}
 	}
-	// PowerShell runs -NonInteractive, where the Cert: drive refuses every
-	// removal from the current-user Root store.
+	// The Cert: drive refuses Root store removals under -NonInteractive.
 	if strings.Contains(inspectionArgs, "Remove-Item") {
 		t.Fatalf("Windows inspection must not delete through the Cert: drive: %s", inspectionArgs)
 	}
