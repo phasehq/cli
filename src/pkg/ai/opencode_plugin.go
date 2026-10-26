@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -22,19 +21,13 @@ type OpenCodePluginInstall struct {
 	AdapterProtocol string
 }
 
-// DefaultOpenCodePluginPath returns OpenCode's documented global local-plugin
-// path. Local JavaScript plugins are loaded automatically on the next start.
+// DefaultOpenCodePluginPath returns OpenCode's global local-plugin path.
+// OpenCode reads ~/.config/opencode on every platform, Windows included
+// (%USERPROFILE%\.config\opencode, not %APPDATA%).
 func DefaultOpenCodePluginPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	if runtime.GOOS == "windows" {
-		configDirectory, err := os.UserConfigDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve user config directory: %w", err)
-		}
-		return filepath.Join(configDirectory, "opencode", "plugins", OpenCodePluginName+".js"), nil
 	}
 	return filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"), nil
 }

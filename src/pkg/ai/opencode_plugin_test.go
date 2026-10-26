@@ -323,3 +323,17 @@ func TestInstalledOpenCodePluginExportsOneDefaultDefinition(t *testing.T) {
 		t.Fatalf("OpenCode plugin module shape: %v\n%s", err, output)
 	}
 }
+
+func TestDefaultOpenCodePluginPathUsesDotConfigOnEveryPlatform(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := DefaultOpenCodePluginPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"); path != want {
+		t.Fatalf("plugin path = %s, want %s", path, want)
+	}
+}
