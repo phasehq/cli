@@ -44,6 +44,22 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 	}
 }
 
+func TestShellInterpreterScriptsArePhaseManaged(t *testing.T) {
+	for command, want := range map[string]bool{
+		"pwsh -CommandWithArgs 'curl http://phase.invalid/v1/status' '; git push'":               true,
+		"pwsh -NoProfile -ExecutionPolicy Bypass -Command 'curl http://phase.invalid/v1/status'": true,
+		"powershell -c curl http://phase.invalid/v1/status":                                      true,
+		"pwsh -EncodedCommand YwB1AHIAbAA=":                                                      false,
+		"pwsh -File ./script.ps1":                                                                false,
+		"fish -c 'curl http://phase.invalid/v1/status'":                                          true,
+		"cmd /c curl http://phase.invalid/v1/status":                                             true,
+	} {
+		if got := shellCommandRequiresPhase(command); got != want {
+			t.Errorf("shellCommandRequiresPhase(%q) = %v, want %v", command, got, want)
+		}
+	}
+}
+
 func TestShellCommandMixesPhase(t *testing.T) {
 	for _, test := range []struct {
 		command string
@@ -66,6 +82,12 @@ func TestShellCommandMixesPhase(t *testing.T) {
 		{command: "powershell -c curl http://phase.invalid/v1/status ';' git push", want: true},
 		{command: "cmd /c curl http://phase.invalid/v1/status & git push", want: true},
 		{command: "sh -c 'curl http://phase.invalid/v1/status' ignored-arg0 'git push'", want: false},
+		{command: "fish -C 'curl http://phase.invalid/v1/status' -c 'git push'", want: true},
+		{command: "fish --init-command='git push' -c 'curl http://phase.invalid/v1/status'", want: true},
+		{command: "pwsh -CommandWithArgs 'curl http://phase.invalid/v1/status' '; git push'", want: false},
+		{command: "pwsh -cwa 'curl http://phase.invalid/v1/status; git push' arg", want: true},
+		{command: "pwsh -NoProfile -ExecutionPolicy Bypass -Command 'curl http://phase.invalid/v1/status' '; git push'", want: true},
+		{command: `cmd /d /s /c "curl http://phase.invalid/v1/status & git push"`, want: true},
 		{command: "sh -c 'curl http://phase.invalid/v1/status'", want: false},
 		{command: "sh -c 'git status && git push'", want: false},
 	} {

@@ -324,6 +324,9 @@ func reconcileClaudeEnvironment(directory string, health claudeRuntimeHealth) {
 	if status.PID > 0 && processIsAlive(status.PID) {
 		return
 	}
+	if claudeHookPhaseAIDisabled() {
+		return
+	}
 	content, err := os.ReadFile(claudeEnvironmentPath(directory))
 	if err != nil {
 		return
@@ -339,6 +342,10 @@ func reconcileClaudeEnvironment(directory string, health claudeRuntimeHealth) {
 	}
 	status.ProxyLive = false
 	_ = writeOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), status)
+	// disable may have removed the files while they were rewritten.
+	if claudeHookPhaseAIDisabled() {
+		_ = removeClaudeEnvironmentFiles()
+	}
 }
 
 // kickClaudeRuntime starts or repairs the hook-owned daemon with a bounded wait

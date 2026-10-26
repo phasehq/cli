@@ -492,42 +492,115 @@ func phaseWrapperExecutable(executable string) bool {
 		executable == "nice" || executable == "nohup" || executable == "time" || executable == "timeout"
 }
 
-// phaseInterpreterScript returns the script a shell interpreter (-c, -Command,
-// /c) or eval runs. ok is false when there is none or it is only known at run
-// time (a variable).
+// phaseInterpreterScript returns the script a shell interpreter or eval runs.
+// ok is false when there is none or it is only known at run time (a
+// variable, an encoded command, or a script file).
 func phaseInterpreterScript(executable string, words []string) (string, bool) {
-	if executable == "eval" {
-		if len(words) == 1 {
+	arguments := words[1:]
+	switch executable {
+	case "eval":
+		if len(arguments) == 0 {
 			return "", false
 		}
-		script := strings.Join(words[1:], " ")
-		if strings.Contains(script, "$") || strings.Contains(script, "%") {
+		return phaseLiteralScript(strings.Join(arguments, " "))
+	case "powershell", "pwsh":
+		return phasePowerShellScript(arguments)
+	case "cmd":
+		for index, argument := range arguments {
+			if flag := strings.ToLower(argument); flag == "/c" || flag == "/k" {
+				// cmd runs the rest of the line.
+				return phaseLiteralScript(strings.Join(arguments[index+1:], " "))
+			}
+		}
+		return "", false
+	case "fish":
+		// fish runs every -c / --command and -C / --init-command value.
+		var scripts []string
+		for index := 0; index < len(arguments); index++ {
+			argument := arguments[index]
+			if value, found := strings.CutPrefix(argument, "--command="); found {
+				scripts = append(scripts, value)
+				continue
+			}
+			if value, found := strings.CutPrefix(argument, "--init-command="); found {
+				scripts = append(scripts, value)
+				continue
+			}
+			takesScript := argument == "--command" || argument == "--init-command" ||
+				(strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") && strings.ContainsAny(argument[1:], "cC"))
+			if takesScript && index+1 < len(arguments) {
+				index++
+				scripts = append(scripts, arguments[index])
+			}
+		}
+		if len(scripts) == 0 {
 			return "", false
 		}
-		return script, true
+		return phaseLiteralScript(strings.Join(scripts, "; "))
 	}
-	for index, argument := range words[1:] {
+	// POSIX shells: the first non-option word after -c is the script; later
+	// words are positional parameters.
+	for index, argument := range arguments {
 		argument = strings.ToLower(argument)
-		isCommand := argument == "/c" || argument == "-command" ||
-			(strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") && strings.Contains(argument[1:], "c"))
-		if !isCommand {
+		if !strings.HasPrefix(argument, "-") || strings.HasPrefix(argument, "--") || !strings.Contains(argument[1:], "c") {
 			continue
 		}
-		script := index + 2
-		if script < len(words) && words[script] == "--" {
+		script := index + 1
+		if script < len(arguments) && arguments[script] == "--" {
 			script++
 		}
-		if script >= len(words) || strings.HasPrefix(words[script], "$") || strings.HasPrefix(words[script], "%") {
+		if script >= len(arguments) {
 			return "", false
 		}
-		// PowerShell -Command and cmd /c run every remaining word as the
-		// script; POSIX shells pass them as positional parameters instead.
-		if executable == "powershell" || executable == "pwsh" || executable == "cmd" {
-			return strings.Join(words[script:], " "), true
-		}
-		return words[script], true
+		return phaseLiteralScript(arguments[script])
 	}
 	return "", false
+}
+
+// phasePowerShellScript reads pwsh / powershell.exe arguments. -Command (and
+// any prefix of it, such as -c) runs every remaining word; -CommandWithArgs
+// runs only the next word and passes the rest as $args.
+func phasePowerShellScript(arguments []string) (string, bool) {
+	for index := 0; index < len(arguments); index++ {
+		flag := strings.ToLower(arguments[index])
+		if !strings.HasPrefix(flag, "-") && !strings.HasPrefix(flag, "/") {
+			continue
+		}
+		name := strings.TrimLeft(flag, "-/")
+		switch {
+		case name == "":
+			continue
+		case name == "cwa" || (len(name) > len("command") && strings.HasPrefix("commandwithargs", name)):
+			if index+1 >= len(arguments) {
+				return "", false
+			}
+			return phaseLiteralScript(arguments[index+1])
+		case strings.HasPrefix("command", name):
+			return phaseLiteralScript(strings.Join(arguments[index+1:], " "))
+		case name == "e" || name == "ec" || (len(name) > 2 && strings.HasPrefix("encodedcommand", name)),
+			name == "f" || strings.HasPrefix("file", name):
+			// An encoded command or a script file cannot be inspected here.
+			return "", false
+		case name == "ep" || name == "ex" || strings.HasPrefix("executionpolicy", name) && len(name) > 2,
+			name == "wd" || strings.HasPrefix("workingdirectory", name) && len(name) > 1,
+			name == "w" || strings.HasPrefix("windowstyle", name) && len(name) > 1,
+			strings.HasPrefix("configurationname", name) && len(name) > 6,
+			strings.HasPrefix("settingsfile", name) && len(name) > 1,
+			name == "of" || strings.HasPrefix("outputformat", name) && len(name) > 1,
+			name == "if" || strings.HasPrefix("inputformat", name) && len(name) > 1:
+			index++ // the flag's value
+		}
+	}
+	return "", false
+}
+
+// phaseLiteralScript rejects scripts that only exist at run time.
+func phaseLiteralScript(script string) (string, bool) {
+	script = strings.TrimSpace(script)
+	if script == "" || strings.HasPrefix(script, "$") || strings.HasPrefix(script, "%") {
+		return "", false
+	}
+	return script, true
 }
 
 // phaseNestedShellScript returns the script a command hands to another shell,
