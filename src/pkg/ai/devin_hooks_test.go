@@ -11,6 +11,7 @@ import (
 func TestInstallDevinHooksPreservesConfigAndIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, ".config", "devin", "config.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -59,6 +60,7 @@ func TestInstallDevinHooksPreservesConfigAndIsIdempotent(t *testing.T) {
 func TestUninstallDevinHooksPreservesUnrelatedHooks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, ".config", "devin", "config.json")
 	executable := filepath.Join(home, "phase")
 	if err := os.WriteFile(executable, []byte("phase"), 0o700); err != nil {
