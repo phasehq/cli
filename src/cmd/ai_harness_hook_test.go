@@ -1329,8 +1329,11 @@ func TestCursorWrapperFollowsItsWindowsTerminalProfile(t *testing.T) {
 			"terminal.integrated.profiles.windows": {"MSYS": {"path": "C:\\msys64\\usr\\bin\\bash.exe", "args": ["--login"]}},
 			"terminal.integrated.defaultProfile.windows": "MSYS",
 		}`, true},
-		"escaped value":   {`{"terminal.integrated.defaultProfile.windows": "Git \u0042ash"}`, true},
-		"url in a string": {`{"a": "http://x/y", "terminal.integrated.defaultProfile.windows": "Git Bash"}`, true},
+		"escaped value":                      {`{"terminal.integrated.defaultProfile.windows": "Git \u0042ash"}`, true},
+		"url in a string":                    {`{"a": "http://x/y", "terminal.integrated.defaultProfile.windows": "Git Bash"}`, true},
+		"line comment after trailing comma":  {"{\"terminal.integrated.defaultProfile.windows\": \"Git Bash\", // keep\n}", true},
+		"block comment after trailing comma": {`{"terminal.integrated.defaultProfile.windows": "Git Bash", /* keep */}`, true},
+		"array with trailing comment":        {`{"terminal.integrated.defaultProfile.windows": "Git Bash", "x": ["y", /* note */]}`, true},
 	} {
 		if got := cursorWindowsShellIsBashOrCmd([]byte(test.settings)); got != test.bashOrCmd {
 			t.Errorf("%s: bash or cmd = %v, want %v", name, got, test.bashOrCmd)
@@ -1351,4 +1354,45 @@ func TestCursorWrapperFollowsItsWindowsTerminalProfile(t *testing.T) {
 	if got := harnessWrapperCommandLine("windows", ai.HarnessCursor, arguments); !strings.HasPrefix(got, "& ") {
 		t.Fatalf("Cursor defaults to the PowerShell form: %s", got)
 	}
+}
+
+func TestCursorProfileExecutableResolvesVariablesAndFallbacks(t *testing.T) {
+	directory := t.TempDir()
+	powershell := filepath.Join(directory, "pwsh.exe")
+	bash := filepath.Join(directory, "bash.exe")
+	for _, path := range []string{powershell, bash} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PHASE_TEST_SHELL", powershell)
+	t.Setenv("PHASE_TEST_DIR", directory)
+	missing := filepath.Join(directory, "missing", "bash.exe")
+	for name, test := range map[string]struct {
+		path string
+		want string
+	}{
+		"whole path variable":           {mustJSON(t, "${env:PHASE_TEST_SHELL}"), powershell},
+		"directory variable":            {mustJSON(t, "${env:PHASE_TEST_DIR}/bash.exe"), directory + "/bash.exe"},
+		"missing candidate falls back":  {mustJSON(t, []string{missing, powershell}), powershell},
+		"first existing candidate wins": {mustJSON(t, []string{bash, powershell}), bash},
+		"unresolved variable":           {mustJSON(t, "${env:PHASE_TEST_UNSET_VARIABLE}"), ""},
+	} {
+		if got := cursorProfileExecutable(json.RawMessage(test.path)); got != test.want {
+			t.Errorf("%s: resolved %q, want %q", name, got, test.want)
+		}
+	}
+	settings := `{"terminal.integrated.profiles.windows": {"Work": {"path": "${env:PHASE_TEST_SHELL}"}}, "terminal.integrated.defaultProfile.windows": "Work"}`
+	if cursorWindowsShellIsBashOrCmd([]byte(settings)) {
+		t.Fatal("a variable pointing at pwsh must keep the PowerShell form")
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
