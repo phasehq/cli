@@ -414,6 +414,33 @@ func TestCompileProcessEnvironmentUsesExplicitCleanupAndSanitizesNoProxy(t *test
 	}
 }
 
+func TestApplyProcessEnvironmentKeepsInheritedNamesThatAreNotShellIdentifiers(t *testing.T) {
+	environment, err := ApplyProcessEnvironment([]string{
+		`ProgramFiles(x86)=C:\Program Files (x86)`,
+		`CommonProgramFiles(x86)=C:\Program Files (x86)\Common Files`,
+		"BASH_FUNC_module%%=() {  :\n}",
+		`=C:=C:\work`,
+		"AWS_PROFILE=ambient-admin",
+		"AWS_ACCESS_KEY_ID=ambient",
+	}, ProcessEnvironmentPlan{Set: map[string]string{"AWS_ACCESS_KEY_ID": "decoy"}, Unset: []string{"AWS_PROFILE"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows toolchains find Visual Studio through ProgramFiles(x86); the
+	// child must see it exactly as the parent does.
+	joined := "\n" + strings.Join(environment, "\n") + "\n"
+	for _, entry := range []string{`ProgramFiles(x86)=C:\Program Files (x86)`, `CommonProgramFiles(x86)=C:\Program Files (x86)\Common Files`, "BASH_FUNC_module%%=() {  :\n}", "AWS_ACCESS_KEY_ID=decoy"} {
+		if !strings.Contains(joined, "\n"+entry+"\n") {
+			t.Fatalf("missing %q in %q", entry, environment)
+		}
+	}
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, "=") || strings.HasPrefix(entry, "AWS_PROFILE=") || entry == "AWS_ACCESS_KEY_ID=ambient" {
+			t.Fatalf("hidden drive entry, unset or overridden value survived: %q", environment)
+		}
+	}
+}
+
 func TestCompileProcessEnvironmentRejectsBindingAndAdapterCollisions(t *testing.T) {
 	base := EnvironmentOptions{
 		ProxyURL: "http://phase:capability@127.0.0.1:9543", CABundlePath: "/bundle.pem",
