@@ -79,9 +79,10 @@ func TestInstallConfiguredAIHarnessAdaptersRefreshesEveryHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := installConfiguredAIHarnessAdapters(
+	installed, _, err := installConfiguredAIHarnessAdapters(
 		context.Background(),
 		[]string{ai.HarnessClaudeCode, ai.HarnessCursor},
+		ai.HarnessCursor,
 		source,
 	)
 	if err != nil {
@@ -141,6 +142,29 @@ func TestCodexHookReviewRequiredWhenExistingAdapterIsRefreshed(t *testing.T) {
 	}
 }
 
+func TestInstallConfiguredAIHarnessAdaptersSkipsCodexWithoutItsCLIUnlessSelected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PATH", t.TempDir())
+	source, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Codex was enabled earlier, and Cursor is added where codex is not on PATH.
+	harnesses := []string{ai.HarnessCodex, ai.HarnessCursor}
+	installed, skipped, err := installConfiguredAIHarnessAdapters(context.Background(), harnesses, ai.HarnessCursor, source)
+	if err != nil {
+		t.Fatalf("adding Cursor failed because the Codex CLI is missing: %v", err)
+	}
+	if installed[ai.HarnessCursor] == "" || installed[ai.HarnessCodex] != "" || skipped[ai.HarnessCodex] == "" {
+		t.Fatalf("installed=%v skipped=%v", installed, skipped)
+	}
+	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), harnesses, ai.HarnessCodex, source); err == nil || !strings.Contains(err.Error(), "PATH") {
+		t.Fatalf("enabling Codex itself must still require its CLI, got %v", err)
+	}
+}
+
 func TestAIEnableHarnessRestartMessagesRepeatOriginalPrompt(t *testing.T) {
 	tests := []struct {
 		harness string
@@ -174,7 +198,7 @@ func TestFormatAIEnableSummaryEndsWithNextSteps(t *testing.T) {
 	codex, _ := ai.SkillTargetByID(ai.HarnessCodex)
 	cfg := &config.AIConfig{Enabled: true, MaskSecretValues: true}
 	agent := &config.UserConfig{PrincipalType: config.PrincipalAgent}
-	summary := formatAIEnableSummary(codex, cfg, agent, map[string]string{ai.HarnessCodex: "Codex Phase discovery adapter installed: phase-ai-bootstrap@phase-cli-local"})
+	summary := formatAIEnableSummary(codex, cfg, agent, map[string]string{ai.HarnessCodex: "Codex Phase discovery adapter installed: phase-ai-bootstrap@phase-cli-local"}, nil)
 	if !strings.HasPrefix(summary, "\n") {
 		t.Fatalf("summary must be separated from the install log:\n%s", summary)
 	}
@@ -197,7 +221,7 @@ func TestFormatAIEnableSummaryEndsWithNextSteps(t *testing.T) {
 
 	claude, _ := ai.SkillTargetByID(ai.HarnessClaudeCode)
 	user := &config.UserConfig{PrincipalType: "user"}
-	summary = formatAIEnableSummary(claude, &config.AIConfig{Enabled: true}, user, map[string]string{ai.HarnessCodex: "refreshed"})
+	summary = formatAIEnableSummary(claude, &config.AIConfig{Enabled: true}, user, map[string]string{ai.HarnessCodex: "refreshed"}, nil)
 	for _, required := range []string{
 		"AI tools can read secret values", "No default Workflow yet", "👉 Before Claude Code can use Phase:",
 		"   " + aiEnableHarnessRestartMessage(ai.HarnessClaudeCode) + "\n", "automatically while the proxy runs",
@@ -210,19 +234,30 @@ func TestFormatAIEnableSummaryEndsWithNextSteps(t *testing.T) {
 	if strings.Contains(summary, "1. ") {
 		t.Fatalf("a single step must not be numbered:\n%s", summary)
 	}
-	summary = formatAIEnableSummary(claude, &config.AIConfig{Enabled: true, DefaultWorkflowID: "wf-123"}, nil, nil)
+	summary = formatAIEnableSummary(claude, &config.AIConfig{Enabled: true, DefaultWorkflowID: "wf-123"}, nil, nil, nil)
 	if !strings.Contains(summary, "Default Workflow: wf-123") {
 		t.Fatalf("default Workflow missing:\n%s", summary)
 	}
-	custom := formatAIEnableSummary(ai.SkillTarget{}, cfg, nil, nil)
+	custom := formatAIEnableSummary(ai.SkillTarget{}, cfg, nil, nil, nil)
 	if !strings.Contains(custom, "✅ Phase AI enabled\n") || !strings.Contains(custom, "phase ai run -- <agent>") || strings.Contains(custom, "Add another harness") {
 		t.Fatalf("custom-path summary:\n%s", custom)
 	}
 	copilot, _ := ai.SkillTargetByID(ai.HarnessCopilot)
-	if summary := formatAIEnableSummary(copilot, cfg, nil, nil); !strings.Contains(summary, "phase ai exec -- <command>") {
+	if summary := formatAIEnableSummary(copilot, cfg, nil, nil, nil); !strings.Contains(summary, "phase ai exec -- <command>") {
 		t.Fatalf("Copilot summary must point at phase ai exec:\n%s", summary)
 	}
-	t.Logf("codex summary:%s", formatAIEnableSummary(codex, cfg, agent, nil))
+	t.Logf("codex summary:%s", formatAIEnableSummary(codex, cfg, agent, nil, nil))
+}
+
+func TestFormatAIEnableSummaryReportsASkippedCodexRefresh(t *testing.T) {
+	cursor, _ := ai.SkillTargetByID(ai.HarnessCursor)
+	summary := formatAIEnableSummary(cursor, &config.AIConfig{Enabled: true}, nil,
+		map[string]string{ai.HarnessCursor: "Cursor Phase discovery adapter installed"},
+		map[string]string{ai.HarnessCodex: "the Codex CLI is not on PATH"})
+	if !strings.Contains(summary, "⚠️  Codex: its Phase plugin was not refreshed, because the Codex CLI is not on PATH.") ||
+		!strings.Contains(summary, "`phase ai enable --harness codex`") || strings.Contains(summary, "refreshed too") {
+		t.Fatalf("a skipped Codex refresh must be reported, without asking to re-trust hooks that did not change:\n%s", summary)
+	}
 }
 
 func TestTrustAttemptPossibleOnlyWhenADialogCanAppear(t *testing.T) {

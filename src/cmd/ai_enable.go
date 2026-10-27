@@ -245,7 +245,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		fmt.Printf("   Earlier Phase skill migrated to: %s\n", migratedPath)
 	}
 
-	installations, err := installConfiguredAIHarnessAdapters(cmd.Context(), cfg.ConfiguredHarnessIDs(), executable)
+	installations, skipped, err := installConfiguredAIHarnessAdapters(cmd.Context(), cfg.ConfiguredHarnessIDs(), selectedTarget.ID, executable)
 	if err != nil {
 		return err
 	}
@@ -263,7 +263,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	if user, err := config.GetDefaultUser(); err == nil {
 		principal = user
 	}
-	fmt.Print(formatAIEnableSummary(selectedTarget, cfg, principal, installations))
+	fmt.Print(formatAIEnableSummary(selectedTarget, cfg, principal, installations, skipped))
 	return nil
 }
 
@@ -280,7 +280,7 @@ func trustAttemptPossible(flagChanged, flagValue, interactive bool) bool {
 // line, then the steps the human must take before the harness can use Phase.
 // It is separated from the install log by blank lines so the next steps are
 // the last thing on screen.
-func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principal *config.UserConfig, installations map[string]string) string {
+func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principal *config.UserConfig, installations, skipped map[string]string) string {
 	var out strings.Builder
 	out.WriteString("\n")
 	if target.Name != "" {
@@ -323,6 +323,11 @@ func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principa
 		out.WriteString("\n")
 		out.WriteString(util.BoldYellow("⚠️  Codex: its Phase hook was refreshed too.") + "\n")
 		out.WriteString(fmt.Sprintf("   Open the Codex CLI, run /hooks, and trust every hook from %s@%s again.\n", ai.CodexBootstrapPluginName, ai.CodexBootstrapMarketplaceName))
+	}
+	if reason := skipped[ai.HarnessCodex]; reason != "" {
+		out.WriteString("\n")
+		out.WriteString(util.BoldYellow("⚠️  Codex: its Phase plugin was not refreshed, because "+reason+".") + "\n")
+		out.WriteString("   Rerun `phase ai enable --harness codex` with the Codex CLI on PATH to refresh it.\n")
 	}
 	if target.ID != "" {
 		out.WriteString("\n   Add another harness with `phase ai enable --harness <name>`; existing integrations stay installed.\n")
@@ -393,9 +398,13 @@ func claudeHookExecutablePath() (string, error) {
 
 // installConfiguredAIHarnessAdapters refreshes one major-versioned helper from
 // the current CLI, then points every thin harness adapter at it. Provider and
-// discovery changes do not require reinstalling those adapters.
-func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string, executable string) (map[string]string, error) {
+// discovery changes do not require reinstalling those adapters. A configured
+// Codex adapter is left as it was when the Codex CLI is not on PATH, unless
+// Codex is the selected harness, so adding another harness does not depend on
+// Codex; the second result maps each skipped harness to the reason.
+func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string, selected, executable string) (map[string]string, map[string]string, error) {
 	installed := make(map[string]string, len(harnesses))
+	skipped := make(map[string]string)
 	hookExecutable := executable
 	for _, harness := range harnesses {
 		if harness == ai.HarnessCopilot {
@@ -403,7 +412,7 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 		}
 		shared, err := ai.InstallSharedHookExecutable(executable)
 		if err != nil {
-			return nil, fmt.Errorf("install shared Phase Agent hook: %w", err)
+			return nil, nil, fmt.Errorf("install shared Phase Agent hook: %w", err)
 		}
 		hookExecutable = shared.ExecutablePath
 		break
@@ -413,50 +422,56 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 		case ai.HarnessClaudeCode:
 			path, err := ai.DefaultClaudeBootstrapPluginPath()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if err := ai.InstallClaudeBootstrapPlugin(path, hookExecutable); err != nil {
-				return nil, fmt.Errorf("install Claude Phase discovery adapter: %w", err)
+				return nil, nil, fmt.Errorf("install Claude Phase discovery adapter: %w", err)
 			}
 			installed[harness] = "Claude Phase discovery adapter installed to: " + path
 		case ai.HarnessCursor:
 			path, err := ai.DefaultCursorBootstrapPluginPath()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if err := ai.InstallCursorBootstrapPlugin(path, hookExecutable); err != nil {
-				return nil, fmt.Errorf("install Cursor Phase discovery adapter: %w", err)
+				return nil, nil, fmt.Errorf("install Cursor Phase discovery adapter: %w", err)
 			}
 			installed[harness] = "Cursor Phase discovery adapter installed to: " + path
 		case ai.HarnessCodex:
 			path, err := ai.DefaultCodexBootstrapMarketplacePath()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			codexExecutable, err := exec.LookPath("codex")
+			if err != nil && harness != selected {
+				// The adapter from an earlier enable still runs the shared
+				// helper refreshed above.
+				skipped[harness] = "the Codex CLI is not on PATH"
+				continue
+			}
 			if err != nil {
-				return nil, errors.New("Codex CLI is required to refresh the configured Phase plugin; install Codex, then rerun `phase ai enable`")
+				return nil, nil, errors.New("Codex CLI is required to install the Phase plugin; install Codex or add its CLI to PATH, then rerun `phase ai enable --harness codex`")
 			}
 			installation, err := ai.InstallCodexBootstrapPlugin(path, hookExecutable)
 			if err != nil {
-				return nil, fmt.Errorf("install Codex Phase discovery adapter: %w", err)
+				return nil, nil, fmt.Errorf("install Codex Phase discovery adapter: %w", err)
 			}
 			if err := ai.ActivateCodexBootstrapPlugin(ctx, codexExecutable, path); err != nil {
-				return nil, fmt.Errorf("activate Codex Phase discovery adapter: %w", err)
+				return nil, nil, fmt.Errorf("activate Codex Phase discovery adapter: %w", err)
 			}
 			installed[harness] = "Codex Phase discovery adapter installed: " + installation.Selector
 		case ai.HarnessOpenCode:
 			path, err := ai.DefaultOpenCodePluginPath()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			runtimeDirectory, err := claudeHookRuntimeDir()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			installation, err := ai.InstallOpenCodePlugin(path, hookExecutable, claudeEnvironmentJSONPath(runtimeDirectory))
 			if err != nil {
-				return nil, fmt.Errorf("install OpenCode Phase plugin: %w", err)
+				return nil, nil, fmt.Errorf("install OpenCode Phase plugin: %w", err)
 			}
 			installed[harness] = "OpenCode Phase plugin installed to: " + installation.PluginPath
 			if removed, err := ai.RemoveLegacyOpenCodePlugins(); err != nil {
@@ -467,20 +482,20 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 		case ai.HarnessDevin:
 			path, err := ai.DefaultDevinConfigPath()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			installation, err := ai.InstallDevinHooks(path, hookExecutable)
 			if err != nil {
-				return nil, fmt.Errorf("install Devin Phase discovery adapter: %w", err)
+				return nil, nil, fmt.Errorf("install Devin Phase discovery adapter: %w", err)
 			}
 			installed[harness] = "Devin Phase discovery adapter installed in: " + installation.ConfigPath
 		case ai.HarnessCopilot:
 			// Copilot consumes only the Agent Skill; it has no automatic helper.
 		default:
-			return nil, fmt.Errorf("unsupported configured Agent harness %q", harness)
+			return nil, nil, fmt.Errorf("unsupported configured Agent harness %q", harness)
 		}
 	}
-	return installed, nil
+	return installed, skipped, nil
 }
 
 func codexHookReviewRequired(installations map[string]string) bool {
