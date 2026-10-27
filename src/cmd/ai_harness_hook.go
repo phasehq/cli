@@ -705,10 +705,16 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 // harnessWrapperCommandLine quotes the wrapper for the shell the harness runs
 // it in. On Windows, Codex uses PowerShell, which needs the call operator to
 // run a quoted executable path; Cursor uses its default terminal profile.
+// Other harnesses may run it in PowerShell too, so they get the unquoted form
+// every Windows shell runs, and the double-quoted cmd form only when the path
+// cannot be written unquoted.
 func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
 	if goos == "windows" {
 		if harness == ai.HarnessCodex || (harness == ai.HarnessCursor && !cursorWindowsShellIsBashOrCmd(cursorWindowsSettings())) {
 			return quotePowerShellCommand(arguments)
+		}
+		if line, ok := ai.WindowsPlainCommand(arguments); ok {
+			return line
 		}
 		return quoteWindowsCommand(arguments)
 	}

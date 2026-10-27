@@ -36,6 +36,9 @@ func TestWindowsShellCommandRunsEverywhereOrFallsBack(t *testing.T) {
 	if got, want := WindowsShellCommand(quoted), `& 'C:\Users\O''Brien Smith\.phase\ai\bin\phase-hook-v1.exe' 'ai' '__codex-event' 'guard'`; got != want {
 		t.Fatalf("fallback command = %q, want %q", got, want)
 	}
+	if line, ok := WindowsPlainCommand(quoted); ok {
+		t.Fatalf("a path that still needs quoting has no plain form, got %q", line)
+	}
 }
 
 func TestCodexWindowsHookCommandsAvoidALeadingQuotedPath(t *testing.T) {

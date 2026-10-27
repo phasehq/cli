@@ -7,13 +7,27 @@ var shortPathName = windowsShortPathName
 
 // WindowsShellCommand renders a command line that runs the same way in every
 // shell a harness may use on Windows: PowerShell, cmd, Git Bash, or a direct
-// CreateProcess. Only an unquoted path with forward slashes followed by plain
-// words parses as a command in all of them: PowerShell reads a leading quoted
-// string as an expression, and cmd and bash reject PowerShell's & call
-// operator. A path with spaces or shell characters uses its 8.3 short name,
-// and failing that the PowerShell call-operator form, PowerShell being the
-// default shell of the Windows harnesses.
+// CreateProcess. That is the WindowsPlainCommand form when there is one, and
+// otherwise the PowerShell call-operator form, PowerShell being the default
+// shell of the Windows harnesses.
 func WindowsShellCommand(arguments []string) string {
+	if line, ok := WindowsPlainCommand(arguments); ok {
+		return line
+	}
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		quoted[index] = "'" + strings.ReplaceAll(argument, "'", "''") + "'"
+	}
+	return "& " + strings.Join(quoted, " ")
+}
+
+// WindowsPlainCommand renders the only command line form that PowerShell, cmd
+// and Git Bash all parse as a command: an unquoted path with forward slashes
+// followed by plain words. PowerShell reads a leading quoted string as an
+// expression, and cmd and bash reject PowerShell's & call operator. A path with
+// spaces or shell characters uses its 8.3 short name; it reports false when a
+// word still needs quoting.
+func WindowsPlainCommand(arguments []string) (string, bool) {
 	words := append([]string{strings.ReplaceAll(arguments[0], `\`, "/")}, arguments[1:]...)
 	if !windowsShellPlainWord(words[0]) {
 		if short, err := shortPathName(arguments[0]); err == nil && windowsShellPlainWord(strings.ReplaceAll(short, `\`, "/")) {
@@ -22,14 +36,10 @@ func WindowsShellCommand(arguments []string) string {
 	}
 	for _, word := range words {
 		if !windowsShellPlainWord(word) {
-			quoted := make([]string, len(arguments))
-			for index, argument := range arguments {
-				quoted[index] = "'" + strings.ReplaceAll(argument, "'", "''") + "'"
-			}
-			return "& " + strings.Join(quoted, " ")
+			return "", false
 		}
 	}
-	return strings.Join(words, " ")
+	return strings.Join(words, " "), true
 }
 
 // windowsExecutableForms lists the spellings of executable that a rendered
