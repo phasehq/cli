@@ -44,6 +44,22 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 	}
 }
 
+func TestShellInterpreterScriptsArePhaseManaged(t *testing.T) {
+	for command, want := range map[string]bool{
+		"pwsh -CommandWithArgs 'curl http://phase.invalid/v1/status' '; git push'":               true,
+		"pwsh -NoProfile -ExecutionPolicy Bypass -Command 'curl http://phase.invalid/v1/status'": true,
+		"powershell -c curl http://phase.invalid/v1/status":                                      true,
+		"pwsh -EncodedCommand YwB1AHIAbAA=":                                                      false,
+		"pwsh -File ./script.ps1":                                                                false,
+		"fish -c 'curl http://phase.invalid/v1/status'":                                          true,
+		"cmd /c curl http://phase.invalid/v1/status":                                             true,
+	} {
+		if got := shellCommandRequiresPhase(command); got != want {
+			t.Errorf("shellCommandRequiresPhase(%q) = %v, want %v", command, got, want)
+		}
+	}
+}
+
 func TestShellCommandUsesPowerShellWeb(t *testing.T) {
 	for _, test := range []struct {
 		command string
@@ -78,6 +94,28 @@ func TestShellCommandMixesPhase(t *testing.T) {
 		{command: "git status && curl http://phase.invalid/v1/capabilities", want: true},
 		{command: `echo "$(curl http://phase.invalid/v1/status)"`, want: true},
 		{command: "phase ai exec -- aws sts get-caller-identity && git status", want: false},
+		// A Phase call and ordinary work hidden in one nested script.
+		{command: "sh -c 'curl http://phase.invalid/v1/status && git push'", want: true},
+		{command: "bash -lc 'curl -s http://phase.invalid/v1/status; rm -rf ./build'", want: true},
+		{command: "env FOO=1 sudo bash -c 'curl http://phase.invalid/v1/status | sh'", want: true},
+		{command: "eval 'curl http://phase.invalid/v1/status; git push'", want: true},
+		{command: `cmd /c "curl http://phase.invalid/v1/status & git push"`, want: true},
+		{command: "pwsh -Command 'curl http://phase.invalid/v1/status' '; git push'", want: true},
+		{command: "powershell -c curl http://phase.invalid/v1/status ';' git push", want: true},
+		{command: "cmd /c curl http://phase.invalid/v1/status & git push", want: true},
+		{command: "sh -c 'curl http://phase.invalid/v1/status' ignored-arg0 'git push'", want: false},
+		{command: "fish -C 'curl http://phase.invalid/v1/status' -c 'git push'", want: true},
+		{command: "fish --init-command='git push' -c 'curl http://phase.invalid/v1/status'", want: true},
+		{command: "fish -C 'curl http://phase.invalid/v1/status #' -c 'git push'", want: true},
+		{command: "env X=1 timeout 5 fish -C 'curl http://phase.invalid/v1/status #' -c 'git push'", want: true},
+		{command: "fish -C 'curl http://phase.invalid/v1/status' -c'git push'", want: true},
+		{command: "fish -ic 'curl http://phase.invalid/v1/status'", want: false},
+		{command: "pwsh -CommandWithArgs 'curl http://phase.invalid/v1/status' '; git push'", want: false},
+		{command: "pwsh -cwa 'curl http://phase.invalid/v1/status; git push' arg", want: true},
+		{command: "pwsh -NoProfile -ExecutionPolicy Bypass -Command 'curl http://phase.invalid/v1/status' '; git push'", want: true},
+		{command: `cmd /d /s /c "curl http://phase.invalid/v1/status & git push"`, want: true},
+		{command: "sh -c 'curl http://phase.invalid/v1/status'", want: false},
+		{command: "sh -c 'git status && git push'", want: false},
 	} {
 		if got := shellCommandMixesPhase(test.command); got != test.want {
 			t.Errorf("shellCommandMixesPhase(%q) = %v, want %v", test.command, got, test.want)

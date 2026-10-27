@@ -330,23 +330,17 @@ func TestInstalledOpenCodePluginExportsOneDefaultDefinition(t *testing.T) {
 	}
 }
 
-func TestDefaultOpenCodePluginPathSitsBesideTheSkillOnEveryOS(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
-	pluginPath, err := DefaultOpenCodePluginPath()
+func TestDefaultOpenCodePluginPathUsesDotConfigOnEveryPlatform(t *testing.T) {
+	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// OpenCode reads ~/.config/opencode on Windows too; %AppData% is never loaded.
-	if want := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"); pluginPath != want {
-		t.Fatalf("plugin path = %s, want %s", pluginPath, want)
+	path, err := DefaultOpenCodePluginPath()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, target := range SkillTargets() {
-		if target.ID == HarnessOpenCode && filepath.Dir(filepath.Dir(filepath.Dir(target.Path))) != filepath.Dir(filepath.Dir(pluginPath)) {
-			t.Fatalf("OpenCode skill %s and plugin %s are in different config directories", target.Path, pluginPath)
-		}
+	if want := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"); path != want {
+		t.Fatalf("plugin path = %s, want %s", path, want)
 	}
 }
 

@@ -223,6 +223,7 @@ func TestRequestClaudeRuntimeShutdownRejectsInvalidAcknowledgement(t *testing.T)
 }
 
 func TestClaudeDaemonRecyclesSameProcessAndGenerationOnOneEngine(t *testing.T) {
+	withClaudeHookTestConfig(t, true)
 	directory := withClaudeHookRuntimeDirectory(t)
 	const generation = "generation-one"
 	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
@@ -1036,5 +1037,132 @@ func TestClaudeSessionLeasesAreBoundedAndExtendedByActivity(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expired lease was not pruned: %v", err)
+	}
+}
+
+// disablingRecycleRuntime publishes one session, then runs phase ai disable
+// (config saved disabled, environment files removed) before the session
+// recycles, the window in which a daemon used to reopen and republish.
+type disablingRecycleRuntime struct {
+	directory string
+	calls     int
+}
+
+func (runtime *disablingRecycleRuntime) ServeManaged(_ context.Context, engine airuntime.Engine) error {
+	runtime.calls++
+	proxyEngine := engine.(*aiproxy.Engine)
+	proxyEngine.OnStarted(aiproxy.Endpoints{ProcessEnvironment: phaseproxy.ProcessEnvironmentPlan{
+		Set: map[string]string{"PHASE_AI_ENABLED": "1", "HTTP_PROXY": "http://phase:cycle@127.0.0.1:9543", "AWS_ACCESS_KEY_ID": "AKIADECOY"},
+	}, Connections: []aiproxy.EndpointConnection{{ConnectionID: "conn-1", Name: "aws-prod", ServiceType: "aws", Protocol: "http"}}})
+	if runtime.calls > 1 {
+		return errors.New("a disabled daemon opened another session")
+	}
+	cfg := config.LoadAIConfig()
+	cfg.Enabled = false
+	if err := config.SaveAIConfig(cfg); err != nil {
+		return err
+	}
+	if err := removeClaudeEnvironmentFiles(); err != nil {
+		return err
+	}
+	return fmt.Errorf("first cycle: %w", airuntime.ErrSessionReprovisionRequired)
+}
+
+func TestClaudeDaemonStopsInsteadOfRecyclingAfterDisable(t *testing.T) {
+	withClaudeHookTestConfig(t, true)
+	directory := withClaudeHookRuntimeDirectory(t)
+	const generation = "generation-disable"
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
+		Version: claudeRuntimeStateVersion, Generation: generation, PID: os.Getpid(), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	managed := &disablingRecycleRuntime{directory: directory}
+	originalRuntime, originalEngine := claudeHookNewRuntime, claudeHookNewProxyEngine
+	originalFingerprint, originalScopeFingerprint := claudeHookFingerprint, claudeHookScopeFingerprint
+	claudeHookNewRuntime = func() (claudeManagedRuntime, error) { return managed, nil }
+	claudeHookNewProxyEngine = aiproxy.New
+	claudeHookFingerprint = func() (string, error) { return "binding-one", nil }
+	claudeHookScopeFingerprint = func() (string, error) { return "scope-one", nil }
+	t.Cleanup(func() {
+		claudeHookNewRuntime, claudeHookNewProxyEngine = originalRuntime, originalEngine
+		claudeHookFingerprint, claudeHookScopeFingerprint = originalFingerprint, originalScopeFingerprint
+	})
+
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	command.Flags().String("generation", "", "")
+	if err := command.Flags().Set("generation", generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAIClaudeDaemon(command, nil); err != nil {
+		t.Fatalf("daemon result = %v", err)
+	}
+	if managed.calls != 1 {
+		t.Fatalf("sessions opened = %d, want 1", managed.calls)
+	}
+	for _, path := range []string{claudeEnvironmentPath(directory), claudeEnvironmentJSONPath(directory), claudeEnvironmentStatusPath(directory)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("disabled daemon recreated %s (stat err %v)", path, err)
+		}
+	}
+}
+
+func TestClaudeDaemonPublishesNothingWhenAlreadyDisabled(t *testing.T) {
+	withClaudeHookTestConfig(t, false)
+	directory := withClaudeHookRuntimeDirectory(t)
+	const generation = "generation-disabled-start"
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
+		Version: claudeRuntimeStateVersion, Generation: generation, PID: os.Getpid(), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	managed := &claudeRecycleTestRuntime{directory: directory, generation: generation}
+	originalRuntime, originalEngine := claudeHookNewRuntime, claudeHookNewProxyEngine
+	originalFingerprint, originalScopeFingerprint := claudeHookFingerprint, claudeHookScopeFingerprint
+	claudeHookNewRuntime = func() (claudeManagedRuntime, error) { return managed, nil }
+	claudeHookNewProxyEngine = aiproxy.New
+	claudeHookFingerprint = func() (string, error) { return "binding-one", nil }
+	claudeHookScopeFingerprint = func() (string, error) { return "scope-one", nil }
+	t.Cleanup(func() {
+		claudeHookNewRuntime, claudeHookNewProxyEngine = originalRuntime, originalEngine
+		claudeHookFingerprint, claudeHookScopeFingerprint = originalFingerprint, originalScopeFingerprint
+	})
+
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	command.Flags().String("generation", "", "")
+	if err := command.Flags().Set("generation", generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAIClaudeDaemon(command, nil); err != nil {
+		t.Fatalf("daemon result = %v", err)
+	}
+	if _, err := os.Stat(claudeEnvironmentPath(directory)); !os.IsNotExist(err) {
+		t.Fatalf("a disabled daemon published an environment (stat err %v)", err)
+	}
+}
+
+func TestActiveClaudeLeasesKeepsLeaseRenewedAfterTheScanTime(t *testing.T) {
+	directory := withClaudeHookRuntimeDirectory(t)
+	path, err := claudeSessionLeasePath(directory, "codex:renewed-after-tick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanTime := time.Now().UTC()
+	renewed := claudeSessionLease{
+		Version: claudeRuntimeStateVersion, Generation: "generation-one",
+		UpdatedAt: scanTime.Add(50 * time.Millisecond), ExpiresAt: scanTime.Add(time.Minute), Purpose: harnessCommandLeasePurpose,
+	}
+	if err := writeOwnerOnlyJSON(path, renewed); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	_, commands, err := activeClaudeLeases(directory, "generation-one", scanTime)
+	if err != nil || !commands {
+		t.Fatalf("a lease renewed after the scan time was dropped: commands=%v err=%v", commands, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("renewed lease was pruned: %v", err)
 	}
 }

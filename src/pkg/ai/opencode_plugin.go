@@ -22,11 +22,9 @@ type OpenCodePluginInstall struct {
 	AdapterProtocol string
 }
 
-// DefaultOpenCodePluginPath returns OpenCode's global local-plugin path. OpenCode
-// resolves its global config directory with xdg-basedir, which is
-// ~/.config/opencode on every OS, Windows included, so the plugin sits beside
-// the skill OpenCode loads from the same directory. Local JavaScript plugins
-// are loaded automatically on the next start.
+// DefaultOpenCodePluginPath returns OpenCode's global local-plugin path.
+// OpenCode reads ~/.config/opencode on every platform, Windows included
+// (%USERPROFILE%\.config\opencode, not %APPDATA%).
 func DefaultOpenCodePluginPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

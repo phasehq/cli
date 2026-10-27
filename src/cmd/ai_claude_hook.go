@@ -511,6 +511,11 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 		cycleStarted := false
 		var publishErr error
 		engine.OnStarted = func(endpoints aiproxy.Endpoints) {
+			if claudeHookPhaseAIDisabled() {
+				publishErr = errClaudeHookPhaseAIDisabled
+				cycleCancel()
+				return
+			}
 			proxyURL := firstMapValue(endpoints.ProcessEnvironment.Set, "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
 			if proxyURL == "" {
 				publishErr = errors.New("Phase AI runtime proxy is unavailable")
@@ -530,6 +535,14 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 			lastPlan, lastConnections = endpoints.ProcessEnvironment, endpoints.Connections
 			if err := writeClaudeEnvironment(directory, os.Getpid(), generation, state.StartedAt, lastPlan, lastConnections, true); err != nil {
 				publishErr = err
+				cycleCancel()
+				return
+			}
+			// disable may have run while the file was written; it removes
+			// the files after saving the config, so a second look is enough.
+			if claudeHookPhaseAIDisabled() {
+				_ = removeClaudeEnvironmentFiles()
+				publishErr = errClaudeHookPhaseAIDisabled
 				cycleCancel()
 				return
 			}
@@ -553,15 +566,31 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 		err = runtimeInstance.ServeManaged(cycleContext, engine)
 		cycleCancel()
 		_ = removeClaudeStateIfGeneration(statePath, generation)
+		disabled := claudeHookPhaseAIDisabled()
 		if cycleStarted {
-			// The listener is gone while this cycle recycles or the daemon exits.
-			// Retire proxy routing immediately; decoys stay (see renderClaudeEnvironment).
-			_ = writeClaudeEnvironment(directory, os.Getpid(), generation, time.Time{}, lastPlan, lastConnections, false)
+			if disabled {
+				// phase ai disable may already have removed these files; never
+				// recreate them, or shells keep sourcing decoys.
+				_ = removeClaudeEnvironmentFiles()
+			} else {
+				// The listener is gone while this cycle recycles or the daemon exits.
+				// Retire proxy routing immediately; decoys stay (see renderClaudeEnvironment).
+				_ = writeClaudeEnvironment(directory, os.Getpid(), generation, time.Time{}, lastPlan, lastConnections, false)
+				if claudeHookPhaseAIDisabled() {
+					disabled = true
+					_ = removeClaudeEnvironmentFiles()
+				}
+			}
 		}
 		if publishErr != nil {
 			err = publishErr
 		}
-		if serveContext.Err() != nil {
+		if serveContext.Err() != nil || errors.Is(publishErr, errClaudeHookPhaseAIDisabled) {
+			stopReason = "shutdown"
+			return nil
+		}
+		if disabled && (cycleStarted || !refreshDeadline.IsZero()) {
+			// Disabled while serving or recycling: do not open another session.
 			stopReason = "shutdown"
 			return nil
 		}
@@ -1033,6 +1062,21 @@ func removeClaudeSessionLease(sessionID string) error {
 	})
 }
 
+// errClaudeHookPhaseAIDisabled stops a daemon cycle that would publish an
+// environment after phase ai disable.
+var errClaudeHookPhaseAIDisabled = errors.New("Phase AI is disabled")
+
+// claudeHookPhaseAIDisabled reports whether phase ai disable has run (or the
+// setup was removed). An unreadable or half-written config is not taken as
+// disabled, so a concurrent enable cannot stop a healthy daemon.
+func claudeHookPhaseAIDisabled() bool {
+	if _, err := os.Stat(config.AIConfigPath); errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	cfg := config.LoadAIConfig()
+	return cfg != nil && !cfg.Enabled
+}
+
 func monitorClaudeSessionLeases(ctx context.Context, cancel context.CancelFunc, directory, generation string) {
 	ticker := time.NewTicker(claudeHookLeasePoll)
 	defer ticker.Stop()
@@ -1042,6 +1086,10 @@ func monitorClaudeSessionLeases(ctx context.Context, cancel context.CancelFunc, 
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			if claudeHookPhaseAIDisabled() {
+				cancel()
+				return
+			}
 			active, err := hasActiveClaudeSessionLease(directory, generation, now)
 			if err != nil {
 				emptySince = time.Time{}
@@ -1087,9 +1135,15 @@ func activeClaudeLeases(directory, generation string, now time.Time) (bool, bool
 					}
 					return nil
 				}
-				if lease.Version != claudeRuntimeStateVersion || lease.UpdatedAt.IsZero() || lease.UpdatedAt.After(now) ||
-					now.Sub(lease.UpdatedAt) > claudeHookLeaseMaxAge ||
-					(!lease.ExpiresAt.IsZero() && !now.Before(lease.ExpiresAt)) ||
+				// A lease renewed after the caller took now is legitimate; judge
+				// it against the time the lock was actually acquired.
+				checkedAt := now
+				if current := time.Now(); current.After(checkedAt) {
+					checkedAt = current
+				}
+				if lease.Version != claudeRuntimeStateVersion || lease.UpdatedAt.IsZero() || lease.UpdatedAt.After(checkedAt) ||
+					checkedAt.Sub(lease.UpdatedAt) > claudeHookLeaseMaxAge ||
+					(!lease.ExpiresAt.IsZero() && !checkedAt.Before(lease.ExpiresAt)) ||
 					(lease.Purpose != "" && lease.Purpose != harnessCommandLeasePurpose) {
 					_ = os.Remove(path)
 					return nil

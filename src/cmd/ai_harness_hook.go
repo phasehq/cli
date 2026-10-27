@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -698,16 +699,214 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 	encodedLease := base64.RawURLEncoding.EncodeToString([]byte(leaseID))
 	encodedCommand := base64.RawURLEncoding.EncodeToString([]byte(original))
 	arguments := []string{executable, "ai", "__harness-exec", "--harness", harness, "--lease", encodedLease, "--command", encodedCommand}
-	if runtime.GOOS == "windows" {
-		// The harness runs this in PowerShell, cmd, or Git Bash; see
-		// ai.WindowsShellCommand for the one form all of them parse.
-		return ai.WindowsShellCommand(arguments), nil
+	return harnessWrapperCommandLine(runtime.GOOS, harness, arguments), nil
+}
+
+// harnessWrapperCommandLine quotes the wrapper for the shell the harness runs
+// it in. On Windows, Codex uses PowerShell, which needs the call operator to
+// run a quoted executable path; Cursor uses its default terminal profile.
+func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
+	if goos == "windows" {
+		if harness == ai.HarnessCodex || (harness == ai.HarnessCursor && !cursorWindowsShellIsBashOrCmd(cursorWindowsSettings())) {
+			return quotePowerShellCommand(arguments)
+		}
+		return quoteWindowsCommand(arguments)
 	}
 	quoted := make([]string, len(arguments))
 	for index, argument := range arguments {
 		quoted[index] = quotePOSIXShellValue(argument)
 	}
-	return strings.Join(quoted, " "), nil
+	return strings.Join(quoted, " ")
+}
+
+// cursorWindowsSettings returns Cursor's user settings.json, or nil.
+var cursorWindowsSettings = func() []byte {
+	directory, err := os.UserConfigDir()
+	if err != nil {
+		return nil
+	}
+	settings, err := os.ReadFile(filepath.Join(directory, "Cursor", "User", "settings.json"))
+	if err != nil {
+		return nil
+	}
+	return settings
+}
+
+// cursorWindowsShellIsBashOrCmd reports whether Cursor's default Windows
+// terminal profile is a POSIX shell or cmd, which cannot parse the PowerShell
+// call operator; the double-quoted form works in both. Unset or unreadable
+// settings mean PowerShell, Cursor's default.
+func cursorWindowsShellIsBashOrCmd(settings []byte) bool {
+	var parsed map[string]json.RawMessage
+	if len(settings) == 0 || json.Unmarshal(stripJSONComments(settings), &parsed) != nil {
+		return false
+	}
+	var name string
+	if json.Unmarshal(parsed["terminal.integrated.defaultProfile.windows"], &name) != nil || name == "" {
+		return false
+	}
+	var profiles map[string]struct {
+		Path   json.RawMessage `json:"path"`
+		Source string          `json:"source"`
+	}
+	_ = json.Unmarshal(parsed["terminal.integrated.profiles.windows"], &profiles)
+	if profile, defined := profiles[name]; defined {
+		if path := cursorProfileExecutable(profile.Path); path != "" {
+			shell := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(path, `\`, "/"))), ".exe")
+			return shell != "pwsh" && shell != "powershell"
+		}
+		switch strings.ToLower(strings.TrimSpace(profile.Source)) {
+		case "git bash":
+			return true
+		case "powershell":
+			return false
+		}
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(name, "bash") || name == "command prompt" || name == "cmd"
+}
+
+var cursorProfileVariable = regexp.MustCompile(`\$\{(env:[A-Za-z_][A-Za-z0-9_]*|userHome)\}`)
+
+// cursorProfileExecutable resolves a profile's path like the terminal does:
+// ${env:NAME} and ${userHome} are substituted, and from a list of candidates
+// the first one that exists wins. "" means it cannot be resolved here.
+func cursorProfileExecutable(raw json.RawMessage) string {
+	var candidates []string
+	var single string
+	if json.Unmarshal(raw, &single) == nil {
+		candidates = []string{single}
+	} else if json.Unmarshal(raw, &candidates) != nil {
+		return ""
+	}
+	resolved := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = cursorProfileVariable.ReplaceAllStringFunc(candidate, func(variable string) string {
+			name := strings.TrimSuffix(strings.TrimPrefix(variable, "${"), "}")
+			if name == "userHome" {
+				home, _ := os.UserHomeDir()
+				return home
+			}
+			return os.Getenv(strings.TrimPrefix(name, "env:"))
+		})
+		if candidate == "" || strings.Contains(candidate, "${") {
+			continue
+		}
+		if len(candidates) == 1 {
+			return candidate
+		}
+		resolved = append(resolved, candidate)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if len(resolved) > 0 {
+		return resolved[0]
+	}
+	return ""
+}
+
+// stripJSONComments turns JSONC (comments, trailing commas) into JSON.
+// Comments go first so a comment after a trailing comma cannot hide it.
+func stripJSONComments(source []byte) []byte {
+	return stripJSONTrailingCommas(stripJSONCommentText(source))
+}
+
+func stripJSONCommentText(source []byte) []byte {
+	out := make([]byte, 0, len(source))
+	inString := false
+	for index := 0; index < len(source); index++ {
+		character := source[index]
+		if inString {
+			out = append(out, character)
+			if character == '\\' && index+1 < len(source) {
+				index++
+				out = append(out, source[index])
+			} else if character == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch {
+		case character == '"':
+			inString = true
+			out = append(out, character)
+		case character == '/' && index+1 < len(source) && source[index+1] == '/':
+			for index < len(source) && source[index] != '\n' {
+				index++
+			}
+			index--
+		case character == '/' && index+1 < len(source) && source[index+1] == '*':
+			index += 2
+			for index+1 < len(source) && !(source[index] == '*' && source[index+1] == '/') {
+				index++
+			}
+			index++
+			out = append(out, ' ')
+		default:
+			out = append(out, character)
+		}
+	}
+	return out
+}
+
+func stripJSONTrailingCommas(source []byte) []byte {
+	out := make([]byte, 0, len(source))
+	inString := false
+	for index := 0; index < len(source); index++ {
+		character := source[index]
+		if inString {
+			out = append(out, character)
+			if character == '\\' && index+1 < len(source) {
+				index++
+				out = append(out, source[index])
+			} else if character == '"' {
+				inString = false
+			}
+			continue
+		}
+		if character == '"' {
+			inString = true
+		}
+		if character == ',' {
+			next := index + 1
+			for next < len(source) && (source[next] == ' ' || source[next] == '\t' || source[next] == '\n' || source[next] == '\r') {
+				next++
+			}
+			if next < len(source) && (source[next] == '}' || source[next] == ']') {
+				continue
+			}
+		}
+		out = append(out, character)
+	}
+	return out
+}
+
+// quotePowerShellCommand renders `& 'exe' 'arg' ...`. PowerShell treats the
+// typographic single quotes as quote characters too, so each is doubled.
+func quotePowerShellCommand(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		var builder strings.Builder
+		builder.WriteByte('\'')
+		for _, character := range argument {
+			if character == '\'' || character == '\u2018' || character == '\u2019' || character == '\u201A' || character == '\u201B' {
+				builder.WriteRune(character)
+			}
+			builder.WriteRune(character)
+		}
+		builder.WriteByte('\'')
+		quoted[index] = builder.String()
+	}
+	return "& " + strings.Join(quoted, " ")
+}
+
+func quoteWindowsCommand(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		quoted[index] = `"` + strings.ReplaceAll(argument, `"`, `\"`) + `"`
+	}
+	return strings.Join(quoted, " ")
 }
 
 type harnessRuntimeBinding struct {

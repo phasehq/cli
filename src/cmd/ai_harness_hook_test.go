@@ -1323,3 +1323,124 @@ func TestOpenCodeSessionKickRegistersLeaseAndNeverFails(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
+	originalSettings := cursorWindowsSettings
+	t.Cleanup(func() { cursorWindowsSettings = originalSettings })
+	cursorWindowsSettings = func() []byte { return nil }
+	arguments := []string{`C:\Users\O'Brien Ann\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
+	for _, harness := range []string{ai.HarnessCodex, ai.HarnessCursor} {
+		got := harnessWrapperCommandLine("windows", harness, arguments)
+		want := `& 'C:\Users\O''Brien Ann\.phase\ai\bin\phase-hook-v1.exe' 'ai' '__harness-exec' '--lease' 'Y29kZXg6YQ'`
+		if got != want {
+			t.Fatalf("%s on Windows:\n got %s\nwant %s", harness, got, want)
+		}
+	}
+	if got := quotePowerShellCommand([]string{"a\u2019b"}); got != "& 'a\u2019\u2019b'" {
+		t.Fatalf("typographic quote not doubled: %s", got)
+	}
+	if got := harnessWrapperCommandLine("windows", ai.HarnessDevin, arguments); !strings.HasPrefix(got, `"C:\Users`) {
+		t.Fatalf("Devin on Windows keeps the cmd form: %s", got)
+	}
+	if got := harnessWrapperCommandLine("linux", ai.HarnessCodex, []string{"/home/o'brien/phase", "ai"}); got != `'/home/o'"'"'brien/phase' 'ai'` {
+		t.Fatalf("POSIX form = %s", got)
+	}
+}
+
+func TestCursorWrapperFollowsItsWindowsTerminalProfile(t *testing.T) {
+	for name, test := range map[string]struct {
+		settings  string
+		bashOrCmd bool
+	}{
+		"unset":          {``, false},
+		"powershell":     {`{"terminal.integrated.defaultProfile.windows": "PowerShell"}`, false},
+		"git bash":       {`{"terminal.integrated.defaultProfile.windows": "Git Bash"}`, true},
+		"command prompt": {`{"terminal.integrated.defaultProfile.windows": "Command Prompt"}`, true},
+		"commented default": {`{
+			// "terminal.integrated.defaultProfile.windows": "Git Bash",
+			/* "terminal.integrated.defaultProfile.windows": "Command Prompt", */
+			"terminal.integrated.defaultProfile.windows": "PowerShell",
+		}`, false},
+		"custom bash source": {`{
+			"terminal.integrated.profiles.windows": {"Development": {"source": "Git Bash"}},
+			"terminal.integrated.defaultProfile.windows": "Development"
+		}`, true},
+		"misleading name, PowerShell source": {`{
+			"terminal.integrated.profiles.windows": {"Bash Migration": {"source": "PowerShell"}},
+			"terminal.integrated.defaultProfile.windows": "Bash Migration"
+		}`, false},
+		"custom path": {`{
+			"terminal.integrated.profiles.windows": {"Work": {"path": ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"]}},
+			"terminal.integrated.defaultProfile.windows": "Work"
+		}`, false},
+		"custom bash path": {`{
+			"terminal.integrated.profiles.windows": {"MSYS": {"path": "C:\\msys64\\usr\\bin\\bash.exe", "args": ["--login"]}},
+			"terminal.integrated.defaultProfile.windows": "MSYS",
+		}`, true},
+		"escaped value":                      {`{"terminal.integrated.defaultProfile.windows": "Git \u0042ash"}`, true},
+		"url in a string":                    {`{"a": "http://x/y", "terminal.integrated.defaultProfile.windows": "Git Bash"}`, true},
+		"line comment after trailing comma":  {"{\"terminal.integrated.defaultProfile.windows\": \"Git Bash\", // keep\n}", true},
+		"block comment after trailing comma": {`{"terminal.integrated.defaultProfile.windows": "Git Bash", /* keep */}`, true},
+		"array with trailing comment":        {`{"terminal.integrated.defaultProfile.windows": "Git Bash", "x": ["y", /* note */]}`, true},
+	} {
+		if got := cursorWindowsShellIsBashOrCmd([]byte(test.settings)); got != test.bashOrCmd {
+			t.Errorf("%s: bash or cmd = %v, want %v", name, got, test.bashOrCmd)
+		}
+	}
+
+	originalSettings := cursorWindowsSettings
+	t.Cleanup(func() { cursorWindowsSettings = originalSettings })
+	arguments := []string{`C:\\Users\\phase\\phase-hook-v1.exe`, "ai"}
+	cursorWindowsSettings = func() []byte { return []byte(`{"terminal.integrated.defaultProfile.windows": "Git Bash"}`) }
+	if got := harnessWrapperCommandLine("windows", ai.HarnessCursor, arguments); strings.HasPrefix(got, "& ") {
+		t.Fatalf("Cursor on Git Bash got the PowerShell form: %s", got)
+	}
+	if got := harnessWrapperCommandLine("windows", ai.HarnessCodex, arguments); !strings.HasPrefix(got, "& ") {
+		t.Fatalf("Codex must keep the PowerShell form: %s", got)
+	}
+	cursorWindowsSettings = func() []byte { return nil }
+	if got := harnessWrapperCommandLine("windows", ai.HarnessCursor, arguments); !strings.HasPrefix(got, "& ") {
+		t.Fatalf("Cursor defaults to the PowerShell form: %s", got)
+	}
+}
+
+func TestCursorProfileExecutableResolvesVariablesAndFallbacks(t *testing.T) {
+	directory := t.TempDir()
+	powershell := filepath.Join(directory, "pwsh.exe")
+	bash := filepath.Join(directory, "bash.exe")
+	for _, path := range []string{powershell, bash} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PHASE_TEST_SHELL", powershell)
+	t.Setenv("PHASE_TEST_DIR", directory)
+	missing := filepath.Join(directory, "missing", "bash.exe")
+	for name, test := range map[string]struct {
+		path string
+		want string
+	}{
+		"whole path variable":           {mustJSON(t, "${env:PHASE_TEST_SHELL}"), powershell},
+		"directory variable":            {mustJSON(t, "${env:PHASE_TEST_DIR}/bash.exe"), directory + "/bash.exe"},
+		"missing candidate falls back":  {mustJSON(t, []string{missing, powershell}), powershell},
+		"first existing candidate wins": {mustJSON(t, []string{bash, powershell}), bash},
+		"unresolved variable":           {mustJSON(t, "${env:PHASE_TEST_UNSET_VARIABLE}"), ""},
+	} {
+		if got := cursorProfileExecutable(json.RawMessage(test.path)); got != test.want {
+			t.Errorf("%s: resolved %q, want %q", name, got, test.want)
+		}
+	}
+	settings := `{"terminal.integrated.profiles.windows": {"Work": {"path": "${env:PHASE_TEST_SHELL}"}}, "terminal.integrated.defaultProfile.windows": "Work"}`
+	if cursorWindowsShellIsBashOrCmd([]byte(settings)) {
+		t.Fatal("a variable pointing at pwsh must keep the PowerShell form")
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}

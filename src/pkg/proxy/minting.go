@@ -46,6 +46,10 @@ type MintingPathRule struct {
 	Method    string
 	Pattern   string
 	Operation string
+	// Service limits an AWS rule to requests for that service, so an S3 object
+	// key that happens to share the path is not blocked. An unknown service
+	// still matches, failing closed.
+	Service string
 }
 
 type MintingRules struct {
@@ -64,7 +68,7 @@ var credentialMintingRules = map[string]MintingRules{
 			"cognito-identity": {"GetCredentialsForIdentity", "GetOpenIdToken", "GetOpenIdTokenForDeveloperIdentity"},
 		},
 		Paths: []MintingPathRule{
-			{Method: http.MethodPost, Pattern: "/v1/authorization/token", Operation: "codeartifact:GetAuthorizationToken"},
+			{Method: http.MethodPost, Pattern: "/v1/authorization-token", Operation: "codeartifact:GetAuthorizationToken", Service: "codeartifact"},
 		},
 	},
 	"github": {
@@ -108,6 +112,11 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 	for _, rule := range rules.Paths {
 		if rule.Method != "" && !strings.EqualFold(rule.Method, req.Method) {
 			continue
+		}
+		if rule.Service != "" {
+			if service := awsScopeService(req); service != "" && service != rule.Service {
+				continue
+			}
 		}
 		if matched, _ := path.Match(rule.Pattern, req.URL.Path); matched {
 			return &CredentialMintingBlock{Operation: rule.Operation}, nil

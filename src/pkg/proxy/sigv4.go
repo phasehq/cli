@@ -886,7 +886,7 @@ func knownAWSService(label string) string {
 	case "email":
 		return "ses"
 	case "sts", "iam", "sqs", "dynamodb", "ec2", "lambda", "execute-api", "kms",
-		"secretsmanager", "ssm", "ssmmessages", "ecr", "ecr-public", "elasticloadbalancing", "rds", "rds-data", "sns",
+		"secretsmanager", "ssm", "ssmmessages", "ecr", "ecr-public", "codeartifact", "elasticloadbalancing", "rds", "rds-data", "sns",
 		"logs", "events", "states", "kinesis", "firehose", "glue", "athena", "cloudformation",
 		"cloudtrail", "autoscaling", "application-autoscaling", "elasticache", "redshift",
 		"redshift-data", "es", "aoss", "bedrock", "sagemaker", "monitoring", "ses",
