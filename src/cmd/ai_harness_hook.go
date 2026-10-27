@@ -704,17 +704,20 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 
 // harnessWrapperCommandLine quotes the wrapper for the shell the harness runs
 // it in. On Windows, Codex uses PowerShell, which needs the call operator to
-// run a quoted executable path; Cursor uses its default terminal profile.
-// Other harnesses get the plain form every Windows shell runs when there is one.
+// run a quoted executable path; Cursor uses its default terminal profile, and
+// OpenCode $SHELL or else PowerShell. Devin gets the form its hooks use.
 func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
 	if goos == "windows" {
-		if harness == ai.HarnessCodex || (harness == ai.HarnessCursor && !cursorWindowsShellIsBashOrCmd(cursorWindowsSettings())) {
+		switch {
+		case harness == ai.HarnessCodex, harness == ai.HarnessCursor && !cursorWindowsShellIsBashOrCmd(cursorWindowsSettings()):
 			return ai.PowerShellCallCommand(arguments)
+		case harness == ai.HarnessCursor, harness == ai.HarnessOpenCode && windowsShellIsBashOrCmd(os.Getenv("SHELL")):
+			if line, ok := ai.WindowsPlainCommand(arguments); ok {
+				return line
+			}
+			return quoteWindowsCommand(arguments)
 		}
-		if line, ok := ai.WindowsPlainCommand(arguments); ok {
-			return line
-		}
-		return quoteWindowsCommand(arguments)
+		return ai.WindowsShellCommand(arguments)
 	}
 	quoted := make([]string, len(arguments))
 	for index, argument := range arguments {
@@ -768,6 +771,15 @@ func cursorWindowsShellIsBashOrCmd(settings []byte) bool {
 	}
 	name = strings.ToLower(strings.TrimSpace(name))
 	return strings.Contains(name, "bash") || name == "command prompt" || name == "cmd"
+}
+
+// windowsShellIsBashOrCmd reports a shell path naming a POSIX shell or cmd.
+func windowsShellIsBashOrCmd(shell string) bool {
+	switch strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(shell, `\`, "/"))), ".exe") {
+	case "bash", "sh", "zsh", "dash", "ksh", "cmd":
+		return true
+	}
+	return false
 }
 
 var cursorProfileVariable = regexp.MustCompile(`\$\{(env:[A-Za-z_][A-Za-z0-9_]*|userHome)\}`)
@@ -1232,6 +1244,10 @@ func startHarnessCommandLeaseRenewal(done <-chan struct{}, interval time.Duratio
 // Invoke-WebRequest, which ignores HTTP(S)_PROXY.
 const windowsPowerShellPrelude = "Remove-Item -Path Alias:curl, Alias:wget -Force -ErrorAction SilentlyContinue; "
 
+// windowsPowerShellEpilogue exits with a failed native command's own status;
+// -Command alone reports every failure as 1.
+const windowsPowerShellEpilogue = "\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }"
+
 func executeHarnessShell(ctx context.Context, command string, environment []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	shell := util.GetDefaultShell()
 	if len(shell) == 0 {
@@ -1241,7 +1257,7 @@ func executeHarnessShell(ctx context.Context, command string, environment []stri
 	if runtime.GOOS == "windows" {
 		base := strings.ToLower(shell[0])
 		if strings.Contains(base, "powershell") || strings.Contains(base, "pwsh") {
-			arguments = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsPowerShellPrelude + command}
+			arguments = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsPowerShellPrelude + command + windowsPowerShellEpilogue}
 		} else {
 			arguments = []string{"/D", "/S", "/C", command}
 		}

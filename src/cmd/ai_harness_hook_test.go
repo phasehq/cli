@@ -1339,8 +1339,15 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 	if got := ai.PowerShellCallCommand([]string{"a\u2019b"}); got != "& 'a\u2019\u2019b'" {
 		t.Fatalf("typographic quote not doubled: %s", got)
 	}
-	if got := harnessWrapperCommandLine("windows", ai.HarnessDevin, arguments); !strings.HasPrefix(got, `"C:\Users`) {
-		t.Fatalf("Devin falls back to the cmd form for a path that needs quoting: %s", got)
+	t.Setenv("SHELL", "")
+	for _, harness := range []string{ai.HarnessDevin, ai.HarnessOpenCode} {
+		if got := harnessWrapperCommandLine("windows", harness, arguments); !strings.HasPrefix(got, "& 'C:\\Users") {
+			t.Fatalf("%s falls back to the PowerShell form for a path that needs quoting: %s", harness, got)
+		}
+	}
+	t.Setenv("SHELL", `C:\Program Files\Git\bin\bash.exe`)
+	if got := harnessWrapperCommandLine("windows", ai.HarnessOpenCode, arguments); !strings.HasPrefix(got, `"C:\Users`) {
+		t.Fatalf("OpenCode under Git Bash falls back to the cmd form: %s", got)
 	}
 	plain := []string{`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
 	for _, harness := range []string{ai.HarnessDevin, ai.HarnessOpenCode} {
