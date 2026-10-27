@@ -11,8 +11,9 @@ import (
 const phaseShellRedirect = "\x00redirect"
 
 // powerShellWebCmdlet matches PowerShell's web cmdlets and their aliases as
-// whole words, not inside names such as "confirm" or "$irm".
-var powerShellWebCmdlet = regexp.MustCompile(`(?i)(^|[\s;|&({=])(invoke-webrequest|invoke-restmethod|iwr|irm)($|[\s;|)}])`)
+// whole words, including at the edge of a quoted script such as
+// pwsh -Command "iwr ...", but not inside names such as "confirm" or "$irm".
+var powerShellWebCmdlet = regexp.MustCompile(`(?i)(^|[\s;|&({="'])(invoke-webrequest|invoke-restmethod|iwr|irm)($|[\s;|)}"'])`)
 
 // shellCommandUsesPowerShellWeb reports a PowerShell web cmdlet in a command
 // that names phase.invalid. Invoke-WebRequest and Invoke-RestMethod ignore
