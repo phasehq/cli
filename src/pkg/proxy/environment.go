@@ -650,8 +650,7 @@ func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPl
 
 // ApplyProcessEnvironment applies a compiled Phase-owned delta to an inherited
 // process environment without modifying the parent process or any files.
-// Inherited variables keep their names: the result is an exec environment, not
-// shell source, so only the keys Phase sets or unsets must be shell identifiers.
+// Only the keys Phase sets or unsets must be shell identifiers.
 func ApplyProcessEnvironment(base []string, plan ProcessEnvironmentPlan) ([]string, error) {
 	values := make(map[string]string)
 	for _, entry := range base {
@@ -684,9 +683,8 @@ func ApplyProcessEnvironment(base []string, plan ProcessEnvironmentPlan) ([]stri
 	return environment, nil
 }
 
-// validInheritedEnvironmentKey accepts any name an OS environment block can
-// carry, such as Windows' ProgramFiles(x86) or bash's exported BASH_FUNC_name%%.
-// An empty name is what Windows' hidden per-drive "=C:" entries split into.
+// validInheritedEnvironmentKey accepts names such as ProgramFiles(x86), but not
+// the empty names Windows' hidden "=C:" entries split into.
 func validInheritedEnvironmentKey(key string) bool {
 	return key != "" && !strings.ContainsAny(key, "=\x00")
 }

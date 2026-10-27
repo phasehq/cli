@@ -343,37 +343,3 @@ func TestDefaultOpenCodePluginPathUsesDotConfigOnEveryPlatform(t *testing.T) {
 		t.Fatalf("plugin path = %s, want %s", path, want)
 	}
 }
-
-func TestRemoveLegacyOpenCodePluginsRemovesOnlyOwnedWindowsCopies(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("earlier builds used %AppData% only on Windows")
-	}
-	appData := t.TempDir()
-	t.Setenv("APPDATA", appData)
-	legacy := filepath.Join(appData, "opencode", "plugins", OpenCodePluginName+".js")
-	if removed, err := RemoveLegacyOpenCodePlugins(); err != nil || len(removed) != 0 {
-		t.Fatalf("missing legacy plugin: removed=%v err=%v", removed, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacy, []byte("// a user's own plugin\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if removed, err := RemoveLegacyOpenCodePlugins(); err != nil || len(removed) != 0 {
-		t.Fatalf("foreign legacy plugin: removed=%v err=%v", removed, err)
-	}
-	if _, err := os.Stat(legacy); err != nil {
-		t.Fatalf("foreign plugin was not preserved: %v", err)
-	}
-	if err := os.WriteFile(legacy, []byte(openCodeOwnershipMarker+"\nexport default {}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	removed, err := RemoveLegacyOpenCodePlugins()
-	if err != nil || len(removed) != 1 || removed[0] != legacy {
-		t.Fatalf("owned legacy plugin: removed=%v err=%v", removed, err)
-	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Fatalf("owned legacy plugin still exists: %v", err)
-	}
-}

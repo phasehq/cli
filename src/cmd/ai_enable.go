@@ -399,10 +399,8 @@ func claudeHookExecutablePath() (string, error) {
 // installConfiguredAIHarnessAdapters refreshes one major-versioned helper from
 // the current CLI, then points every thin harness adapter at it. Provider and
 // discovery changes do not require reinstalling those adapters. When another
-// harness is selected, a Codex adapter that is already up to date is left
-// alone, and an outdated one is left as it was if the Codex CLI is not on PATH,
-// so adding another harness does not depend on Codex; the second result maps
-// each harness left outdated to the reason.
+// harness is selected, a current Codex adapter is left alone, and an outdated
+// one is returned as skipped when the Codex CLI is not on PATH.
 func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string, selected, executable string) (map[string]string, map[string]string, error) {
 	installed := make(map[string]string, len(harnesses))
 	skipped := make(map[string]string)
@@ -444,8 +442,6 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 				return nil, nil, err
 			}
 			if harness != selected && ai.CodexBootstrapPluginCurrent(path, hookExecutable) {
-				// It already runs the shared helper refreshed above, and
-				// refreshing it would change nothing Codex runs.
 				continue
 			}
 			codexExecutable, err := exec.LookPath("codex")
@@ -478,11 +474,6 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 				return nil, nil, fmt.Errorf("install OpenCode Phase plugin: %w", err)
 			}
 			installed[harness] = "OpenCode Phase plugin installed to: " + installation.PluginPath
-			if removed, err := ai.RemoveLegacyOpenCodePlugins(); err != nil {
-				installed[harness] += fmt.Sprintf(" (could not remove an older copy OpenCode never loads: %v)", err)
-			} else if len(removed) > 0 {
-				installed[harness] += " (removed an older copy OpenCode never loads: " + strings.Join(removed, ", ") + ")"
-			}
 		case ai.HarnessDevin:
 			path, err := ai.DefaultDevinConfigPath()
 			if err != nil {

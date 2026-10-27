@@ -705,13 +705,11 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 // harnessWrapperCommandLine quotes the wrapper for the shell the harness runs
 // it in. On Windows, Codex uses PowerShell, which needs the call operator to
 // run a quoted executable path; Cursor uses its default terminal profile.
-// Other harnesses may run it in PowerShell too, so they get the unquoted form
-// every Windows shell runs, and the double-quoted cmd form only when the path
-// cannot be written unquoted.
+// Other harnesses get the plain form every Windows shell runs when there is one.
 func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
 	if goos == "windows" {
 		if harness == ai.HarnessCodex || (harness == ai.HarnessCursor && !cursorWindowsShellIsBashOrCmd(cursorWindowsSettings())) {
-			return quotePowerShellCommand(arguments)
+			return ai.PowerShellCallCommand(arguments)
 		}
 		if line, ok := ai.WindowsPlainCommand(arguments); ok {
 			return line
@@ -886,25 +884,6 @@ func stripJSONTrailingCommas(source []byte) []byte {
 		out = append(out, character)
 	}
 	return out
-}
-
-// quotePowerShellCommand renders `& 'exe' 'arg' ...`. PowerShell treats the
-// typographic single quotes as quote characters too, so each is doubled.
-func quotePowerShellCommand(arguments []string) string {
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		var builder strings.Builder
-		builder.WriteByte('\'')
-		for _, character := range argument {
-			if character == '\'' || character == '\u2018' || character == '\u2019' || character == '\u201A' || character == '\u201B' {
-				builder.WriteRune(character)
-			}
-			builder.WriteRune(character)
-		}
-		builder.WriteByte('\'')
-		quoted[index] = builder.String()
-	}
-	return "& " + strings.Join(quoted, " ")
 }
 
 func quoteWindowsCommand(arguments []string) string {
@@ -1249,9 +1228,8 @@ func startHarnessCommandLeaseRenewal(done <-chan struct{}, interval time.Duratio
 	return renewal.Wait
 }
 
-// windowsPowerShellPrelude makes curl and wget run the real executables.
-// Windows PowerShell aliases both to Invoke-WebRequest, which ignores
-// HTTP(S)_PROXY, so a wrapped phase.invalid call would miss the Phase proxy.
+// windowsPowerShellPrelude drops Windows PowerShell's curl and wget aliases of
+// Invoke-WebRequest, which ignores HTTP(S)_PROXY.
 const windowsPowerShellPrelude = "Remove-Item -Path Alias:curl, Alias:wget -Force -ErrorAction SilentlyContinue; "
 
 func executeHarnessShell(ctx context.Context, command string, environment []string, stdin io.Reader, stdout, stderr io.Writer) error {

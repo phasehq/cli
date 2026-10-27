@@ -4,9 +4,7 @@ package ai
 
 import "syscall"
 
-// windowsShortPathName returns the 8.3 short form of an existing path. It has
-// no spaces when the volume keeps short names, so commands can name the hook
-// executable without quoting.
+// windowsShortPathName returns the 8.3 short form of an existing path.
 func windowsShortPathName(path string) (string, error) {
 	long, err := syscall.UTF16PtrFromString(path)
 	if err != nil {

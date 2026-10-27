@@ -17,7 +17,6 @@ func withShortPathName(t *testing.T, resolve func(string) (string, error)) {
 func TestWindowsShellCommandRunsEverywhereOrFallsBack(t *testing.T) {
 	arguments := []string{`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__codex-event", "guard"}
 	withShortPathName(t, func(string) (string, error) { return "", errors.New("not needed") })
-	// PowerShell, cmd and Git Bash all run an unquoted forward-slash path.
 	if got, want := WindowsShellCommand(arguments), "C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __codex-event guard"; got != want {
 		t.Fatalf("plain path command = %q, want %q", got, want)
 	}
@@ -39,13 +38,15 @@ func TestWindowsShellCommandRunsEverywhereOrFallsBack(t *testing.T) {
 	if line, ok := WindowsPlainCommand(quoted); ok {
 		t.Fatalf("a path that still needs quoting has no plain form, got %q", line)
 	}
+	typographic := []string{"C:\\Users\\O\u2019Brien\\phase-hook-v1.exe", "ai"}
+	if got, want := WindowsShellCommand(typographic), "& 'C:\\Users\\O\u2019\u2019Brien\\phase-hook-v1.exe' 'ai'"; got != want {
+		t.Fatalf("typographic fallback = %q, want %q", got, want)
+	}
 }
 
 func TestCodexWindowsHookCommandsAvoidALeadingQuotedPath(t *testing.T) {
 	withShortPathName(t, func(string) (string, error) { return "", errors.New("not needed") })
 	command := codexPluginCommand(`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, true, "ai", "__codex-event", "guard")
-	// Codex runs commandWindows in a Windows shell; PowerShell cannot run a
-	// command line that starts with a quoted path.
 	if strings.HasPrefix(command, `"`) || command != "C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __codex-event guard" {
 		t.Fatalf("Codex commandWindows = %q", command)
 	}
@@ -69,5 +70,11 @@ func TestDevinRecognizesEveryWindowsSpellingOfTheHelper(t *testing.T) {
 	removePhaseDevinGroups(hooks, windowsExecutableForms(helper)...)
 	if len(hooks["PreToolUse"]) != 1 || !strings.Contains(string(hooks["PreToolUse"][0]), "audit.js") {
 		t.Fatalf("Phase groups from earlier and current builds must both be removed, and only them: %s", hooks["PreToolUse"])
+	}
+	quotedHelper := `C:\Users\O'Brien Smith\.phase\ai\bin\phase-hook-v1.exe`
+	hooks = map[string][]json.RawMessage{"PreToolUse": {group(WindowsShellCommand([]string{quotedHelper, "ai", "__devin-event", "guard"}))}}
+	removePhaseDevinGroups(hooks, windowsExecutableForms(quotedHelper)...)
+	if len(hooks["PreToolUse"]) != 0 {
+		t.Fatalf("the PowerShell fallback spelling was not recognized: %s", hooks["PreToolUse"])
 	}
 }

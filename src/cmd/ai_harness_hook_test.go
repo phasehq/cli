@@ -1336,7 +1336,7 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 			t.Fatalf("%s on Windows:\n got %s\nwant %s", harness, got, want)
 		}
 	}
-	if got := quotePowerShellCommand([]string{"a\u2019b"}); got != "& 'a\u2019\u2019b'" {
+	if got := ai.PowerShellCallCommand([]string{"a\u2019b"}); got != "& 'a\u2019\u2019b'" {
 		t.Fatalf("typographic quote not doubled: %s", got)
 	}
 	if got := harnessWrapperCommandLine("windows", ai.HarnessDevin, arguments); !strings.HasPrefix(got, `"C:\Users`) {
@@ -1344,7 +1344,6 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 	}
 	plain := []string{`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
 	for _, harness := range []string{ai.HarnessDevin, ai.HarnessOpenCode} {
-		// Their Windows shell may be PowerShell, which cannot run the cmd form.
 		if got, want := harnessWrapperCommandLine("windows", harness, plain), "C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __harness-exec --lease Y29kZXg6YQ"; got != want {
 			t.Fatalf("%s on Windows:\n got %s\nwant %s", harness, got, want)
 		}

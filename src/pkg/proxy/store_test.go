@@ -426,8 +426,6 @@ func TestApplyProcessEnvironmentKeepsInheritedNamesThatAreNotShellIdentifiers(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Windows toolchains find Visual Studio through ProgramFiles(x86); the
-	// child must see it exactly as the parent does.
 	joined := "\n" + strings.Join(environment, "\n") + "\n"
 	for _, entry := range []string{`ProgramFiles(x86)=C:\Program Files (x86)`, `CommonProgramFiles(x86)=C:\Program Files (x86)\Common Files`, "BASH_FUNC_module%%=() {  :\n}", "AWS_ACCESS_KEY_ID=decoy"} {
 		if !strings.Contains(joined, "\n"+entry+"\n") {

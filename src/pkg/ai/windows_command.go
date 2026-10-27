@@ -5,28 +5,18 @@ import "strings"
 // shortPathName resolves a path's 8.3 short name; tests replace it.
 var shortPathName = windowsShortPathName
 
-// WindowsShellCommand renders a command line that runs the same way in every
-// shell a harness may use on Windows: PowerShell, cmd, Git Bash, or a direct
-// CreateProcess. That is the WindowsPlainCommand form when there is one, and
-// otherwise the PowerShell call-operator form, PowerShell being the default
-// shell of the Windows harnesses.
+// WindowsShellCommand renders the WindowsPlainCommand form, or PowerShell's
+// call-operator form when there is none.
 func WindowsShellCommand(arguments []string) string {
 	if line, ok := WindowsPlainCommand(arguments); ok {
 		return line
 	}
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		quoted[index] = "'" + strings.ReplaceAll(argument, "'", "''") + "'"
-	}
-	return "& " + strings.Join(quoted, " ")
+	return PowerShellCallCommand(arguments)
 }
 
-// WindowsPlainCommand renders the only command line form that PowerShell, cmd
-// and Git Bash all parse as a command: an unquoted path with forward slashes
-// followed by plain words. PowerShell reads a leading quoted string as an
-// expression, and cmd and bash reject PowerShell's & call operator. A path with
-// spaces or shell characters uses its 8.3 short name; it reports false when a
-// word still needs quoting.
+// WindowsPlainCommand renders the one form PowerShell, cmd and Git Bash all
+// run: an unquoted forward-slash path, or its 8.3 name, and plain words. It
+// reports false when a word still needs quoting.
 func WindowsPlainCommand(arguments []string) (string, bool) {
 	words := append([]string{strings.ReplaceAll(arguments[0], `\`, "/")}, arguments[1:]...)
 	if !windowsShellPlainWord(words[0]) {
@@ -42,19 +32,37 @@ func WindowsPlainCommand(arguments []string) (string, bool) {
 	return strings.Join(words, " "), true
 }
 
-// windowsExecutableForms lists the spellings of executable that a rendered
-// command may contain, including the backslash form earlier builds quoted, so
-// hook entries written before WindowsShellCommand are still recognized.
+// PowerShellCallCommand renders `& 'exe' 'arg' ...`. PowerShell treats the
+// typographic single quotes as quote characters too, so each is doubled.
+func PowerShellCallCommand(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		quoted[index] = "'" + powerShellQuoteEscape(argument) + "'"
+	}
+	return "& " + strings.Join(quoted, " ")
+}
+
+func powerShellQuoteEscape(value string) string {
+	var builder strings.Builder
+	for _, character := range value {
+		if character == '\'' || character == '\u2018' || character == '\u2019' || character == '\u201A' || character == '\u201B' {
+			builder.WriteRune(character)
+		}
+		builder.WriteRune(character)
+	}
+	return builder.String()
+}
+
+// windowsExecutableForms lists the spellings of executable in a rendered command.
 func windowsExecutableForms(executable string) []string {
-	forms := []string{executable, strings.ReplaceAll(executable, `\`, "/")}
+	forms := []string{executable, strings.ReplaceAll(executable, `\`, "/"), powerShellQuoteEscape(executable)}
 	if short, err := shortPathName(executable); err == nil {
 		forms = append(forms, strings.ReplaceAll(short, `\`, "/"))
 	}
 	return forms
 }
 
-// windowsShellPlainWord reports a word that PowerShell, cmd, and POSIX shells
-// all pass through unquoted and unexpanded.
+// windowsShellPlainWord reports a word every shell passes through unchanged.
 func windowsShellPlainWord(word string) bool {
 	if word == "" || word[0] == '~' {
 		return false

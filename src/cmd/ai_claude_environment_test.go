@@ -101,8 +101,6 @@ func TestRenderClaudeEnvironmentProbesTheProxyPortOnWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Git Bash cannot signal a native Windows PID, so routing must depend on
-	// the proxy still accepting connections instead.
 	if strings.Contains(content, "kill -0") ||
 		!strings.Contains(content, claudeProxyBlockBegin+"\nif true 2>/dev/null </dev/tcp/127.0.0.1/9543; then\n") {
 		t.Fatalf("Windows liveness guard:\n%s", content)
@@ -258,8 +256,7 @@ func TestClaudeEnvironmentSourcesInRealShell(t *testing.T) {
 	}
 }
 
-// findTestBash returns bash for real-shell tests: Git Bash on Windows (the shell
-// Claude Code uses there; System32\bash.exe is the WSL launcher), PATH elsewhere.
+// findTestBash returns Git Bash on Windows (System32\bash.exe is WSL), else bash.
 func findTestBash(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -276,9 +273,6 @@ func findTestBash(t *testing.T) string {
 	return path
 }
 
-// TestClaudeEnvironmentWindowsGuardSourcesInBash sources the Windows rendering
-// in bash against a real listener: routing applies while the proxy accepts
-// connections, and once it stops routing is dropped while decoys stay.
 func TestClaudeEnvironmentWindowsGuardSourcesInBash(t *testing.T) {
 	bash := findTestBash(t)
 	withClaudeEnvironmentGOOS(t, "windows")

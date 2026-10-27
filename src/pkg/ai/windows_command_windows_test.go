@@ -11,8 +11,7 @@ import (
 	"testing"
 )
 
-// windowsTestShells returns the shells a harness may run a command line in on
-// Windows, each running one exact command line. Missing shells are skipped.
+// windowsTestShells runs one exact command line in each installed shell.
 func windowsTestShells() map[string]func(string) (string, error) {
 	shells := map[string]func(string) (string, error){
 		"cmd": func(line string) (string, error) {
@@ -39,9 +38,7 @@ func windowsTestShells() map[string]func(string) (string, error) {
 	return shells
 }
 
-// TestWindowsShellCommandRunsInEveryWindowsShell runs a rendered command line,
-// with curl.exe standing in for the hook executable, in each shell, from a
-// plain path and from a path with a space.
+// curl.exe stands in for the hook executable, from a plain and a spaced path.
 func TestWindowsShellCommandRunsInEveryWindowsShell(t *testing.T) {
 	system := filepath.Join(os.Getenv("SystemRoot"), "System32", "curl.exe")
 	payload, err := os.ReadFile(system)
@@ -61,7 +58,6 @@ func TestWindowsShellCommandRunsInEveryWindowsShell(t *testing.T) {
 		line := WindowsShellCommand([]string{executable, "--version"})
 		for name, run := range shells {
 			if strings.HasPrefix(line, "& ") && name != "powershell" && name != "pwsh" {
-				// No 8.3 name on this volume: only PowerShell runs the fallback form.
 				continue
 			}
 			output, err := run(line)
