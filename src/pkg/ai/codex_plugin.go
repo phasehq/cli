@@ -209,6 +209,20 @@ func InstallCodexBootstrapPlugin(root, phaseExecutable string) (CodexBootstrapIn
 	return installation, nil
 }
 
+// CodexBootstrapPluginCurrent reports, without the Codex CLI, whether root holds
+// this build's plugin version and hooks for phaseExecutable.
+func CodexBootstrapPluginCurrent(root, phaseExecutable string) bool {
+	pluginRoot := filepath.Join(root, "plugins", CodexBootstrapPluginName)
+	var manifest codexPluginManifest
+	payload, err := os.ReadFile(filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"))
+	if err != nil || json.Unmarshal(payload, &manifest) != nil || manifest.Version != HarnessAdapterProtocolVersion {
+		return false
+	}
+	want, err := json.MarshalIndent(codexBootstrapHooks(phaseExecutable), "", "  ")
+	got, readErr := os.ReadFile(filepath.Join(pluginRoot, "hooks", "hooks.json"))
+	return err == nil && readErr == nil && bytes.Equal(bytes.TrimSpace(got), want)
+}
+
 // ActivateCodexBootstrapPlugin registers the Phase-owned marketplace and
 // installs (or refreshes) the plugin via Codex's supported CLI. Hook trust is
 // deliberately left to Codex's /hooks review flow.
@@ -363,11 +377,7 @@ func codexBootstrapHooks(hookExecutable string) codexHookFile {
 
 func codexPluginCommand(executable string, windows bool, arguments ...string) string {
 	if windows {
-		parts := []string{quoteWindowsCommandArgument(executable)}
-		for _, argument := range arguments {
-			parts = append(parts, quoteWindowsCommandArgument(argument))
-		}
-		return strings.Join(parts, " ")
+		return WindowsShellCommand(append([]string{executable}, arguments...))
 	}
 	parts := []string{quotePOSIXCommandArgument(executable)}
 	for _, argument := range arguments {
@@ -378,10 +388,6 @@ func codexPluginCommand(executable string, windows bool, arguments ...string) st
 
 func quotePOSIXCommandArgument(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}
-
-func quoteWindowsCommandArgument(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
 func codexPluginSelector() string {

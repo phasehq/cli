@@ -129,16 +129,12 @@ func cursorBootstrapExecutablePath(root string) string {
 }
 
 func cursorHookCommand(executable string, args ...string) string {
-	command := quotePOSIXCommandArgument(executable)
 	if runtime.GOOS == "windows" {
-		command = quoteWindowsCommandArgument(executable)
+		return WindowsShellCommand(append([]string{executable}, args...))
 	}
+	command := quotePOSIXCommandArgument(executable)
 	for _, arg := range args {
-		if runtime.GOOS == "windows" {
-			command += " " + quoteWindowsCommandArgument(arg)
-		} else {
-			command += " " + quotePOSIXCommandArgument(arg)
-		}
+		command += " " + quotePOSIXCommandArgument(arg)
 	}
 	return command
 }

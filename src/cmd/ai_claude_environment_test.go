@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +36,15 @@ func testClaudeEnvironmentPlan() phaseproxy.ProcessEnvironmentPlan {
 	}
 }
 
+func withClaudeEnvironmentGOOS(t *testing.T, goos string) {
+	t.Helper()
+	previous := claudeEnvironmentGOOS
+	claudeEnvironmentGOOS = goos
+	t.Cleanup(func() { claudeEnvironmentGOOS = previous })
+}
+
 func TestRenderClaudeEnvironmentSeparatesRoutingFromDecoys(t *testing.T) {
+	withClaudeEnvironmentGOOS(t, "linux")
 	content, err := renderClaudeEnvironment(4242, testClaudeEnvironmentPlan(), true)
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +92,37 @@ func TestRenderClaudeEnvironmentSeparatesRoutingFromDecoys(t *testing.T) {
 	}
 	if stripped := stripClaudeProxyBlock(content); stripped != degraded {
 		t.Fatalf("stripping the live file must equal the degraded render:\n--- stripped ---\n%s\n--- degraded ---\n%s", stripped, degraded)
+	}
+}
+
+func TestRenderClaudeEnvironmentProbesTheProxyPortOnWindows(t *testing.T) {
+	withClaudeEnvironmentGOOS(t, "windows")
+	content, err := renderClaudeEnvironment(4242, testClaudeEnvironmentPlan(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content, "kill -0") ||
+		!strings.Contains(content, claudeProxyBlockBegin+"\nif true 2>/dev/null </dev/tcp/127.0.0.1/9543; then\n") {
+		t.Fatalf("Windows liveness guard:\n%s", content)
+	}
+	unrouted := testClaudeEnvironmentPlan()
+	delete(unrouted.Set, "HTTPS_PROXY")
+	delete(unrouted.Set, "https_proxy")
+	content, err = renderClaudeEnvironment(4242, unrouted, true)
+	if err != nil || !strings.Contains(content, "\nif false; then\n") {
+		t.Fatalf("a plan without a proxy must never route: err=%v\n%s", err, content)
+	}
+	for name, proxy := range map[string]string{
+		"hostname": "http://phase:capability@localhost:9543",
+		"IPv6":     "http://phase:capability@[::1]:9543",
+		"no port":  "http://phase:capability@127.0.0.1",
+		"bad port": "http://phase:capability@127.0.0.1:99999",
+	} {
+		plan := testClaudeEnvironmentPlan()
+		plan.Set["HTTPS_PROXY"] = proxy
+		if _, err := renderClaudeEnvironment(4242, plan, true); err == nil {
+			t.Fatalf("%s proxy was accepted", name)
+		}
 	}
 }
 
@@ -213,6 +253,75 @@ func TestClaudeEnvironmentSourcesInRealShell(t *testing.T) {
 	}
 	if got := sourceClaudeEnvironment(t, loaderPath); got != "|AKIADECOY||0" {
 		t.Fatalf("degraded environment, got %q", got)
+	}
+}
+
+// findTestBash returns Git Bash on Windows (System32\bash.exe is WSL), else bash.
+func findTestBash(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		candidate := filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe")
+		if _, err := os.Stat(candidate); err != nil {
+			t.Skip("Git Bash is not installed")
+		}
+		return candidate
+	}
+	path, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	return path
+}
+
+func TestClaudeEnvironmentWindowsGuardSourcesInBash(t *testing.T) {
+	bash := findTestBash(t)
+	withClaudeEnvironmentGOOS(t, "windows")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connection.Close()
+		}
+	}()
+	proxy := "http://phase:capability@" + listener.Addr().String()
+	plan := testClaudeEnvironmentPlan()
+	plan.Set["HTTPS_PROXY"], plan.Set["https_proxy"] = proxy, proxy
+	directory := t.TempDir()
+	if err := writeClaudeEnvironment(directory, 4242, "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	inherited := make([]string, 0)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(key) {
+		case "HTTPS_PROXY", "HTTP_PROXY", "PHASE_AI_ENABLED", "AWS_ACCESS_KEY_ID":
+			continue
+		}
+		inherited = append(inherited, entry)
+	}
+	source := func() string {
+		script := `. "$1"; status=$?; printf '%s|%s|%s|%s' "${HTTPS_PROXY:-}" "${AWS_ACCESS_KEY_ID:-}" "${PHASE_AI_ENABLED:-}" "$status"`
+		command := exec.Command(bash, "-c", script, "bash", filepath.ToSlash(claudeEnvironmentPath(directory)))
+		command.Env = inherited
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("sourcing failed: %v\n%s", err, output)
+		}
+		return string(output)
+	}
+	if got := source(); got != proxy+"|AKIADECOY|1|0" {
+		t.Fatalf("live proxy environment, got %q", got)
+	}
+	listener.Close()
+	if got := source(); got != "|AKIADECOY||0" {
+		t.Fatalf("stopped proxy must drop routing and keep decoys, got %q", got)
 	}
 }
 

@@ -3,11 +3,21 @@ package cmd
 import (
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 )
 
 const phaseShellRedirect = "\x00redirect"
+
+var powerShellWebCmdlet = regexp.MustCompile(`(?i)(^|[\s;|&({="'])(invoke-webrequest|invoke-restmethod|iwr|irm)($|[\s;|)}"'])`)
+
+// shellCommandUsesPowerShellWeb reports a PowerShell web cmdlet, as a whole
+// word, in a command naming phase.invalid. Windows PowerShell's web cmdlets
+// ignore HTTP(S)_PROXY, so hooks deny the call and point the Agent at curl.
+func shellCommandUsesPowerShellWeb(command string) bool {
+	return strings.Contains(strings.ToLower(command), "phase.invalid") && powerShellWebCmdlet.MatchString(command)
+}
 
 type phaseShellWord struct {
 	value   string

@@ -60,6 +60,31 @@ func TestShellInterpreterScriptsArePhaseManaged(t *testing.T) {
 	}
 }
 
+func TestShellCommandUsesPowerShellWeb(t *testing.T) {
+	for _, test := range []struct {
+		command string
+		want    bool
+	}{
+		{command: "Invoke-RestMethod http://phase.invalid/v1/status", want: true},
+		{command: `irm "http://phase.invalid/v1/requests" -Method Post -Body $body`, want: true},
+		{command: "$r = Invoke-WebRequest -Uri http://phase.invalid/v1/status -UseBasicParsing", want: true},
+		{command: "(iwr http://phase.invalid/v1/status).Content", want: true},
+		{command: `$u = "http://phase.invalid/v1/status"; IRM $u`, want: true},
+		{command: `pwsh -NoProfile -Command "iwr http://phase.invalid/v1/status"`, want: true},
+		{command: `powershell -c 'Invoke-RestMethod http://phase.invalid/v1/status'`, want: true},
+		{command: `Write-Output "irmx" phase.invalid`, want: false},
+		{command: "curl.exe -sS http://phase.invalid/v1/status", want: false},
+		{command: "curl --fail http://phase.invalid/v1/status", want: false},
+		{command: "Invoke-RestMethod https://api.github.com/user", want: false},
+		{command: "Write-Output confirm phase.invalid", want: false},
+		{command: "Get-Content irm.txt; Get-Content phase.invalid.md", want: false},
+	} {
+		if got := shellCommandUsesPowerShellWeb(test.command); got != test.want {
+			t.Errorf("shellCommandUsesPowerShellWeb(%q) = %v, want %v", test.command, got, test.want)
+		}
+	}
+}
+
 func TestShellCommandMixesPhase(t *testing.T) {
 	for _, test := range []struct {
 		command string

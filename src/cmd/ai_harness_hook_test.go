@@ -644,6 +644,54 @@ func TestHarnessWrapperCommandEnforcesCrossPlatformArgumentLimit(t *testing.T) {
 	}
 }
 
+func TestHarnessGuardsRejectPowerShellWebCallsToPhase(t *testing.T) {
+	const call = "Invoke-RestMethod http://phase.invalid/v1/status"
+	t.Setenv("PHASE_AI_ENABLED", "")
+	t.Run("codex", func(t *testing.T) {
+		withHarnessHookConfig(t, ai.HarnessCodex)
+		command, output := newHarnessHookCommand(`{"session_id":"codex-session","hook_event_name":"PreToolUse","tool_name":"Bash",
+			"tool_input":{"command":"` + call + `"},"tool_use_id":"tool-one"}`)
+		if err := runAICodexEvent(command, []string{"guard"}); err != nil {
+			t.Fatal(err)
+		}
+		var result codexToolOutput
+		if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.HookSpecificOutput.PermissionDecision != "deny" || result.HookSpecificOutput.PermissionDecisionReason != harnessPowerShellWebMessage() {
+			t.Fatalf("Codex guard output = %#v", result)
+		}
+	})
+	t.Run("cursor", func(t *testing.T) {
+		withHarnessHookConfig(t, ai.HarnessCursor)
+		command, output := newHarnessHookCommand(`{"hook_event_name":"preToolUse","tool_name":"Shell",
+			"tool_input":{"command":"` + call + `"},"tool_use_id":"tool-two"}`)
+		if err := runAICursorEvent(command, []string{"guard"}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output.String(), "do not use the Phase AI proxy") || strings.Contains(output.String(), "__harness-exec") {
+			t.Fatalf("Cursor guard output = %s", output.String())
+		}
+	})
+	t.Run("devin", func(t *testing.T) {
+		withHarnessHookConfig(t, ai.HarnessDevin)
+		command, output := newHarnessHookCommand(`{"session_id":"devin-session","hook_event_name":"PreToolUse","tool_name":"exec",
+			"tool_input":{"command":"` + call + `"},"tool_use_id":"devin-tool"}`)
+		if err := runAIDevinEvent(command, []string{"guard"}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output.String(), "do not use the Phase AI proxy") || strings.Contains(output.String(), "__harness-exec") {
+			t.Fatalf("Devin guard output = %s", output.String())
+		}
+	})
+	t.Run("opencode", func(t *testing.T) {
+		withHarnessHookConfig(t, ai.HarnessOpenCode)
+		if response := runOpenCodeCommandForTest(t, call); !response.Managed || response.Error != harnessPowerShellWebMessage() {
+			t.Fatalf("OpenCode command response = %#v", response)
+		}
+	})
+}
+
 func TestCursorGuardUsesSessionEnvironmentAndCursorSchema(t *testing.T) {
 	withHarnessHookConfig(t, ai.HarnessCursor)
 	prepareHarnessHookRuntime(t)
@@ -1288,11 +1336,17 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 			t.Fatalf("%s on Windows:\n got %s\nwant %s", harness, got, want)
 		}
 	}
-	if got := quotePowerShellCommand([]string{"a\u2019b"}); got != "& 'a\u2019\u2019b'" {
+	if got := ai.PowerShellCallCommand([]string{"a\u2019b"}); got != "& 'a\u2019\u2019b'" {
 		t.Fatalf("typographic quote not doubled: %s", got)
 	}
 	if got := harnessWrapperCommandLine("windows", ai.HarnessDevin, arguments); !strings.HasPrefix(got, `"C:\Users`) {
-		t.Fatalf("Devin on Windows keeps the cmd form: %s", got)
+		t.Fatalf("Devin falls back to the cmd form for a path that needs quoting: %s", got)
+	}
+	plain := []string{`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
+	for _, harness := range []string{ai.HarnessDevin, ai.HarnessOpenCode} {
+		if got, want := harnessWrapperCommandLine("windows", harness, plain), "C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __harness-exec --lease Y29kZXg6YQ"; got != want {
+			t.Fatalf("%s on Windows:\n got %s\nwant %s", harness, got, want)
+		}
 	}
 	if got := harnessWrapperCommandLine("linux", ai.HarnessCodex, []string{"/home/o'brien/phase", "ai"}); got != `'/home/o'"'"'brien/phase' 'ai'` {
 		t.Fatalf("POSIX form = %s", got)

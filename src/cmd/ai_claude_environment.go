@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +38,9 @@ const (
 	// so a slow or unreachable Console never stalls ordinary work.
 	claudeHookKickBudget = 1500 * time.Millisecond
 )
+
+// claudeEnvironmentGOOS picks the liveness guard; tests override it.
+var claudeEnvironmentGOOS = runtime.GOOS
 
 type claudeEnvironmentStatus struct {
 	Schema      int                          `json:"schema"`
@@ -70,7 +77,7 @@ type claudeRuntimeHealth struct {
 
 // renderClaudeEnvironment produces the POSIX shell a harness sources before each
 // command. Proxy routing, Phase runtime markers, and trust overrides live inside
-// a liveness guard on the issuing proxy PID, so a crashed proxy can never strand
+// a liveness guard on the issuing proxy, so a crashed proxy can never strand
 // a shell behind a dead port. Decoys, adapter endpoints, and explicit unsets
 // stay outside the guard: while Phase AI is enabled, provider tools either reach
 // the Phase proxy or fail on the decoy. They never fall through to an ambient
@@ -78,6 +85,13 @@ type claudeRuntimeHealth struct {
 func renderClaudeEnvironment(pid int, plan phaseproxy.ProcessEnvironmentPlan, proxyLive bool) (string, error) {
 	if proxyLive && pid <= 0 {
 		return "", errors.New("Phase AI proxy PID is required for a live environment")
+	}
+	var guard string
+	if proxyLive {
+		var err error
+		if guard, err = claudeProxyLivenessGuard(pid, plan); err != nil {
+			return "", err
+		}
 	}
 	keys := make([]string, 0, len(plan.Set))
 	for key, value := range plan.Set {
@@ -115,7 +129,7 @@ func renderClaudeEnvironment(pid int, plan phaseproxy.ProcessEnvironmentPlan, pr
 	}
 	if proxyLive {
 		out.WriteString(claudeProxyBlockBegin + "\n")
-		fmt.Fprintf(&out, "if kill -0 %d 2>/dev/null; then\n", pid)
+		out.WriteString("if " + guard + "; then\n")
 		for _, key := range keys {
 			if !phaseproxy.RuntimeControlEnvironmentKey(key) {
 				continue
@@ -131,6 +145,35 @@ func renderClaudeEnvironment(pid int, plan phaseproxy.ProcessEnvironmentPlan, pr
 	// command (`. file && command`) is never blocked by this file.
 	out.WriteString(":\n")
 	return out.String(), nil
+}
+
+// claudeProxyLivenessGuard keeps routing on only while the proxy is alive. Git
+// Bash cannot signal native Windows PIDs, so on Windows it probes the port.
+func claudeProxyLivenessGuard(pid int, plan phaseproxy.ProcessEnvironmentPlan) (string, error) {
+	if claudeEnvironmentGOOS != "windows" {
+		return fmt.Sprintf("kill -0 %d 2>/dev/null", pid), nil
+	}
+	raw := ""
+	for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+		if raw = plan.Set[key]; raw != "" {
+			break
+		}
+	}
+	if raw == "" {
+		return "false", nil
+	}
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("Phase AI proxy URL is invalid")
+	}
+	host, port, err := net.SplitHostPort(proxyURL.Host)
+	number, portErr := strconv.Atoi(port)
+	if err != nil || portErr != nil || net.ParseIP(host).To4() == nil || number < 1 || number > 65535 {
+		return "", fmt.Errorf("Phase AI proxy address %q is not an IPv4 address and port", proxyURL.Host)
+	}
+	// true is a regular builtin, so a refused connection fails the test without
+	// ending a non-interactive shell.
+	return fmt.Sprintf("true 2>/dev/null </dev/tcp/%s/%s", host, port), nil
 }
 
 // stripClaudeProxyBlock removes the proxy-routing block from rendered content.

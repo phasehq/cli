@@ -279,7 +279,11 @@ func TestClaudeDaemonRecyclesSameProcessAndGenerationOnOneEngine(t *testing.T) {
 		t.Fatalf("managed recycle did not publish a newer cycle start: %v then %v", managed.states[0].StartedAt, managed.states[1].StartedAt)
 	}
 	for index, environment := range managed.environments {
-		if !strings.Contains(environment, fmt.Sprintf("if kill -0 %d 2>/dev/null; then", os.Getpid())) ||
+		guard, err := claudeProxyLivenessGuard(os.Getpid(), phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{"HTTP_PROXY": managed.states[index].ProxyURL}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(environment, "if "+guard+"; then") ||
 			!strings.Contains(environment, "export HTTP_PROXY='"+managed.states[index].ProxyURL+"'") ||
 			!strings.Contains(environment, "export AWS_ACCESS_KEY_ID='AKIADECOY'") {
 			t.Fatalf("cycle %d did not publish a live sourced environment:\n%s", index+1, environment)
@@ -289,7 +293,7 @@ func TestClaudeDaemonRecyclesSameProcessAndGenerationOnOneEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(final), "kill -0") || strings.Contains(string(final), "HTTP_PROXY") ||
+	if strings.Contains(string(final), claudeProxyBlockBegin) || strings.Contains(string(final), "HTTP_PROXY") ||
 		!strings.Contains(string(final), "export AWS_ACCESS_KEY_ID='AKIADECOY'") {
 		t.Fatalf("daemon exit left proxy routing in the sourced environment:\n%s", final)
 	}
@@ -929,7 +933,7 @@ func TestClaudeHeartbeatReportsStatusAndRetiresStaleRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(environment), "kill -0") || strings.Contains(string(environment), "HTTPS_PROXY") ||
+	if strings.Contains(string(environment), claudeProxyBlockBegin) || strings.Contains(string(environment), "HTTPS_PROXY") ||
 		!strings.Contains(string(environment), "export AWS_ACCESS_KEY_ID='AKIADECOY'") {
 		t.Fatalf("heartbeat left routing for a dead proxy:\n%s", environment)
 	}
