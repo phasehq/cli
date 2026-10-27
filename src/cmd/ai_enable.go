@@ -326,7 +326,7 @@ func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principa
 	}
 	if reason := skipped[ai.HarnessCodex]; reason != "" {
 		out.WriteString("\n")
-		out.WriteString(util.BoldYellow("⚠️  Codex: its Phase plugin was not refreshed, because "+reason+".") + "\n")
+		out.WriteString(util.BoldYellow("⚠️  Codex: its Phase plugin is out of date and was not refreshed, because "+reason+".") + "\n")
 		out.WriteString("   Rerun `phase ai enable --harness codex` with the Codex CLI on PATH to refresh it.\n")
 	}
 	if target.ID != "" {
@@ -398,10 +398,11 @@ func claudeHookExecutablePath() (string, error) {
 
 // installConfiguredAIHarnessAdapters refreshes one major-versioned helper from
 // the current CLI, then points every thin harness adapter at it. Provider and
-// discovery changes do not require reinstalling those adapters. A configured
-// Codex adapter is left as it was when the Codex CLI is not on PATH, unless
-// Codex is the selected harness, so adding another harness does not depend on
-// Codex; the second result maps each skipped harness to the reason.
+// discovery changes do not require reinstalling those adapters. When another
+// harness is selected, a Codex adapter that is already up to date is left
+// alone, and an outdated one is left as it was if the Codex CLI is not on PATH,
+// so adding another harness does not depend on Codex; the second result maps
+// each harness left outdated to the reason.
 func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string, selected, executable string) (map[string]string, map[string]string, error) {
 	installed := make(map[string]string, len(harnesses))
 	skipped := make(map[string]string)
@@ -442,10 +443,13 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 			if err != nil {
 				return nil, nil, err
 			}
+			if harness != selected && ai.CodexBootstrapPluginCurrent(path, hookExecutable) {
+				// It already runs the shared helper refreshed above, and
+				// refreshing it would change nothing Codex runs.
+				continue
+			}
 			codexExecutable, err := exec.LookPath("codex")
 			if err != nil && harness != selected {
-				// The adapter from an earlier enable still runs the shared
-				// helper refreshed above.
 				skipped[harness] = "the Codex CLI is not on PATH"
 				continue
 			}

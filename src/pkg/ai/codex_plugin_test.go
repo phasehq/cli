@@ -368,6 +368,19 @@ func TestCodexBootstrapPluginRefusesUnownedPaths(t *testing.T) {
 	}
 }
 
+func TestCodexBootstrapPluginCurrentMatchesWhatInstallWrites(t *testing.T) {
+	root, executable := installCodexTestPlugin(t)
+	if !CodexBootstrapPluginCurrent(root, executable) {
+		t.Fatal("the plugin InstallCodexBootstrapPlugin just wrote is not current")
+	}
+	if CodexBootstrapPluginCurrent(root, executable+"-moved") {
+		t.Fatal("hooks that run another helper path are current")
+	}
+	if CodexBootstrapPluginCurrent(filepath.Join(root, "missing"), executable) {
+		t.Fatal("a missing plugin is current")
+	}
+}
+
 func installCodexTestPlugin(t *testing.T) (string, string) {
 	t.Helper()
 	parent := t.TempDir()

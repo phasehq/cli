@@ -142,7 +142,7 @@ func TestCodexHookReviewRequiredWhenExistingAdapterIsRefreshed(t *testing.T) {
 	}
 }
 
-func TestInstallConfiguredAIHarnessAdaptersSkipsCodexWithoutItsCLIUnlessSelected(t *testing.T) {
+func TestInstallConfiguredAIHarnessAdaptersDoNotNeedCodexForAnotherHarness(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -162,6 +162,21 @@ func TestInstallConfiguredAIHarnessAdaptersSkipsCodexWithoutItsCLIUnlessSelected
 	}
 	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), harnesses, ai.HarnessCodex, source); err == nil || !strings.Contains(err.Error(), "PATH") {
 		t.Fatalf("enabling Codex itself must still require its CLI, got %v", err)
+	}
+	// Once the Codex adapter is up to date, adding Cursor leaves it alone.
+	root, err := ai.DefaultCodexBootstrapMarketplacePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper, err := ai.DefaultSharedHookExecutablePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ai.InstallCodexBootstrapPlugin(root, helper); err != nil {
+		t.Fatal(err)
+	}
+	if installed, skipped, err := installConfiguredAIHarnessAdapters(context.Background(), harnesses, ai.HarnessCursor, source); err != nil || len(skipped) != 0 || installed[ai.HarnessCodex] != "" {
+		t.Fatalf("an up-to-date Codex adapter was touched or reported: installed=%v skipped=%v err=%v", installed, skipped, err)
 	}
 }
 
@@ -254,7 +269,7 @@ func TestFormatAIEnableSummaryReportsASkippedCodexRefresh(t *testing.T) {
 	summary := formatAIEnableSummary(cursor, &config.AIConfig{Enabled: true}, nil,
 		map[string]string{ai.HarnessCursor: "Cursor Phase discovery adapter installed"},
 		map[string]string{ai.HarnessCodex: "the Codex CLI is not on PATH"})
-	if !strings.Contains(summary, "⚠️  Codex: its Phase plugin was not refreshed, because the Codex CLI is not on PATH.") ||
+	if !strings.Contains(summary, "⚠️  Codex: its Phase plugin is out of date and was not refreshed, because the Codex CLI is not on PATH.") ||
 		!strings.Contains(summary, "`phase ai enable --harness codex`") || strings.Contains(summary, "refreshed too") {
 		t.Fatalf("a skipped Codex refresh must be reported, without asking to re-trust hooks that did not change:\n%s", summary)
 	}

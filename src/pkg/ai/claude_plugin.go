@@ -186,12 +186,20 @@ func UninstallClaudeBootstrapPlugin(root string) error {
 	return nil
 }
 
-func writeJSONFile(path string, value any, mode os.FileMode) error {
+// jsonFilePayload is exactly what writeJSONFile writes for value.
+func jsonFilePayload(value any) ([]byte, error) {
 	payload, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(payload, '\n'), nil
+}
+
+func writeJSONFile(path string, value any, mode os.FileMode) error {
+	payload, err := jsonFilePayload(value)
 	if err != nil {
 		return err
 	}
-	payload = append(payload, '\n')
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".phase-plugin-*")
 	if err != nil {
 		return err

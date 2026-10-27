@@ -175,9 +175,24 @@ func InstallCodexBootstrapPlugin(root, phaseExecutable string) (CodexBootstrapIn
 	installation.PluginVersion = HarnessAdapterProtocolVersion
 
 	hooks := codexBootstrapHooks(hookExecutable)
-	manifest := codexPluginManifest{
+	manifest := codexBootstrapManifest()
+	if err := writeJSONFile(filepath.Join(manifestDirectory, "plugin.json"), manifest, 0o600); err != nil {
+		return installation, fmt.Errorf("write Codex bootstrap plugin manifest: %w", err)
+	}
+	if err := writeJSONFile(filepath.Join(hooksDirectory, "hooks.json"), hooks, 0o600); err != nil {
+		return installation, fmt.Errorf("write Codex bootstrap hooks: %w", err)
+	}
+	if err := upsertCodexMarketplace(root); err != nil {
+		return installation, err
+	}
+	return installation, nil
+}
+
+// codexBootstrapManifest is the plugin.json InstallCodexBootstrapPlugin writes.
+func codexBootstrapManifest() codexPluginManifest {
+	return codexPluginManifest{
 		Name:        CodexBootstrapPluginName,
-		Version:     installation.PluginVersion,
+		Version:     HarnessAdapterProtocolVersion,
 		Description: "Makes explicitly selected Phase-managed Connections available to Codex.",
 		Author:      codexPluginAuthor{Name: "Phase"},
 		Homepage:    "https://phase.dev",
@@ -197,16 +212,28 @@ func InstallCodexBootstrapPlugin(root, phaseExecutable string) (CodexBootstrapIn
 			},
 		},
 	}
-	if err := writeJSONFile(filepath.Join(manifestDirectory, "plugin.json"), manifest, 0o600); err != nil {
-		return installation, fmt.Errorf("write Codex bootstrap plugin manifest: %w", err)
+}
+
+// CodexBootstrapPluginCurrent reports whether the plugin under root already
+// holds exactly the manifest and hooks InstallCodexBootstrapPlugin would write
+// for phaseExecutable, so refreshing it would change nothing Codex runs. It
+// needs no Codex CLI.
+func CodexBootstrapPluginCurrent(root, phaseExecutable string) bool {
+	pluginRoot := filepath.Join(root, "plugins", CodexBootstrapPluginName)
+	for path, value := range map[string]any{
+		filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"): codexBootstrapManifest(),
+		filepath.Join(pluginRoot, "hooks", "hooks.json"):          codexBootstrapHooks(phaseExecutable),
+	} {
+		want, err := jsonFilePayload(value)
+		if err != nil {
+			return false
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			return false
+		}
 	}
-	if err := writeJSONFile(filepath.Join(hooksDirectory, "hooks.json"), hooks, 0o600); err != nil {
-		return installation, fmt.Errorf("write Codex bootstrap hooks: %w", err)
-	}
-	if err := upsertCodexMarketplace(root); err != nil {
-		return installation, err
-	}
-	return installation, nil
+	return true
 }
 
 // ActivateCodexBootstrapPlugin registers the Phase-owned marketplace and
