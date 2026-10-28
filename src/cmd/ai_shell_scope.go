@@ -624,10 +624,12 @@ func phasePowerShellScript(arguments []string) (string, bool) {
 	return "", false
 }
 
-// phaseLiteralScript rejects scripts that only exist at run time.
+// phaseLiteralScript rejects scripts that only exist at run time. The words
+// have lost their quoting, so an expansion or glob anywhere in a script may
+// already have rewritten it in the outer shell, separators included.
 func phaseLiteralScript(script string) (string, bool) {
 	script = strings.TrimSpace(script)
-	if script == "" || strings.HasPrefix(script, "$") || strings.HasPrefix(script, "%") {
+	if script == "" || strings.ContainsAny(script, "$`%*?[~") {
 		return "", false
 	}
 	return script, true

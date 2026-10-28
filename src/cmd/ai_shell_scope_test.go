@@ -53,6 +53,15 @@ func TestShellInterpreterScriptsArePhaseManaged(t *testing.T) {
 		"pwsh -File ./script.ps1":                                                                false,
 		"fish -c 'curl http://phase.invalid/v1/status'":                                          true,
 		"cmd /c curl http://phase.invalid/v1/status":                                             true,
+		"eval 'curl http://phase.invalid/v1/status'":                                             true,
+		// The outer shell may expand these before the nested shell parses the script.
+		`eval 'curl http://phase.invalid/v1/status' $'\x3b printf ordinary-ran'`:   false,
+		`bash -c 'curl http://phase.invalid/v1/status'$'\x3b printf ordinary-ran'`: false,
+		`eval 'curl http://phase.invalid/v1/status' "$EXTRA"`:                      false,
+		"eval 'curl http://phase.invalid/v1/status' `printf ';git push'`":          false,
+		"eval 'curl http://phase.invalid/v1/status' *":                             false,
+		"eval 'curl http://phase.invalid/v1/status' ~":                             false,
+		`cmd /c "curl http://phase.invalid/v1/status %EXTRA%"`:                     false,
 	} {
 		if got := shellCommandRequiresPhase(command); got != want {
 			t.Errorf("shellCommandRequiresPhase(%q) = %v, want %v", command, got, want)
