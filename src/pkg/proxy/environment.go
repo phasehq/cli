@@ -193,11 +193,17 @@ var customCABundleEnvironmentKeys = map[string]struct{}{
 // in place of a Phase-managed Connection.
 func RuntimeControlEnvironmentKey(key string) bool {
 	switch strings.ToUpper(strings.TrimSpace(key)) {
-	case "PHASE_AI_ENABLED", "PHASE_AI_CA_BUNDLE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "JAVA_TOOL_OPTIONS":
+	case "PHASE_AI_ENABLED", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY":
 		return true
 	}
-	_, ok := customCABundleEnvironmentKeys[strings.ToUpper(strings.TrimSpace(key))]
-	return ok
+	return TrustEnvironmentKey(key)
+}
+
+// TrustEnvironmentKey reports whether key points clients at CA material.
+func TrustEnvironmentKey(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	_, ok := customCABundleEnvironmentKeys[key]
+	return ok || key == "PHASE_AI_CA_BUNDLE" || key == "JAVA_TOOL_OPTIONS"
 }
 
 // CredentialFamiliesForConnection maps a connection to the bounded family of

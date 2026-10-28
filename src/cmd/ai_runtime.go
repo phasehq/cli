@@ -228,11 +228,11 @@ func runAIExecCommandWithEnvironment(cmd *cobra.Command, command, environment []
 		if err != nil {
 			return err
 		}
-		// A value the selection does not change keeps its inherited form: a relay
+		// A CA path the selection does not change keeps its inherited form: a relay
 		// plans its own CA paths, which a bootstrapped sandbox holds at its own.
 		owned := phaseproxy.ProcessEnvironmentPlan{Set: make(map[string]string, len(ownedPlan.Set))}
 		for key, value := range ownedPlan.Set {
-			if selected, ok := plan.Set[key]; ok && selected == value {
+			if selected, ok := plan.Set[key]; ok && selected == value && phaseproxy.TrustEnvironmentKey(key) {
 				delete(plan.Set, key)
 				continue
 			}

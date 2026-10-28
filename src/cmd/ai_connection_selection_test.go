@@ -72,7 +72,8 @@ func TestExecSelectedConnectionKeepsInheritedTrustPaths(t *testing.T) {
 		t.Skip("uses a POSIX child to inspect isolated environment")
 	}
 	// A relay plans its own CA paths; a bootstrapped sandbox holds the same
-	// trust material at its own paths, or leaves a variable unset.
+	// trust material at its own paths, or leaves a variable unset. Other
+	// values always come from the selection, even when the plans agree.
 	const relayBundle = "/relay-home/.phase/ai/runtime-ca-bundle.pem"
 	var originalProxy, selectedProxy string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +88,7 @@ func TestExecSelectedConnectionKeepsInheritedTrustPaths(t *testing.T) {
 			"schemaVersion": 1, "sessionUid": "session-one", "connectionId": "pg-two", "configGeneration": 1,
 			"processEnvironment": phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
 				"PHASE_AI_ENABLED": "1", "HTTP_PROXY": proxy, "http_proxy": proxy, "HTTPS_PROXY": proxy, "https_proxy": proxy,
-				"PGSSLROOTCERT": relayBundle, "SSL_CERT_FILE": relayBundle, "PGPASSWORD": password,
+				"PGSSLROOTCERT": relayBundle, "SSL_CERT_FILE": relayBundle, "PGPASSWORD": password, "PGHOST": "relay.example.test",
 			}},
 		})
 	}))
@@ -102,13 +103,14 @@ func TestExecSelectedConnectionKeepsInheritedTrustPaths(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "")
 	t.Setenv("PGSSLROOTCERT", sandboxBundle)
 	t.Setenv("PGPASSWORD", "decoy-default")
+	t.Setenv("PGHOST", "ambient.example")
 	t.Setenv("SSL_CERT_FILE", "")
 	os.Unsetenv("SSL_CERT_FILE")
 	command := &cobra.Command{}
 	command.SetContext(t.Context())
 	command.Flags().String("connection", "pg-two", "")
 	if err := runAIExecInheritedCommand(command, []string{"/bin/sh", "-c",
-		`test "$PGSSLROOTCERT" = "` + sandboxBundle + `" && test -z "${SSL_CERT_FILE+set}" && test "$PGPASSWORD" = decoy-selected`}); err != nil {
+		`test "$PGSSLROOTCERT" = "` + sandboxBundle + `" && test -z "${SSL_CERT_FILE+set}" && test "$PGPASSWORD" = decoy-selected && test "$PGHOST" = relay.example.test`}); err != nil {
 		t.Fatal(err)
 	}
 }
