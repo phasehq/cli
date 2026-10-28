@@ -436,7 +436,8 @@ func startClaudeHookDaemon(executable, generation string) (int, error) {
 		return 0, err
 	}
 	pid := child.Process.Pid
-	_ = child.Process.Release()
+	// Reap the daemon if it exits while this process still runs.
+	go func() { _ = child.Wait() }()
 	return pid, nil
 }
 

@@ -607,6 +607,39 @@ func TestClaudeRuntimeLockRecoversAnInterruptedWrite(t *testing.T) {
 	}
 }
 
+func TestProcessIsAliveRejectsAZombie(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("zombie detection reads /proc")
+	}
+	child := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Left unreaped, the exited child stays a zombie as under a non-reaping init.
+	t.Cleanup(func() { _ = child.Wait() })
+	statPath := fmt.Sprintf("/proc/%d/stat", child.Process.Pid)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stat, err := os.ReadFile(statPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(stat), ") Z ") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child never became a zombie: %s", stat)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processIsAlive(child.Process.Pid) {
+		t.Fatal("an exited zombie process was reported alive")
+	}
+	if !processIsAlive(os.Getpid()) {
+		t.Fatal("the running test process was reported dead")
+	}
+}
+
 func TestClaudeHeartbeatDoesNotModifyWatchedRuntimeState(t *testing.T) {
 	directory := withClaudeHookRuntimeDirectory(t)
 	statePath := filepath.Join(directory, claudeRuntimeStateFile)

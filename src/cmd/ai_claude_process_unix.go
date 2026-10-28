@@ -3,10 +3,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 )
 
@@ -23,7 +25,21 @@ func processIsAlive(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return (err == nil || errors.Is(err, syscall.EPERM)) && !processIsZombie(pid)
+}
+
+// processIsZombie reports an exited process that its parent has not reaped,
+// which a non-reaping container init keeps forever; kill(pid, 0) still
+// succeeds for it. Only Linux exposes the state here, so elsewhere the hook
+// reaps the daemon it starts.
+func processIsZombie(pid int) bool {
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// The state follows the command name, which may itself contain ") ".
+	end := bytes.LastIndexByte(stat, ')')
+	return end >= 0 && end+2 < len(stat) && (stat[end+2] == 'Z' || stat[end+2] == 'X')
 }
 
 func openClaudeEnvironmentFile(path string) (*os.File, error) {
