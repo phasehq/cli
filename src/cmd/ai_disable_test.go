@@ -178,3 +178,31 @@ func TestOpenCodePluginIsRecordedBeforeALaterAdapterFails(t *testing.T) {
 		t.Fatalf("disable left the OpenCode plugin that the failed enable wrote: %v", err)
 	}
 }
+
+func TestForeignOpenCodePluginIsNotRecordedForCleanup(t *testing.T) {
+	_, source := isolateAISetup(t)
+	plugin, err := ai.DefaultOpenCodePluginPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := []byte("export const Foreign = async () => ({})\n")
+	if err := os.MkdirAll(filepath.Dir(plugin), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plugin, foreign, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.AIConfig{Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{ai.HarnessOpenCode}}
+	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessOpenCode, source); err == nil {
+		t.Fatal("enable replaced a foreign OpenCode plugin")
+	}
+	if saved := config.LoadAIConfig(); saved != nil && len(saved.OpenCodePlugins) != 0 {
+		t.Fatalf("the foreign plugin was recorded as Phase's: %v", saved.OpenCodePlugins)
+	}
+	if err := runAIDisableForTest(); err != nil {
+		t.Fatal(err)
+	}
+	if payload, err := os.ReadFile(plugin); err != nil || string(payload) != string(foreign) {
+		t.Fatalf("the foreign plugin was changed: %q, %v", payload, err)
+	}
+}

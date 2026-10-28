@@ -89,12 +89,8 @@ func InstallOpenCodePlugin(pluginPath, hookExecutable, environmentPath string) (
 	if !filepath.IsAbs(environmentPath) {
 		return installation, errors.New("Phase environment path for OpenCode must be absolute")
 	}
-	if payload, readErr := os.ReadFile(pluginPath); readErr == nil {
-		if !isOwnedOpenCodePlugin(string(payload)) {
-			return installation, errors.New("refusing to replace an OpenCode plugin not owned by Phase")
-		}
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return installation, fmt.Errorf("inspect existing OpenCode plugin: %w", readErr)
+	if err := ClaimOpenCodePlugin(pluginPath); err != nil {
+		return installation, err
 	}
 	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
 		return installation, fmt.Errorf("create OpenCode Phase directory: %w", err)
@@ -264,6 +260,21 @@ export default phaseAIPlugin
 		return installation, fmt.Errorf("write OpenCode Phase plugin: %w", err)
 	}
 	return installation, nil
+}
+
+// ClaimOpenCodePlugin fails when pluginPath holds a plugin Phase does not own.
+func ClaimOpenCodePlugin(pluginPath string) error {
+	payload, err := os.ReadFile(pluginPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect existing OpenCode plugin: %w", err)
+	}
+	if !isOwnedOpenCodePlugin(string(payload)) {
+		return errors.New("refusing to replace an OpenCode plugin not owned by Phase")
+	}
+	return nil
 }
 
 func isOwnedOpenCodePlugin(source string) bool {

@@ -493,6 +493,10 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, cfg *config.AIConfi
 				}
 			}
 			for _, path := range paths {
+				// A foreign file must not be recorded, or disable would try to remove it.
+				if err := ai.ClaimOpenCodePlugin(path); err != nil {
+					return nil, nil, fmt.Errorf("install OpenCode Phase plugin at %s: %w", path, err)
+				}
 				if err := config.RecordOpenCodePlugin(path); err != nil {
 					return nil, nil, fmt.Errorf("record OpenCode Phase plugin: %w", err)
 				}
