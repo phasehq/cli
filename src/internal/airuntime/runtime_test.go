@@ -51,7 +51,7 @@ func TestSavedLoginRejectsObsoleteAgentTokenAsAuthenticationRequired(t *testing.
 }
 
 func TestSavedLoginRejectsInvalidHostAsAuthenticationRequired(t *testing.T) {
-	token := "pss_agent:v2:" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
+	token := "pss_agent:v1:" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
 	_, err := clientForSavedLogin("not-a-url", token)
 	if !errors.Is(err, ErrAuthenticationRequired) {
 		t.Fatalf("invalid saved host error = %v, want ErrAuthenticationRequired", err)

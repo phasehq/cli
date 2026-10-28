@@ -37,7 +37,7 @@ func TestParseDurableTokenCompatibility(t *testing.T) {
 		{testToken("pss_user", 2, ""), TokenUser},
 		{testToken("pss_service", 1, ""), TokenService},
 		{testToken("pss_service", 2, ""), TokenServiceAccount},
-		{testToken("pss_agent", 2, ""), TokenAgent},
+		{testToken("pss_agent", 1, ""), TokenAgent},
 	}
 	for _, test := range tests {
 		got, lookup, err := ParseDurableToken(test.token)
@@ -52,6 +52,7 @@ func TestParseDurableTokenCompatibility(t *testing.T) {
 		"",
 		"pss_agent:v1:" + strings.Repeat("a:", 4) + "a",
 		"pss_agent:v1:" + strings.Repeat("a", 64),
+		testToken("pss_agent", 2, ""),
 		"pss_user:v1:not-hex",
 	} {
 		if _, _, err := ParseDurableToken(invalid); err == nil {
@@ -63,7 +64,7 @@ func TestParseDurableTokenCompatibility(t *testing.T) {
 func TestClientBypassesDataPlaneProxyInsideManagedChild(t *testing.T) {
 	t.Setenv("PHASE_AI_ENABLED", "1")
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
-	client, err := NewClient("https://console.phase.dev", testToken("pss_agent", 2, ""), nil)
+	client, err := NewClient("https://console.phase.dev", testToken("pss_agent", 1, ""), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +90,7 @@ func TestClientSendsCapturedSharedUserAgentOnEveryAgentRoute(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(server.URL, testToken("pss_agent", 2, ""), server.Client())
+	client, err := NewClient(server.URL, testToken("pss_agent", 1, ""), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestRequestRoutesUseSharedSDKWithoutChangingRelayContract(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(server.URL, testToken("pss_agent", 2, ""), server.Client())
+	client, err := NewClient(server.URL, testToken("pss_agent", 1, ""), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestRequestRoutesUseSharedSDKWithoutChangingRelayContract(t *testing.T) {
 }
 
 func TestSharedSDKRequestErrorIsBoundedAndMapped(t *testing.T) {
-	secret := testToken("pss_agent", 2, "")
+	secret := testToken("pss_agent", 1, "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/sessions/") {
@@ -275,7 +276,7 @@ func TestClientNeverFollowsSameOrCrossOriginRedirects(t *testing.T) {
 
 			originalRedirect := func(*http.Request, []*http.Request) error { return nil }
 			supplied := &http.Client{Transport: source.Client().Transport, CheckRedirect: originalRedirect}
-			client, err := NewClient(source.URL, testToken("pss_agent", 2, ""), supplied)
+			client, err := NewClient(source.URL, testToken("pss_agent", 1, ""), supplied)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -305,7 +306,7 @@ func TestAgentAPIBasePathNormalization(t *testing.T) {
 		{"https://example.test/phase/service/public/v1/agents", "/phase/service/public/v1/agents/sessions/"},
 	}
 	for _, test := range tests {
-		client, err := NewClient(test.host, testToken("pss_agent", 2, ""), http.DefaultClient)
+		client, err := NewClient(test.host, testToken("pss_agent", 1, ""), http.DefaultClient)
 		if err != nil {
 			t.Fatalf("NewClient(%q): %v", test.host, err)
 		}
@@ -322,7 +323,7 @@ func TestAgentAPIBasePathNormalization(t *testing.T) {
 		"https://example.test?tenant=one",
 		"https://example.test#fragment",
 	} {
-		if _, err := NewClient(invalid, testToken("pss_agent", 2, ""), http.DefaultClient); err == nil {
+		if _, err := NewClient(invalid, testToken("pss_agent", 1, ""), http.DefaultClient); err == nil {
 			t.Fatalf("expected unsafe host rejection for %q", invalid)
 		}
 	}
@@ -345,7 +346,7 @@ func TestAgentAPIRequiresHTTPSOutsideExplicitLoopback(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.host, func(t *testing.T) {
-			_, err := NewClient(test.host, testToken("pss_agent", 2, ""), http.DefaultClient)
+			_, err := NewClient(test.host, testToken("pss_agent", 1, ""), http.DefaultClient)
 			if (err == nil) != test.allowed {
 				t.Fatalf("NewClient(%q) error=%v, allowed=%t", test.host, err, test.allowed)
 			}
@@ -678,7 +679,7 @@ func TestAgentIdentityUsesAgentOnlyEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(server.URL, testToken("pss_agent", 2, ""), server.Client())
+	client, err := NewClient(server.URL, testToken("pss_agent", 1, ""), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +706,7 @@ func TestAgentIdentityRejectsNonAgentTokensAndIncompleteResponses(t *testing.T) 
 		_, _ = w.Write([]byte(`{"schemaVersion":1,"principalType":"agent","agent":{"id":"agent-123","name":"Claude"}}`))
 	}))
 	defer server.Close()
-	agentClient, err := NewClient(server.URL, testToken("pss_agent", 2, ""), server.Client())
+	agentClient, err := NewClient(server.URL, testToken("pss_agent", 1, ""), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +726,7 @@ func TestRuntimeRoutesCarrySessionCredential(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
-	client, err := NewClient(server.URL, testToken("pss_agent", 2, ""), server.Client())
+	client, err := NewClient(server.URL, testToken("pss_agent", 1, ""), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -756,7 +757,7 @@ func TestRuntimeRoutesCarrySessionCredential(t *testing.T) {
 }
 
 func TestAPIErrorDropsDetailsAndRedactsCredentialShapedMessage(t *testing.T) {
-	secret := testToken("pss_agent", 2, "")
+	secret := testToken("pss_agent", 1, "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprintf(w, `{"error":{"code":"denied","message":"bad %s","retryable":false,"details":{"raw":"live-secret"}}}`, secret)
@@ -796,7 +797,7 @@ func TestAPIErrorCarriesRetryMetadata(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, err := NewClient(server.URL, testToken("pss_agent", 2, ""), server.Client())
+			client, err := NewClient(server.URL, testToken("pss_agent", 1, ""), server.Client())
 			if err != nil {
 				t.Fatal(err)
 			}

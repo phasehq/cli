@@ -488,7 +488,7 @@ func writeRemoteTLSIdentity(t *testing.T, host string) (string, string, *x509.Ce
 }
 
 func remoteAgentToken() string {
-	return "pss_agent:v2:" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
+	return "pss_agent:v1:" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
 }
 
 func remoteProxyHTTPClient(t *testing.T, rawProxyURL string, roots *x509.CertPool) *http.Client {
