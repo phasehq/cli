@@ -724,63 +724,154 @@ func phaseSimpleCommandRequiresPhase(words []string) bool {
 	if phaseWrapperExecutable(executable) {
 		return phaseSimpleCommandRequiresPhase(phaseUnwrapCommand(executable, words[1:]))
 	}
+	if executable == "curl" || executable == "wget" {
+		return phaseCurlWgetRequiresPhase(executable, words[1:])
+	}
 	if phaseNetworkExecutable(executable) {
-		managed := false
-		for index, argument := range words[1:] {
-			if phaseNetworkNonTargetValue(executable, words[1:], index) {
-				continue
-			}
+		for _, argument := range words[1:] {
 			if phaseManagedTarget(argument) {
-				managed = true
-			} else if phaseNetworkOtherTarget(executable, argument) {
-				// Every transfer in the call would run with Phase material.
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// phaseCurlWgetRequiresPhase proves a curl or wget call reaches only Phase.
+// It walks the arguments in order, consuming each option's value where curl
+// and wget would, so a value such as -o cannot be mistaken for a transfer and
+// a transfer cannot be mistaken for a value. Options it does not recognise, or
+// any operand that is not phase.invalid, leave the call unmanaged: the guard
+// manages a call only when it can prove every transfer is Phase.
+func phaseCurlWgetRequiresPhase(executable string, arguments []string) bool {
+	managed := false
+	operandsOnly := false
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		if operandsOnly {
+			if !phaseManagedTarget(argument) {
 				return false
 			}
+			managed = true
+			continue
 		}
-		return managed
+		switch {
+		case argument == "--":
+			operandsOnly = true
+		case strings.HasPrefix(argument, "--"):
+			name, value, hasValue := strings.Cut(argument[2:], "=")
+			name = strings.ToLower(name)
+			kind := phaseNetworkLongOption(executable, name)
+			switch {
+			case kind == phaseOptionTarget:
+				target := value
+				if !hasValue {
+					if index++; index >= len(arguments) {
+						return false
+					}
+					target = arguments[index]
+				}
+				if !phaseManagedTarget(target) {
+					return false
+				}
+				managed = true
+			case kind == phaseOptionValue:
+				if !hasValue {
+					index++ // the option's value is the next argument
+				}
+			case kind == phaseOptionFlag && !hasValue:
+			default:
+				return false
+			}
+		case strings.HasPrefix(argument, "-") && len(argument) > 1:
+			if !phaseNetworkShortCluster(executable, argument[1:], arguments, &index) {
+				return false
+			}
+		default:
+			if !phaseManagedTarget(argument) {
+				return false
+			}
+			managed = true
+		}
 	}
-	return false
+	return managed
 }
 
-// phaseNetworkOtherTarget reports an argument through which curl or wget may
-// reach something other than Phase: another operand, or a file of options or
-// URLs.
-func phaseNetworkOtherTarget(executable, argument string) bool {
-	lower := strings.ToLower(argument)
-	short := strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--")
-	switch executable {
-	case "curl":
-		return !strings.HasPrefix(argument, "-") || strings.HasPrefix(lower, "--url=") ||
-			strings.HasPrefix(lower, "--conf") || short && strings.Contains(argument, "K")
-	case "wget":
-		return !strings.HasPrefix(argument, "-") || strings.HasPrefix(lower, "--input") ||
-			strings.HasPrefix(lower, "--exec") || short && strings.ContainsAny(argument, "ie")
+// phaseNetworkShortCluster reads a short-option cluster such as -fsS or -qO-.
+// A value-taking option consumes the rest of the cluster, or the next argument
+// when it is the last in the cluster. An unknown option fails the proof.
+func phaseNetworkShortCluster(executable, cluster string, arguments []string, index *int) bool {
+	for position := 0; position < len(cluster); position++ {
+		flag := cluster[position]
+		takesValue, known := phaseNetworkShortOption(executable, flag)
+		if !known {
+			return false
+		}
+		if !takesValue {
+			continue
+		}
+		if position+1 == len(cluster) {
+			*index++ // the value is the next argument
+		}
+		return true // the rest of the cluster, if any, is the attached value
 	}
-	return false
+	return true
 }
 
-func phaseNetworkNonTargetValue(executable string, arguments []string, index int) bool {
-	if index <= 0 {
-		return false
-	}
-	previousRaw := arguments[index-1]
-	previous := strings.ToLower(previousRaw)
+type phaseOptionKind int
+
+const (
+	phaseOptionUnknown phaseOptionKind = iota
+	phaseOptionFlag
+	phaseOptionValue
+	phaseOptionTarget
+)
+
+func phaseNetworkLongOption(executable, name string) phaseOptionKind {
 	switch executable {
 	case "curl":
-		// Short options are case-sensitive: -O takes no value, -o does.
-		switch previousRaw {
-		case "-d", "-F", "-H", "-m", "-o", "-w", "-X", "-x":
-			return true
-		}
-		switch previous {
-		case "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--form", "--form-string",
-			"--header", "--json", "--max-time", "--output", "--proxy", "--request", "--write-out":
-			return true
+		switch name {
+		case "url":
+			return phaseOptionTarget
+		case "fail", "silent", "show-error", "include", "verbose", "location":
+			return phaseOptionFlag
+		case "request", "header", "data", "data-raw", "data-binary", "data-ascii", "data-urlencode",
+			"json", "max-time", "proxy", "output", "form", "form-string", "user-agent", "referer",
+			"user", "cookie", "write-out":
+			return phaseOptionValue
 		}
 	case "wget":
-		return previous == "-o" || previous == "--output-document" || previous == "--output-file"
+		switch name {
+		case "quiet", "no-config":
+			return phaseOptionFlag
+		case "output-document":
+			return phaseOptionValue
+		}
 	}
-	return false
+	return phaseOptionUnknown
+}
+
+// phaseNetworkShortOption reports whether a short option is recognised and
+// whether it consumes a value. The config (-K) and upload (-T) options, and
+// anything unlisted, are unknown so the call cannot be proved plain.
+func phaseNetworkShortOption(executable string, flag byte) (takesValue, known bool) {
+	switch executable {
+	case "curl":
+		switch flag {
+		case 'f', 's', 'S', 'i', 'v', 'L', 'O', 'G', 'q', '#':
+			return false, true
+		case 'X', 'H', 'd', 'o', 'm', 'x', 'A', 'e', 'u', 'U', 'b', 'w':
+			return true, true
+		}
+	case "wget":
+		switch flag {
+		case 'q':
+			return false, true
+		case 'O':
+			return true, true
+		}
+	}
+	return false, false
 }
 
 func phaseUnwrapCommand(wrapper string, words []string) []string {

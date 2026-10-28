@@ -38,6 +38,16 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "attached curl config file", command: "curl -sKextra.conf http://phase.invalid/v1/status", want: false},
 		{name: "long curl config file", command: "curl --config=extra.conf http://phase.invalid/v1/status", want: false},
 		{name: "curl argument that is not a URL", command: "curl http://phase.invalid/v1/status ^", want: false},
+		// -H consumes -o as its value, so the file URL is a second transfer.
+		{name: "curl option value hides a file transfer", command: "curl -q --proto=file -H -o file:///ordinary-marker http://phase.invalid/v1/status", want: false},
+		{name: "curl double dash exposes an operand", command: "curl http://phase.invalid/v1/status -- -d", want: false},
+		{name: "wget abbreviated input file", command: "wget --inp=urls.txt http://phase.invalid/v1/status", want: false},
+		{name: "wget abbreviated execute", command: "wget --exe=input=urls.txt http://phase.invalid/v1/status", want: false},
+		{name: "wget long config file", command: "wget --config=extra.conf http://phase.invalid/v1/status", want: false},
+		// Attached short-option values are not config or input switches.
+		{name: "curl attached output file", command: "curl -q -oKeyData.json http://phase.invalid/v1/status", want: true},
+		{name: "curl attached header", command: "curl -q -HX-Api-Key:test http://phase.invalid/v1/status", want: true},
+		{name: "wget attached output document", command: "wget --no-config -Oresponse.json http://phase.invalid/v1/status", want: true},
 		{name: "curl home redirect env", command: "CURL_HOME=/tmp/x curl http://phase.invalid/v1/status", want: false},
 		{name: "curl home redirect env through env", command: "env HOME=/tmp/x curl http://phase.invalid/v1/status", want: false},
 		{name: "wget rc redirect env", command: "WGETRC=/tmp/x wget -qO- http://phase.invalid/v1/status", want: false},
