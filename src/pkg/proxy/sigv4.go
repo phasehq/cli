@@ -555,9 +555,10 @@ func validateSigV4SignedHeaders(req *http.Request, scope sigV4Scope) error {
 			}
 			continue
 		}
-		_, present, err := singleHeader(req.Header, header)
-		if err != nil || !present {
-			return sigV4Error(AWSSigV4MalformedAuthorization, err)
+		// SigV4 signs repeated values joined by commas, as the signer does when
+		// re-signing; headers that must be single are checked where they are read.
+		if !headerPresent(req.Header, header) {
+			return sigV4Error(AWSSigV4MalformedAuthorization, nil)
 		}
 	}
 	if _, present, err := singleHeader(req.Header, "X-Amz-Security-Token"); err != nil {
@@ -741,6 +742,23 @@ func singleHeader(headers http.Header, name string) (string, bool, error) {
 		return "", true, errors.New("duplicate or invalid header")
 	}
 	return values[0], true, nil
+}
+
+// headerPresent reports whether name has a value, and no value breaks a line.
+func headerPresent(headers http.Header, name string) bool {
+	present := false
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		for _, value := range values {
+			if strings.ContainsAny(value, "\r\n") {
+				return false
+			}
+			present = true
+		}
+	}
+	return present
 }
 
 func deleteHeader(headers http.Header, name string) {

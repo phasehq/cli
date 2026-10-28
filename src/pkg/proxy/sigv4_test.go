@@ -567,3 +567,37 @@ func TestResignAWSSigV4SignsS3KeysEncodedOnceAndOtherServicesTwice(t *testing.T)
 		t.Fatalf("execute-api re-signed authorization differs from default signing\n got: %s\nwant: %s", got, want)
 	}
 }
+
+func TestResignAWSSigV4AcceptsRepeatedOrdinarySignedHeaders(t *testing.T) {
+	decoy := aws.Credentials{AccessKeyID: testExpectedAccessKeyID, SecretAccessKey: testDecoySecret, SessionToken: "decoy-session-token"}
+	putObject := func(credentials aws.Credentials) *http.Request {
+		req := newAWSRequest(t, "https://bucket.s3.us-east-1.amazonaws.com/key", "hello")
+		req.Method = http.MethodPut
+		req.Header.Set("X-Amz-Content-Sha256", sha256Hex("hello"))
+		req.Header.Add("X-Amz-Meta-Color", "red")
+		req.Header.Add("X-Amz-Meta-Color", "blue")
+		signRequest(t, req, credentials, "s3", "us-east-1", sha256Hex("hello"))
+		return req
+	}
+	live := AWSCredentials{AccessKeyID: testLiveAccessKeyID, SecretAccessKey: testLiveSecret}
+	options := AWSSigV4Options{ExpectedAccessKeyID: testExpectedAccessKeyID}
+	req := putObject(decoy)
+	if _, err := resignAWSSigV4(context.Background(), req, live, options); err != nil {
+		t.Fatal(err)
+	}
+	reference := putObject(aws.Credentials{AccessKeyID: testLiveAccessKeyID, SecretAccessKey: testLiveSecret})
+	if got, want := req.Header.Get("Authorization"), reference.Header.Get("Authorization"); got != want {
+		t.Fatalf("re-signed authorization differs from direct signing\n got: %s\nwant: %s", got, want)
+	}
+
+	for name, failure := range map[string]AWSSigV4Failure{
+		"X-Amz-Date":           AWSSigV4InvalidSigningTime,
+		"X-Amz-Content-Sha256": AWSSigV4InvalidPayloadHash,
+		"X-Amz-Security-Token": AWSSigV4MalformedAuthorization,
+	} {
+		repeated := putObject(decoy)
+		repeated.Header.Add(name, repeated.Header.Get(name))
+		_, err := resignAWSSigV4(context.Background(), repeated, live, options)
+		assertSigV4Error(t, err, failure)
+	}
+}
