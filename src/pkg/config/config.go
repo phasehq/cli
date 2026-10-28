@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -352,6 +353,21 @@ func (cfg *AIConfig) ClearHarnessInstallations() {
 	cfg.SkillInstallPath = ""
 	cfg.SkillInstallPaths = nil
 	cfg.OpenCodePlugins = nil
+}
+
+// RecordOpenCodePlugin adds path to the saved config's OpenCode plugins. Enable
+// records a plugin before writing it, so disable finds it even if a later step
+// of enable fails.
+func RecordOpenCodePlugin(path string) error {
+	cfg := LoadAIConfig()
+	if cfg == nil {
+		cfg = &AIConfig{ProxyMode: AIProxyModeLocal}
+	}
+	if slices.Contains(cfg.OpenCodePlugins, path) {
+		return nil
+	}
+	cfg.OpenCodePlugins = append(cfg.OpenCodePlugins, path)
+	return SaveAIConfig(cfg)
 }
 
 func uniqueNonEmpty(values []string, extras ...string) []string {

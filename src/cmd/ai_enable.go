@@ -493,6 +493,9 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, cfg *config.AIConfi
 				}
 			}
 			for _, path := range paths {
+				if err := config.RecordOpenCodePlugin(path); err != nil {
+					return nil, nil, fmt.Errorf("record OpenCode Phase plugin: %w", err)
+				}
 				if _, err := ai.InstallOpenCodePlugin(path, hookExecutable, claudeEnvironmentJSONPath(runtimeDirectory)); err != nil {
 					return nil, nil, fmt.Errorf("install OpenCode Phase plugin at %s: %w", path, err)
 				}

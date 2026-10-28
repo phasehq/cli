@@ -178,6 +178,32 @@ func TestAIConfigAddsHarnessesWithoutReplacingExistingIntegrations(t *testing.T)
 
 const aiHarnessCursorForTest = "cursor"
 
+func TestRecordOpenCodePluginKeepsTheSavedConfig(t *testing.T) {
+	overrideAIConfigPath(t, filepath.Join(t.TempDir(), "ai.json"))
+	first := filepath.Join(t.TempDir(), "first.js")
+	if err := RecordOpenCodePlugin(first); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := LoadAIConfig(); cfg == nil || cfg.Enabled || len(cfg.OpenCodePlugins) != 1 || cfg.OpenCodePlugins[0] != first {
+		t.Fatalf("recording into a missing config: %+v", cfg)
+	}
+
+	if err := SaveAIConfig(&AIConfig{Enabled: true, ProxyMode: AIProxyModeLocal, DefaultWorkflowID: "workflow-123", HarnessIDs: []string{"opencode"}, OpenCodePlugins: []string{first}}); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(t.TempDir(), "second.js")
+	for _, path := range []string{first, second} {
+		if err := RecordOpenCodePlugin(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := LoadAIConfig()
+	if cfg == nil || !cfg.Enabled || cfg.DefaultWorkflowID != "workflow-123" || !cfg.HarnessConfigured("opencode") ||
+		len(cfg.OpenCodePlugins) != 2 || cfg.OpenCodePlugins[1] != second {
+		t.Fatalf("recording changed the saved config: %+v", cfg)
+	}
+}
+
 func TestAIConfigDisabledStateRetainsWorkflow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ai.json")
 	overrideAIConfigPath(t, path)

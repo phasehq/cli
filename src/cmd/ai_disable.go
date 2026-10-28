@@ -70,9 +70,9 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	if cfg != nil && cfg.HarnessConfigured(ai.HarnessOpenCode) {
+	if cfg != nil {
 		pluginPaths := cfg.OpenCodePlugins
-		if len(pluginPaths) == 0 {
+		if len(pluginPaths) == 0 && cfg.HarnessConfigured(ai.HarnessOpenCode) {
 			pluginPaths, _ = ai.FindOpenCodePlugins(cfg.ConfiguredSkillInstallPaths())
 		}
 		for _, pluginPath := range pluginPaths {

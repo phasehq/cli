@@ -140,3 +140,41 @@ func TestOpenCodePluginOfAnEarlierBuildIsFoundBesideItsSkill(t *testing.T) {
 		t.Fatalf("disable left the OpenCode plugin beside the recorded skill: %v", err)
 	}
 }
+
+func TestOpenCodePluginIsRecordedBeforeALaterAdapterFails(t *testing.T) {
+	_, source := isolateAISetup(t)
+	cfg := &config.AIConfig{Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{ai.HarnessOpenCode, ai.HarnessCursor}}
+	if err := config.SaveAIConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_CONFIG_DIR", filepath.Join(t.TempDir(), "opencode"))
+	plugin, err := ai.DefaultOpenCodePluginPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorRoot, err := ai.DefaultCursorBootstrapPluginPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A Cursor plugin directory Phase does not own makes the Cursor adapter fail.
+	if err := os.MkdirAll(cursorRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessOpenCode, source); err == nil {
+		t.Fatal("the Cursor adapter did not fail")
+	}
+	if _, err := os.Stat(plugin); err != nil {
+		t.Fatalf("the OpenCode plugin was not installed before Cursor: %v", err)
+	}
+
+	if err := os.Remove(cursorRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	if err := runAIDisableForTest(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(plugin); !os.IsNotExist(err) {
+		t.Fatalf("disable left the OpenCode plugin that the failed enable wrote: %v", err)
+	}
+}
