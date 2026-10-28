@@ -62,6 +62,11 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		// An empty quoted argument is preserved so a later option cannot swallow
 		// a real target as its value.
 		{name: "curl empty quoted header hides a file transfer", command: "curl -q -H '' file:///ordinary-marker http://phase.invalid/v1/status", want: false},
+		// Only an unquoted, unescaped number before > or < is a descriptor.
+		{name: "curl quoted digits before redirect", command: "curl -q -H '2'>out file:///ordinary-marker http://phase.invalid/v1/status", want: false},
+		{name: "curl escaped digit before redirect", command: `curl -q -H \2>out file:///ordinary-marker http://phase.invalid/v1/status`, want: false},
+		{name: "curl digit and empty quote before redirect", command: "curl -q -H 2''>out file:///ordinary-marker http://phase.invalid/v1/status", want: false},
+		{name: "phase control with stderr redirect", command: "curl -sS http://phase.invalid/v1/status 2>&1", want: true},
 		// A command substitution or expansion anywhere leaves the call ambient.
 		{name: "curl nested command substitution", command: "curl http://phase.invalid/v1/status -H x$(curl http://phase.invalid/v1/status)", want: false},
 		{name: "curl variable expansion", command: "curl $URL http://phase.invalid/v1/status", want: false},

@@ -432,8 +432,8 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 	var word strings.Builder
 	var quote rune
 	escaped, comment, ambiguous := false, false, false
-	// pending keeps a quoted word that produced no characters, such as '', so a
-	// later scan can see the empty argument rather than lose it.
+	// pending marks a word with any quoting or escape: an empty one such as ''
+	// is still an argument, and a quoted number is never a descriptor.
 	pending := false
 	flush := func() {
 		if word.Len() != 0 || pending {
@@ -480,6 +480,7 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 		switch character {
 		case '\\':
 			escaped = true
+			pending = true
 		case '\'', '"':
 			quote = character
 			pending = true
@@ -490,7 +491,7 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 				word.WriteRune(character)
 			}
 		case '>', '<':
-			if word.Len() != 0 && !phaseDigits(word.String()) {
+			if pending || word.Len() != 0 && !phaseDigits(word.String()) {
 				flush()
 			} else {
 				word.Reset()
