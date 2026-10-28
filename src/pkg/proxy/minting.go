@@ -28,7 +28,8 @@ import (
 //     parameter and the Action field of a form-encoded body, which the proxy
 //     buffers and restores. AWS services differ in which selector they honour,
 //     so a request is refused when any of them names a blocked operation.
-//   - Paths (any HTTP API): method plus path pattern, matched with path.Match.
+//   - Paths (any HTTP API): method plus path pattern, matched with path.Match,
+//     and optionally a query parameter the request must carry.
 //
 // A Connection whose connectionConfig carries allowCredentialMinting: true is
 // exempt. Console does not set that today; it is the hook for a per-Connection
@@ -45,6 +46,7 @@ const (
 type MintingPathRule struct {
 	Method    string
 	Pattern   string
+	Query     string
 	Operation string
 	// Service limits an AWS rule to requests for that service, so an S3 object
 	// key that happens to share the path is not blocked. An unknown service
@@ -60,15 +62,19 @@ type MintingRules struct {
 var credentialMintingRules = map[string]MintingRules{
 	"aws": {
 		Operations: map[string][]string{
-			"sts":              {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity", "AssumeRoot", "GetFederationToken", "GetSessionToken"},
-			"iam":              {"CreateAccessKey", "CreateLoginProfile", "UpdateLoginProfile", "CreateServiceSpecificCredential", "ResetServiceSpecificCredential", "UploadSSHPublicKey", "UploadSigningCertificate"},
-			"ecr":              {"GetAuthorizationToken"},
-			"ecr-public":       {"GetAuthorizationToken"},
-			"redshift":         {"GetClusterCredentials", "GetClusterCredentialsWithIAM"},
-			"cognito-identity": {"GetCredentialsForIdentity", "GetOpenIdToken", "GetOpenIdTokenForDeveloperIdentity"},
+			"sts":                 {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity", "AssumeRoot", "GetFederationToken", "GetSessionToken"},
+			"iam":                 {"CreateAccessKey", "CreateLoginProfile", "UpdateLoginProfile", "CreateServiceSpecificCredential", "ResetServiceSpecificCredential", "UploadSSHPublicKey", "UploadSigningCertificate"},
+			"ecr":                 {"GetAuthorizationToken"},
+			"ecr-public":          {"GetAuthorizationToken"},
+			"redshift":            {"GetClusterCredentials", "GetClusterCredentialsWithIAM"},
+			"redshift-serverless": {"GetCredentials"},
+			"cognito-identity":    {"GetCredentialsForIdentity", "GetOpenIdToken", "GetOpenIdTokenForDeveloperIdentity"},
+			"ec2":                 {"CreateKeyPair"},
+			"lightsail":           {"GetInstanceAccessDetails", "CreateKeyPair", "DownloadDefaultKeyPair", "CreateBucketAccessKey"},
 		},
 		Paths: []MintingPathRule{
 			{Method: http.MethodPost, Pattern: "/v1/authorization-token", Operation: "codeartifact:GetAuthorizationToken", Service: "codeartifact"},
+			{Method: http.MethodGet, Pattern: "/*", Query: "session", Operation: "s3express:CreateSession", Service: "s3express"},
 		},
 	},
 	"github": {
@@ -117,6 +123,9 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 			if service := awsScopeService(req); service != "" && service != rule.Service {
 				continue
 			}
+		}
+		if rule.Query != "" && !req.URL.Query().Has(rule.Query) {
+			continue
 		}
 		if matched, _ := path.Match(rule.Pattern, req.URL.Path); matched {
 			return &CredentialMintingBlock{Operation: rule.Operation}, nil

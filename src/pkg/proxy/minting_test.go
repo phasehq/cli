@@ -235,3 +235,49 @@ func TestCredentialMintingPathRulesStayWithinTheirService(t *testing.T) {
 		t.Fatalf("an unidentifiable service must still be blocked: blocked=%#v err=%v", blocked, err)
 	}
 }
+
+func TestCredentialMintingBlocksKeyPairDatabaseAndSessionCredentials(t *testing.T) {
+	connection := mintingAWSConnection(nil)
+	decoy := aws.Credentials{AccessKeyID: testExpectedAccessKeyID, SecretAccessKey: testDecoySecret}
+	signedJSON := func(host, service, target string) *http.Request {
+		req := newAWSRequest(t, "https://"+host+"/", "{}")
+		req.Header.Set("Content-Type", "application/x-amz-json-1.1")
+		req.Header.Set("X-Amz-Target", target)
+		signRequest(t, req, decoy, service, "us-east-1", sha256Hex("{}"))
+		return req
+	}
+	signedGet := func(rawURL, service string) *http.Request {
+		req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signRequest(t, req, decoy, service, "us-east-1", emptyPayloadSHA256)
+		return req
+	}
+	const zonal = "https://bucket--use1-az4--x-s3.s3express-use1-az4.us-east-1.amazonaws.com"
+	for _, tc := range []struct {
+		req       *http.Request
+		operation string
+	}{
+		{signedQueryRequest(t, "ec2.us-east-1.amazonaws.com", "Action=CreateKeyPair&KeyName=k&Version=2016-11-15"), "ec2:CreateKeyPair"},
+		{signedJSON("redshift-serverless.us-east-1.amazonaws.com", "redshift-serverless", "RedshiftServerless.GetCredentials"), "redshift-serverless:GetCredentials"},
+		{signedJSON("lightsail.us-east-1.amazonaws.com", "lightsail", "Lightsail_20161128.GetInstanceAccessDetails"), "lightsail:GetInstanceAccessDetails"},
+		{signedJSON("lightsail.us-east-1.amazonaws.com", "lightsail", "Lightsail_20161128.CreateBucketAccessKey"), "lightsail:CreateBucketAccessKey"},
+		{signedGet(zonal+"/?session", "s3express"), "s3express:CreateSession"},
+	} {
+		blocked, err := CredentialMintingBlocked(tc.req, connection)
+		if err != nil || blocked == nil || blocked.Operation != tc.operation {
+			t.Fatalf("%s: blocked=%#v err=%v", tc.operation, blocked, err)
+		}
+	}
+	for name, req := range map[string]*http.Request{
+		"ec2 describe":      signedQueryRequest(t, "ec2.us-east-1.amazonaws.com", "Action=DescribeInstances&Version=2016-11-15"),
+		"lightsail list":    signedJSON("lightsail.us-east-1.amazonaws.com", "lightsail", "Lightsail_20161128.GetInstances"),
+		"s3express list":    signedGet(zonal+"/?list-type=2", "s3express"),
+		"s3 general bucket": signedGet("https://bucket.s3.us-east-1.amazonaws.com/?session", "s3"),
+	} {
+		if blocked, err := CredentialMintingBlocked(req, connection); err != nil || blocked != nil {
+			t.Fatalf("%s: blocked=%#v err=%v", name, blocked, err)
+		}
+	}
+}
