@@ -50,9 +50,11 @@ func TestLoadAIConfigNeverSeesAPartialSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	stop := make(chan struct{})
-	failures := make(chan string, 8)
+	failures := make(chan string, 4)
 	var readers sync.WaitGroup
-	for range 8 {
+	// Paced so a Windows rename, which waits for readers to close the file,
+	// is not starved.
+	for range 4 {
 		readers.Add(1)
 		go func() {
 			defer readers.Done()
@@ -66,7 +68,7 @@ func TestLoadAIConfigNeverSeesAPartialSave(t *testing.T) {
 					failures <- "a reader saw an unreadable AI config during a save"
 					return
 				}
-				time.Sleep(100 * time.Microsecond)
+				time.Sleep(time.Millisecond)
 			}
 		}()
 	}
