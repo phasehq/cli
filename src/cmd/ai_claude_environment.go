@@ -355,36 +355,36 @@ func inspectClaudeRuntime(directory string) claudeRuntimeHealth {
 
 // reconcileClaudeEnvironment retires proxy routing in the sourced file when the
 // daemon that published it is gone. The PID guard already protects every
-// command; this bounds PID reuse to one prompt.
+// command; this bounds PID reuse to one prompt. It holds the runtime lock, so
+// a replacement daemon publishes either before the check or after the rewrite.
 func reconcileClaudeEnvironment(directory string, health claudeRuntimeHealth) {
-	if health.ready {
+	if health.ready || claudeHookPhaseAIDisabled() {
 		return
 	}
-	var status claudeEnvironmentStatus
-	if readOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), &status) != nil || !status.ProxyLive {
-		return
-	}
-	if status.PID > 0 && processIsAlive(status.PID) {
-		return
-	}
-	if claudeHookPhaseAIDisabled() {
-		return
-	}
-	content, err := os.ReadFile(claudeEnvironmentPath(directory))
-	if err != nil {
-		return
-	}
-	if err := writeOwnerOnlyBytes(claudeEnvironmentPath(directory), []byte(stripClaudeProxyBlock(string(content)))); err != nil {
-		return
-	}
-	var payload claudeEnvironmentJSON
-	if readOwnerOnlyJSON(claudeEnvironmentJSONPath(directory), &payload) == nil && payload.Schema == claudeEnvironmentSchema {
-		payload.ProxyLive = false
-		payload.Proxy = map[string]string{}
-		_ = writeOwnerOnlyJSON(claudeEnvironmentJSONPath(directory), payload)
-	}
-	status.ProxyLive = false
-	_ = writeOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), status)
+	_ = withClaudeRuntimeLock(directory, func() error {
+		var status claudeEnvironmentStatus
+		if readOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), &status) != nil || !status.ProxyLive {
+			return nil
+		}
+		if status.PID > 0 && processIsAlive(status.PID) {
+			return nil
+		}
+		content, err := os.ReadFile(claudeEnvironmentPath(directory))
+		if err != nil {
+			return nil
+		}
+		if err := writeOwnerOnlyBytes(claudeEnvironmentPath(directory), []byte(stripClaudeProxyBlock(string(content)))); err != nil {
+			return nil
+		}
+		var payload claudeEnvironmentJSON
+		if readOwnerOnlyJSON(claudeEnvironmentJSONPath(directory), &payload) == nil && payload.Schema == claudeEnvironmentSchema {
+			payload.ProxyLive = false
+			payload.Proxy = map[string]string{}
+			_ = writeOwnerOnlyJSON(claudeEnvironmentJSONPath(directory), payload)
+		}
+		status.ProxyLive = false
+		return writeOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), status)
+	})
 	// disable may have removed the files while they were rewritten.
 	if claudeHookPhaseAIDisabled() {
 		_ = removeClaudeEnvironmentFiles()

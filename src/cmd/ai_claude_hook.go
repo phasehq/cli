@@ -529,22 +529,8 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 				RuntimeFingerprint: fingerprint, RuntimeScopeFingerprint: scopeFingerprint,
 				PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: proxyURL,
 			}
-			if err := writeOwnerOnlyJSON(statePath, state); err != nil {
-				publishErr = err
-				cycleCancel()
-				return
-			}
 			lastPlan, lastConnections = endpoints.ProcessEnvironment, endpoints.Connections
-			if err := writeClaudeEnvironment(directory, os.Getpid(), generation, state.StartedAt, lastPlan, lastConnections, true); err != nil {
-				publishErr = err
-				cycleCancel()
-				return
-			}
-			// disable may have run while the file was written; it removes
-			// the files after saving the config, so a second look is enough.
-			if claudeHookPhaseAIDisabled() {
-				_ = removeClaudeEnvironmentFiles()
-				publishErr = errClaudeHookPhaseAIDisabled
+			if publishErr = publishClaudeRuntime(directory, state, lastPlan, lastConnections); publishErr != nil {
 				cycleCancel()
 				return
 			}
@@ -637,6 +623,31 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	}
+}
+
+// publishClaudeRuntime writes the runtime state and the live environment under
+// the runtime lock, so a hook retiring a dead daemon's routing cannot
+// interleave with it.
+func publishClaudeRuntime(directory string, state claudeRuntimeState, plan phaseproxy.ProcessEnvironmentPlan, connections []aiproxy.EndpointConnection) error {
+	return withClaudeRuntimeLock(directory, func() error {
+		if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+			return err
+		}
+		if err := writeClaudeEnvironment(directory, state.PID, state.Generation, state.StartedAt, plan, connections, true); err != nil {
+			return err
+		}
+		// disable may have run while the file was written; it removes
+		// the files after saving the config, so a second look is enough.
+		if claudeHookPhaseAIDisabled() {
+			_ = removeClaudeEnvironmentFiles()
+			return errClaudeHookPhaseAIDisabled
+		}
+		return nil
+	})
+}
+
+func withClaudeRuntimeLock(directory string, mutate func() error) error {
+	return withClaudeLeaseMutationLock(context.Background(), filepath.Join(directory, claudeRuntimeLockFile), mutate)
 }
 
 func claudeRecycleRetryable(err error) bool {

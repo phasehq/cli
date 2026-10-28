@@ -408,3 +408,36 @@ func TestInspectClaudeRuntimeAndStatusLines(t *testing.T) {
 		t.Fatalf("ready status = %q", line)
 	}
 }
+
+func TestReconcileNeverRetiresAReplacementsRouting(t *testing.T) {
+	withClaudeHookTestConfig(t, true)
+	directory := withClaudeHookRuntimeDirectory(t)
+	plan := testClaudeEnvironmentPlan()
+	const deadPID = 1 << 30
+	for range 20 {
+		if err := writeClaudeEnvironment(directory, deadPID, "generation-gone", time.Now().UTC(), plan, nil, true); err != nil {
+			t.Fatal(err)
+		}
+		state := claudeRuntimeState{
+			Version: claudeRuntimeStateVersion, Generation: "generation-live", PID: os.Getpid(),
+			StartedAt: time.Now().UTC(), ProxyURL: plan.Set["HTTPS_PROXY"],
+		}
+		done := make(chan error, 1)
+		go func() { done <- publishClaudeRuntime(directory, state, plan, nil) }()
+		reconcileClaudeEnvironment(directory, claudeRuntimeHealth{})
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		environment, err := os.ReadFile(claudeEnvironmentPath(directory))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status claudeEnvironmentStatus
+		if err := readOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), &status); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(environment), claudeProxyBlockBegin) || !status.ProxyLive || status.Generation != "generation-live" {
+			t.Fatalf("a stale reconcile retired the replacement's routing: status=%+v\n%s", status, environment)
+		}
+	}
+}
