@@ -24,53 +24,79 @@ type phaseShellWord struct {
 	control bool
 }
 
-// shellCommandRequiresPhase recognizes only explicit Phase control calls.
-// Provider clients, Phase CLI commands, and ordinary shell commands remain
-// visible to the harness's normal permission evaluation.
-//
-// This is not a general shell security parser. Arbitrary scripts, SDKs, aliases,
-// build targets, and variable-expanded endpoints are outside its supported
-// boundary and do not receive Phase material. Malformed or opaque shell payloads
-// remain ambient; the hook must not claim commands it cannot identify.
+// shellCommandRequiresPhase recognizes only a single, plain Phase control call:
+// one simple command that runs curl, curl.exe or wget directly against
+// phase.invalid, with only allow-listed options and the redirections the parser
+// already accepts. Harnesses hand the hook the command as the agent typed it,
+// and the skill tells agents to call curl directly, so a managed call never
+// needs a wrapper, interpreter, substitution, assignment or expansion to be
+// looked through. Everything else -- provider clients, Phase CLI commands,
+// wrapped or nested commands, and any ordinary shell work -- stays ambient.
+// Mixed command lines are denied separately by shellCommandMixesPhase.
 func shellCommandRequiresPhase(command string) bool {
-	command, heredocCommands, valid := phaseStripShellHeredocs(command)
-	if !valid {
-		return false
-	}
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return false
-	}
-	for _, heredocCommand := range heredocCommands {
-		if shellCommandRequiresPhase(heredocCommand) {
-			return true
-		}
-	}
-	nested, valid := phaseShellSubcommands(command)
-	if !valid {
-		return false
-	}
-	for _, subcommand := range nested {
-		if shellCommandRequiresPhase(subcommand) {
-			return true
-		}
-	}
 	words, valid := phaseTokenizeShell(command)
 	if !valid {
 		return false
 	}
-	segment := make([]string, 0, 8)
+	simple := make([]string, 0, len(words))
 	for _, word := range words {
+		// A separator, pipe, subshell or $(...) all emit a control word, so
+		// the command is not one simple command.
 		if word.control {
-			if phaseSimpleCommandRequiresPhase(segment) {
-				return true
-			}
-			segment = segment[:0]
-		} else {
-			segment = append(segment, word.value)
+			return false
 		}
+		simple = append(simple, word.value)
 	}
-	return phaseSimpleCommandRequiresPhase(segment)
+	return phasePlainNetworkCall(simple)
+}
+
+// phasePlainNetworkCall proves that words form a single curl or wget call that
+// reaches only phase.invalid. It rejects a leading assignment or wrapper (the
+// client must be the first word), an empty or expansion-bearing word, and any
+// client but curl, curl.exe or wget.
+func phasePlainNetworkCall(words []string) bool {
+	arguments := make([]string, 0, len(words))
+	for index := 0; index < len(words); index++ {
+		word := words[index]
+		if word == phaseShellRedirect {
+			// The next word is this redirection's target; reject an expansion
+			// in it, then skip both.
+			if index+1 < len(words) {
+				if target := words[index+1]; target == "" || strings.ContainsAny(target, "$`") {
+					return false
+				}
+			}
+			index++
+			continue
+		}
+		// A backtick or $ expands at run time; an empty word is the quoted
+		// argument that lets a later option swallow a real target.
+		if word == "" || strings.ContainsAny(word, "$`") {
+			return false
+		}
+		arguments = append(arguments, word)
+	}
+	if len(arguments) == 0 {
+		return false
+	}
+	client := phaseNetworkClient(arguments[0])
+	if client == "" {
+		return false
+	}
+	return phaseCurlWgetRequiresPhase(client, arguments[1:])
+}
+
+// phaseNetworkClient maps a command word to the Phase-managed HTTP client it
+// names, or "" when it is neither curl nor wget. The name must be written
+// directly, so a path or a wrapper does not qualify.
+func phaseNetworkClient(word string) string {
+	switch strings.ToLower(word) {
+	case "curl", "curl.exe":
+		return "curl"
+	case "wget", "wget.exe":
+		return "wget"
+	}
+	return ""
 }
 
 // shellCommandMixesPhase reports command lines that would otherwise run both
@@ -406,11 +432,15 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 	var word strings.Builder
 	var quote rune
 	escaped, comment, ambiguous := false, false, false
+	// pending keeps a quoted word that produced no characters, such as '', so a
+	// later scan can see the empty argument rather than lose it.
+	pending := false
 	flush := func() {
-		if word.Len() != 0 {
+		if word.Len() != 0 || pending {
 			words = append(words, phaseShellWord{value: word.String()})
 			word.Reset()
 		}
+		pending = false
 	}
 	characters := []rune(command)
 	for index, character := range characters {
@@ -452,6 +482,7 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 			escaped = true
 		case '\'', '"':
 			quote = character
+			pending = true
 		case '#':
 			if word.Len() == 0 {
 				comment = true
@@ -463,6 +494,7 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 				flush()
 			} else {
 				word.Reset()
+				pending = false
 			}
 			if len(words) == 0 || words[len(words)-1].value != phaseShellRedirect {
 				words = append(words, phaseShellWord{value: phaseShellRedirect})

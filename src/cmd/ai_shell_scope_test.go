@@ -24,7 +24,10 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "phase capabilities", command: "curl http://phase.invalid/v1/capabilities", want: true},
 		{name: "phase scoped context", command: "curl 'http://phase.invalid/v1/context?serviceType=aws'", want: true},
 		{name: "phase control URL option", command: "curl --url=http://phase.invalid/v1/status", want: true},
-		{name: "phase control host and port", command: "openssl s_client -connect phase.invalid:443", want: true},
+		{name: "phase control with curl.exe", command: "curl.exe -sS http://phase.invalid/v1/status", want: true},
+		{name: "phase control with output file", command: "curl -sS -o response.json http://phase.invalid/v1/status", want: true},
+		// Only curl, curl.exe and wget are managed; other clients stay ambient.
+		{name: "openssl client is not managed", command: "openssl s_client -connect phase.invalid:443", want: false},
 		{name: "phase request with body", command: `curl --fail --silent --show-error -X POST http://phase.invalid/v1/requests -H 'Content-Type: application/json' -d '{"serviceType":"aws"}'`, want: true},
 		{name: "phase request with json", command: `curl --json '{"serviceType":"aws"}' --request POST http://phase.invalid/v1/requests`, want: true},
 		{name: "phase control through relay proxy", command: "curl -fsS --proxy 'https://phase:capability@relay.example.test:9543' http://phase.invalid/v1/status", want: true},
@@ -48,10 +51,20 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "curl attached output file", command: "curl -q -oKeyData.json http://phase.invalid/v1/status", want: true},
 		{name: "curl attached header", command: "curl -q -HX-Api-Key:test http://phase.invalid/v1/status", want: true},
 		{name: "wget attached output document", command: "wget --no-config -Oresponse.json http://phase.invalid/v1/status", want: true},
+		// A plain call carries no leading assignment and no wrapper; the client
+		// must be the first word, so nothing can redirect config or inject work.
 		{name: "curl home redirect env", command: "CURL_HOME=/tmp/x curl http://phase.invalid/v1/status", want: false},
-		{name: "curl home redirect env through env", command: "env HOME=/tmp/x curl http://phase.invalid/v1/status", want: false},
-		{name: "wget rc redirect env", command: "WGETRC=/tmp/x wget -qO- http://phase.invalid/v1/status", want: false},
-		{name: "unrelated env keeps control managed", command: "FOO=bar curl http://phase.invalid/v1/status", want: true},
+		{name: "any leading assignment", command: "FOO=bar curl http://phase.invalid/v1/status", want: false},
+		{name: "env wrapper with options and config", command: "env -u PHASE_UNUSED CURL_HOME=/scratch curl http://phase.invalid/v1/status", want: false},
+		{name: "sudo wrapper", command: "sudo -u nobody curl http://phase.invalid/v1/status", want: false},
+		{name: "nice wrapper", command: "nice -n 10 curl http://phase.invalid/v1/status", want: false},
+		{name: "timeout wrapper", command: "timeout 5 wget -qO- http://phase.invalid/v1/status", want: false},
+		// An empty quoted argument is preserved so a later option cannot swallow
+		// a real target as its value.
+		{name: "curl empty quoted header hides a file transfer", command: "curl -q -H '' file:///ordinary-marker http://phase.invalid/v1/status", want: false},
+		// A command substitution or expansion anywhere leaves the call ambient.
+		{name: "curl nested command substitution", command: "curl http://phase.invalid/v1/status -H x$(curl http://phase.invalid/v1/status)", want: false},
+		{name: "curl variable expansion", command: "curl $URL http://phase.invalid/v1/status", want: false},
 		{name: "second wget URL", command: "wget http://phase.invalid/v1/status https://example.invalid/", want: false},
 		{name: "wget input file", command: "wget --input-file=urls.txt http://phase.invalid/v1/status", want: false},
 		{name: "ordinary compound", command: "git status && aws sts get-caller-identity", want: false},
@@ -61,11 +74,13 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "ambient opaque eval", command: `eval "$PROVIDER_COMMAND"`, want: false},
 		{name: "ambient malformed shell", command: "git commit -m 'unfinished", want: false},
 		{name: "provider docs in heredoc", command: "cat <<'EOF'\naws sts get-caller-identity\nEOF", want: false},
-		{name: "phase control in expanding heredoc", command: "cat <<EOF\n$(curl http://phase.invalid/v1/status)\nEOF", want: true},
-		{name: "phase control through shell", command: "bash -lc 'curl http://phase.invalid/v1/status'", want: true},
+		// A nested or wrapped call is not a single plain call; it stays ambient.
+		{name: "heredoc is not a plain call", command: "cat <<EOF\n$(curl http://phase.invalid/v1/status)\nEOF", want: false},
+		{name: "interpreter is not a plain call", command: "bash -lc 'curl http://phase.invalid/v1/status'", want: false},
 		// POSIX backslash-quote only escapes a " in POSIX shells; on Windows
 		// the quote closes early and the rest is a separate command.
 		{name: "windows backslash quote mismatch", command: `curl.exe http://phase.invalid/v1/status -H "x\"; Write-Output ordinary; #"`, want: false},
+		{name: "windows backslash quote with nested marker", command: `curl.exe http://phase.invalid/v1/status -H "x\"; Write-Output ordinary; #$(curl http://phase.invalid/v1/status)"`, want: false},
 		// cmd treats ' literally, so the & inside is a separator there.
 		{name: "cmd literal single quote", command: `cmd /d /s /c "curl http://phase.invalid/v1/status -H 'x & echo ordinary & rem '"`, want: false},
 	}
@@ -78,27 +93,22 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 	}
 }
 
-func TestShellInterpreterScriptsArePhaseManaged(t *testing.T) {
-	for command, want := range map[string]bool{
-		"pwsh -CommandWithArgs 'curl http://phase.invalid/v1/status' '; git push'":               true,
-		"pwsh -NoProfile -ExecutionPolicy Bypass -Command 'curl http://phase.invalid/v1/status'": true,
-		"powershell -c curl http://phase.invalid/v1/status":                                      true,
-		"pwsh -EncodedCommand YwB1AHIAbAA=":                                                      false,
-		"pwsh -File ./script.ps1":                                                                false,
-		"fish -c 'curl http://phase.invalid/v1/status'":                                          true,
-		"cmd /c curl http://phase.invalid/v1/status":                                             true,
-		"eval 'curl http://phase.invalid/v1/status'":                                             true,
-		// The outer shell may expand these before the nested shell parses the script.
-		`eval 'curl http://phase.invalid/v1/status' $'\x3b printf ordinary-ran'`:   false,
-		`bash -c 'curl http://phase.invalid/v1/status'$'\x3b printf ordinary-ran'`: false,
-		`eval 'curl http://phase.invalid/v1/status' "$EXTRA"`:                      false,
-		"eval 'curl http://phase.invalid/v1/status' `printf ';git push'`":          false,
-		"eval 'curl http://phase.invalid/v1/status' *":                             false,
-		"eval 'curl http://phase.invalid/v1/status' ~":                             false,
-		`cmd /c "curl http://phase.invalid/v1/status %EXTRA%"`:                     false,
+// A command handed to an interpreter or eval is not a single plain client
+// call, so the guard no longer looks inside one; every form stays ambient.
+func TestShellInterpreterScriptsAreNotPhaseManaged(t *testing.T) {
+	for _, command := range []string{
+		"pwsh -CommandWithArgs 'curl http://phase.invalid/v1/status' '; git push'",
+		"pwsh -NoProfile -ExecutionPolicy Bypass -Command 'curl http://phase.invalid/v1/status'",
+		"powershell -c curl http://phase.invalid/v1/status",
+		"pwsh -EncodedCommand YwB1AHIAbAA=",
+		"pwsh -File ./script.ps1",
+		"fish -c 'curl http://phase.invalid/v1/status'",
+		"cmd /c curl http://phase.invalid/v1/status",
+		"eval 'curl http://phase.invalid/v1/status'",
+		`cmd /c "curl http://phase.invalid/v1/status %EXTRA%"`,
 	} {
-		if got := shellCommandRequiresPhase(command); got != want {
-			t.Errorf("shellCommandRequiresPhase(%q) = %v, want %v", command, got, want)
+		if shellCommandRequiresPhase(command) {
+			t.Errorf("shellCommandRequiresPhase(%q) = true, want false", command)
 		}
 	}
 }

@@ -243,14 +243,14 @@ func runAICodexEvent(cmd *cobra.Command, args []string) error {
 		if shellCommandUsesPowerShellWeb(original) {
 			return denyCodexShellWithReason(cmd, harnessPowerShellWebMessage())
 		}
+		if shellCommandMixesPhase(original) {
+			return denyCodexShellWithReason(cmd, harnessMixedCommandMessage())
+		}
 		if !shellCommandRequiresPhase(original) {
 			return nil
 		}
 		if len(original) > maxHarnessCommandBytes {
 			return denyCodexShell(cmd)
-		}
-		if shellCommandMixesPhase(original) {
-			return denyCodexShellWithReason(cmd, harnessMixedCommandMessage())
 		}
 	}
 	if err != nil || strings.TrimSpace(input.SessionID) == "" {
@@ -373,14 +373,14 @@ func runAICursorEvent(cmd *cobra.Command, args []string) error {
 		if shellCommandUsesPowerShellWeb(original) {
 			return denyCursorShellWithReason(cmd, harnessPowerShellWebMessage())
 		}
+		if shellCommandMixesPhase(original) {
+			return denyCursorShellWithReason(cmd, harnessMixedCommandMessage())
+		}
 		if !shellCommandRequiresPhase(original) {
 			return nil
 		}
 		if len(original) > maxHarnessCommandBytes {
 			return denyCursorShell(cmd)
-		}
-		if shellCommandMixesPhase(original) {
-			return denyCursorShellWithReason(cmd, harnessMixedCommandMessage())
 		}
 	}
 	if disabled, configErr := automaticHarnessDisabled(ai.HarnessCursor); disabled || configErr != nil {
@@ -499,14 +499,14 @@ func runAIDevinEvent(cmd *cobra.Command, args []string) error {
 		if shellCommandUsesPowerShellWeb(original) {
 			return denyDevin(cmd, harnessPowerShellWebMessage())
 		}
+		if shellCommandMixesPhase(original) {
+			return denyDevin(cmd, harnessMixedCommandMessage())
+		}
 		if !shellCommandRequiresPhase(original) {
 			return nil
 		}
 		if len(original) > maxHarnessCommandBytes {
 			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		if shellCommandMixesPhase(original) {
-			return denyDevin(cmd, harnessMixedCommandMessage())
 		}
 	}
 	if err != nil || strings.TrimSpace(input.SessionID) == "" {
