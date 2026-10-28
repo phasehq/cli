@@ -34,6 +34,11 @@ type phaseShellWord struct {
 // wrapped or nested commands, and any ordinary shell work -- stays ambient.
 // Mixed command lines are denied separately by shellCommandMixesPhase.
 func shellCommandRequiresPhase(command string) bool {
+	// PowerShell also delimits strings with typographic quotes, which the
+	// tokenizer reads as ordinary characters.
+	if strings.ContainsAny(command, "‘’‚‛“”„") {
+		return false
+	}
 	words, valid := phaseTokenizeShell(command)
 	if !valid {
 		return false

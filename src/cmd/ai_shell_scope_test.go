@@ -86,6 +86,9 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		// the quote closes early and the rest is a separate command.
 		{name: "windows backslash quote mismatch", command: `curl.exe http://phase.invalid/v1/status -H "x\"; Write-Output ordinary; #"`, want: false},
 		{name: "windows backslash quote with nested marker", command: `curl.exe http://phase.invalid/v1/status -H "x\"; Write-Output ordinary; #$(curl http://phase.invalid/v1/status)"`, want: false},
+		// PowerShell also reads typographic quotes as string delimiters.
+		{name: "powershell typographic single quote", command: "curl.exe http://phase.invalid/v1/status -H 'x’; Write-Output ordinary; #'", want: false},
+		{name: "powershell typographic double quote", command: "curl.exe http://phase.invalid/v1/status -H \"x”; Write-Output ordinary; #\"", want: false},
 		// cmd treats ' literally, so the & inside is a separator there.
 		{name: "cmd literal single quote", command: `cmd /d /s /c "curl http://phase.invalid/v1/status -H 'x & echo ordinary & rem '"`, want: false},
 	}
