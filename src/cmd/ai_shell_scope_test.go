@@ -70,6 +70,13 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		// A command substitution or expansion anywhere leaves the call ambient.
 		{name: "curl nested command substitution", command: "curl http://phase.invalid/v1/status -H x$(curl http://phase.invalid/v1/status)", want: false},
 		{name: "curl variable expansion", command: "curl $URL http://phase.invalid/v1/status", want: false},
+		// An unquoted glob can expand into extra arguments; a quoted or escaped
+		// one is literal.
+		{name: "curl unquoted star glob", command: "curl -q -H x* http://phase.invalid/v1/status", want: false},
+		{name: "curl unquoted question glob", command: "curl -q -H x? http://phase.invalid/v1/status", want: false},
+		{name: "curl unquoted bracket glob", command: "curl -q -H x[ab] http://phase.invalid/v1/status", want: false},
+		{name: "curl quoted glob characters", command: "curl -q -H 'x*?[' http://phase.invalid/v1/status", want: true},
+		{name: "curl escaped glob character", command: `curl -q -H x\* http://phase.invalid/v1/status`, want: true},
 		{name: "second wget URL", command: "wget http://phase.invalid/v1/status https://example.invalid/", want: false},
 		{name: "wget input file", command: "wget --input-file=urls.txt http://phase.invalid/v1/status", want: false},
 		{name: "ordinary compound", command: "git status && aws sts get-caller-identity", want: false},

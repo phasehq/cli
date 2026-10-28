@@ -22,6 +22,7 @@ func shellCommandUsesPowerShellWeb(command string) bool {
 type phaseShellWord struct {
 	value   string
 	control bool
+	glob    bool // an unquoted *, ? or [ the shell may expand into more words
 }
 
 // shellCommandRequiresPhase recognizes only a single, plain Phase control call:
@@ -47,7 +48,7 @@ func shellCommandRequiresPhase(command string) bool {
 	for _, word := range words {
 		// A separator, pipe, subshell or $(...) all emit a control word, so
 		// the command is not one simple command.
-		if word.control {
+		if word.control || word.glob {
 			return false
 		}
 		simple = append(simple, word.value)
@@ -439,13 +440,13 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 	escaped, comment, ambiguous := false, false, false
 	// pending marks a word with any quoting or escape: an empty one such as ''
 	// is still an argument, and a quoted number is never a descriptor.
-	pending := false
+	pending, glob := false, false
 	flush := func() {
 		if word.Len() != 0 || pending {
-			words = append(words, phaseShellWord{value: word.String()})
+			words = append(words, phaseShellWord{value: word.String(), glob: glob})
 			word.Reset()
 		}
-		pending = false
+		pending, glob = false, false
 	}
 	characters := []rune(command)
 	for index, character := range characters {
@@ -519,6 +520,7 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 				flush()
 			} else {
 				word.WriteRune(character)
+				glob = glob || strings.ContainsRune("*?[", character)
 			}
 		}
 	}
