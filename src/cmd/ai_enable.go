@@ -217,6 +217,13 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	}
 	stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
 	defer cancel()
+	// Until the new config is saved, a hook must not start a daemon that would
+	// read the previous one.
+	releaseSetup, err := lockClaudeHookSetup(stopContext)
+	if err != nil {
+		return fmt.Errorf("prepare Phase AI integration update: %w", err)
+	}
+	defer releaseSetup()
 	stoppedRuntime, err := prepareHookRuntimeForSetup(stopContext)
 	if err != nil {
 		return fmt.Errorf("prepare Phase AI integration update: %w", err)

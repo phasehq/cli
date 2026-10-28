@@ -69,6 +69,7 @@ const (
 	claudeRuntimeStateVersion  = 2
 	claudeRuntimeStateFile     = "claude-runtime.json"
 	claudeRuntimeLockFile      = "claude-runtime.lock"
+	claudeSetupLockFile        = "claude-runtime.setup.lock"
 	claudeSessionLeasePrefix   = "claude-session-"
 	claudeSessionLeaseSuffix   = ".lease.json"
 	claudeLeaseLockSuffix      = ".mutation.lock"
@@ -1001,12 +1002,25 @@ func claudeSessionLeasePath(directory, sessionID string) (string, error) {
 }
 
 func withClaudeLeaseMutationLock(ctx context.Context, leasePath string, mutate func() error) error {
+	lockFile, err := acquireClaudeFileLock(ctx, leasePath+claudeLeaseLockSuffix)
+	if err != nil {
+		return err
+	}
+	mutationErr := mutate()
+	releaseErr := unlockClaudeLeaseFile(lockFile)
+	if mutationErr != nil {
+		return mutationErr
+	}
+	return releaseErr
+}
+
+// acquireClaudeFileLock waits briefly for an exclusive OS lock on lockPath.
+func acquireClaudeFileLock(ctx context.Context, lockPath string) (*os.File, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	lockPath := leasePath + claudeLeaseLockSuffix
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
-		return err
+		return nil, err
 	}
 	waitContext, cancel := context.WithTimeout(ctx, claudeLeaseLockWait)
 	defer cancel()
@@ -1015,22 +1029,33 @@ func withClaudeLeaseMutationLock(ctx context.Context, leasePath string, mutate f
 	for {
 		lockFile, acquired, err := tryLockClaudeLeaseFile(lockPath)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if acquired {
-			mutationErr := mutate()
-			releaseErr := unlockClaudeLeaseFile(lockFile)
-			if mutationErr != nil {
-				return mutationErr
-			}
-			return releaseErr
+			return lockFile, nil
 		}
 		select {
 		case <-waitContext.Done():
-			return errors.New("Claude session lease is busy")
+			return nil, errors.New("Claude session lease is busy")
 		case <-ticker.C:
 		}
 	}
+}
+
+var errClaudeHookSetupInProgress = errors.New("Phase AI setup is in progress")
+
+// lockClaudeHookSetup keeps hooks from starting a daemon until phase ai enable
+// has saved the configuration that daemon must read.
+func lockClaudeHookSetup(ctx context.Context) (func(), error) {
+	directory, err := claudeHookRuntimeDir()
+	if err != nil {
+		return nil, err
+	}
+	lockFile, err := acquireClaudeFileLock(ctx, filepath.Join(directory, claudeSetupLockFile))
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = unlockClaudeLeaseFile(lockFile) }, nil
 }
 
 func withClaudeLeaseRegistryLock(ctx context.Context, directory string, mutate func() error) error {
@@ -1210,6 +1235,14 @@ func claimClaudeRuntimeLock(path, generation string) (bool, error) {
 		case !errors.Is(err, os.ErrNotExist) && !abandonedClaudeRuntimeLock(path, err):
 			return err
 		}
+		setup, free, err := tryLockClaudeLeaseFile(filepath.Join(filepath.Dir(path), claudeSetupLockFile))
+		if err != nil {
+			return err
+		}
+		if !free {
+			return errClaudeHookSetupInProgress
+		}
+		defer unlockClaudeLeaseFile(setup)
 		claimed = true
 		return writeOwnerOnlyJSON(path, claudeRuntimeLock{
 			Version: claudeRuntimeStateVersion, Generation: generation, CreatedAt: time.Now().UTC(),

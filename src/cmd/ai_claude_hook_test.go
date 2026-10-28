@@ -577,6 +577,26 @@ func TestClaudeRuntimeLockStaleRecoveryGrantsOneOwner(t *testing.T) {
 	}
 }
 
+func TestHookDaemonStartWaitsForSetupToFinish(t *testing.T) {
+	directory := withClaudeHookRuntimeDirectory(t)
+	lockPath := filepath.Join(directory, claudeRuntimeLockFile)
+	release, err := lockClaudeHookSetup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := claimClaudeRuntimeLock(lockPath, "generation-during-setup")
+	if claimed || !errors.Is(err, errClaudeHookSetupInProgress) {
+		t.Fatalf("a daemon start during setup: claimed=%v err=%v", claimed, err)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a daemon start during setup left a lock: %v", err)
+	}
+	release()
+	if claimed, err := claimClaudeRuntimeLock(lockPath, "generation-after-setup"); !claimed || err != nil {
+		t.Fatalf("a daemon start after setup: claimed=%v err=%v", claimed, err)
+	}
+}
+
 func TestClaudeRuntimeLockRecoversAnInterruptedWrite(t *testing.T) {
 	directory := withClaudeHookRuntimeDirectory(t)
 	lockPath := filepath.Join(directory, claudeRuntimeLockFile)
