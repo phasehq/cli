@@ -458,6 +458,10 @@ func TestClaudeDaemonPublishesAuthenticationFailureFromRuntimeConstruction(t *te
 func TestClaudeHookReusesInheritedPhaseEnvironment(t *testing.T) {
 	withClaudeHookTestConfig(t, true)
 	t.Setenv("PHASE_AI_ENABLED", "1")
+	// phase ai run started from a shell that carries the hook daemon's
+	// environment: its own proxy replaced the daemon's.
+	t.Setenv("HTTPS_PROXY", "http://phase:run-capability@127.0.0.1:9600")
+	t.Setenv(claudeHookRuntimeMarker, claudeHookRuntimeMarkerValue("http://phase:daemon-capability@127.0.0.1:9543"))
 	t.Setenv("CLAUDE_ENV_FILE", filepath.Join(t.TempDir(), "claude.env"))
 	originalEnsure := claudeHookEnsureRuntime
 	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
@@ -481,6 +485,62 @@ func TestClaudeHookReusesInheritedPhaseEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "inherited from phase ai run") {
 		t.Fatalf("inherited flow context = %s", output.String())
+	}
+}
+
+func TestClaudeHookAdoptsAnEnvironmentInheritedFromTheHookDaemon(t *testing.T) {
+	withClaudeHookTestConfig(t, true)
+	directory := withClaudeHookRuntimeDirectory(t)
+	withClaudeHookFingerprints(t)
+	plan := phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
+		"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": "http://phase:capability@127.0.0.1:9543", "AWS_ACCESS_KEY_ID": "AKIADECOY",
+	}}
+	if err := writeClaudeEnvironment(directory, os.Getpid(), "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	// Claude launched from an OpenCode shell inherits what the plugin exported.
+	var published claudeEnvironmentJSON
+	if err := readOwnerOnlyJSON(claudeEnvironmentJSONPath(directory), &published); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(claudeHookRuntimeMarker, "")
+	for key, value := range published.Set {
+		t.Setenv(key, value)
+	}
+	for key, value := range published.Proxy {
+		t.Setenv(key, value)
+	}
+	loaderPath := filepath.Join(t.TempDir(), "claude.env")
+	t.Setenv("CLAUDE_ENV_FILE", loaderPath)
+	originalEnsure := claudeHookEnsureRuntime
+	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	ensureCalls := 0
+	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+		ensureCalls++
+		return phaseproxy.ProcessEnvironmentPlan{}, errors.New("runtime unavailable")
+	}
+
+	command := &cobra.Command{}
+	setClaudeHookInput(command, "SessionStart")
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := runAIClaudeHook(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if ensureCalls != 1 || strings.Contains(output.String(), "inherited from phase ai run") {
+		t.Fatalf("SessionStart treated the hook daemon's environment as a launcher's: ensure calls=%d output=%s", ensureCalls, output.String())
+	}
+	if loader, err := os.ReadFile(loaderPath); err != nil || !strings.Contains(string(loader), claudeEnvironmentLoaderMark) {
+		t.Fatalf("SessionStart did not install the loader: %q err=%v", loader, err)
+	}
+	command = &cobra.Command{}
+	setClaudeHookInput(command, "UserPromptSubmit")
+	command.SetOut(io.Discard)
+	if err := runAIClaudeEvent(command, []string{"heartbeat"}); err != nil {
+		t.Fatal(err)
+	}
+	if ensureCalls != 2 {
+		t.Fatalf("heartbeat did not repair the runtime for an adopted session: ensure calls=%d", ensureCalls)
 	}
 }
 

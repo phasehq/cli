@@ -3,8 +3,11 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -41,6 +44,16 @@ const (
 
 // claudeEnvironmentGOOS picks the liveness guard; tests override it.
 var claudeEnvironmentGOOS = runtime.GOOS
+
+// claudeHookRuntimeMarker tags an environment published by the shared hook
+// daemon. Its value is bound to that daemon's proxy URL, so an environment from
+// a launcher such as phase ai run, which replaces the proxy, never matches.
+const claudeHookRuntimeMarker = "PHASE_AI_HOOK_RUNTIME"
+
+func claudeHookRuntimeMarkerValue(proxyURL string) string {
+	digest := sha256.Sum256([]byte(proxyURL))
+	return hex.EncodeToString(digest[:16])
+}
 
 type claudeEnvironmentStatus struct {
 	Schema      int                          `json:"schema"`
@@ -246,6 +259,10 @@ func renderClaudeEnvironmentJSON(pid int, plan phaseproxy.ProcessEnvironmentPlan
 // that cycle ends (degraded, decoys only).
 func writeClaudeEnvironment(directory string, pid int, generation string, startedAt time.Time,
 	plan phaseproxy.ProcessEnvironmentPlan, connections []aiproxy.EndpointConnection, proxyLive bool) error {
+	if proxyURL := firstMapValue(plan.Set, "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"); proxyURL != "" {
+		plan.Set = maps.Clone(plan.Set)
+		plan.Set[claudeHookRuntimeMarker] = claudeHookRuntimeMarkerValue(proxyURL)
+	}
 	content, err := renderClaudeEnvironment(pid, plan, proxyLive)
 	if err != nil {
 		return err
@@ -287,12 +304,13 @@ func removeClaudeEnvironmentFiles() error {
 
 // claudeEnvironmentLoaderSnippet is the only content Phase writes into the
 // harness-owned environment file. It names a path; no Phase value enters that
-// file. An environment inherited from `phase ai run` (PHASE_AI_ENABLED=1) wins,
-// and a missing or unreadable file is a silent no-op.
+// file. An environment inherited from `phase ai run` (PHASE_AI_ENABLED=1) wins
+// unless it was copied from this file, and a missing or unreadable file is a
+// silent no-op.
 func claudeEnvironmentLoaderSnippet(environmentPath string) string {
 	quoted := quotePOSIXShellValue(environmentPath)
 	return claudeEnvironmentLoaderMark + "\n" +
-		`if [ "${PHASE_AI_ENABLED:-}" != 1 ] && [ -r ` + quoted + ` ]; then . ` + quoted + `; fi` + "\n"
+		`if { [ "${PHASE_AI_ENABLED:-}" != 1 ] || [ -n "${` + claudeHookRuntimeMarker + `:-}" ]; } && [ -r ` + quoted + ` ]; then . ` + quoted + `; fi` + "\n"
 }
 
 // installClaudeEnvironmentLoader appends the loader snippet to loaderPath once.

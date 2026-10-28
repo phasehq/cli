@@ -241,6 +241,9 @@ func TestClaudeEnvironmentSourcesInRealShell(t *testing.T) {
 	if got := sourceClaudeEnvironment(t, loaderPath, "PHASE_AI_ENABLED=1"); got != "||1|0" {
 		t.Fatalf("inherited phase ai run environment must win, got %q", got)
 	}
+	if got := sourceClaudeEnvironment(t, loaderPath, "PHASE_AI_ENABLED=1", claudeHookRuntimeMarker+"=stale"); got != "http://phase:capability@127.0.0.1:9543|AKIADECOY|1|0" {
+		t.Fatalf("an inherited hook daemon environment must be refreshed, got %q", got)
+	}
 	const deadPID = 1 << 30
 	if err := writeClaudeEnvironment(directory, deadPID, "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
 		t.Fatal(err)

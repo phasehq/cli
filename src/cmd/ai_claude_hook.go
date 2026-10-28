@@ -197,7 +197,7 @@ func runAIClaudeHook(cmd *cobra.Command, args []string) error {
 	if strings.TrimSpace(hookInput.SessionID) == "" {
 		return emitClaudeHookFailure(cmd)
 	}
-	if os.Getenv("PHASE_AI_ENABLED") == "1" {
+	if claudeLauncherEnvironment() {
 		// phase ai run already gave this harness a complete environment; the
 		// loader defers to it and no second runtime is started.
 		return emitClaudeHookContext(cmd, claudeInheritedPhaseAIContext)
@@ -214,6 +214,18 @@ func runAIClaudeHook(cmd *cobra.Command, args []string) error {
 	_ = installClaudeEnvironmentLoader(os.Getenv("CLAUDE_ENV_FILE"), claudeEnvironmentPath(directory))
 	health := kickClaudeRuntime(cmd.Context(), directory, hookInput.SessionID, claudeHookKickBudget)
 	return emitClaudeHookContext(cmd, claudePhaseAIHarnessContext+"\n"+claudeEnvironmentStatusLine(health))
+}
+
+// claudeLauncherEnvironment reports whether Claude inherited a complete Phase
+// environment from a launcher such as phase ai run. One copied from the shared
+// hook daemon (Claude started from an OpenCode shell) is adopted instead: it
+// needs the loader and a lease to follow that daemon's restarts.
+func claudeLauncherEnvironment() bool {
+	if os.Getenv("PHASE_AI_ENABLED") != "1" {
+		return false
+	}
+	proxyURL := firstEnvironmentValue("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
+	return proxyURL == "" || os.Getenv(claudeHookRuntimeMarker) != claudeHookRuntimeMarkerValue(proxyURL)
 }
 
 func emitClaudeHookFailure(cmd *cobra.Command) error {
@@ -262,7 +274,7 @@ func runAIClaudeEvent(cmd *cobra.Command, args []string) error {
 func runClaudeHeartbeat(cmd *cobra.Command, sessionID string) error {
 	leaseID := harnessLeaseID(ai.HarnessClaudeCode, sessionID)
 	_ = touchClaudeSessionLease(leaseID)
-	if os.Getenv("PHASE_AI_ENABLED") == "1" {
+	if claudeLauncherEnvironment() {
 		return nil
 	}
 	directory, err := claudeHookRuntimeDir()
