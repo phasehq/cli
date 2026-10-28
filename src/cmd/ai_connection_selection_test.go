@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -62,6 +64,52 @@ func TestExecSelectedConnectionUsesPrivateChildEnvironment(t *testing.T) {
 	}
 	if value := firstEnvironmentValue("AWS_REGION"); value != "parent" {
 		t.Fatal("selected command mutated parent process environment")
+	}
+}
+
+func TestExecSelectedConnectionKeepsInheritedTrustPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX child to inspect isolated environment")
+	}
+	// A relay plans its own CA paths; a bootstrapped sandbox holds the same
+	// trust material at its own paths, or leaves a variable unset.
+	const relayBundle = "/relay-home/.phase/ai/runtime-ca-bundle.pem"
+	var originalProxy, selectedProxy string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxy, password := originalProxy, "decoy-default"
+		if r.URL.Path == "/v1/connections/pg-two/environment" {
+			proxy, password = selectedProxy, "decoy-selected"
+		} else if r.URL.Path != phaseproxy.ManifestPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schemaVersion": 1, "sessionUid": "session-one", "connectionId": "pg-two", "configGeneration": 1,
+			"processEnvironment": phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
+				"PHASE_AI_ENABLED": "1", "HTTP_PROXY": proxy, "http_proxy": proxy, "HTTPS_PROXY": proxy, "https_proxy": proxy,
+				"PGSSLROOTCERT": relayBundle, "SSL_CERT_FILE": relayBundle, "PGPASSWORD": password,
+			}},
+		})
+	}))
+	defer server.Close()
+	proxy, _ := url.Parse(server.URL)
+	proxy.User = url.UserPassword("phase", "test-capability")
+	originalProxy = proxy.String()
+	proxy.User = url.UserPassword("phase.pg-two", "test-capability")
+	selectedProxy = proxy.String()
+	sandboxBundle := filepath.Join(t.TempDir(), "ca-bundle.pem")
+	t.Setenv("HTTPS_PROXY", originalProxy)
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("PGSSLROOTCERT", sandboxBundle)
+	t.Setenv("PGPASSWORD", "decoy-default")
+	t.Setenv("SSL_CERT_FILE", "")
+	os.Unsetenv("SSL_CERT_FILE")
+	command := &cobra.Command{}
+	command.SetContext(t.Context())
+	command.Flags().String("connection", "pg-two", "")
+	if err := runAIExecInheritedCommand(command, []string{"/bin/sh", "-c",
+		`test "$PGSSLROOTCERT" = "` + sandboxBundle + `" && test -z "${SSL_CERT_FILE+set}" && test "$PGPASSWORD" = decoy-selected`}); err != nil {
+		t.Fatal(err)
 	}
 }
 

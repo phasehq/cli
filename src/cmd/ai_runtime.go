@@ -224,11 +224,21 @@ func runAIExecCommandWithEnvironment(cmd *cobra.Command, command, environment []
 		if ownedPlan == nil {
 			return errors.New("Phase AI runtime environment ownership is unavailable")
 		}
-		base, err := scrubAIManagedEnvironment(child.Env, *ownedPlan)
+		plan, err := loadSelectedConnectionEnvironmentFromProxy(cmd.Context(), id, rawProxy)
 		if err != nil {
 			return err
 		}
-		plan, err := loadSelectedConnectionEnvironmentFromProxy(cmd.Context(), id, rawProxy)
+		// A value the selection does not change keeps its inherited form: a relay
+		// plans its own CA paths, which a bootstrapped sandbox holds at its own.
+		owned := phaseproxy.ProcessEnvironmentPlan{Set: make(map[string]string, len(ownedPlan.Set))}
+		for key, value := range ownedPlan.Set {
+			if selected, ok := plan.Set[key]; ok && selected == value {
+				delete(plan.Set, key)
+				continue
+			}
+			owned.Set[key] = value
+		}
+		base, err := scrubAIManagedEnvironment(child.Env, owned)
 		if err != nil {
 			return err
 		}
