@@ -708,8 +708,8 @@ func (a *protocolAdapters) refusePGCredentialChange(kind byte, payload []byte, b
 }
 
 // pgCredentialChange names the statement in sql that creates a role or sets a
-// role password. It also reads dollar-quoted bodies such as DO blocks, but it
-// is a best-effort guard: SQL assembled at run time (EXECUTE, format) gets past.
+// role password. It also reads the code of DO blocks and function bodies, but
+// it is a best-effort guard: SQL assembled at run time (EXECUTE, format) gets past.
 func pgCredentialChange(sql string, depth int) string {
 	var matcher pgRoleMatcher
 	for i := 0; i < len(sql); {
@@ -743,7 +743,7 @@ func pgCredentialChange(sql string, depth int) string {
 				end = len(body)
 			}
 			next = i + len(tag) + end + len(tag)
-			if depth < 4 {
+			if depth < 4 && matcher.code {
 				if operation := pgCredentialChange(body[:end], depth+1); operation != "" {
 					return operation
 				}
@@ -766,12 +766,19 @@ func pgCredentialChange(sql string, depth int) string {
 }
 
 // pgRoleMatcher takes one statement's tokens in order: lower-cased words, ""
-// for anything else, and ";" at the end of the statement.
-type pgRoleMatcher struct{ previous, last, alter string }
+// for anything else, and ";" at the end of the statement. code reports that a
+// string constant there is code to run, a DO block or a function body, and
+// not data.
+type pgRoleMatcher struct {
+	previous, last, alter string
+	routine, code         bool
+}
 
 func (m *pgRoleMatcher) next(token string) string {
 	previous, last := m.previous, m.last
 	m.previous, m.last = last, token
+	m.routine = m.routine || (last == "create" || last == "replace") && (token == "function" || token == "procedure")
+	m.code = token == "do" || token == "as" && m.routine || m.code && (token == "language" || last == "language")
 	operation := ""
 	switch {
 	case last == "create" && (token == "role" || token == "group"):

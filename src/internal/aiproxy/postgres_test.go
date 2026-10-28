@@ -393,6 +393,11 @@ func TestPostgresCredentialChangeStatements(t *testing.T) {
 		"CREATE USER MAPPING FOR CURRENT_USER SERVER s OPTIONS (password 'x')":   "",
 		"ALTER USER MAPPING FOR app SERVER s OPTIONS (SET password 'x')":         "",
 		"CREATE TABLE create_role_log (password text)":                           "",
+		"DO LANGUAGE plpgsql $$BEGIN CREATE ROLE agent; END$$":                   "CREATE ROLE",
+		"CREATE OR REPLACE FUNCTION f() AS $f$ ALTER ROLE app PASSWORD 'x' $f$":  "ALTER ROLE ... PASSWORD",
+		"SELECT $$CREATE ROLE example$$":                                         "",
+		"INSERT INTO documents(body) VALUES ($$CREATE ROLE example$$)":           "",
+		"INSERT INTO t VALUES (1) ON CONFLICT DO UPDATE SET b = $$CREATE ROLE$$": "",
 	} {
 		if got := pgCredentialChange(sql, 0); got != want {
 			t.Errorf("pgCredentialChange(%q) = %q, want %q", sql, got, want)
