@@ -199,6 +199,12 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		return processedResponse{event: event, failure: failure}
 	}
 	if binding.connection.Injection.Action == "aws_sigv4" {
+		// The re-signed request carries the live key ID, session token and a
+		// replayable signature, so it never crosses the network in plaintext.
+		if upstream.URL.Scheme != "https" && !explicitLoopbackHost(host) {
+			failure := &requestFailure{status: http.StatusForbidden, code: "aws_https_required", message: "Phase sends signed AWS requests only over HTTPS. Use the https:// endpoint.", decision: "block", reason: "aws_https_required", binding: binding}
+			return processedResponse{event: makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.Injection.Action), failure: failure}
+		}
 		// Keep the response representation inspectable so a live AWS identity
 		// can never bypass the exact response redaction boundary via compression.
 		upstream.Header.Set("Accept-Encoding", "identity")

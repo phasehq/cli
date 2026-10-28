@@ -549,3 +549,72 @@ func TestCopyResponseWritesHeaderNamesVerbatim(t *testing.T) {
 		t.Fatalf("response = %d %q", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestAWSSigV4IsNotSentOverPlaintextHTTP(t *testing.T) {
+	const (
+		fakeAccessKeyID = "AKIAPHASEPLAINTEXT00"
+		liveAccessKeyID = "AKIALIVEPLAINTEXT000"
+		decoySecret     = "phasePlaintextDecoySecret00000000000000"
+	)
+	console := httptest.NewServer(http.NotFoundHandler())
+	defer console.Close()
+	client, err := agentapi.NewClient(console.URL, durableTestToken(), console.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := controlRuntimeState(t, client, map[string]any{
+		"schemaVersion": 1, "sessionUid": "plaintext-session", "sessionCredential": "plaintext-backend-capability",
+		"expiresAt": time.Now().Add(time.Hour).UTC(), "maxExpiresAt": time.Now().Add(2 * time.Hour).UTC(),
+		"configGeneration": 1, "configEnv": map[string]string{},
+		"connections": []any{map[string]any{
+			"grantId": "grant-aws", "connectionId": "aws", "credentialId": "aws-credential",
+			"serviceType": "aws", "protocol": "http",
+			"hosts":            []any{map[string]any{"match": "suffix", "value": ".example.test"}, map[string]any{"match": "exact", "value": "127.0.0.1"}},
+			"connectionConfig": map[string]any{"service": "sts", "region": "us-east-1"},
+			"injection": map[string]any{
+				"action": "aws_sigv4", "serviceFrom": "config", "regionFrom": "config",
+				"valueFrom": map[string]any{"source": "credential", "fields": map[string]string{"accessKeyId": "access_key_id", "secretAccessKey": "secret_access_key"}},
+			},
+			"identifiers":    map[string]string{"access_key_id": fakeAccessKeyID},
+			"decoyMaterial":  map[string]string{"secret_access_key": decoySecret},
+			"agentEnv":       map[string]string{"AWS_ACCESS_KEY_ID": fakeAccessKeyID, "AWS_SECRET_ACCESS_KEY": decoySecret},
+			"secretMaterial": map[string]string{"access_key_id": liveAccessKeyID, "secret_access_key": "phasePlaintextLiveSecret000000000000000"},
+		}},
+	}, "plaintext-runtime-capability")
+	defer state.destroy()
+	var sent []string
+	proxy := &httpProxy{state: state, transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		sent = append(sent, request.URL.Scheme+"://"+request.URL.Host)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})}
+	emptyPayloadHash := sha256.Sum256(nil)
+	process := func(target string) processedResponse {
+		request, _ := http.NewRequest(http.MethodGet, target+"/?Action=GetCallerIdentity", nil)
+		request.Header.Set("X-Amz-Content-Sha256", hex.EncodeToString(emptyPayloadHash[:]))
+		if err := v4.NewSigner().SignHTTP(context.Background(), aws.Credentials{AccessKeyID: fakeAccessKeyID, SecretAccessKey: decoySecret},
+			request, hex.EncodeToString(emptyPayloadHash[:]), "sts", "us-east-1", time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		result := proxy.process(request, nil)
+		if result.response != nil {
+			result.response.Body.Close()
+		}
+		return result
+	}
+	for _, target := range []string{"http://sts.example.test:443", "http://sts.example.test"} {
+		if result := process(target); result.failure == nil || result.failure.status != http.StatusForbidden || result.event.ProxyDecision != "block" {
+			t.Fatalf("%s: plaintext AWS request was not refused: %+v", target, result.failure)
+		}
+	}
+	if len(sent) != 0 {
+		t.Fatalf("signed AWS requests were sent in plaintext: %v", sent)
+	}
+	for _, target := range []string{"https://sts.example.test", "http://127.0.0.1:4566"} {
+		if result := process(target); result.failure != nil {
+			t.Fatalf("%s: AWS request was refused: %+v", target, result.failure)
+		}
+	}
+	if strings.Join(sent, " ") != "https://sts.example.test http://127.0.0.1:4566" {
+		t.Fatalf("upstream requests=%v", sent)
+	}
+}
