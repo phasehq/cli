@@ -22,14 +22,25 @@ type OpenCodePluginInstall struct {
 }
 
 // DefaultOpenCodePluginPath returns OpenCode's global local-plugin path.
-// OpenCode reads ~/.config/opencode on every platform, Windows included
-// (%USERPROFILE%\.config\opencode, not %APPDATA%).
 func DefaultOpenCodePluginPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"), nil
+	return filepath.Join(openCodeConfigDirectory(home), "plugins", OpenCodePluginName+".js"), nil
+}
+
+// openCodeConfigDirectory is the one global config root OpenCode loads:
+// OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else ~/.config/opencode
+// on every platform, Windows included (not %APPDATA%).
+func openCodeConfigDirectory(home string) string {
+	if directory := os.Getenv("OPENCODE_CONFIG_DIR"); directory != "" {
+		return directory
+	}
+	if directory := os.Getenv("XDG_CONFIG_HOME"); directory != "" {
+		return filepath.Join(directory, "opencode")
+	}
+	return filepath.Join(home, ".config", "opencode")
 }
 
 // InstallOpenCodePlugin installs a dependency-free, provider-agnostic plugin.

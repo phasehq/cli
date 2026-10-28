@@ -208,13 +208,23 @@ func skillTargetsNamed(skillName string) []SkillTarget {
 	if err != nil {
 		return nil
 	}
+	return skillTargetsIn(home, openCodeConfigDirectory(home), skillName)
+}
+
+// SandboxSkillTargets lists the Agent skill paths under a sandbox's home in
+// each harness's default layout, whatever this machine's environment says.
+func SandboxSkillTargets(home string) []SkillTarget {
+	return skillTargetsIn(home, filepath.Join(home, ".config", "opencode"), AgentSkillName)
+}
+
+func skillTargetsIn(home, openCodeRoot, skillName string) []SkillTarget {
 	return []SkillTarget{
 		{ID: HarnessClaudeCode, Name: "Claude Code", Path: filepath.Join(home, ".claude", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
 		{ID: HarnessCursor, Name: "Cursor", Path: filepath.Join(home, ".cursor", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
 		{ID: HarnessCopilot, Name: "VS Code Copilot", Path: filepath.Join(home, ".copilot", "skills", skillName, "SKILL.md"), Note: "global"},
 		{ID: HarnessCodex, Name: "Codex", Path: filepath.Join(home, ".agents", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
 		{ID: HarnessDevin, Name: "Devin", Path: filepath.Join(home, ".agents", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy (preview)"},
-		{ID: HarnessOpenCode, Name: "OpenCode", Path: filepath.Join(home, ".config", "opencode", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
+		{ID: HarnessOpenCode, Name: "OpenCode", Path: filepath.Join(openCodeRoot, "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
 	}
 }
 

@@ -146,7 +146,7 @@ func relayBootstrapSkills() []aiproxy.BootstrapSkill {
 	}
 	seen := make(map[string]bool)
 	skills := make([]aiproxy.BootstrapSkill, 0)
-	for _, target := range ai.SkillTargets() {
+	for _, target := range ai.SandboxSkillTargets(home) {
 		relative, err := filepath.Rel(home, target.Path)
 		if err != nil || strings.HasPrefix(relative, "..") {
 			continue

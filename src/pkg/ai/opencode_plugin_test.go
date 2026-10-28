@@ -332,6 +332,8 @@ func TestInstalledOpenCodePluginExportsOneDefaultDefinition(t *testing.T) {
 }
 
 func TestDefaultOpenCodePluginPathUsesDotConfigOnEveryPlatform(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -342,5 +344,33 @@ func TestDefaultOpenCodePluginPathUsesDotConfigOnEveryPlatform(t *testing.T) {
 	}
 	if want := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js"); path != want {
 		t.Fatalf("plugin path = %s, want %s", path, want)
+	}
+}
+
+func TestOpenCodePathsFollowItsConfigDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(root, "home"))
+	check := func(want string) {
+		t.Helper()
+		if path, err := DefaultOpenCodePluginPath(); err != nil || path != filepath.Join(want, "plugins", OpenCodePluginName+".js") {
+			t.Fatalf("plugin path = %q, %v; want it under %s", path, err, want)
+		}
+		for _, targets := range [][]SkillTarget{SkillTargets(), SecretsSkillTargets()} {
+			for _, target := range targets {
+				if target.ID == HarnessOpenCode && filepath.Dir(filepath.Dir(filepath.Dir(target.Path))) != want {
+					t.Fatalf("skill path = %q, want it under %s", target.Path, want)
+				}
+			}
+		}
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	check(filepath.Join(root, "xdg", "opencode"))
+	t.Setenv("OPENCODE_CONFIG_DIR", filepath.Join(root, "override"))
+	check(filepath.Join(root, "override"))
+	sandbox := filepath.Join(root, "sandbox")
+	if target, _ := skillTargetByID(SandboxSkillTargets(sandbox), HarnessOpenCode); target.Path != filepath.Join(sandbox, ".config", "opencode", "skills", AgentSkillName, "SKILL.md") {
+		t.Fatalf("sandbox skill path = %q; it must not follow this machine's OpenCode settings", target.Path)
 	}
 }
