@@ -1263,6 +1263,30 @@ func TestKickLeasesASessionToADaemonStillStarting(t *testing.T) {
 	}
 }
 
+func TestKickLeasesASessionToAnEstablishedDaemonWhileItRecycles(t *testing.T) {
+	withClaudeHookTestConfig(t, true)
+	directory := withClaudeHookRuntimeDirectory(t)
+	originalEnsure := claudeHookEnsureRuntime
+	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+		return phaseproxy.ProcessEnvironmentPlan{}, errClaudeRuntimeRefreshing
+	}
+	const generation = "generation-recycling"
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
+		Version: claudeRuntimeStateVersion, Generation: generation, PID: os.Getpid(),
+		CreatedAt: time.Now().Add(-10 * time.Minute).UTC(), RecyclingAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if health := kickClaudeRuntime(context.Background(), directory, "session-one", time.Millisecond); !health.starting {
+		t.Fatalf("kick health = %+v, want starting", health)
+	}
+	active, err := hasActiveClaudeSessionLease(directory, generation, time.Now())
+	if err != nil || !active {
+		t.Fatalf("a session started during a recycle has no lease: active=%v err=%v", active, err)
+	}
+}
+
 func TestClaudeHeartbeatInstallsAMissingLoader(t *testing.T) {
 	withClaudeHookTestConfig(t, true)
 	directory := withClaudeHookRuntimeDirectory(t)

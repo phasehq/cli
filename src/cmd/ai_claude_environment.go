@@ -356,8 +356,10 @@ func inspectClaudeRuntime(directory string) claudeRuntimeHealth {
 		health.refreshedAt, health.refreshReason = lastClaudeSessionRefresh(directory, time.Now(), claudeRefreshNoticeWindow)
 		return health
 	}
+	// A daemon recycling its session has withdrawn its state as if starting.
 	lock, lockErr := readClaudeRuntimeLock(filepath.Join(directory, claudeRuntimeLockFile))
-	if lockErr == nil && lock.PID > 0 && processIsAlive(lock.PID) && time.Since(lock.CreatedAt) < 2*claudeHookStartTimeout {
+	if lockErr == nil && lock.PID > 0 && processIsAlive(lock.PID) &&
+		(time.Since(lock.CreatedAt) < 2*claudeHookStartTimeout || time.Since(lock.RecyclingAt) < 2*claudeHookStartTimeout) {
 		health.starting = true
 		return health
 	}
@@ -418,8 +420,8 @@ func kickClaudeRuntime(ctx context.Context, directory, sessionID string, budget 
 
 // kickHarnessRuntime is the harness-neutral form used by every transparent-mode
 // integration (Claude Code hooks, the OpenCode plugin). A daemon still starting
-// gets the lease too, so it does not idle out if it becomes ready only after
-// this wait and the session's next prompt.
+// or recycling gets the lease too, so it does not idle out if it becomes ready
+// only after this wait and the session's next prompt.
 func kickHarnessRuntime(ctx context.Context, directory, harness, sessionID string, budget time.Duration) claudeRuntimeHealth {
 	if ctx == nil {
 		ctx = context.Background()
