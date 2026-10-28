@@ -1,6 +1,7 @@
 package aiproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -16,12 +17,14 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 const maxPGMessageBytes = 16 << 20
@@ -168,7 +171,7 @@ func (a *protocolAdapters) handlePostgres(ctx context.Context, client net.Conn, 
 	_ = writePGMessage(tlsClient, 'Z', []byte{'I'})
 	_ = client.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
-	a.proxyPGMessages(tlsClient, upstream, grantID, identity, params["database"])
+	a.proxyPGMessages(tlsClient, upstream, current.binding)
 }
 
 func readPGStartup(reader io.Reader) ([]byte, error) {
@@ -627,17 +630,219 @@ func hmacSHA256(key []byte, value string) []byte {
 	return mac.Sum(nil)
 }
 
-func (a *protocolAdapters) proxyPGMessages(client, upstream net.Conn, grantID string, identity pgSessionIdentity, database string) {
+func (a *protocolAdapters) proxyPGMessages(client, upstream net.Conn, binding *binding) {
 	done := make(chan struct{}, 1)
 	go func() {
 		_, _ = io.Copy(client, upstream)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(upstream, client)
+		_ = a.forwardPGClientMessages(upstream, client, binding)
 		done <- struct{}{}
 	}()
 	<-done
+}
+
+// forwardPGClientMessages relays client messages one at a time so the SQL in
+// each Query and Parse is checked before it reaches the upstream.
+func (a *protocolAdapters) forwardPGClientMessages(upstream io.Writer, client io.Reader, binding *binding) error {
+	reader := bufio.NewReader(client)
+	writer := bufio.NewWriter(upstream)
+	header := make([]byte, 5)
+	for {
+		if _, err := io.ReadFull(reader, header); err != nil {
+			return err
+		}
+		length := int64(binary.BigEndian.Uint32(header[1:])) - 4
+		if length < 0 {
+			return errors.New("invalid PostgreSQL message length")
+		}
+		if header[0] == 'Q' || header[0] == 'P' {
+			if length > maxPGMessageBytes {
+				return errors.New("PostgreSQL statement is too large to inspect")
+			}
+			payload := make([]byte, length)
+			if _, err := io.ReadFull(reader, payload); err != nil {
+				return err
+			}
+			if err := writePGMessage(writer, header[0], a.refusePGCredentialChange(header[0], payload, binding)); err != nil {
+				return err
+			}
+		} else {
+			if _, err := writer.Write(header); err != nil {
+				return err
+			}
+			if _, err := io.CopyN(writer, reader, length); err != nil {
+				return err
+			}
+		}
+		if reader.Buffered() == 0 {
+			if err := writer.Flush(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// refusePGCredentialChange swaps a statement that creates a role or sets a role
+// password for one that fails with Phase's message, so the server answers with
+// an ordinary error and the session and any open transaction stay in step.
+func (a *protocolAdapters) refusePGCredentialChange(kind byte, payload []byte, binding *binding) []byte {
+	start := 0
+	if kind == 'P' {
+		start = bytes.IndexByte(payload, 0) + 1
+	}
+	end := bytes.IndexByte(payload[start:], 0)
+	if end < 0 {
+		end = len(payload) - start
+	}
+	end += start
+	operation := pgCredentialChange(string(payload[start:end]), 0)
+	if operation == "" {
+		return payload
+	}
+	blocked := &phaseproxy.CredentialMintingBlock{Operation: "PostgreSQL " + operation}
+	a.emitProtocolEventWithDetail(binding, "postgres", "QUERY", "block", "denied", "credential_minting_blocked", map[string]any{"blocked_operation": blocked.Operation})
+	refusal := "DO $phase$BEGIN RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = '" + strings.ReplaceAll(blocked.Message(), "'", "''") + "'; END$phase$"
+	return slices.Concat(payload[:start], []byte(refusal), payload[end:])
+}
+
+// pgCredentialChange names the statement in sql that creates a role or sets a
+// role password. It also reads dollar-quoted bodies such as DO blocks, but it
+// is a best-effort guard: SQL assembled at run time (EXECUTE, format) gets past.
+func pgCredentialChange(sql string, depth int) string {
+	var matcher pgRoleMatcher
+	for i := 0; i < len(sql); {
+		token, next := "", i+1
+		switch c := sql[i]; {
+		case c == ' ', c == '\t', c == '\n', c == '\r', c == '\f', c == '\v':
+			i++
+			continue
+		case strings.HasPrefix(sql[i:], "--"):
+			if end := strings.IndexByte(sql[i:], '\n'); end >= 0 {
+				i += end
+			} else {
+				i = len(sql)
+			}
+			continue
+		case strings.HasPrefix(sql[i:], "/*"):
+			i = pgSkipComment(sql, i)
+			continue
+		case c == ';':
+			token = ";"
+		case c == '\'', c == '"':
+			next = pgSkipQuoted(sql, i, false)
+		case c == '$':
+			tag := pgDollarTag(sql[i:])
+			if tag == "" {
+				break
+			}
+			body := sql[i+len(tag):]
+			end := strings.Index(body, tag)
+			if end < 0 {
+				end = len(body)
+			}
+			next = i + len(tag) + end + len(tag)
+			if depth < 4 {
+				if operation := pgCredentialChange(body[:end], depth+1); operation != "" {
+					return operation
+				}
+			}
+		case pgIdentifierByte(c, true):
+			for next < len(sql) && pgIdentifierByte(sql[next], false) {
+				next++
+			}
+			token = strings.ToLower(sql[i:next])
+			if token == "e" && next < len(sql) && sql[next] == '\'' {
+				token, next = "", pgSkipQuoted(sql, next, true)
+			}
+		}
+		i = min(next, len(sql))
+		if operation := matcher.next(token); operation != "" {
+			return operation
+		}
+	}
+	return matcher.next(";")
+}
+
+// pgRoleMatcher takes one statement's tokens in order: lower-cased words, ""
+// for anything else, and ";" at the end of the statement.
+type pgRoleMatcher struct{ previous, last, alter string }
+
+func (m *pgRoleMatcher) next(token string) string {
+	previous, last := m.previous, m.last
+	m.previous, m.last = last, token
+	operation := ""
+	switch {
+	case last == "create" && (token == "role" || token == "group"):
+		operation = "CREATE " + strings.ToUpper(token)
+	case previous == "create" && last == "user" && token != "mapping":
+		operation = "CREATE USER"
+	case last == "alter" && token == "role":
+		m.alter = "ROLE"
+	case previous == "alter" && last == "user" && token != "mapping":
+		m.alter = "USER"
+	}
+	if m.alter != "" && token == "password" {
+		operation = "ALTER " + m.alter + " ... PASSWORD"
+	}
+	if token == ";" {
+		*m = pgRoleMatcher{}
+	}
+	return operation
+}
+
+func pgIdentifierByte(c byte, first bool) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c >= 0x80 ||
+		!first && (c >= '0' && c <= '9' || c == '$')
+}
+
+// pgDollarTag returns the $tag$ that opens a dollar-quoted string, or "".
+func pgDollarTag(sql string) string {
+	for i := 1; i < len(sql); i++ {
+		if sql[i] == '$' {
+			return sql[:i+1]
+		}
+		if !pgIdentifierByte(sql[i], i == 1) {
+			return ""
+		}
+	}
+	return ""
+}
+
+// pgSkipQuoted returns the index just past the quoted string at sql[start].
+func pgSkipQuoted(sql string, start int, backslashEscapes bool) int {
+	quote := sql[start]
+	for i := start + 1; i < len(sql); i++ {
+		switch {
+		case backslashEscapes && sql[i] == '\\':
+			i++
+		case sql[i] == quote && i+1 < len(sql) && sql[i+1] == quote:
+			i++
+		case sql[i] == quote:
+			return i + 1
+		}
+	}
+	return len(sql)
+}
+
+// pgSkipComment returns the index just past the nestable comment at sql[start].
+func pgSkipComment(sql string, start int) int {
+	depth := 0
+	for i := start; i+1 < len(sql); i++ {
+		switch sql[i : i+2] {
+		case "/*":
+			depth++
+			i++
+		case "*/":
+			depth--
+			i++
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(sql)
 }
 func tcpRoleField(fields map[string]string, role string) string {
 	if value := fields[role]; value != "" {

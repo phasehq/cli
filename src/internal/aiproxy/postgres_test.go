@@ -1,6 +1,7 @@
 package aiproxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -337,6 +339,110 @@ func TestPGStartupPacketForwardsClientSettingsDeterministically(t *testing.T) {
 	for value, want := range map[string]bool{"": false, "off": false, "0": false, "false": false, "true": true, "database": true, "1": true} {
 		if got := postgresReplicationRequested(value); got != want {
 			t.Fatalf("replication=%q requested=%v, want %v", value, got, want)
+		}
+	}
+}
+
+func TestPostgresCredentialChangeStatements(t *testing.T) {
+	for sql, want := range map[string]string{
+		"ALTER ROLE CURRENT_USER PASSWORD 'agent-chosen'":                        "ALTER ROLE ... PASSWORD",
+		`alter user "app" with encrypted password 'SCRAM-SHA-256$4096:x'`:        "ALTER USER ... PASSWORD",
+		"ALTER/**/ROLE app PASSWORD 'x'":                                         "ALTER ROLE ... PASSWORD",
+		"SELECT 1; CREATE ROLE agent LOGIN PASSWORD 'x'":                         "CREATE ROLE",
+		"-- setup\ncreate user agent":                                            "CREATE USER",
+		"CREATE GROUP admins":                                                    "CREATE GROUP",
+		"DO $$BEGIN IF true THEN CREATE ROLE agent LOGIN; END IF; END$$":         "CREATE ROLE",
+		"DO $body$ BEGIN ALTER ROLE current_user PASSWORD 'x'; END $body$":       "ALTER ROLE ... PASSWORD",
+		"SELECT '--'; ALTER ROLE app PASSWORD 'x'":                               "ALTER ROLE ... PASSWORD",
+		`SELECT E'it\'s'; ALTER ROLE app PASSWORD 'x'`:                           "ALTER ROLE ... PASSWORD",
+		"SELECT $$'$$; ALTER ROLE app PASSWORD 'x'":                              "ALTER ROLE ... PASSWORD",
+		"/* /* */ ' */ ALTER ROLE app PASSWORD 'x'":                              "ALTER ROLE ... PASSWORD",
+		"SELECT password FROM users":                                             "",
+		"ALTER ROLE app SET search_path = app; SELECT password FROM users":       "",
+		"INSERT INTO tasks VALUES ('create user page'), ('alter role password')": "",
+		"-- create role later\nSELECT 1":                                         "",
+		"CREATE USER MAPPING FOR CURRENT_USER SERVER s OPTIONS (password 'x')":   "",
+		"ALTER USER MAPPING FOR app SERVER s OPTIONS (SET password 'x')":         "",
+		"CREATE TABLE create_role_log (password text)":                           "",
+	} {
+		if got := pgCredentialChange(sql, 0); got != want {
+			t.Errorf("pgCredentialChange(%q) = %q, want %q", sql, got, want)
+		}
+	}
+}
+
+func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) }))
+	defer console.Close()
+	client, err := agentapi.NewClient(console.URL, durableTestToken(), console.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := newRuntimeStateWithCapability(postgresRefreshSession(t, client, 1, "live-password"), "postgres-runtime-capability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.destroy()
+	spoolDirectory := t.TempDir()
+	events, err := newEventBuffer(state, time.Hour, spoolDirectory, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Stop()
+	snapshot, err := state.protocolBinding("grant-pg", "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.release()
+	clientPeer, clientSide := net.Pipe()
+	upstreamSide, upstreamPeer := net.Pipe()
+	defer clientPeer.Close()
+	defer upstreamPeer.Close()
+	_ = upstreamPeer.SetDeadline(time.Now().Add(5 * time.Second))
+	go (&protocolAdapters{state: state, events: events}).proxyPGMessages(clientSide, upstreamSide, snapshot.binding)
+
+	parse := func(query string) []byte { return append([]byte("s1\x00"+query+"\x00"), 0, 1, 0, 0, 0, 23) }
+	for _, step := range []struct {
+		kind    byte
+		payload []byte
+		blocked bool
+	}{
+		{'Q', []byte("SELECT 1\x00"), false},
+		{'Q', []byte("ALTER ROLE CURRENT_USER PASSWORD 'agent-chosen-password'\x00"), true},
+		{'P', parse("CREATE ROLE agent LOGIN PASSWORD 'agent-chosen-password'"), true},
+		{'B', []byte("\x00s1\x00\x00\x00\x00\x01\x00\x00\x00\x017\x00\x00"), false},
+		{'P', parse("SELECT $1::int"), false},
+	} {
+		go func() { _ = writePGMessage(clientPeer, step.kind, step.payload) }()
+		kind, payload, err := readPGMessage(upstreamPeer)
+		if err != nil || kind != step.kind {
+			t.Fatalf("upstream received %q err=%v, want %q", kind, err, step.kind)
+		}
+		if !step.blocked {
+			if !bytes.Equal(payload, step.payload) {
+				t.Fatalf("allowed message was changed: %q", payload)
+			}
+			continue
+		}
+		if bytes.Contains(payload, []byte("agent-chosen-password")) || !bytes.Contains(payload, []byte("RAISE EXCEPTION")) ||
+			!bytes.Contains(payload, []byte("Phase blocked PostgreSQL")) {
+			t.Fatalf("credential change reached the upstream: %q", payload)
+		}
+		if kind == 'P' && (!bytes.HasPrefix(payload, []byte("s1\x00DO ")) || !bytes.HasSuffix(payload, []byte("\x00\x00\x01\x00\x00\x00\x17"))) {
+			t.Fatalf("refused Parse lost its statement name or parameter types: %q", payload)
+		}
+	}
+	files := spoolJSONFiles(t, spoolDirectory)
+	if len(files) != 2 {
+		t.Fatalf("blocked statements recorded %d events, want 2", len(files))
+	}
+	for _, file := range files {
+		recorded, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(recorded, []byte(`"credential_minting_blocked"`)) || bytes.Contains(recorded, []byte("agent-chosen-password")) {
+			t.Fatalf("blocked statement event=%s", recorded)
 		}
 	}
 }
