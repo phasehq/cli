@@ -133,8 +133,9 @@ func TestDevinRefreshKeepsUserHandlersInPhaseGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload, _ = os.ReadFile(configPath)
+	guard := phaseDevinHooks(shared.ExecutablePath)["PreToolUse"][0].Hooks[0].Command
 	if !strings.Contains(string(payload), "user-security-check") || !strings.Contains(string(payload), "user field") ||
-		strings.Count(string(payload), "guard") != 1 {
+		devinHandlerCount(t, payload, guard) != 1 {
 		t.Fatalf("refresh dropped the user handler or duplicated the guard: %s", payload)
 	}
 	if err := UninstallDevinHooks(configPath); err != nil {
@@ -153,6 +154,27 @@ func TestDevinRefreshKeepsUserHandlersInPhaseGroups(t *testing.T) {
 		len(hooks["PreToolUse"][0]["hooks"].([]any)) != 1 {
 		t.Fatalf("uninstall must drop only Phase handlers and their emptied groups: %s", payload)
 	}
+}
+
+func devinHandlerCount(t *testing.T, payload []byte, command string) int {
+	t.Helper()
+	var config struct {
+		Hooks map[string][]devinHookGroup `json:"hooks"`
+	}
+	if err := json.Unmarshal(payload, &config); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, groups := range config.Hooks {
+		for _, group := range groups {
+			for _, handler := range group.Hooks {
+				if handler.Command == command {
+					count++
+				}
+			}
+		}
+	}
+	return count
 }
 
 func TestDevinCleanupMatchesAQuotedHelperPath(t *testing.T) {
