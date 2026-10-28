@@ -113,6 +113,9 @@ type claudeRuntimeLock struct {
 	Generation string    `json:"generation"`
 	PID        int       `json:"pid,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
+	// RecyclingAt is when the daemon last withdrew its state to reopen its
+	// session; setup may stop it then as during a startup.
+	RecyclingAt time.Time `json:"recyclingAt,omitempty"`
 }
 
 type claudeRuntimeFailure struct {
@@ -366,7 +369,7 @@ func ensureClaudeHookRuntime(ctx context.Context) (phaseproxy.ProcessEnvironment
 			_ = releaseClaudeRuntimeLock(lockPath, generation)
 			return phaseproxy.ProcessEnvironmentPlan{}, startErr
 		}
-		if err := updateClaudeRuntimeLockPID(lockPath, generation, pid); err != nil {
+		if err := updateClaudeRuntimeLock(lockPath, generation, func(lock *claudeRuntimeLock) { lock.PID = pid }); err != nil {
 			if process, findErr := os.FindProcess(pid); findErr == nil {
 				_ = process.Kill()
 			}
@@ -553,6 +556,10 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 
 		err = runtimeInstance.ServeManaged(cycleContext, engine)
 		cycleCancel()
+		recycling := cycleStarted && (errors.Is(err, airuntime.ErrSessionReprovisionRequired) || errors.Is(err, airuntime.ErrSessionExpired))
+		if recycling {
+			_ = updateClaudeRuntimeLock(lockPath, generation, func(lock *claudeRuntimeLock) { lock.RecyclingAt = time.Now().UTC() })
+		}
 		_ = removeClaudeStateIfGeneration(statePath, generation)
 		disabled := claudeHookPhaseAIDisabled()
 		if cycleStarted {
@@ -583,7 +590,7 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		if cycleStarted && (errors.Is(err, airuntime.ErrSessionReprovisionRequired) || errors.Is(err, airuntime.ErrSessionExpired)) {
+		if recycling {
 			reason := "environment_changed"
 			if errors.Is(err, airuntime.ErrSessionExpired) {
 				reason = "hard_expiry"
@@ -1184,7 +1191,7 @@ func claudeRuntimeFailurePath(directory, generation string) string {
 	return filepath.Join(directory, "claude-runtime-"+generation+".error.json")
 }
 
-// claimClaudeRuntimeLock, updateClaudeRuntimeLockPID and
+// claimClaudeRuntimeLock, updateClaudeRuntimeLock and
 // releaseClaudeRuntimeLock each run under an OS lock, so stale-owner recovery
 // can never hand ownership to two starters.
 func claimClaudeRuntimeLock(path, generation string) (bool, error) {
@@ -1223,13 +1230,13 @@ func abandonedClaudeRuntimeLock(path string, readErr error) bool {
 	return err == nil && time.Since(info.ModTime()) > claudeHookStartTimeout
 }
 
-func updateClaudeRuntimeLockPID(path, generation string, pid int) error {
+func updateClaudeRuntimeLock(path, generation string, update func(*claudeRuntimeLock)) error {
 	return withClaudeLeaseMutationLock(context.Background(), path, func() error {
 		lock, err := readClaudeRuntimeLock(path)
 		if err != nil || lock.Generation != generation {
 			return errors.New("Phase AI runtime lock ownership changed")
 		}
-		lock.PID = pid
+		update(&lock)
 		return writeOwnerOnlyJSON(path, lock)
 	})
 }
@@ -1368,7 +1375,7 @@ func stopClaudeHookRuntime(ctx context.Context) error {
 			return lockErr
 		}
 		if lock.PID > 0 && processIsAlive(lock.PID) {
-			if time.Since(lock.CreatedAt) > 2*claudeHookStartTimeout {
+			if time.Since(lock.CreatedAt) > 2*claudeHookStartTimeout && time.Since(lock.RecyclingAt) > 2*claudeHookStartTimeout {
 				return errors.New("refusing to stop a live process from a stale Phase AI startup lock")
 			}
 			process, findErr := os.FindProcess(lock.PID)

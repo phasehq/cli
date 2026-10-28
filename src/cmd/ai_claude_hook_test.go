@@ -305,6 +305,71 @@ func TestClaudeDaemonRecyclesSameProcessAndGenerationOnOneEngine(t *testing.T) {
 	}
 }
 
+type claudeStopDuringRecycleRuntime struct {
+	cycles  int
+	stopErr error
+}
+
+func (runtime *claudeStopDuringRecycleRuntime) ServeManaged(ctx context.Context, engine airuntime.Engine) error {
+	runtime.cycles++
+	if runtime.cycles == 2 {
+		// The session is recycling: the daemon's state is withdrawn.
+		runtime.stopErr = stopClaudeHookRuntime(ctx)
+	}
+	engine.(*aiproxy.Engine).OnStarted(aiproxy.Endpoints{ProcessEnvironment: phaseproxy.ProcessEnvironmentPlan{
+		Set: map[string]string{"PHASE_AI_ENABLED": "1", "HTTP_PROXY": "http://phase:capability@127.0.0.1:9543"},
+	}})
+	if runtime.cycles == 1 {
+		return fmt.Errorf("first managed cycle: %w", airuntime.ErrSessionExpired)
+	}
+	return errClaudeRecycleTestComplete
+}
+
+func TestSetupCanStopAnEstablishedDaemonWhileItRecycles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX sleep process as the daemon PID")
+	}
+	withClaudeHookTestConfig(t, true)
+	directory := withClaudeHookRuntimeDirectory(t)
+	withClaudeHookFingerprints(t)
+	daemon := exec.Command("sleep", "60")
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { _ = daemon.Wait(); close(exited) }()
+	t.Cleanup(func() { _ = daemon.Process.Kill() })
+	const generation = "generation-established"
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
+		Version: claudeRuntimeStateVersion, Generation: generation, PID: daemon.Process.Pid,
+		CreatedAt: time.Now().Add(-10 * time.Minute).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	managed := &claudeStopDuringRecycleRuntime{}
+	originalRuntime := claudeHookNewRuntime
+	claudeHookNewRuntime = func() (claudeManagedRuntime, error) { return managed, nil }
+	t.Cleanup(func() { claudeHookNewRuntime = originalRuntime })
+
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	command.Flags().String("generation", "", "")
+	if err := command.Flags().Set("generation", generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAIClaudeDaemon(command, nil); !errors.Is(err, errClaudeRecycleTestComplete) {
+		t.Fatalf("daemon recycle result = %v", err)
+	}
+	if managed.cycles != 2 || managed.stopErr != nil {
+		t.Fatalf("setup could not stop the recycling daemon: cycles=%d err=%v", managed.cycles, managed.stopErr)
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the recycling daemon was not stopped")
+	}
+}
+
 func TestClaudeDaemonPublishesAuthenticationFailure(t *testing.T) {
 	directory := withClaudeHookRuntimeDirectory(t)
 	const generation = "generation-authentication-failure"
