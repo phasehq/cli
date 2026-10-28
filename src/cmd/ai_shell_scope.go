@@ -666,7 +666,49 @@ func phaseNestedShellScript(words []string) (string, bool) {
 	return "", false
 }
 
+// phaseNetworkCallHasConfigEnv reports a curl or wget call whose shell-visible
+// environment redirects where the client loads its implicit configuration.
+// curl and wget read those files before argv, so such a call could run extra
+// configured transfers with the Phase environment and cannot be proved plain.
+func phaseNetworkCallHasConfigEnv(words []string) bool {
+	config := false
+	for len(words) > 0 {
+		word := words[0]
+		switch {
+		case word == phaseShellRedirect:
+			if len(words) > 1 {
+				words = words[2:]
+			} else {
+				words = words[1:]
+			}
+			continue
+		case phaseAssignment(word):
+			name, _, _ := strings.Cut(word, "=")
+			switch name {
+			case "HOME", "CURL_HOME", "XDG_CONFIG_HOME", "WGETRC", "SYSTEM_WGETRC":
+				config = true
+			}
+			words = words[1:]
+			continue
+		case phaseCommandPrefix(word):
+			words = words[1:]
+			continue
+		}
+		executable := phaseExecutableName(word)
+		// env and sudo carry inline VAR=value assignments ahead of the command.
+		if phaseWrapperExecutable(executable) {
+			words = words[1:]
+			continue
+		}
+		return config && (executable == "curl" || executable == "wget")
+	}
+	return false
+}
+
 func phaseSimpleCommandRequiresPhase(words []string) bool {
+	if phaseNetworkCallHasConfigEnv(words) {
+		return false
+	}
 	words = phaseCommandWords(words)
 	if len(words) == 0 {
 		return false
