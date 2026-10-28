@@ -300,6 +300,35 @@ func TestProtocolConnectionClosesPromptlyOnSessionRevocation(t *testing.T) {
 	close(stop)
 }
 
+func TestProtocolConnectionClosesAtSessionExpiry(t *testing.T) {
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) }))
+	defer console.Close()
+	client, err := agentapi.NewClient(console.URL, durableTestToken(), console.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := newRuntimeStateWithCapability(postgresRefreshSession(t, client, 1, "live-password"), "postgres-runtime-capability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.destroy()
+	// Nothing signals a state change at expiry, as when the monitor is held
+	// up by a slow refresh.
+	state.mu.Lock()
+	state.expiresAt = time.Now().Add(200 * time.Millisecond)
+	state.mu.Unlock()
+	proxySide, clientSide := net.Pipe()
+	defer clientSide.Close()
+	stop := make(chan struct{})
+	defer close(stop)
+	go (&protocolAdapters{state: state}).watchProtocolRoute(context.Background(), proxySide, "grant-pg",
+		protocolRoute{protocol: "postgres", host: "database.internal", port: 5432}, 5432, stop)
+	_ = clientSide.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := clientSide.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("protocol connection outlived session expiry: %v", err)
+	}
+}
+
 func postgresRefreshSession(t *testing.T, client *agentapi.Client, generation int, password string) *airuntime.ProxySession {
 	t.Helper()
 	session := decodeTestSession(t, map[string]any{

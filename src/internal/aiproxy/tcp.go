@@ -190,7 +190,8 @@ func routeForBinding(binding *binding, protocol string, defaultPort int) (protoc
 }
 
 // watchProtocolRoute closes an idle connection as soon as the session becomes
-// unavailable, its grant is removed/rebound, or its credential expires.
+// unavailable, its grant is removed/rebound, or the session or its credential
+// expires.
 func (a *protocolAdapters) watchProtocolRoute(ctx context.Context, connection net.Conn, grantID string, expected protocolRoute, defaultPort int, stop <-chan struct{}) {
 	for {
 		changed := a.state.changeSignal()
@@ -201,18 +202,17 @@ func (a *protocolAdapters) watchProtocolRoute(ctx context.Context, connection ne
 			if !snapshot.binding.authorizationDecision(time.Now()).allowed {
 				err = errors.New("Agent connection authorization is unavailable")
 			} else {
-				expiresAt := time.Time{}
-				if credentialExpiry := snapshot.binding.connection.CredentialExpiresAt; credentialExpiry != nil {
+				// Session expiry is enforced here too: the monitor that fails the
+				// session can be held up by a slow refresh.
+				expiresAt := a.state.expiration()
+				if credentialExpiry := snapshot.binding.connection.CredentialExpiresAt; credentialExpiry != nil && credentialExpiry.Before(expiresAt) {
 					expiresAt = *credentialExpiry
 				}
-				if !expiresAt.IsZero() {
-					delay := time.Until(expiresAt)
-					if delay <= 0 {
-						err = errors.New("Agent connection or source expired")
-					} else {
-						expiryTimer = time.NewTimer(delay)
-						expiry = expiryTimer.C
-					}
+				if delay := time.Until(expiresAt); delay <= 0 {
+					err = errors.New("Agent connection or source expired")
+				} else {
+					expiryTimer = time.NewTimer(delay)
+					expiry = expiryTimer.C
 				}
 			}
 		}
