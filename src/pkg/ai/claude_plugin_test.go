@@ -184,3 +184,53 @@ func TestUninstallClaudeBootstrapPluginRemovesOnlyOwnedPlugin(t *testing.T) {
 		t.Fatal("unexpected plugin path was accepted")
 	}
 }
+
+func TestClaudeBootstrapPluginLeavesForeignFilesAlone(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, ClaudeBootstrapPluginName)
+	executable := filepath.Join(parent, "phase")
+	manifestPath := filepath.Join(root, ".claude-plugin", "plugin.json")
+	hooksPath := filepath.Join(root, "hooks", "hooks.json")
+	foreign := map[string]string{
+		manifestPath: `{"name":"user-owned-plugin","version":"1.0.0"}`,
+		hooksPath:    `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"user-security-check"}]}]}}`,
+	}
+	for path, content := range foreign {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := InstallClaudeBootstrapPlugin(root, executable); err == nil {
+		t.Fatal("install claimed a plugin directory Phase does not own")
+	}
+	for path, content := range foreign {
+		if payload, err := os.ReadFile(path); err != nil || string(payload) != content {
+			t.Fatalf("install changed %s: %q, %v", path, payload, err)
+		}
+	}
+
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallClaudeBootstrapPlugin(root, executable); err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(root, "keep-user-data.txt")
+	if err := os.WriteFile(userFile, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallClaudeBootstrapPlugin(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(userFile); err != nil {
+		t.Fatalf("uninstall removed a file Phase did not write: %v", err)
+	}
+	for _, path := range []string{manifestPath, hooksPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("uninstall left %s: %v", path, err)
+		}
+	}
+}

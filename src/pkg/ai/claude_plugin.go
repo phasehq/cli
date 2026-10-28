@@ -62,6 +62,13 @@ func InstallClaudeBootstrapPlugin(root, phaseExecutable string) error {
 	if !filepath.IsAbs(phaseExecutable) {
 		return errors.New("Phase executable path for the Claude hook must be absolute")
 	}
+	if _, err := os.Stat(root); err == nil {
+		if err := validateClaudeBootstrapOwnership(root); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect Claude bootstrap plugin: %w", err)
+	}
 	manifestDirectory := filepath.Join(root, ".claude-plugin")
 	hooksDirectory := filepath.Join(root, "hooks")
 	for _, directory := range []string{root, manifestDirectory, hooksDirectory} {
@@ -169,19 +176,32 @@ func UninstallClaudeBootstrapPlugin(root string) error {
 		return errors.New("refusing to remove an unexpected Claude bootstrap plugin path")
 	}
 	manifestPath := filepath.Join(root, ".claude-plugin", "plugin.json")
-	payload, err := os.ReadFile(manifestPath)
-	if errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(manifestPath); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil {
+	if err := validateClaudeBootstrapOwnership(root); err != nil {
+		return err
+	}
+	// The manifest goes last so an interrupted removal is still Phase's to retry.
+	for _, path := range []string{filepath.Join(root, "hooks", "hooks.json"), manifestPath} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove Claude bootstrap file %s: %w", path, err)
+		}
+	}
+	for _, directory := range []string{filepath.Join(root, "hooks"), filepath.Join(root, ".claude-plugin"), root} {
+		_ = os.Remove(directory)
+	}
+	return nil
+}
+
+func validateClaudeBootstrapOwnership(root string) error {
+	payload, err := os.ReadFile(filepath.Join(root, ".claude-plugin", "plugin.json"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read Claude bootstrap plugin manifest: %w", err)
 	}
 	var manifest claudePluginManifest
-	if err := json.Unmarshal(payload, &manifest); err != nil || manifest.Name != ClaudeBootstrapPluginName {
-		return errors.New("refusing to remove a Claude plugin not owned by Phase")
-	}
-	if err := os.RemoveAll(root); err != nil {
-		return fmt.Errorf("remove Claude bootstrap plugin: %w", err)
+	if err != nil || json.Unmarshal(payload, &manifest) != nil || manifest.Name != ClaudeBootstrapPluginName {
+		return errors.New("refusing to modify a Claude plugin directory not owned by Phase")
 	}
 	return nil
 }
