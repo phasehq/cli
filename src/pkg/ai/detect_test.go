@@ -1,6 +1,12 @@
 package ai
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/phasehq/cli/pkg/config"
+)
 
 func TestDetectAIAgent(t *testing.T) {
 	allKeys := []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE", "AGENT"}
@@ -59,5 +65,23 @@ func TestDetectAIAgentCommandPrefersChildExecutable(t *testing.T) {
 		if got := DetectAIAgentCommand(test.command); got != test.want {
 			t.Fatalf("DetectAIAgentCommand(%q) = %q, want %q", test.command, got, test.want)
 		}
+	}
+}
+
+func TestShouldRedactFailsClosedForAnUnreadableAIConfig(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	path := filepath.Join(t.TempDir(), "ai.json")
+	original := config.AIConfigPath
+	config.AIConfigPath = path
+	t.Cleanup(func() { config.AIConfigPath = original })
+
+	if ShouldRedact("sealed") {
+		t.Fatal("redacted without an ai.json")
+	}
+	if err := os.WriteFile(path, []byte(`{"version":"3","enab`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !ShouldRedact("sealed") || !ShouldRedact("secret") || ShouldRedact("config") {
+		t.Fatal("an unreadable ai.json must mask sealed and secret values")
 	}
 }

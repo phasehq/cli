@@ -265,6 +265,8 @@ func runClaudeHeartbeat(cmd *cobra.Command, sessionID string) error {
 	if err != nil {
 		return nil
 	}
+	// Repairs a session whose SessionStart could not install the loader.
+	_ = installClaudeEnvironmentLoader(os.Getenv("CLAUDE_ENV_FILE"), claudeEnvironmentPath(directory))
 	health := inspectClaudeRuntime(directory)
 	if health.ready {
 		if _, statErr := os.Stat(mustClaudeLeasePath(directory, leaseID)); statErr != nil {

@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
+	"time"
 )
 
 func overrideAIConfigPath(t *testing.T, path string) {
@@ -33,8 +35,54 @@ func TestLoadAIConfigMigratesLegacyVisibilityConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) == `{"version":"1","maskSecretValues":false}` {
-		t.Fatal("legacy AI config was not persisted as the current version")
+	// Loading never writes, so a reader cannot overwrite a concurrent save;
+	// enable and disable persist the current version.
+	if string(data) != `{"version":"1","maskSecretValues":false}` {
+		t.Fatalf("loading rewrote the legacy AI config: %s", data)
+	}
+}
+
+func TestLoadAIConfigNeverSeesAPartialSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ai.json")
+	overrideAIConfigPath(t, path)
+	cfg := &AIConfig{Enabled: true, ProxyMode: AIProxyModeLocal, MaskSecretValues: true, DefaultWorkflowID: "workflow-123"}
+	if err := SaveAIConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	failures := make(chan string, 8)
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if loaded := LoadAIConfig(); loaded == nil || !loaded.MaskSecretValues {
+					failures <- "a reader saw an unreadable AI config during a save"
+					return
+				}
+				time.Sleep(100 * time.Microsecond)
+			}
+		}()
+	}
+	for range 200 {
+		if err := SaveAIConfig(cfg); err != nil {
+			close(stop)
+			readers.Wait()
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	readers.Wait()
+	select {
+	case failure := <-failures:
+		t.Fatal(failure)
+	default:
 	}
 }
 

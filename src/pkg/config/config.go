@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -72,7 +74,7 @@ func SaveConfig(config *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ConfigFilePath, data, 0600)
+	return writeFileAtomically(ConfigFilePath, data)
 }
 
 func GetDefaultUser() (*UserConfig, error) {
@@ -237,17 +239,16 @@ func LoadAIConfig() *AIConfig {
 		return nil
 	}
 
-	// Version 1 files hold only the masking preference. They are rewritten in
-	// the current format on first load.
+	// Version 1 files hold only the masking preference. They are read in the
+	// current format and rewritten by the next save; loading never writes, so a
+	// reader cannot overwrite a concurrent save.
 	if raw.Version == "" || raw.Version == "1" {
-		migrated := &AIConfig{
+		return &AIConfig{
 			Version:          AIConfigVersion,
 			Enabled:          true,
 			ProxyMode:        AIProxyModeLocal,
 			MaskSecretValues: maskPreference(raw.MaskSecretValues),
 		}
-		_ = SaveAIConfig(migrated)
-		return migrated
 	}
 	if raw.Version != AIConfigVersion || raw.Enabled == nil {
 		return nil
@@ -381,7 +382,40 @@ func SaveAIConfig(cfg *AIConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(AIConfigPath, data, 0600)
+	return writeFileAtomically(AIConfigPath, data)
+}
+
+// writeFileAtomically replaces path with one rename, so a concurrent reader
+// sees the previous or the new file and never a truncated one.
+func writeFileAtomically(path string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	for attempt := 0; ; attempt++ {
+		err = os.Rename(temporary.Name(), path)
+		// Windows cannot replace a file while a reader has it open; reads are brief.
+		if err == nil || runtime.GOOS != "windows" || attempt == 50 {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func RemoveUser(id string) error {

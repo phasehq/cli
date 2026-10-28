@@ -95,6 +95,8 @@ func withClaudeHookTestConfig(t *testing.T, enabled bool) {
 func withClaudeHookRuntimeDirectory(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
+	// Hooks append a loader to this file; never touch a real harness session's.
+	t.Setenv("CLAUDE_ENV_FILE", "")
 	originalDirectory := claudeHookRuntimeDir
 	claudeHookRuntimeDir = func() (string, error) { return directory, nil }
 	t.Cleanup(func() { claudeHookRuntimeDir = originalDirectory })
@@ -982,6 +984,30 @@ func TestClaudeHeartbeatStaysLocalWhileRuntimeIsHealthy(t *testing.T) {
 	}
 	if _, err := os.Stat(leasePath); err != nil {
 		t.Fatalf("healthy heartbeat did not register the missing session lease: %v", err)
+	}
+}
+
+func TestClaudeHeartbeatInstallsAMissingLoader(t *testing.T) {
+	withClaudeHookTestConfig(t, true)
+	directory := withClaudeHookRuntimeDirectory(t)
+	t.Setenv("PHASE_AI_ENABLED", "")
+	loaderPath := filepath.Join(t.TempDir(), "claude.env")
+	t.Setenv("CLAUDE_ENV_FILE", loaderPath)
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), claudeRuntimeState{
+		Version: claudeRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(),
+		StartedAt: time.Now().UTC(), ProxyURL: "http://phase:capability@127.0.0.1:1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	command := &cobra.Command{}
+	setClaudeHookInput(command, "UserPromptSubmit")
+	command.SetOut(io.Discard)
+	if err := runAIClaudeEvent(command, []string{"heartbeat"}); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := os.ReadFile(loaderPath)
+	if err != nil || string(loader) != claudeEnvironmentLoaderSnippet(claudeEnvironmentPath(directory)) {
+		t.Fatalf("heartbeat did not repair a session that missed its loader: %q err=%v", loader, err)
 	}
 }
 
