@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -618,5 +621,60 @@ func TestRedactAWSSigV4ResponseKeepsETag(t *testing.T) {
 	body, err := io.ReadAll(response.Body)
 	if err != nil || string(body) != "hello world" {
 		t.Fatalf("body = %q, err = %v", body, err)
+	}
+}
+
+func TestRedactAWSSigV4ResponseReturnsCleanGzipObjectsUnchanged(t *testing.T) {
+	gzipped := func(content string) []byte {
+		var buffer bytes.Buffer
+		writer := gzip.NewWriter(&buffer)
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buffer.Bytes()
+	}
+	redactions := []CredentialRedaction{
+		{Live: testLiveAccessKeyID, AgentVisible: testExpectedAccessKeyID},
+		{Live: testLiveSecret, AgentVisible: testDecoySecret},
+	}
+	stored := gzipped("ordinary object data")
+	response := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        http.Header{"Content-Encoding": {"gzip"}, "Content-Length": {strconv.Itoa(len(stored))}},
+		ContentLength: int64(len(stored)),
+		Body:          io.NopCloser(bytes.NewReader(stored)),
+	}
+	if err := RedactAWSSigV4Response(response, redactions); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil || !bytes.Equal(body, stored) {
+		t.Fatalf("gzip body changed: err=%v", err)
+	}
+	if response.Header.Get("Content-Length") != strconv.Itoa(len(stored)) || response.ContentLength != int64(len(stored)) {
+		t.Fatalf("gzip body length changed: %q %d", response.Header.Get("Content-Length"), response.ContentLength)
+	}
+
+	for name, test := range map[string]struct {
+		encoding string
+		body     []byte
+	}{
+		"gzip with live material": {"gzip", gzipped("key=" + testLiveAccessKeyID)},
+		"truncated gzip":          {"gzip", stored[:len(stored)-4]},
+		"not gzip":                {"gzip", []byte("plain " + testLiveSecret)},
+		"other encoding":          {"br", []byte("ordinary object data")},
+		"stacked encodings":       {"gzip, br", stored},
+	} {
+		response := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Encoding": {test.encoding}},
+			Body:       io.NopCloser(bytes.NewReader(test.body)),
+		}
+		if err := RedactAWSSigV4Response(response, redactions); err == nil {
+			t.Fatalf("%s: encoded response was not refused", name)
+		}
 	}
 }

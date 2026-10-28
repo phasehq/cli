@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -301,7 +302,8 @@ type CredentialRedaction struct {
 // RedactAWSSigV4Response replaces every exact occurrence of proxy-only live
 // AWS material in an upstream response. Headers are rewritten eagerly and the
 // body is rewritten as it streams, including matches split across reads.
-// Encoded bodies are rejected because plaintext redaction is unverifiable.
+// A gzip body is checked whole and returned unchanged; other encoded bodies
+// are rejected because plaintext redaction is unverifiable.
 func RedactAWSSigV4Response(response *http.Response, redactions []CredentialRedaction) error {
 	if response == nil {
 		return errors.New("AWS response redaction configuration is invalid")
@@ -329,9 +331,12 @@ func RedactAWSSigV4Response(response *http.Response, redactions []CredentialReda
 	if response.StatusCode == http.StatusSwitchingProtocols || response.Body == nil || response.Body == http.NoBody {
 		return nil
 	}
-	encoding := strings.TrimSpace(response.Header.Get("Content-Encoding"))
+	encoding := strings.TrimSpace(strings.Join(response.Header.Values("Content-Encoding"), ","))
+	if strings.EqualFold(encoding, "gzip") {
+		return checkGzipAWSResponse(response, redactions)
+	}
 	if encoding != "" && !strings.EqualFold(encoding, "identity") {
-		return errors.New("encoded AWS response cannot be safely redacted")
+		return errEncodedAWSResponse
 	}
 	response.Header.Del("Content-Length")
 	response.Header.Del("Content-MD5")
@@ -348,6 +353,49 @@ func RedactAWSSigV4Response(response *http.Response, redactions []CredentialReda
 	}
 	outermost.onDone = func() { response.Trailer = replaceAWSResponseHeader(response.Trailer, redactions) }
 	response.Body = body
+	return nil
+}
+
+var errEncodedAWSResponse = errors.New("encoded AWS response cannot be safely redacted")
+
+// checkGzipAWSResponse handles S3 objects stored with Content-Encoding: gzip,
+// which S3 returns whatever the request accepts. The bounded body is decoded
+// in full and passed on byte for byte only when no live value appears in it.
+func checkGzipAWSResponse(response *http.Response, redactions []CredentialRedaction) error {
+	if response.ContentLength > defaultAWSBodyBufferBytes {
+		return errEncodedAWSResponse
+	}
+	compressed, err := readBounded(response.Body, defaultAWSBodyBufferBytes)
+	_ = response.Body.Close()
+	if err != nil {
+		return errEncodedAWSResponse
+	}
+	response.Trailer = replaceAWSResponseHeader(response.Trailer, redactions)
+	decoded, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return errEncodedAWSResponse
+	}
+	var body io.ReadCloser = decoded
+	stages := make([]*exactReplacingReadCloser, 0, len(redactions))
+	for _, redaction := range redactions {
+		if bytes.Contains(compressed, []byte(redaction.Live)) {
+			return errEncodedAWSResponse
+		}
+		stage := &exactReplacingReadCloser{source: body, match: []byte(redaction.Live), replacement: []byte(redaction.AgentVisible)}
+		stages = append(stages, stage)
+		body = stage
+	}
+	_, err = io.Copy(io.Discard, body)
+	_ = body.Close()
+	if err != nil {
+		return errEncodedAWSResponse
+	}
+	for _, stage := range stages {
+		if stage.replaced {
+			return errEncodedAWSResponse
+		}
+	}
+	response.Body = io.NopCloser(bytes.NewReader(compressed))
 	return nil
 }
 
@@ -381,6 +429,7 @@ type exactReplacingReadCloser struct {
 	readErr     error
 	onDone      func()
 	done        bool
+	replaced    bool
 	scratch     [32 << 10]byte
 }
 
@@ -393,6 +442,7 @@ func (r *exactReplacingReadCloser) Read(destination []byte) (int, error) {
 			r.output = append(r.output, r.input[:index]...)
 			r.output = append(r.output, r.replacement...)
 			r.input = r.input[index+len(r.match):]
+			r.replaced = true
 			continue
 		}
 		if r.readErr != nil {
