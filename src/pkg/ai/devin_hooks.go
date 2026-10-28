@@ -170,21 +170,52 @@ func removePhaseDevinGroups(hooks map[string][]json.RawMessage, helperPaths ...s
 	for event, groups := range hooks {
 		kept := groups[:0]
 		for _, raw := range groups {
-			var group devinHookGroup
-			if json.Unmarshal(raw, &group) != nil || !isPhaseDevinGroup(group, helperPaths...) {
+			if group, changed := withoutPhaseDevinHandlers(raw, helperPaths); !changed {
 				kept = append(kept, raw)
+			} else if group != nil {
+				kept = append(kept, group)
 			}
 		}
 		hooks[event] = kept
 	}
 }
 
-func isPhaseDevinGroup(group devinHookGroup, helperPaths ...string) bool {
-	for _, hook := range group.Hooks {
-		for _, helperPath := range helperPaths {
-			if strings.Contains(hook.Command, helperPath) && strings.Contains(hook.Command, "__devin-") {
-				return true
-			}
+// withoutPhaseDevinHandlers drops Phase's handlers from a group and keeps the
+// rest of it as written. It returns nil when no handler is left.
+func withoutPhaseDevinHandlers(raw json.RawMessage, helperPaths []string) (json.RawMessage, bool) {
+	var group map[string]json.RawMessage
+	var handlers []json.RawMessage
+	if json.Unmarshal(raw, &group) != nil || json.Unmarshal(group["hooks"], &handlers) != nil {
+		return raw, false
+	}
+	kept := handlers[:0]
+	for _, handler := range handlers {
+		var parsed devinHookHandler
+		if json.Unmarshal(handler, &parsed) != nil || !isPhaseDevinCommand(parsed.Command, helperPaths) {
+			kept = append(kept, handler)
+		}
+	}
+	if len(kept) == len(handlers) {
+		return raw, false
+	}
+	if len(kept) == 0 {
+		return nil, true
+	}
+	payload, err := json.Marshal(kept)
+	if err != nil {
+		return raw, false
+	}
+	group["hooks"] = payload
+	if payload, err = json.Marshal(group); err != nil {
+		return raw, false
+	}
+	return payload, true
+}
+
+func isPhaseDevinCommand(command string, helperPaths []string) bool {
+	for _, helperPath := range helperPaths {
+		if strings.Contains(command, helperPath) && strings.Contains(command, "__devin-") {
+			return true
 		}
 	}
 	return false
