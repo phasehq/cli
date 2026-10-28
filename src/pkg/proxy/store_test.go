@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -190,6 +191,89 @@ func TestCAStoreRenewsCertificateNearExpiryAndKeepsFreshOnes(t *testing.T) {
 	}
 	if !replacedPaths.Renewed || replaced.cert.SerialNumber.Cmp(old.cert.SerialNumber) == 0 || replacedPaths.NotAfter.After(time.Now().Add(91*24*time.Hour)) {
 		t.Fatalf("legacy long-lived CA was kept: renewed=%v notAfter=%s", replacedPaths.Renewed, replacedPaths.NotAfter)
+	}
+}
+
+// pausingKeyring holds the first Set until release is closed or a short wait
+// passes, leaving room for a second Ensure to run unless Ensure serializes.
+type pausingKeyring struct {
+	mu       sync.Mutex
+	values   map[string]string
+	sets     int
+	firstSet chan struct{}
+	release  chan struct{}
+}
+
+func (k *pausingKeyring) Get(service, user string) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	value, ok := k.values[service+"/"+user]
+	if !ok {
+		return "", errors.New("not found")
+	}
+	return value, nil
+}
+
+func (k *pausingKeyring) Set(service, user, value string) error {
+	k.mu.Lock()
+	k.values[service+"/"+user] = value
+	k.sets++
+	first := k.sets == 1
+	k.mu.Unlock()
+	if first {
+		close(k.firstSet)
+		select {
+		case <-k.release:
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+func TestCAStoreConcurrentRenewalPublishesOneConsistentCA(t *testing.T) {
+	directory := t.TempDir()
+	_, certPEM, keyPEM, err := GenerateCA(5 * 24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "ca.pem"), certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keyring := &pausingKeyring{
+		values:   map[string]string{caKeyringService + "/" + caKeyringUser: string(keyPEM)},
+		firstSet: make(chan struct{}), release: make(chan struct{}),
+	}
+	store := CAStore{Directory: directory, Keyring: keyring, Validity: 365 * 24 * time.Hour}
+	type ensured struct {
+		ca  *CA
+		err error
+	}
+	firstDone := make(chan ensured, 1)
+	go func() {
+		ca, _, err := store.Ensure()
+		firstDone <- ensured{ca, err}
+	}()
+	<-keyring.firstSet
+	second, _, secondErr := store.Ensure()
+	close(keyring.release)
+	first := <-firstDone
+	if first.err != nil || secondErr != nil {
+		t.Fatalf("Ensure failed: %v, %v", first.err, secondErr)
+	}
+
+	publishedPEM, err := os.ReadFile(filepath.Join(directory, "ca.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedKey, _ := keyring.Get(caKeyringService, caKeyringUser)
+	published, err := LoadCA(publishedPEM, []byte(storedKey))
+	if err != nil {
+		t.Fatalf("published certificate does not match the stored key: %v", err)
+	}
+	for _, ca := range []*CA{first.ca, second} {
+		if ca.cert.SerialNumber.Cmp(published.cert.SerialNumber) != 0 {
+			t.Fatal("an Ensure caller is serving a CA that was not published")
+		}
 	}
 }
 

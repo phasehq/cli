@@ -100,6 +100,13 @@ func (s CAStore) Ensure() (*CA, CAPaths, error) {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		return nil, CAPaths{}, fmt.Errorf("secure Phase AI directory: %w", err)
 	}
+	// Runtimes, relays and enable can run Ensure at once. One lock across load,
+	// renewal and publication keeps the stored key and certificate a pair.
+	unlock, err := lockCAFile(filepath.Join(directory, "ca.lock"))
+	if err != nil {
+		return nil, CAPaths{}, fmt.Errorf("lock proxy CA: %w", err)
+	}
+	defer unlock()
 	paths := CAPaths{
 		Certificate: filepath.Join(directory, "ca.pem"),
 		Bundle:      filepath.Join(directory, "ca-bundle.pem"),
