@@ -198,10 +198,11 @@ async function phaseServer() {
 }
 
 // OpenCode 2.x reads setup(context) from the default export; hooks are
-// registered through the context and the tool input is edited in place.
+// registered through the context and the tool input is edited in place. Its
+// command tool is named shell rather than 1.x's bash.
 async function phaseSetup(context) {
   await context.tool.hook("execute.before", async (event) => {
-    if (event.tool !== "bash") return
+    if (event.tool !== "shell") return
     const args = event.input
     const command = args && typeof args === "object" ? args.command : undefined
     const replacement = rewritePhaseCommand(command, event.sessionID)

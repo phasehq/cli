@@ -44,7 +44,7 @@ func TestInstallOpenCodePluginIsDependencyFreeAndIdempotent(t *testing.T) {
 		`__opencode-command`, "execFileSync",
 		// OpenCode 2.x requires a default export with id and setup(); 1.x reads server().
 		`export default phaseAIPlugin`, `id: "phase-ai-bootstrap"`, `server: phaseServer`, `setup: phaseSetup`,
-		`context.tool.hook("execute.before"`, `event.tool !== "bash"`,
+		`context.tool.hook("execute.before"`, `event.tool !== "shell"`,
 		// Transparent mode: the daemon-published environment is applied to every
 		// shell, routing only while the proxy PID is alive; the daemon is kicked.
 		`"shell.env"`, `context.shell.hook("create.before"`, `__opencode-session`, `phaseEnvironmentFile`,
@@ -138,7 +138,8 @@ for (const item of commandCases) { const output = { args: { command: item.comman
 const registered = {};
 await phaseAIPlugin.setup({ tool: { hook: async (name, callback) => { registered[name] = callback; return { dispose: async () => {} }; } } });
 if (typeof registered["execute.before"] !== "function") throw new Error("setup did not register execute.before");
-for (const item of commandCases) { const event = { tool: "bash", sessionID: "test", input: { command: item.command } }; await registered["execute.before"](event); if (event.input.command !== item.want) throw new Error(JSON.stringify({ ...item, got: event.input.command, api: "setup" })); }
+// OpenCode 2.x names its command tool "shell".
+for (const item of commandCases) { const event = { tool: "shell", sessionID: "test", input: { command: item.command, workdir: "/tmp" } }; await registered["execute.before"](event); if (event.input.command !== item.want) throw new Error(JSON.stringify({ ...item, got: event.input.command, api: "setup" })); }
 const other = { tool: "read", sessionID: "test", input: { filePath: "http://phase.invalid/x" } };
 await registered["execute.before"](other);
 if (other.input.filePath !== "http://phase.invalid/x") throw new Error("non-bash tool input was modified");
