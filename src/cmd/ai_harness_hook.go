@@ -677,11 +677,21 @@ func registerHarnessLease(harness, sessionID string, expiresAt time.Time) error 
 	return withClaudeLeaseRegistryLock(context.Background(), directory, func() error {
 		return withClaudeLeaseMutationLock(context.Background(), path, func() error {
 			state, err := readClaudeRuntimeState(filepath.Join(directory, claudeRuntimeStateFile))
+			generation := state.Generation
+			if errors.Is(err, os.ErrNotExist) {
+				// A daemon still starting has no state yet; its lock names the
+				// generation whose lease monitor will count this lease.
+				lock, lockErr := readClaudeRuntimeLock(filepath.Join(directory, claudeRuntimeLockFile))
+				if lockErr != nil || lock.Generation == "" || lock.PID <= 0 || !processIsAlive(lock.PID) {
+					return err
+				}
+				generation, err = lock.Generation, nil
+			}
 			if err != nil {
 				return err
 			}
 			return writeOwnerOnlyJSON(path, claudeSessionLease{
-				Version: claudeRuntimeStateVersion, Generation: state.Generation,
+				Version: claudeRuntimeStateVersion, Generation: generation,
 				UpdatedAt: time.Now().UTC(), ExpiresAt: expiresAt,
 			})
 		})

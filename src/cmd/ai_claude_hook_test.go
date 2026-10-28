@@ -1158,6 +1158,31 @@ func TestClaudeHeartbeatStaysLocalWhileRuntimeIsHealthy(t *testing.T) {
 	}
 }
 
+func TestKickLeasesASessionToADaemonStillStarting(t *testing.T) {
+	withClaudeHookTestConfig(t, true)
+	directory := withClaudeHookRuntimeDirectory(t)
+	originalEnsure := claudeHookEnsureRuntime
+	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+		return phaseproxy.ProcessEnvironmentPlan{}, errors.New("Phase AI automatic proxy did not become ready")
+	}
+	const generation = "generation-starting"
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
+		Version: claudeRuntimeStateVersion, Generation: generation, PID: os.Getpid(), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if health := kickClaudeRuntime(context.Background(), directory, "session-one", time.Millisecond); !health.starting {
+		t.Fatalf("kick health = %+v, want starting", health)
+	}
+	// The daemon publishes after the hook's wait ended; the session must still
+	// keep it from idling out.
+	active, err := hasActiveClaudeSessionLease(directory, generation, time.Now())
+	if err != nil || !active {
+		t.Fatalf("a session waiting on a slow startup has no lease: active=%v err=%v", active, err)
+	}
+}
+
 func TestClaudeHeartbeatInstallsAMissingLoader(t *testing.T) {
 	withClaudeHookTestConfig(t, true)
 	directory := withClaudeHookRuntimeDirectory(t)

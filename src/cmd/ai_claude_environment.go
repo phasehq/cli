@@ -399,7 +399,9 @@ func kickClaudeRuntime(ctx context.Context, directory, sessionID string, budget 
 }
 
 // kickHarnessRuntime is the harness-neutral form used by every transparent-mode
-// integration (Claude Code hooks, the OpenCode plugin).
+// integration (Claude Code hooks, the OpenCode plugin). A daemon still starting
+// gets the lease too, so it does not idle out if it becomes ready only after
+// this wait and the session's next prompt.
 func kickHarnessRuntime(ctx context.Context, directory, harness, sessionID string, budget time.Duration) claudeRuntimeHealth {
 	if ctx == nil {
 		ctx = context.Background()
@@ -408,7 +410,7 @@ func kickHarnessRuntime(ctx context.Context, directory, harness, sessionID strin
 	defer cancel()
 	_ = ensureHarnessRuntimeReady(kickContext)
 	health := inspectClaudeRuntime(directory)
-	if health.ready {
+	if health.ready || health.starting {
 		_ = registerHarnessLease(harness, sessionID, time.Now().UTC().Add(harnessSessionLeaseTTL))
 	}
 	reconcileClaudeEnvironment(directory, health)
