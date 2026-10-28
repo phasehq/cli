@@ -1,0 +1,81 @@
+package cmd
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/phasehq/cli/pkg/ai"
+	"github.com/phasehq/cli/pkg/config"
+	"github.com/spf13/cobra"
+)
+
+func TestOpenCodePluginIsRefreshedAndRemovedWhereItWasInstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	for _, marker := range []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE", "AGENT"} {
+		t.Setenv(marker, "")
+	}
+	withClaudeHookRuntimeDirectory(t)
+	originalAIConfig := config.AIConfigPath
+	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
+	t.Cleanup(func() { config.AIConfigPath = originalAIConfig })
+	source, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	customRoot := filepath.Join(t.TempDir(), "opencode")
+	t.Setenv("OPENCODE_CONFIG_DIR", customRoot)
+	customPlugin := filepath.Join(customRoot, "plugins", ai.OpenCodePluginName+".js")
+	cfg := &config.AIConfig{Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{ai.HarnessOpenCode}}
+	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessOpenCode, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveAIConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later enable for another harness runs without OpenCode's environment.
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	defaultPlugin, err := ai.DefaultOpenCodePluginPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(customPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ai.InstallOpenCodePlugin(customPlugin, filepath.Join(home, "old-phase"), filepath.Join(home, "env.json")); err != nil {
+		t.Fatal(err)
+	}
+	cfg = config.LoadAIConfig()
+	cfg.AddHarnessInstallation(ai.HarnessCursor, "")
+	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessCursor, source); err != nil {
+		t.Fatal(err)
+	}
+	if payload, err := os.ReadFile(customPlugin); err != nil || string(payload) != string(current) {
+		t.Fatalf("refresh did not rewrite the installed OpenCode plugin: %v", err)
+	}
+	if _, err := os.Stat(defaultPlugin); !os.IsNotExist(err) {
+		t.Fatalf("refresh installed a second OpenCode plugin at %s: %v", defaultPlugin, err)
+	}
+	if err := config.SaveAIConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := runAIDisable(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(customPlugin); !os.IsNotExist(err) {
+		t.Fatalf("disable left the OpenCode plugin at %s: %v", customPlugin, err)
+	}
+	if cfg := config.LoadAIConfig(); cfg == nil || len(cfg.OpenCodePlugins) != 0 {
+		t.Fatalf("disable kept the recorded OpenCode plugin paths: %+v", cfg)
+	}
+}

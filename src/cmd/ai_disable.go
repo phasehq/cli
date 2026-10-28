@@ -70,12 +70,19 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	if pluginPath, err := ai.DefaultOpenCodePluginPath(); err == nil && cfg != nil && cfg.HarnessConfigured(ai.HarnessOpenCode) {
-		_, statErr := os.Stat(pluginPath)
-		if err := ai.UninstallOpenCodePlugin(pluginPath); err != nil {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove OpenCode Phase plugin: %w", err))
-		} else if statErr == nil {
-			fmt.Printf("   Removed OpenCode Phase plugin: %s\n", pluginPath)
+	if cfg != nil && cfg.HarnessConfigured(ai.HarnessOpenCode) {
+		pluginPaths := cfg.OpenCodePlugins
+		// Earlier builds did not record where the plugin went.
+		if pluginPath, err := ai.DefaultOpenCodePluginPath(); err == nil && len(pluginPaths) == 0 {
+			pluginPaths = []string{pluginPath}
+		}
+		for _, pluginPath := range pluginPaths {
+			_, statErr := os.Stat(pluginPath)
+			if err := ai.UninstallOpenCodePlugin(pluginPath); err != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("remove OpenCode Phase plugin: %w", err))
+			} else if statErr == nil {
+				fmt.Printf("   Removed OpenCode Phase plugin: %s\n", pluginPath)
+			}
 		}
 	}
 	if configPath, err := ai.DefaultDevinConfigPath(); err == nil && cfg != nil && cfg.HarnessConfigured(ai.HarnessDevin) {

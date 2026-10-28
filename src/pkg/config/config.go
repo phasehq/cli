@@ -217,6 +217,9 @@ type AIConfig struct {
 	HarnessID         string   `json:"harnessId,omitempty"`
 	SkillInstallPaths []string `json:"skillInstallPaths,omitempty"`
 	HarnessIDs        []string `json:"harnessIds,omitempty"`
+	// OpenCode's root follows its environment, so refresh and disable use the
+	// plugin paths enable wrote rather than the current environment's.
+	OpenCodePlugins []string `json:"openCodePlugins,omitempty"`
 }
 
 func LoadAIConfig() *AIConfig {
@@ -234,6 +237,7 @@ func LoadAIConfig() *AIConfig {
 		SkillInstallPaths []string `json:"skillInstallPaths"`
 		HarnessIDs        []string `json:"harnessIds"`
 		MaskSecretValues  *bool    `json:"maskSecretValues"`
+		OpenCodePlugins   []string `json:"openCodePlugins"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -268,6 +272,7 @@ func LoadAIConfig() *AIConfig {
 		HarnessID:         raw.HarnessID,
 		SkillInstallPaths: uniqueNonEmpty(raw.SkillInstallPaths, raw.SkillInstallPath),
 		HarnessIDs:        uniqueNonEmpty(raw.HarnessIDs, raw.HarnessID),
+		OpenCodePlugins:   uniqueNonEmpty(raw.OpenCodePlugins),
 	}
 }
 
@@ -346,6 +351,7 @@ func (cfg *AIConfig) ClearHarnessInstallations() {
 	cfg.HarnessIDs = nil
 	cfg.SkillInstallPath = ""
 	cfg.SkillInstallPaths = nil
+	cfg.OpenCodePlugins = nil
 }
 
 func uniqueNonEmpty(values []string, extras ...string) []string {

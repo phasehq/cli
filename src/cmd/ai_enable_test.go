@@ -81,7 +81,7 @@ func TestInstallConfiguredAIHarnessAdaptersRefreshesEveryHelper(t *testing.T) {
 	}
 	installed, _, err := installConfiguredAIHarnessAdapters(
 		context.Background(),
-		[]string{ai.HarnessClaudeCode, ai.HarnessCursor},
+		&config.AIConfig{HarnessIDs: []string{ai.HarnessClaudeCode, ai.HarnessCursor}},
 		ai.HarnessCursor,
 		source,
 	)
@@ -152,15 +152,15 @@ func TestInstallConfiguredAIHarnessAdaptersDoNotNeedCodexForAnotherHarness(t *te
 		t.Fatal(err)
 	}
 	// Codex was enabled earlier, and Cursor is added where codex is not on PATH.
-	harnesses := []string{ai.HarnessCodex, ai.HarnessCursor}
-	installed, skipped, err := installConfiguredAIHarnessAdapters(context.Background(), harnesses, ai.HarnessCursor, source)
+	cfg := &config.AIConfig{HarnessIDs: []string{ai.HarnessCodex, ai.HarnessCursor}}
+	installed, skipped, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessCursor, source)
 	if err != nil {
 		t.Fatalf("adding Cursor failed because the Codex CLI is missing: %v", err)
 	}
 	if installed[ai.HarnessCursor] == "" || installed[ai.HarnessCodex] != "" || skipped[ai.HarnessCodex] == "" {
 		t.Fatalf("installed=%v skipped=%v", installed, skipped)
 	}
-	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), harnesses, ai.HarnessCodex, source); err == nil || !strings.Contains(err.Error(), "PATH") {
+	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessCodex, source); err == nil || !strings.Contains(err.Error(), "PATH") {
 		t.Fatalf("enabling Codex itself must still require its CLI, got %v", err)
 	}
 	// Once the Codex adapter is up to date, adding Cursor leaves it alone.
@@ -175,7 +175,7 @@ func TestInstallConfiguredAIHarnessAdaptersDoNotNeedCodexForAnotherHarness(t *te
 	if _, err := ai.InstallCodexBootstrapPlugin(root, helper); err != nil {
 		t.Fatal(err)
 	}
-	if installed, skipped, err := installConfiguredAIHarnessAdapters(context.Background(), harnesses, ai.HarnessCursor, source); err != nil || len(skipped) != 0 || installed[ai.HarnessCodex] != "" {
+	if installed, skipped, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessCursor, source); err != nil || len(skipped) != 0 || installed[ai.HarnessCodex] != "" {
 		t.Fatalf("an up-to-date Codex adapter was touched or reported: installed=%v skipped=%v err=%v", installed, skipped, err)
 	}
 }

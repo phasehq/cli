@@ -27,7 +27,7 @@ func DefaultOpenCodePluginPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(openCodeConfigDirectory(home), "plugins", OpenCodePluginName+".js"), nil
+	return filepath.Abs(filepath.Join(openCodeConfigDirectory(home), "plugins", OpenCodePluginName+".js"))
 }
 
 // openCodeConfigDirectory is the one global config root OpenCode loads:

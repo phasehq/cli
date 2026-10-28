@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -252,7 +253,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		fmt.Printf("   Earlier Phase skill migrated to: %s\n", migratedPath)
 	}
 
-	installations, skipped, err := installConfiguredAIHarnessAdapters(cmd.Context(), cfg.ConfiguredHarnessIDs(), selectedTarget.ID, executable)
+	installations, skipped, err := installConfiguredAIHarnessAdapters(cmd.Context(), cfg, selectedTarget.ID, executable)
 	if err != nil {
 		return err
 	}
@@ -407,8 +408,10 @@ func claudeHookExecutablePath() (string, error) {
 // the current CLI, then points every thin harness adapter at it. Provider and
 // discovery changes do not require reinstalling those adapters. When another
 // harness is selected, a current Codex adapter is left alone, and an outdated
-// one is returned as skipped when the Codex CLI is not on PATH.
-func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string, selected, executable string) (map[string]string, map[string]string, error) {
+// one is returned as skipped when the Codex CLI is not on PATH. Where the
+// OpenCode plugin is installed is recorded in cfg.
+func installConfiguredAIHarnessAdapters(ctx context.Context, cfg *config.AIConfig, selected, executable string) (map[string]string, map[string]string, error) {
+	harnesses := cfg.ConfiguredHarnessIDs()
 	installed := make(map[string]string, len(harnesses))
 	skipped := make(map[string]string)
 	hookExecutable := executable
@@ -468,19 +471,29 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, harnesses []string,
 			}
 			installed[harness] = "Codex Phase discovery adapter installed: " + installation.Selector
 		case ai.HarnessOpenCode:
-			path, err := ai.DefaultOpenCodePluginPath()
-			if err != nil {
-				return nil, nil, err
-			}
 			runtimeDirectory, err := claudeHookRuntimeDir()
 			if err != nil {
 				return nil, nil, err
 			}
-			installation, err := ai.InstallOpenCodePlugin(path, hookExecutable, claudeEnvironmentJSONPath(runtimeDirectory))
-			if err != nil {
-				return nil, nil, fmt.Errorf("install OpenCode Phase plugin: %w", err)
+			// Enabling another harness may run without OpenCode's environment, so
+			// only OpenCode's own enable adds the current environment's root.
+			paths := cfg.OpenCodePlugins
+			if harness == selected || len(paths) == 0 {
+				path, err := ai.DefaultOpenCodePluginPath()
+				if err != nil {
+					return nil, nil, err
+				}
+				if !slices.Contains(paths, path) {
+					paths = append(paths, path)
+				}
 			}
-			installed[harness] = "OpenCode Phase plugin installed to: " + installation.PluginPath
+			for _, path := range paths {
+				if _, err := ai.InstallOpenCodePlugin(path, hookExecutable, claudeEnvironmentJSONPath(runtimeDirectory)); err != nil {
+					return nil, nil, fmt.Errorf("install OpenCode Phase plugin at %s: %w", path, err)
+				}
+			}
+			cfg.OpenCodePlugins = paths
+			installed[harness] = "OpenCode Phase plugin installed to: " + strings.Join(paths, ", ")
 		case ai.HarnessDevin:
 			path, err := ai.DefaultDevinConfigPath()
 			if err != nil {
