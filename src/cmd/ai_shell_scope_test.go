@@ -119,6 +119,12 @@ func TestShellCommandMixesPhase(t *testing.T) {
 		{command: `cmd /d /s /c "curl http://phase.invalid/v1/status & git push"`, want: true},
 		{command: "sh -c 'curl http://phase.invalid/v1/status'", want: false},
 		{command: "sh -c 'git status && git push'", want: false},
+		// Descriptor duplication and closure are redirections, not separators.
+		{command: "curl http://phase.invalid/v1/status 2>&1", want: false},
+		{command: "curl http://phase.invalid/v1/status >/dev/null 2>&1", want: false},
+		{command: "curl http://phase.invalid/v1/status 2>&- <&0", want: false},
+		{command: "curl http://phase.invalid/v1/status 2>&1 && git push", want: true},
+		{command: "curl http://phase.invalid/v1/status 2>&1 & git push", want: true},
 	} {
 		if got := shellCommandMixesPhase(test.command); got != test.want {
 			t.Errorf("shellCommandMixesPhase(%q) = %v, want %v", test.command, got, test.want)

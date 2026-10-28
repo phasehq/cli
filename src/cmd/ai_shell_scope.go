@@ -462,6 +462,10 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 				words = append(words, phaseShellWord{value: phaseShellRedirect})
 			}
 		case ';', '&', '|', '\n', '(', ')', '{', '}':
+			// >& and <& duplicate or close a descriptor (2>&1, 2>&-).
+			if character == '&' && word.Len() == 0 && index > 0 && (characters[index-1] == '>' || characters[index-1] == '<') {
+				break
+			}
 			flush()
 			words = append(words, phaseShellWord{control: true})
 		default:
