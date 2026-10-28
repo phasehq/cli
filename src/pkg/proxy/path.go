@@ -19,9 +19,12 @@ func canonicalHTTPPath(value string) (string, error) {
 	if err != nil || strings.ContainsRune(decoded, '\x00') {
 		return "", errors.New("invalid HTTP path")
 	}
-	cleaned := path.Clean("/" + strings.TrimPrefix(decoded, "/"))
-	if cleaned == "." {
-		cleaned = "/"
+	rooted := "/" + strings.TrimPrefix(decoded, "/")
+	cleaned := path.Clean(rooted)
+	// S3 keeps dot segments and repeated slashes in object keys, so a path that
+	// would only match a rule once cleaned names a different object upstream.
+	if rooted != cleaned && (cleaned == "/" || rooted != cleaned+"/") {
+		return "", errors.New("non-canonical HTTP path")
 	}
 	return cleaned, nil
 }
