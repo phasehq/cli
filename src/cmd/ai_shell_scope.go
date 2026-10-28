@@ -669,14 +669,36 @@ func phaseSimpleCommandRequiresPhase(words []string) bool {
 		return phaseSimpleCommandRequiresPhase(phaseUnwrapCommand(executable, words[1:]))
 	}
 	if phaseNetworkExecutable(executable) {
+		managed := false
 		for index, argument := range words[1:] {
 			if phaseNetworkNonTargetValue(executable, words[1:], index) {
 				continue
 			}
 			if phaseManagedTarget(argument) {
-				return true
+				managed = true
+			} else if phaseNetworkOtherTarget(executable, argument) {
+				// Every transfer in the call would run with Phase material.
+				return false
 			}
 		}
+		return managed
+	}
+	return false
+}
+
+// phaseNetworkOtherTarget reports an argument through which curl or wget may
+// reach something other than Phase: another operand, or a file of options or
+// URLs.
+func phaseNetworkOtherTarget(executable, argument string) bool {
+	lower := strings.ToLower(argument)
+	short := strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--")
+	switch executable {
+	case "curl":
+		return !strings.HasPrefix(argument, "-") || strings.HasPrefix(lower, "--url=") ||
+			strings.HasPrefix(lower, "--conf") || short && strings.Contains(argument, "K")
+	case "wget":
+		return !strings.HasPrefix(argument, "-") || strings.HasPrefix(lower, "--input") ||
+			strings.HasPrefix(lower, "--exec") || short && strings.ContainsAny(argument, "ie")
 	}
 	return false
 }
@@ -689,12 +711,14 @@ func phaseNetworkNonTargetValue(executable string, arguments []string, index int
 	previous := strings.ToLower(previousRaw)
 	switch executable {
 	case "curl":
-		if previousRaw == "-F" || previousRaw == "-H" {
+		// Short options are case-sensitive: -O takes no value, -o does.
+		switch previousRaw {
+		case "-d", "-F", "-H", "-m", "-o", "-w", "-X", "-x":
 			return true
 		}
 		switch previous {
-		case "-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
-			"--form", "--form-string", "--header", "-o", "--output", "-w", "--write-out":
+		case "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--form", "--form-string",
+			"--header", "--json", "--max-time", "--output", "--proxy", "--request", "--write-out":
 			return true
 		}
 	case "wget":
@@ -843,7 +867,9 @@ func phaseManagedTarget(value string) bool {
 	}
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 	if host == "" {
-		parsed, _ = url.Parse("//" + strings.Trim(value, "[]'\".,"))
+		if parsed, err = url.Parse("//" + strings.Trim(value, "[]'\".,")); err != nil {
+			return false
+		}
 		host = strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 	}
 	return host == "phase.invalid"
