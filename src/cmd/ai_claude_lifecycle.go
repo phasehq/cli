@@ -52,13 +52,18 @@ func lastClaudeSessionRefresh(directory string, now time.Time, window time.Durat
 			if record.Reason != "recycled" || now.Sub(record.Time) > window || record.Time.After(now.Add(time.Minute)) {
 				return time.Time{}, ""
 			}
+			// The recycle that this ready ends, past any retries it took.
 			reason := ""
-			for back := index - 1; back >= 0 && back >= index-3; back-- {
+			for back := index - 1; back >= 0; back-- {
 				var previous claudeLifecycleRecord
-				if json.Unmarshal(bytes.TrimSpace(lines[back]), &previous) == nil && previous.Event == "session_recycle" {
-					reason = previous.Reason
-					break
+				if json.Unmarshal(bytes.TrimSpace(lines[back]), &previous) != nil ||
+					previous.Event == "session_retry" || previous.Event == "daemon_rejected" {
+					continue
 				}
+				if previous.Event == "session_recycle" {
+					reason = previous.Reason
+				}
+				break
 			}
 			return record.Time, reason
 		}

@@ -139,6 +139,17 @@ func TestLastClaudeSessionRefreshReadsTheLatestRecycle(t *testing.T) {
 	if refreshed.IsZero() || reason != "hard_expiry" || !strings.Contains(claudeSessionRefreshNotice(refreshed, reason), "renewed at") {
 		t.Fatalf("expiry refresh = %v %q", refreshed, reason)
 	}
+	write(
+		claudeLifecycleRecord{Time: at(40), Event: "session_recycle", Reason: "environment_changed"},
+		claudeLifecycleRecord{Time: at(39), Event: "session_retry", Reason: "backend_unavailable"},
+		claudeLifecycleRecord{Time: at(38), Event: "session_retry", Reason: "backend_unavailable"},
+		claudeLifecycleRecord{Time: at(37), Event: "daemon_rejected", Reason: "ownership"},
+		claudeLifecycleRecord{Time: at(36), Event: "session_retry", Reason: "backend_unavailable"},
+		claudeLifecycleRecord{Time: at(35), Event: "session_ready", Reason: "recycled"},
+	)
+	if refreshed, reason = lastClaudeSessionRefresh(directory, now, claudeRefreshNoticeWindow); !refreshed.Equal(at(35)) || reason != "environment_changed" {
+		t.Fatalf("refresh after retries = %v %q", refreshed, reason)
+	}
 	if claudeSessionRefreshNotice(time.Time{}, "") != "" {
 		t.Fatal("no refresh must add no notice")
 	}
