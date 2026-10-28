@@ -475,10 +475,15 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, cfg *config.AIConfi
 			if err != nil {
 				return nil, nil, err
 			}
+			paths := cfg.OpenCodePlugins
+			if len(paths) == 0 {
+				if paths, err = ai.FindOpenCodePlugins(cfg.ConfiguredSkillInstallPaths()); err != nil {
+					return nil, nil, err
+				}
+			}
 			// Enabling another harness may run without OpenCode's environment, so
 			// only OpenCode's own enable adds the current environment's root.
-			paths := cfg.OpenCodePlugins
-			if harness == selected || len(paths) == 0 {
+			if harness == selected {
 				path, err := ai.DefaultOpenCodePluginPath()
 				if err != nil {
 					return nil, nil, err

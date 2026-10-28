@@ -72,9 +72,8 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 	}
 	if cfg != nil && cfg.HarnessConfigured(ai.HarnessOpenCode) {
 		pluginPaths := cfg.OpenCodePlugins
-		// Earlier builds did not record where the plugin went.
-		if pluginPath, err := ai.DefaultOpenCodePluginPath(); err == nil && len(pluginPaths) == 0 {
-			pluginPaths = []string{pluginPath}
+		if len(pluginPaths) == 0 {
+			pluginPaths, _ = ai.FindOpenCodePlugins(cfg.ConfiguredSkillInstallPaths())
 		}
 		for _, pluginPath := range pluginPaths {
 			_, statErr := os.Stat(pluginPath)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -28,6 +29,31 @@ func DefaultOpenCodePluginPath() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Abs(filepath.Join(openCodeConfigDirectory(home), "plugins", OpenCodePluginName+".js"))
+}
+
+// FindOpenCodePlugins returns the Phase-owned plugins in the current OpenCode
+// root and in the roots holding skillPaths, or the current root's plugin path
+// when there are none. Earlier builds recorded only the skill paths.
+func FindOpenCodePlugins(skillPaths []string) ([]string, error) {
+	current, err := DefaultOpenCodePluginPath()
+	if err != nil {
+		return nil, err
+	}
+	candidates := []string{current}
+	for _, skillPath := range skillPaths {
+		root := filepath.Dir(filepath.Dir(filepath.Dir(skillPath)))
+		candidates = append(candidates, filepath.Join(root, "plugins", OpenCodePluginName+".js"))
+	}
+	var found []string
+	for _, path := range candidates {
+		if payload, err := os.ReadFile(path); err == nil && isOwnedOpenCodePlugin(string(payload)) && !slices.Contains(found, path) {
+			found = append(found, path)
+		}
+	}
+	if len(found) == 0 {
+		return []string{current}, nil
+	}
+	return found, nil
 }
 
 // openCodeConfigDirectory is the one global config root OpenCode loads:

@@ -302,6 +302,39 @@ func TestUninstallOpenCodePluginRemovesOwnedFiles(t *testing.T) {
 	}
 }
 
+func TestFindOpenCodePluginsReturnsOnlyOwnedPluginsBesideSkills(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	skill := func(configRoot string) string {
+		return filepath.Join(configRoot, "skills", AgentSkillName, "SKILL.md")
+	}
+	ownedPlugin := filepath.Join(root, "owned", "plugins", OpenCodePluginName+".js")
+	if _, err := InstallOpenCodePlugin(ownedPlugin, filepath.Join(root, "phase"), filepath.Join(root, "env.json")); err != nil {
+		t.Fatal(err)
+	}
+	foreignPlugin := filepath.Join(root, "foreign", "plugins", OpenCodePluginName+".js")
+	if err := os.MkdirAll(filepath.Dir(foreignPlugin), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(foreignPlugin, []byte("export const Foreign = async () => ({})\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	found, err := FindOpenCodePlugins([]string{skill(filepath.Join(root, "owned")), skill(filepath.Join(root, "foreign"))})
+	if err != nil || len(found) != 1 || found[0] != ownedPlugin {
+		t.Fatalf("found %v, %v; want only %s", found, err, ownedPlugin)
+	}
+	current, err := DefaultOpenCodePluginPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found, err := FindOpenCodePlugins([]string{skill(filepath.Join(root, "foreign"))}); err != nil || len(found) != 1 || found[0] != current {
+		t.Fatalf("found %v, %v; want the current root's %s", found, err, current)
+	}
+}
+
 func TestInstalledOpenCodePluginExportsOneDefaultDefinition(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test imports the plugin with a POSIX node invocation")
