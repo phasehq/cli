@@ -25,7 +25,7 @@ func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 
 	const durableToken = "durable-token"
 	const mintedSecret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const mintedFullToken = "pss_agent:v1:" + mintedSecret
+	const mintedFullToken = "pss_agent:v2:" + mintedSecret + ":" + mintedSecret + ":" + mintedSecret + ":" + mintedSecret
 	const sessionCredential = "session-credential"
 	session := SessionAuth{SessionUID: "session-123", Credential: SensitiveString(sessionCredential)}
 
@@ -595,7 +595,7 @@ func TestAuthenticationFromPhaseToken(t *testing.T) {
 		kind  AuthenticationType
 		token string
 	}{
-		{kind: AuthenticationAgent, token: "pss_agent:v1:" + lookup},
+		{kind: AuthenticationAgent, token: "pss_agent:v2:" + strings.Join(fullParts, ":")},
 		{kind: AuthenticationUser, token: "pss_user:v1:" + strings.Join(fullParts, ":")},
 		{kind: AuthenticationServiceAccount, token: "pss_service:v2:" + strings.Join(fullParts, ":")},
 	}
@@ -610,14 +610,14 @@ func TestAuthenticationFromPhaseToken(t *testing.T) {
 			}
 		})
 	}
-	if _, err := AuthenticationFromPhaseToken("pss_agent:v1:bad"); err == nil {
+	if _, err := AuthenticationFromPhaseToken("pss_agent:v2:bad"); err == nil {
 		t.Fatal("expected malformed token error")
 	}
-	if _, err := AuthenticationFromPhaseToken("pss_agent:v2:" + strings.Join(fullParts, ":")); err == nil {
+	if _, err := AuthenticationFromPhaseToken("pss_agent:v1:" + lookup); err == nil {
 		t.Fatal("expected unsupported Agent token version error")
 	}
-	if _, err := AuthenticationFromPhaseToken("pss_agent:v1:" + lookup + ":" + lookup); err == nil {
-		t.Fatal("expected Agent key-share token to be rejected")
+	if _, err := AuthenticationFromPhaseToken("pss_agent:v2:" + lookup); err == nil {
+		t.Fatal("expected Agent token without key shares to be rejected")
 	}
 	if _, err := AuthenticationFromPhaseToken("pss_user:v2:" + strings.Join(fullParts, ":")); err == nil {
 		t.Fatal("expected unsupported PAT version error")
