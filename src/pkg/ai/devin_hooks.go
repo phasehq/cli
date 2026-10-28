@@ -61,7 +61,7 @@ func InstallDevinHooks(configPath, phaseExecutable string) (DevinHooksInstall, e
 	if err != nil {
 		return installation, err
 	}
-	removePhaseDevinGroups(hooks, windowsExecutableForms(helperPath)...)
+	removePhaseDevinGroups(hooks, devinExecutableForms(helperPath)...)
 	for event, groups := range phaseDevinHooks(helperPath) {
 		for _, group := range groups {
 			payload, err := json.Marshal(group)
@@ -99,7 +99,7 @@ func UninstallDevinHooks(configPath string) error {
 	if err != nil {
 		return err
 	}
-	removePhaseDevinGroups(hooks, windowsExecutableForms(helperPath)...)
+	removePhaseDevinGroups(hooks, devinExecutableForms(helperPath)...)
 	hooksPayload, err := json.Marshal(hooks)
 	if err != nil {
 		return err
@@ -164,6 +164,12 @@ func shellCommand(arguments []string) string {
 		quoted[index] = quotePOSIXCommandArgument(argument)
 	}
 	return strings.Join(quoted, " ")
+}
+
+// devinExecutableForms lists the spellings of helperPath in a rendered hook,
+// from this build's renderer and from earlier ones.
+func devinExecutableForms(helperPath string) []string {
+	return append(windowsExecutableForms(helperPath), shellCommand([]string{helperPath}))
 }
 
 func removePhaseDevinGroups(hooks map[string][]json.RawMessage, helperPaths ...string) {

@@ -154,3 +154,36 @@ func TestDevinRefreshKeepsUserHandlersInPhaseGroups(t *testing.T) {
 		t.Fatalf("uninstall must drop only Phase handlers and their emptied groups: %s", payload)
 	}
 }
+
+func TestDevinCleanupMatchesAQuotedHelperPath(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "O'Brien")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, ".config", "devin", "config.json")
+	executable := filepath.Join(home, "phase")
+	if err := os.WriteFile(executable, []byte("phase"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shared, err := InstallSharedHookExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := InstallDevinHooks(configPath, shared.ExecutablePath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload, _ := os.ReadFile(configPath)
+	if got := strings.Count(string(payload), "__devin-hook"); got != 1 {
+		t.Fatalf("reinstall left %d SessionStart hooks: %s", got, payload)
+	}
+	if err := UninstallDevinHooks(configPath); err != nil {
+		t.Fatal(err)
+	}
+	if payload, _ = os.ReadFile(configPath); strings.Contains(string(payload), "__devin-") {
+		t.Fatalf("uninstall left Phase hooks behind: %s", payload)
+	}
+}
