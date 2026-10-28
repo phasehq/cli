@@ -1173,65 +1173,70 @@ func claudeRuntimeFailurePath(directory, generation string) string {
 	return filepath.Join(directory, "claude-runtime-"+generation+".error.json")
 }
 
+// claimClaudeRuntimeLock, updateClaudeRuntimeLockPID and
+// releaseClaudeRuntimeLock each run under an OS lock, so stale-owner recovery
+// can never hand ownership to two starters.
 func claimClaudeRuntimeLock(path, generation string) (bool, error) {
-	if existing, err := readClaudeRuntimeLock(path); err == nil {
-		if existing.PID > 0 && processIsAlive(existing.PID) {
-			return false, nil
+	claimed := false
+	err := withClaudeLeaseMutationLock(context.Background(), path, func() error {
+		existing, err := readClaudeRuntimeLock(path)
+		switch {
+		case err == nil:
+			if existing.PID > 0 && processIsAlive(existing.PID) {
+				return nil
+			}
+			if existing.PID == 0 && time.Since(existing.CreatedAt) < claudeHookStartTimeout {
+				return nil
+			}
+		case !errors.Is(err, os.ErrNotExist) && !abandonedClaudeRuntimeLock(path, err):
+			return err
 		}
-		if existing.PID == 0 && time.Since(existing.CreatedAt) < claudeHookStartTimeout {
-			return false, nil
-		}
-		_ = os.Remove(path)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
+		claimed = true
+		return writeOwnerOnlyJSON(path, claudeRuntimeLock{
+			Version: claudeRuntimeStateVersion, Generation: generation, CreatedAt: time.Now().UTC(),
+		})
+	})
+	return claimed && err == nil, err
+}
+
+// abandonedClaudeRuntimeLock reports a lock that cannot be parsed and is older
+// than any startup: an earlier build was interrupted while writing it.
+func abandonedClaudeRuntimeLock(path string, readErr error) bool {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) &&
+		!errors.As(readErr, &syntaxErr) && !errors.As(readErr, &typeErr) {
+		return false
 	}
-	lock := claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: generation, CreatedAt: time.Now().UTC(),
-	}
-	payload, err := json.Marshal(lock)
-	if err != nil {
-		return false, err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if _, err := file.Write(payload); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return false, err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return false, err
-	}
-	return true, nil
+	info, err := os.Lstat(path)
+	return err == nil && time.Since(info.ModTime()) > claudeHookStartTimeout
 }
 
 func updateClaudeRuntimeLockPID(path, generation string, pid int) error {
-	lock, err := readClaudeRuntimeLock(path)
-	if err != nil || lock.Generation != generation {
-		return errors.New("Phase AI runtime lock ownership changed")
-	}
-	lock.PID = pid
-	return writeOwnerOnlyJSON(path, lock)
+	return withClaudeLeaseMutationLock(context.Background(), path, func() error {
+		lock, err := readClaudeRuntimeLock(path)
+		if err != nil || lock.Generation != generation {
+			return errors.New("Phase AI runtime lock ownership changed")
+		}
+		lock.PID = pid
+		return writeOwnerOnlyJSON(path, lock)
+	})
 }
 
 func releaseClaudeRuntimeLock(path, generation string) error {
-	lock, err := readClaudeRuntimeLock(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if lock.Generation != generation {
-		return nil
-	}
-	return os.Remove(path)
+	return withClaudeLeaseMutationLock(context.Background(), path, func() error {
+		lock, err := readClaudeRuntimeLock(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil && !abandonedClaudeRuntimeLock(path, err) {
+			return err
+		}
+		if err == nil && lock.Generation != generation {
+			return nil
+		}
+		return os.Remove(path)
+	})
 }
 
 func removeClaudeStateIfGeneration(path, generation string) error {
@@ -1348,7 +1353,7 @@ func stopClaudeHookRuntime(ctx context.Context) error {
 		if errors.Is(lockErr, os.ErrNotExist) {
 			return nil
 		}
-		if lockErr != nil {
+		if lockErr != nil && !abandonedClaudeRuntimeLock(lockPath, lockErr) {
 			return lockErr
 		}
 		if lock.PID > 0 && processIsAlive(lock.PID) {

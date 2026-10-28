@@ -469,6 +469,79 @@ func TestClaudeLeaseFileLockIsReleasedWhenOwnerExits(t *testing.T) {
 	}
 }
 
+func TestClaudeRuntimeLockStaleRecoveryGrantsOneOwner(t *testing.T) {
+	directory := withClaudeHookRuntimeDirectory(t)
+	lockPath := filepath.Join(directory, claudeRuntimeLockFile)
+	if err := writeOwnerOnlyJSON(lockPath, claudeRuntimeLock{
+		Version: claudeRuntimeStateVersion, Generation: "generation-stale", CreatedAt: time.Now().Add(-time.Hour).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const claimers = 32
+	results := make(chan string, claimers)
+	start := make(chan struct{})
+	for index := range claimers {
+		go func() {
+			<-start
+			generation := fmt.Sprintf("generation-%d", index)
+			claimed, err := claimClaudeRuntimeLock(lockPath, generation)
+			switch {
+			case err != nil:
+				results <- "error: " + err.Error()
+			case claimed:
+				results <- generation
+			default:
+				results <- ""
+			}
+		}()
+	}
+	close(start)
+	var owners []string
+	for range claimers {
+		result := <-results
+		if strings.HasPrefix(result, "error: ") {
+			t.Fatal(result)
+		}
+		if result != "" {
+			owners = append(owners, result)
+		}
+	}
+	lock, err := readClaudeRuntimeLock(lockPath)
+	if err != nil || len(owners) != 1 || lock.Generation != owners[0] {
+		t.Fatalf("stale lock recovery granted owners %v; recorded %q err=%v", owners, lock.Generation, err)
+	}
+}
+
+func TestClaudeRuntimeLockRecoversAnInterruptedWrite(t *testing.T) {
+	directory := withClaudeHookRuntimeDirectory(t)
+	lockPath := filepath.Join(directory, claudeRuntimeLockFile)
+	writeEmptyLock := func(age time.Duration) {
+		t.Helper()
+		if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		modified := time.Now().Add(-age)
+		if err := os.Chtimes(lockPath, modified, modified); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEmptyLock(0)
+	if claimed, err := claimClaudeRuntimeLock(lockPath, "generation-new"); claimed || err == nil {
+		t.Fatalf("a lock still being written was replaced: claimed=%v err=%v", claimed, err)
+	}
+	writeEmptyLock(time.Hour)
+	if claimed, err := claimClaudeRuntimeLock(lockPath, "generation-new"); !claimed || err != nil {
+		t.Fatalf("an abandoned lock blocked recovery: claimed=%v err=%v", claimed, err)
+	}
+	writeEmptyLock(time.Hour)
+	if err := stopClaudeHookRuntime(context.Background()); err != nil {
+		t.Fatalf("stop could not clear an abandoned lock: %v", err)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("abandoned lock survived stop: %v", err)
+	}
+}
+
 func TestClaudeHeartbeatDoesNotModifyWatchedRuntimeState(t *testing.T) {
 	directory := withClaudeHookRuntimeDirectory(t)
 	statePath := filepath.Join(directory, claudeRuntimeStateFile)
