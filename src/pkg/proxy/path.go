@@ -21,12 +21,12 @@ func canonicalHTTPPath(value string) (string, error) {
 	}
 	rooted := "/" + strings.TrimPrefix(decoded, "/")
 	cleaned := path.Clean(rooted)
-	// S3 keeps dot segments and repeated slashes in object keys, so a path that
-	// would only match a rule once cleaned names a different object upstream.
+	// S3 keeps dot segments, repeated slashes and a trailing slash in object
+	// keys, so a rule matches the path as sent and never one cleaning changes.
 	if rooted != cleaned && (cleaned == "/" || rooted != cleaned+"/") {
 		return "", errors.New("non-canonical HTTP path")
 	}
-	return cleaned, nil
+	return rooted, nil
 }
 
 func globMatch(pattern, value string) bool {

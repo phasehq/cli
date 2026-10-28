@@ -48,4 +48,16 @@ func TestMatchHostRuleRefusesPathsThatOnlyMatchOnceCleaned(t *testing.T) {
 			t.Errorf("MatchHostRule(%q)=%t, want %t", requestPath, got, want)
 		}
 	}
+	// S3 keys "allowed" and "allowed/" are different objects.
+	for rulePath, requests := range map[string]map[string]bool{
+		"/allowed":  {"/allowed": true, "/allowed/": false},
+		"/allowed/": {"/allowed/": true, "/allowed": false},
+	} {
+		rule.Path = rulePath
+		for requestPath, want := range requests {
+			if got := MatchHostRule(rule, "bucket.s3.us-east-1.amazonaws.com", 443, requestPath); got != want {
+				t.Errorf("rule %q MatchHostRule(%q)=%t, want %t", rulePath, requestPath, got, want)
+			}
+		}
+	}
 }
