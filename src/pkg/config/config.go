@@ -57,7 +57,7 @@ type Config struct {
 }
 
 func LoadConfig() (*Config, error) {
-	data, err := os.ReadFile(ConfigFilePath)
+	data, err := readConfigFile(ConfigFilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +225,7 @@ type AIConfig struct {
 }
 
 func LoadAIConfig() *AIConfig {
-	data, err := os.ReadFile(AIConfigPath)
+	data, err := readConfigFile(AIConfigPath)
 	if err != nil {
 		return nil
 	}
@@ -411,6 +411,18 @@ func SaveAIConfig(cfg *AIConfig) error {
 		return err
 	}
 	return writeFileAtomically(AIConfigPath, data)
+}
+
+// readConfigFile retries a read that races writeFileAtomically: Windows refuses
+// to open the file for the instant its replacement is renamed over it.
+func readConfigFile(path string) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		data, err := os.ReadFile(path)
+		if err == nil || runtime.GOOS != "windows" || errors.Is(err, os.ErrNotExist) || attempt == 20 {
+			return data, err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // writeFileAtomically replaces path with one rename, so a concurrent reader
