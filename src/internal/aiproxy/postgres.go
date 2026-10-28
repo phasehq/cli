@@ -784,15 +784,24 @@ func pgToken(sql string, i int, backslashes bool) (word, text string, quoted boo
 			text, next = pgQuoted(sql, next, true)
 			return "", text, true, next
 		}
-		if word == "u" && strings.HasPrefix(sql[next:], "&'") {
+		if word == "u" && (strings.HasPrefix(sql[next:], "&'") || strings.HasPrefix(sql[next:], `&"`)) {
+			quote := sql[next+1]
 			text, next = pgQuoted(sql, next+1, false)
+			// UESCAPE takes any string constant but a U& one, which also keeps
+			// this lookahead from recursing.
 			escape, j := byte('\\'), pgSkipSpace(sql, next)
 			if len(sql) > j+7 && strings.EqualFold(sql[j:j+7], "uescape") && !pgIdentifierByte(sql[j+7], false) {
-				if j = pgSkipSpace(sql, j+7); j < len(sql) && sql[j] == '\'' {
-					if value, after := pgQuoted(sql, j, backslashes); len(value) == 1 {
-						escape, next = value[0], after
+				if j = pgSkipSpace(sql, j+7); j < len(sql) && sql[j]|0x20 != 'u' {
+					if _, value, quoted, after := pgToken(sql, j, backslashes); quoted {
+						next = after
+						if len(value) == 1 {
+							escape = value[0]
+						}
 					}
 				}
+			}
+			if quote == '"' {
+				return "", "", false, next
 			}
 			return "", pgUnicodeUnescape(text, escape), true, next
 		}

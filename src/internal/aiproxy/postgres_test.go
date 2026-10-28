@@ -414,6 +414,17 @@ func TestPostgresCredentialChangeStatements(t *testing.T) {
 			t.Errorf("pgCredentialChange(%q) = %q, want %q", sql, got, want)
 		}
 	}
+	// A DO body may follow a LANGUAGE clause that names the language in any
+	// identifier or string spelling.
+	for _, language := range []string{
+		"plpgsql", `"plpgsql"`, `U&"plpgsql"`, `u&"pl!0070gsql" UESCAPE '!'`, `U&"plpgsql" -- c` + "\r" + `UESCAPE $$!$$`,
+		"'plpgsql'", "E'plpgsql'", "$$plpgsql$$", `U&'pl!0070gsql' UESCAPE E'!'`,
+	} {
+		sql := "DO LANGUAGE " + language + " 'BEGIN CREATE ROLE agent; END'"
+		if got := pgCredentialChange(sql); got != "CREATE ROLE" {
+			t.Errorf("pgCredentialChange(%q) = %q, want %q", sql, got, "CREATE ROLE")
+		}
+	}
 	nested := "CREATE ROLE agent"
 	for _, tag := range []string{"$a$", "$b$", "$c$", "$d$", "$e$"} {
 		nested = "DO " + tag + nested + tag
