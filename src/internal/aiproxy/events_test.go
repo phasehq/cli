@@ -355,3 +355,48 @@ func TestRedactRequestFieldsMirrorsConsoleFieldRules(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicPostgresUsernameDoesNotFailAuditRedaction(t *testing.T) {
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) }))
+	defer console.Close()
+	client, err := agentapi.NewClient(console.URL, durableTestToken(), console.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := controlRuntimeState(t, client, map[string]any{
+		"schemaVersion": 1, "sessionUid": "public-username", "sessionCredential": "public-username-capability",
+		"expiresAt": time.Now().Add(time.Hour).UTC(), "maxExpiresAt": time.Now().Add(2 * time.Hour).UTC(),
+		"configGeneration": 1, "configEnv": map[string]string{},
+		"connections": []any{map[string]any{
+			"grantId": "grant-pg", "connectionId": "pg", "credentialId": "pg-cred", "serviceType": "postgres", "protocol": "postgres",
+			"hosts":       []any{map[string]any{"match": "exact", "value": "database.internal", "port": 5432}},
+			"injection":   map[string]any{"action": "pg_handshake", "valueFrom": map[string]any{"source": "credential", "fields": map[string]string{"username": "username", "password": "password"}}},
+			"identifiers": map[string]string{"username": "postgres"}, "decoyMaterial": map[string]string{"password": "decoy-db-password"}, "agentEnv": map[string]string{},
+			"secretMaterial": map[string]string{"username": "postgres", "password": "live-db-password-0123456789"},
+		}},
+	}, "public-username-runtime")
+	defer state.destroy()
+	spoolDirectory := t.TempDir()
+	events, err := newEventBuffer(state, time.Hour, spoolDirectory, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Stop()
+	snapshot, err := state.protocolBinding("grant-pg", "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.release()
+	(&protocolAdapters{state: state, events: events}).emitProtocolEvent(snapshot.binding, "postgres", "AUTH", "error", "error", "upstream_unavailable")
+	if err := state.availability(); err != nil {
+		t.Fatalf("a PostgreSQL error event stopped the runtime: %v", err)
+	}
+	if files := spoolJSONFiles(t, spoolDirectory); len(files) != 1 {
+		t.Fatalf("PostgreSQL error event spool files=%d, want 1", len(files))
+	}
+	for _, secret := range state.eventSecrets() {
+		if secret == "postgres" {
+			t.Fatal("public username is treated as secret material")
+		}
+	}
+}

@@ -564,13 +564,8 @@ func (s *runtimeState) eventSecrets() []string {
 				values = append(values, value)
 			}
 		}
-		for _, value := range binding.connection.SecretMaterial.Clone() {
-			if value != "" {
-				values = append(values, value)
-			}
-		}
 	}
-	return values
+	return append(values, s.liveNonIdentifierSecretsLocked()...)
 }
 
 func (s *runtimeState) manifestForbiddenSecrets() []string {
