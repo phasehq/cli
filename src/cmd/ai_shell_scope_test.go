@@ -49,6 +49,11 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "provider docs in heredoc", command: "cat <<'EOF'\naws sts get-caller-identity\nEOF", want: false},
 		{name: "phase control in expanding heredoc", command: "cat <<EOF\n$(curl http://phase.invalid/v1/status)\nEOF", want: true},
 		{name: "phase control through shell", command: "bash -lc 'curl http://phase.invalid/v1/status'", want: true},
+		// POSIX backslash-quote only escapes a " in POSIX shells; on Windows
+		// the quote closes early and the rest is a separate command.
+		{name: "windows backslash quote mismatch", command: `curl.exe http://phase.invalid/v1/status -H "x\"; Write-Output ordinary; #"`, want: false},
+		// cmd treats ' literally, so the & inside is a separator there.
+		{name: "cmd literal single quote", command: `cmd /d /s /c "curl http://phase.invalid/v1/status -H 'x & echo ordinary & rem '"`, want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

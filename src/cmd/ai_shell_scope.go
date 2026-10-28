@@ -405,7 +405,7 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 	words := make([]phaseShellWord, 0, 16)
 	var word strings.Builder
 	var quote rune
-	escaped, comment := false, false
+	escaped, comment, ambiguous := false, false, false
 	flush := func() {
 		if word.Len() != 0 {
 			words = append(words, phaseShellWord{value: word.String()})
@@ -432,6 +432,12 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 			} else if quote == '"' && character == '\\' {
 				if index+1 < len(characters) && (characters[index+1] == '$' || characters[index+1] == '`' ||
 					characters[index+1] == '"' || characters[index+1] == '\\' || characters[index+1] == '\n') {
+					// Only POSIX shells escape an embedded " this way; cmd and
+					// PowerShell close the string after the backslash, so the
+					// quoting cannot be proved plain across shells.
+					if characters[index+1] == '"' {
+						ambiguous = true
+					}
 					escaped = true
 				} else {
 					word.WriteRune(character)
@@ -479,7 +485,7 @@ func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
 		}
 	}
 	flush()
-	return words, quote == 0 && !escaped
+	return words, quote == 0 && !escaped && !ambiguous
 }
 
 // phaseCommandWords drops redirections, leading assignments, and command
@@ -524,8 +530,14 @@ func phaseInterpreterScript(executable string, words []string) (string, bool) {
 	case "cmd":
 		for index, argument := range arguments {
 			if flag := strings.ToLower(argument); flag == "/c" || flag == "/k" {
-				// cmd runs the rest of the line.
-				return phaseLiteralScript(strings.Join(arguments[index+1:], " "))
+				// cmd runs the rest of the line, treating ' as an ordinary
+				// character. Our tokenizer reads it as a POSIX quote, so a
+				// script carrying one cannot be proved plain; keep it ambient.
+				script := strings.Join(arguments[index+1:], " ")
+				if strings.ContainsRune(script, '\'') {
+					return "", false
+				}
+				return phaseLiteralScript(script)
 			}
 		}
 		return "", false
