@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -361,6 +362,11 @@ func (cfg *AIConfig) ClearHarnessInstallations() {
 func RecordOpenCodePlugin(path string) error {
 	cfg := LoadAIConfig()
 	if cfg == nil {
+		// Never replace an ai.json this build cannot read: redaction fails
+		// closed on it, and it may hold a newer CLI's settings.
+		if _, err := os.Stat(AIConfigPath); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("Phase AI configuration cannot be read")
+		}
 		cfg = &AIConfig{ProxyMode: AIProxyModeLocal}
 	}
 	if slices.Contains(cfg.OpenCodePlugins, path) {

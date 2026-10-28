@@ -202,6 +202,17 @@ func TestRecordOpenCodePluginKeepsTheSavedConfig(t *testing.T) {
 		len(cfg.OpenCodePlugins) != 2 || cfg.OpenCodePlugins[1] != second {
 		t.Fatalf("recording changed the saved config: %+v", cfg)
 	}
+
+	unreadable := []byte(`{"version":"99"}`)
+	if err := os.WriteFile(AIConfigPath, unreadable, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordOpenCodePlugin(second); err == nil {
+		t.Fatal("recording replaced an ai.json this build cannot read")
+	}
+	if payload, err := os.ReadFile(AIConfigPath); err != nil || string(payload) != string(unreadable) {
+		t.Fatalf("unreadable ai.json was changed: %q (%v)", payload, err)
+	}
 }
 
 func TestAIConfigDisabledStateRetainsWorkflow(t *testing.T) {
