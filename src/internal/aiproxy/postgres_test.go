@@ -398,10 +398,31 @@ func TestPostgresCredentialChangeStatements(t *testing.T) {
 		"SELECT $$CREATE ROLE example$$":                                         "",
 		"INSERT INTO documents(body) VALUES ($$CREATE ROLE example$$)":           "",
 		"INSERT INTO t VALUES (1) ON CONFLICT DO UPDATE SET b = $$CREATE ROLE$$": "",
+		"ALTER ROLE CURRENT_USER -- note\r PASSWORD 'x'":                         "ALTER ROLE ... PASSWORD",
+		"-- harmless\rALTER ROLE CURRENT_USER PASSWORD 'chosen'":                 "ALTER ROLE ... PASSWORD",
+		`SELECT 'x\''; ALTER ROLE app PASSWORD 'p'; --'`:                         "ALTER ROLE ... PASSWORD",
+		"DO 'BEGIN ALTER ROLE CURRENT_USER PASSWORD ''chosen''; END'":            "ALTER ROLE ... PASSWORD",
+		"DO 'BEGIN RAISE NOTICE ''--''; CREATE ROLE agent; END'":                 "CREATE ROLE",
+		"DO 'BEGIN ALTER ROLE app '\n'PASSWORD ''x''; END'":                      "ALTER ROLE ... PASSWORD",
+		`DO E'BEGIN \x41LTER ROLE app PASSWORD \'x\'; END'`:                      "ALTER ROLE ... PASSWORD",
+		`DO U&'BEGIN \0041LTER ROLE app PASSWORD ''x''; END'`:                    "ALTER ROLE ... PASSWORD",
+		"DO U&'BEGIN !0041LTER ROLE app PASSWORD ''x''; END' UESCAPE '!'":        "ALTER ROLE ... PASSWORD",
+		"CREATE FUNCTION f() AS 'BEGIN CREATE ROLE agent; END' LANGUAGE plpgsql": "CREATE ROLE",
+		"SELECT 'DO', 'CREATE ROLE example'":                                     "",
 	} {
-		if got := pgCredentialChange(sql, 0); got != want {
+		if got := pgCredentialChange(sql); got != want {
 			t.Errorf("pgCredentialChange(%q) = %q, want %q", sql, got, want)
 		}
+	}
+	nested := "CREATE ROLE agent"
+	for _, tag := range []string{"$a$", "$b$", "$c$", "$d$", "$e$"} {
+		nested = "DO " + tag + nested + tag
+		if got := pgCredentialChange(nested); got == "" {
+			t.Errorf("pgCredentialChange(%q) = %q", nested, got)
+		}
+	}
+	if got := pgCredentialChange(nested); got != pgNestedTooDeep {
+		t.Errorf("pgCredentialChange(%q) = %q, want %q", nested, got, pgNestedTooDeep)
 	}
 }
 
@@ -446,6 +467,7 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 		{'P', parse("CREATE ROLE agent LOGIN PASSWORD 'agent-chosen-password'"), true},
 		{'B', []byte("\x00s1\x00\x00\x00\x00\x01\x00\x00\x00\x017\x00\x00"), false},
 		{'P', parse("SELECT $1::int"), false},
+		{'Q', []byte("DO $a$DO $b$DO $c$DO $d$DO $e$SELECT 1$e$$d$$c$$b$$a$\x00"), true},
 	} {
 		go func() { _ = writePGMessage(clientPeer, step.kind, step.payload) }()
 		kind, payload, err := readPGMessage(upstreamPeer)
@@ -467,8 +489,8 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 		}
 	}
 	files := spoolJSONFiles(t, spoolDirectory)
-	if len(files) != 2 {
-		t.Fatalf("blocked statements recorded %d events, want 2", len(files))
+	if len(files) != 3 {
+		t.Fatalf("blocked statements recorded %d events, want 3", len(files))
 	}
 	for _, file := range files {
 		recorded, err := os.ReadFile(file)

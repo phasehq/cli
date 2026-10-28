@@ -697,72 +697,108 @@ func (a *protocolAdapters) refusePGCredentialChange(kind byte, payload []byte, b
 		end = len(payload) - start
 	}
 	end += start
-	operation := pgCredentialChange(string(payload[start:end]), 0)
+	operation := pgCredentialChange(string(payload[start:end]))
 	if operation == "" {
 		return payload
 	}
 	blocked := &phaseproxy.CredentialMintingBlock{Operation: "PostgreSQL " + operation}
+	message := blocked.Message()
+	if operation == pgNestedTooDeep {
+		message = "Phase blocked " + blocked.Operation + ": Phase reads no deeper into DO blocks and function bodies to rule out creating a role or setting a password."
+	}
 	a.emitProtocolEventWithDetail(binding, "postgres", "QUERY", "block", "denied", "credential_minting_blocked", map[string]any{"blocked_operation": blocked.Operation})
-	refusal := "DO $phase$BEGIN RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = '" + strings.ReplaceAll(blocked.Message(), "'", "''") + "'; END$phase$"
+	refusal := "DO $phase$BEGIN RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = '" + strings.ReplaceAll(message, "'", "''") + "'; END$phase$"
 	return slices.Concat(payload[:start], []byte(refusal), payload[end:])
 }
+
+// pgNestedTooDeep is the operation pgCredentialChange names for code that is
+// nested too deeply for it to read.
+const pgNestedTooDeep = "code nested more than 4 deep"
 
 // pgCredentialChange names the statement in sql that creates a role or sets a
 // role password. It also reads the code of DO blocks and function bodies, but
 // it is a best-effort guard: SQL assembled at run time (EXECUTE, format) gets past.
-func pgCredentialChange(sql string, depth int) string {
+func pgCredentialChange(sql string) string {
+	// Whether a backslash escapes in a quoted string depends on
+	// standard_conforming_strings, which the proxy does not see.
+	operation := pgScanCredentialChange(sql, 0, false)
+	if operation == "" && strings.Contains(sql, `\`) {
+		operation = pgScanCredentialChange(sql, 0, true)
+	}
+	return operation
+}
+
+func pgScanCredentialChange(sql string, depth int, backslashes bool) string {
 	var matcher pgRoleMatcher
 	for i := 0; i < len(sql); {
-		token, next := "", i+1
-		switch c := sql[i]; {
-		case c == ' ', c == '\t', c == '\n', c == '\r', c == '\f', c == '\v':
-			i++
-			continue
-		case strings.HasPrefix(sql[i:], "--"):
-			if end := strings.IndexByte(sql[i:], '\n'); end >= 0 {
-				i += end
-			} else {
-				i = len(sql)
+		word, text, quoted, next := pgToken(sql, i, backslashes)
+		if quoted && matcher.code {
+			if depth == 4 {
+				return pgNestedTooDeep
 			}
-			continue
-		case strings.HasPrefix(sql[i:], "/*"):
-			i = pgSkipComment(sql, i)
-			continue
-		case c == ';':
-			token = ";"
-		case c == '\'', c == '"':
-			next = pgSkipQuoted(sql, i, false)
-		case c == '$':
-			tag := pgDollarTag(sql[i:])
-			if tag == "" {
-				break
+			if operation := pgScanCredentialChange(text, depth+1, backslashes); operation != "" {
+				return operation
 			}
+		}
+		if operation := matcher.next(word); operation != "" {
+			return operation
+		}
+		i = next
+	}
+	return matcher.next(";")
+}
+
+// pgToken reads the token at or after sql[i] and returns the index just past
+// it: a keyword or identifier as a lower-cased word, ";" as a word, or a string
+// constant's value as text with quoted set.
+func pgToken(sql string, i int, backslashes bool) (word, text string, quoted bool, next int) {
+	i = pgSkipSpace(sql, i)
+	if i == len(sql) {
+		return "", "", false, i
+	}
+	switch c := sql[i]; {
+	case c == ';':
+		return ";", "", false, i + 1
+	case c == '\'':
+		text, next = pgQuoted(sql, i, backslashes)
+		return "", text, true, next
+	case c == '"':
+		_, next = pgQuoted(sql, i, false)
+		return "", "", false, next
+	case c == '$':
+		if tag := pgDollarTag(sql[i:]); tag != "" {
 			body := sql[i+len(tag):]
 			end := strings.Index(body, tag)
 			if end < 0 {
-				end = len(body)
+				return "", body, true, len(sql)
 			}
-			next = i + len(tag) + end + len(tag)
-			if depth < 4 && matcher.code {
-				if operation := pgCredentialChange(body[:end], depth+1); operation != "" {
-					return operation
+			return "", body[:end], true, i + len(tag) + end + len(tag)
+		}
+	case pgIdentifierByte(c, true):
+		next = i + 1
+		for next < len(sql) && pgIdentifierByte(sql[next], false) {
+			next++
+		}
+		word = strings.ToLower(sql[i:next])
+		if word == "e" && strings.HasPrefix(sql[next:], "'") {
+			text, next = pgQuoted(sql, next, true)
+			return "", text, true, next
+		}
+		if word == "u" && strings.HasPrefix(sql[next:], "&'") {
+			text, next = pgQuoted(sql, next+1, false)
+			escape, j := byte('\\'), pgSkipSpace(sql, next)
+			if len(sql) > j+7 && strings.EqualFold(sql[j:j+7], "uescape") && !pgIdentifierByte(sql[j+7], false) {
+				if j = pgSkipSpace(sql, j+7); j < len(sql) && sql[j] == '\'' {
+					if value, after := pgQuoted(sql, j, backslashes); len(value) == 1 {
+						escape, next = value[0], after
+					}
 				}
 			}
-		case pgIdentifierByte(c, true):
-			for next < len(sql) && pgIdentifierByte(sql[next], false) {
-				next++
-			}
-			token = strings.ToLower(sql[i:next])
-			if token == "e" && next < len(sql) && sql[next] == '\'' {
-				token, next = "", pgSkipQuoted(sql, next, true)
-			}
+			return "", pgUnicodeUnescape(text, escape), true, next
 		}
-		i = min(next, len(sql))
-		if operation := matcher.next(token); operation != "" {
-			return operation
-		}
+		return word, "", false, next
 	}
-	return matcher.next(";")
+	return "", "", false, i + 1
 }
 
 // pgRoleMatcher takes one statement's tokens in order: lower-cased words, ""
@@ -817,20 +853,138 @@ func pgDollarTag(sql string) string {
 	return ""
 }
 
-// pgSkipQuoted returns the index just past the quoted string at sql[start].
-func pgSkipQuoted(sql string, start int, backslashEscapes bool) int {
+// pgQuoted reads the quoted string or identifier at sql[start] and returns its
+// value and the index just past it. backslashes applies E string escapes.
+func pgQuoted(sql string, start int, backslashes bool) (string, int) {
 	quote := sql[start]
-	for i := start + 1; i < len(sql); i++ {
-		switch {
-		case backslashEscapes && sql[i] == '\\':
+	var value strings.Builder
+	for i := start + 1; i < len(sql); {
+		switch c := sql[i]; {
+		case c == quote && i+1 < len(sql) && sql[i+1] == quote:
+			value.WriteByte(quote)
+			i += 2
+		case c == quote:
+			next := pgContinuedString(sql, i+1)
+			if quote != '\'' || next == 0 {
+				return value.String(), i + 1
+			}
+			i = next
+		case c == '\\' && backslashes:
+			escaped, size := pgEscape(sql[i:])
+			value.WriteString(escaped)
+			i += size
+		default:
+			value.WriteByte(c)
 			i++
-		case sql[i] == quote && i+1 < len(sql) && sql[i+1] == quote:
-			i++
-		case sql[i] == quote:
-			return i + 1
 		}
 	}
-	return len(sql)
+	return value.String(), len(sql)
+}
+
+// pgContinuedString returns the index just past the quote that continues a
+// string closed before sql[i], or 0. The server joins strings separated only
+// by whitespace and -- comments that include a newline.
+func pgContinuedString(sql string, i int) int {
+	newline := false
+	for ; i < len(sql); i++ {
+		switch c := sql[i]; {
+		case c == '\n' || c == '\r':
+			newline = true
+		case c == ' ' || c == '\t' || c == '\f' || c == '\v':
+		case strings.HasPrefix(sql[i:], "--"):
+			end := strings.IndexAny(sql[i:], "\r\n")
+			if end < 0 {
+				return 0
+			}
+			i += end - 1
+		case c == '\'' && newline:
+			return i + 1
+		default:
+			return 0
+		}
+	}
+	return 0
+}
+
+// pgEscape decodes the backslash escape that starts s, as an E string does,
+// and returns its value and length.
+func pgEscape(s string) (string, int) {
+	if len(s) < 2 {
+		return "", len(s)
+	}
+	if i := strings.IndexByte("bfnrt", s[1]); i >= 0 {
+		return "\b\f\n\r\t"[i : i+1], 2
+	}
+	digits, base, start, width := "01234567", 8, 1, 3
+	switch s[1] {
+	case 'x':
+		digits, base, start, width = "0123456789abcdefABCDEF", 16, 2, 2
+	case 'u':
+		digits, base, start, width = "0123456789abcdefABCDEF", 16, 2, 4
+	case 'U':
+		digits, base, start, width = "0123456789abcdefABCDEF", 16, 2, 8
+	}
+	end := start
+	for end < len(s) && end-start < width && strings.IndexByte(digits, s[end]) >= 0 {
+		end++
+	}
+	if end == start {
+		return s[1:2], 2
+	}
+	code, _ := strconv.ParseUint(s[start:end], base, 32)
+	if s[1] == 'u' || s[1] == 'U' {
+		return string(rune(code)), end
+	}
+	return string([]byte{byte(code)}), end
+}
+
+// pgUnicodeUnescape decodes the escapes in the value of a U& string.
+func pgUnicodeUnescape(s string, escape byte) string {
+	var value strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != escape {
+			value.WriteByte(s[i])
+			continue
+		}
+		digits, width := s[i+1:], 4
+		if strings.HasPrefix(digits, "+") {
+			digits, width = digits[1:], 6
+			i++
+		} else if len(digits) > 0 && digits[0] == escape {
+			value.WriteByte(escape)
+			i++
+			continue
+		}
+		if len(digits) >= width {
+			if code, err := strconv.ParseUint(digits[:width], 16, 32); err == nil {
+				value.WriteRune(rune(code))
+				i += width
+			}
+		}
+	}
+	return value.String()
+}
+
+// pgSkipSpace returns the index of the first byte at or after i that is not
+// whitespace or a comment.
+func pgSkipSpace(sql string, i int) int {
+	for i < len(sql) {
+		switch {
+		case strings.IndexByte(" \t\n\r\f\v", sql[i]) >= 0:
+			i++
+		case strings.HasPrefix(sql[i:], "--"):
+			if end := strings.IndexAny(sql[i:], "\r\n"); end >= 0 {
+				i += end
+			} else {
+				i = len(sql)
+			}
+		case strings.HasPrefix(sql[i:], "/*"):
+			i = pgSkipComment(sql, i)
+		default:
+			return i
+		}
+	}
+	return i
 }
 
 // pgSkipComment returns the index just past the nestable comment at sql[start].
