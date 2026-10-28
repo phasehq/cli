@@ -155,3 +155,19 @@ func TestShellCommandMixesPhase(t *testing.T) {
 		}
 	}
 }
+
+// Hooks run a command automatically, with the Phase environment, when it is
+// Phase-managed and not mixed.
+func TestCmdCaretDoesNotHideACommandSeparator(t *testing.T) {
+	for _, command := range []string{
+		`cmd /d /s /c "curl http://phase.invalid/v1/status ^>& aws sts get-caller-identity"`,
+		`cmd /d /s /c "curl http://phase.invalid/v1/status ^<& aws sts get-caller-identity"`,
+		`cmd /d /s /c "curl http://phase.invalid/v1/status -o out^>& calc"`,
+		"curl http://phase.invalid/v1/status -o out^>& calc",
+		"curl http://phase.invalid/v1/status -o out^<& calc",
+	} {
+		if shellCommandRequiresPhase(command) && !shellCommandMixesPhase(command) {
+			t.Errorf("%q runs as a Phase call, but cmd's caret leaves its & a separator", command)
+		}
+	}
+}
