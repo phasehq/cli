@@ -336,7 +336,7 @@ func RedactAWSSigV4Response(response *http.Response, redactions []CredentialReda
 	response.Header.Del("Content-Length")
 	response.Header.Del("Content-MD5")
 	response.Header.Del("Digest")
-	response.Header.Del("ETag")
+	// ETag stays: it names the object version for conditional requests.
 	response.ContentLength = -1
 	body := response.Body
 	var outermost *exactReplacingReadCloser

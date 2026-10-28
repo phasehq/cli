@@ -601,3 +601,22 @@ func TestResignAWSSigV4AcceptsRepeatedOrdinarySignedHeaders(t *testing.T) {
 		assertSigV4Error(t, err, failure)
 	}
 }
+
+func TestRedactAWSSigV4ResponseKeepsETag(t *testing.T) {
+	const etag = `"5eb63bbbe01eeed093cb22bb8f5acdc3"`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Etag": {etag}, "Content-Length": {"11"}},
+		Body:       io.NopCloser(strings.NewReader("hello world")),
+	}
+	if err := RedactAWSSigV4Response(response, []CredentialRedaction{{Live: testLiveSecret, AgentVisible: testDecoySecret}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := response.Header.Get("ETag"); got != etag {
+		t.Fatalf("ETag = %q, want %q", got, etag)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != "hello world" {
+		t.Fatalf("body = %q, err = %v", body, err)
+	}
+}
