@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "sessionUid": "session-123",
+  "expiresAt": "2026-07-12T11:00:00Z",
+  "maxExpiresAt": "2026-07-13T09:00:00Z",
+  "configGeneration": 2,
+  "configEnv": {},
+  "connections": []
+}

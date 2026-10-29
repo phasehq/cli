@@ -21,6 +21,15 @@ import (
 // Create new Phase client. Return host and token
 func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 	if init {
+		if envToken := os.Getenv("PHASE_SERVICE_TOKEN"); strings.HasPrefix(envToken, "pss_agent:") {
+			return nil, fmt.Errorf("the active login is an Agent token and can only be used with phase ai commands")
+		}
+		if os.Getenv("PHASE_SERVICE_TOKEN") == "" {
+			if user, err := config.GetDefaultUser(); err == nil && user != nil &&
+				user.IsAgentPrincipal() {
+				return nil, fmt.Errorf("the active login is an Agent token and can only be used with phase ai commands")
+			}
+		}
 		creds, err := keyring.GetCredentials()
 		if err != nil {
 			return nil, err
@@ -36,8 +45,13 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 			return nil, fmt.Errorf("both pss and host must be provided when init is false")
 		}
 	}
+	if strings.HasPrefix(pss, "pss_agent:") {
+		return nil, fmt.Errorf("Agent tokens are scoped to phase ai commands and cannot access ordinary secrets APIs")
+	}
 
-	setUserAgent()
+	// Root initialization configures this once for CLI commands. Keep this call
+	// for direct package callers so NewPhase preserves its historical behavior.
+	ConfigureUserAgent()
 
 	p, err := sdk.New(pss, host, false)
 	if err != nil {
@@ -55,7 +69,10 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 	return p, nil
 }
 
-func setUserAgent() {
+// UserAgent returns the Phase CLI identity attached to every Console request.
+// Keeping the builder here gives both the legacy SDK client and the Agent API
+// client one canonical version, platform, user, host, and harness string.
+func UserAgent() string {
 	hostname, _ := os.Hostname()
 	username := "unknown"
 	if u, err := os.UserHomeDir(); err == nil {
@@ -70,8 +87,13 @@ func setUserAgent() {
 	if agent := ai.DetectAIAgent(); agent != "" {
 		ua += fmt.Sprintf(" (ai-agent/%s)", agent)
 	}
+	return ua
+}
 
-	network.SetUserAgent(ua)
+// ConfigureUserAgent installs the shared CLI identity in the Go SDK network
+// package. The root command invokes this once before any subcommand runs.
+func ConfigureUserAgent() {
+	network.SetUserAgent(UserAgent())
 }
 
 func Auth(p *sdk.Phase) error {

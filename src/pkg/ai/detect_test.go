@@ -1,6 +1,12 @@
 package ai
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/phasehq/cli/pkg/config"
+)
 
 func TestDetectAIAgent(t *testing.T) {
 	allKeys := []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE", "AGENT"}
@@ -34,5 +40,48 @@ func TestDetectAIAgent(t *testing.T) {
 				t.Fatalf("DetectAIAgent() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDetectAIAgentCommandPrefersChildExecutable(t *testing.T) {
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("CURSOR_AGENT", "")
+	t.Setenv("CODEX", "1")
+	t.Setenv("OPENCODE", "")
+	t.Setenv("AGENT", "")
+
+	for _, test := range []struct {
+		command []string
+		want    string
+	}{
+		{[]string{"/usr/local/bin/claude", "--print"}, "claude-code"},
+		{[]string{"/usr/local/bin/devin"}, "devin"},
+		{[]string{`C:\\Tools\\codex.exe`}, "codex"},
+		{[]string{"cursor-agent"}, "cursor"},
+		{[]string{"opencode"}, "opencode"},
+		{[]string{"unknown-harness"}, "codex"},
+		{nil, "codex"},
+	} {
+		if got := DetectAIAgentCommand(test.command); got != test.want {
+			t.Fatalf("DetectAIAgentCommand(%q) = %q, want %q", test.command, got, test.want)
+		}
+	}
+}
+
+func TestShouldRedactFailsClosedForAnUnreadableAIConfig(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	path := filepath.Join(t.TempDir(), "ai.json")
+	original := config.AIConfigPath
+	config.AIConfigPath = path
+	t.Cleanup(func() { config.AIConfigPath = original })
+
+	if ShouldRedact("sealed") {
+		t.Fatal("redacted without an ai.json")
+	}
+	if err := os.WriteFile(path, []byte(`{"version":"3","enab`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !ShouldRedact("sealed") || !ShouldRedact("secret") || ShouldRedact("config") {
+		t.Fatal("an unreadable ai.json must mask sealed and secret values")
 	}
 }

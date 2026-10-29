@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "matcherSchemaVersion": 1,
+  "kind": "phase.ai.capabilities",
+  "sessionUid": "session-123",
+  "services": [
+    {
+      "serviceType": "aws",
+      "displayName": "Amazon Web Services",
+      "credentialProviders": ["aws", "aws_assume_role"],
+      "clientMatchers": [
+        {"kind": "executable", "values": ["aws"]}
+      ],
+      "connectionIds": ["connection-aws"]
+    },
+    {
+      "serviceType": "postgres",
+      "displayName": "PostgreSQL",
+      "credentialProviders": ["postgres"],
+      "clientMatchers": [
+        {
+          "kind": "executable",
+          "values": [
+            "clusterdb",
+            "createdb",
+            "createuser",
+            "dropdb",
+            "dropuser",
+            "pg_basebackup",
+            "pg_dump",
+            "pg_dumpall",
+            "pg_isready",
+            "pg_restore",
+            "pgbench",
+            "psql",
+            "reindexdb",
+            "vacuumdb"
+          ]
+        },
+        {"kind": "uri_scheme", "values": ["postgres", "postgresql"]}
+      ],
+      "connectionIds": ["connection-postgres"]
+    }
+  ]
+}

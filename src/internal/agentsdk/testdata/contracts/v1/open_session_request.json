@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "workflow-123",
+  "idempotencyKey": "proxy-start-01J00000000000000000000000",
+  "client": {
+    "name": "phase-cli",
+    "version": "2.5.0",
+    "supportedSchemaVersions": [1],
+    "protocols": ["http", "postgres"],
+    "injectionActions": [
+      "set_header",
+      "replace_header",
+      "remove_header",
+      "set_param",
+      "set_path",
+      "replace_path_regex",
+      "aws_sigv4",
+      "pg_handshake"
+    ]
+  },
+  "harnessLabel": "claude-code"
+}

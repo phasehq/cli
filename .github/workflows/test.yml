@@ -38,3 +38,79 @@ jobs:
       - name: Build (smoke test)
         working-directory: src
         run: go build ./...
+
+  enable-smoke:
+    name: phase ai enable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: src/go.sum
+
+      - name: Build
+        working-directory: src
+        shell: bash
+        run: go build -o ../phase-cli${{ runner.os == 'Windows' && '.exe' || '' }} .
+
+      - name: Enable without touching the trust store
+        shell: bash
+        run: ./.github/scripts/ai-enable-smoke.sh ./phase-cli${{ runner.os == 'Windows' && '.exe' || '' }} no-trust
+
+      - name: Trust the CA in the per-user NSS database
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libnss3-tools
+          ./.github/scripts/ai-enable-smoke.sh ./phase-cli trust-nss
+
+      # The macOS keychain and the Windows user Root store need a consent
+      # dialog that a headless runner cannot show (the command blocks until
+      # the job times out), so those two trust paths are covered by the unit
+      # tests with a recorded command runner and by manual QA.
+
+  enable-containers:
+    name: phase ai enable (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: fedora:41
+            install: dnf -y -q install nss-tools
+          - image: debian:12
+            install: apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y libnss3-tools
+          - image: ubuntu:24.04
+            install: apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y libnss3-tools
+          - image: alpine:3.20
+            install: apk add -q nss-tools
+          - image: archlinux:latest
+            install: pacman -Sy --noconfirm --disable-sandbox nss
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: src/go.sum
+
+      - name: Build a static Linux binary
+        working-directory: src
+        run: GOOS=linux GOARCH=amd64 go build -o ../phase-cli .
+
+      - name: Enable inside a stock ${{ matrix.image }} container
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -e PHASE=/work/phase-cli -e INSTALL='${{ matrix.install }}' \
+            ${{ matrix.image }} sh /work/.github/scripts/ai-enable-container.sh
+

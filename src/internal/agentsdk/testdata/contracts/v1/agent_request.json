@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "request-123",
+  "grantId": "grant-aws",
+  "connectionId": "connection-aws",
+  "credentialId": "credential-aws",
+  "kind": "credential_update",
+  "credentialProvider": "aws",
+  "credentialName": "AWS - EC2, RDS, S3 full access",
+  "markdown": "Update AWS permissions",
+  "status": "pending",
+  "cooldown": true,
+  "createdAt": "2026-07-16T08:00:00Z",
+  "requestExpiresAt": "2026-07-16T09:00:00Z"
+}
