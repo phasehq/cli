@@ -24,9 +24,6 @@ func testToken(prefix string, version int, lookup string) string {
 	if lookup == "" {
 		lookup = strings.Repeat("a", 64)
 	}
-	if prefix == "pss_agent" {
-		return fmt.Sprintf("%s:v%d:%s", prefix, version, lookup)
-	}
 	return fmt.Sprintf("%s:v%d:%s:%s:%s:%s", prefix, version, lookup,
 		strings.Repeat("b", 64), strings.Repeat("c", 64), strings.Repeat("d", 64))
 }
@@ -54,7 +51,8 @@ func TestParseDurableTokenCompatibility(t *testing.T) {
 	for _, invalid := range []string{
 		"",
 		"pss_agent:v1:" + strings.Repeat("a:", 4) + "a",
-		"pss_agent:v2:" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64),
+		"pss_agent:v1:" + strings.Repeat("a", 64),
+		testToken("pss_agent", 2, ""),
 		"pss_user:v1:not-hex",
 	} {
 		if _, _, err := ParseDurableToken(invalid); err == nil {

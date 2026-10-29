@@ -387,8 +387,8 @@ func ServiceAccountAuthentication(token string) Authentication {
 
 // AuthenticationFromPhaseToken extracts the bearer lookup value from a full
 // Agent, Personal Access, or Service Account token without involving phase.New
-// or the secrets client. Agent tokens are opaque v1 bearer secrets. Personal
-// Access Tokens use v1 and Service Account tokens use v2.
+// or the secrets client. All three carry key shares; Agent and Personal Access
+// Tokens use v1, and Service Account tokens use v2.
 func AuthenticationFromPhaseToken(token string) (Authentication, error) {
 	parts := strings.Split(token, ":")
 	if len(parts) < 2 {
@@ -399,7 +399,7 @@ func AuthenticationFromPhaseToken(token string) (Authentication, error) {
 		if parts[1] != "v1" {
 			return Authentication{}, fmt.Errorf("agents: invalid Agent token version")
 		}
-		if len(parts) != 3 || !isHex64(parts[2]) {
+		if !validKeyShareToken(parts) {
 			return Authentication{}, fmt.Errorf("agents: invalid Phase token")
 		}
 		return AgentAuthentication(parts[2]), nil
