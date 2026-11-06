@@ -101,6 +101,36 @@ func New(workflowOverride string) (*Runtime, error) {
 	return &Runtime{Client: client, WorkflowID: workflowID}, nil
 }
 
+// NewForUp builds the runtime for `phase up`. It's a network feature, so it doesn't
+// depend on the `phase ai enable` setup, and it takes the same logins `phase ai run`
+// does: an Agent token, or a user login with a Workflow.
+func NewForUp(workflowOverride string) (*Runtime, error) {
+	host, err := config.GetDefaultUserHost()
+	if err != nil {
+		return nil, ErrAuthenticationRequired
+	}
+	token, err := keyring.GetCredentials()
+	if err != nil {
+		return nil, ErrAuthenticationRequired
+	}
+	client, err := clientForSavedLogin(host, token)
+	if err != nil {
+		return nil, err
+	}
+	if client.TokenType() == agentapi.TokenService {
+		return nil, errors.New("Phase Service tokens cannot use phase up; use a User or Agent token")
+	}
+	workflowID := workflowOverride
+	if client.TokenType() == agentapi.TokenAgent {
+		workflowID = ""
+	} else if workflowID == "" {
+		if aiConfig := config.LoadAIConfig(); aiConfig != nil {
+			workflowID = aiConfig.DefaultWorkflowID
+		}
+	}
+	return &Runtime{Client: client, WorkflowID: workflowID, HarnessLabel: "phase up"}, nil
+}
+
 func clientForSavedLogin(host, token string) (*agentapi.Client, error) {
 	if _, _, err := agentapi.ParseDurableToken(token); err != nil {
 		return nil, ErrAuthenticationRequired

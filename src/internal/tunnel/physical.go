@@ -1,0 +1,107 @@
+package tunnel
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/netip"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// With the whole machine captured, anything the engine sends has to leave by the real
+// interface, or it would come straight back into the tunnel. Pinning a socket to an
+// interface needs no privileges, and it's how other VPNs avoid the same loop.
+
+// Physical is the interface the engine's own traffic leaves by.
+var Physical = &PhysicalPath{}
+
+type PhysicalPath struct {
+	mu      sync.RWMutex
+	name    string
+	index   int
+	enabled bool
+}
+
+// Refresh follows the default route, and turns pinning on.
+func (p *PhysicalPath) Refresh() {
+	name, index := DefaultRouteInterface()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.enabled = true
+	if index != 0 {
+		p.name, p.index = name, index
+	}
+}
+
+// Watch follows the default route until ctx ends, so a move from Wi-Fi to Ethernet
+// takes effect on the next connection.
+func (p *PhysicalPath) Watch(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.Refresh()
+		}
+	}
+}
+
+// Current returns the interface, and whether pinning is on at all.
+func (p *PhysicalPath) Current() (name string, index int, enabled bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.name, p.index, p.enabled
+}
+
+var (
+	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
+	tailnetV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+// staysOnItsRoute is an address another interface is responsible for. It never reaches
+// the tunnel, so pinning it to the physical interface could only break it.
+func staysOnItsRoute(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	return addr.IsLoopback() || tailnetV4.Contains(addr) || tailnetV6.Contains(addr)
+}
+
+// Bind pins one socket that is about to reach address.
+func (p *PhysicalPath) Bind(address string, bind func(ipv6 bool, name string, index int) error) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil
+	}
+	addr, err := netip.ParseAddr(strings.SplitN(host, "%", 2)[0])
+	if err != nil || staysOnItsRoute(addr) {
+		return nil
+	}
+	name, index, enabled := p.Current()
+	if !enabled {
+		return nil
+	}
+	if index == 0 {
+		return errors.New("no network: there's no default route to leave by")
+	}
+	return bind(addr.Unmap().Is6(), name, index)
+}
+
+// Control is a net.Dialer control function.
+func (p *PhysicalPath) Control(_, address string, raw syscall.RawConn) error {
+	return p.Bind(address, func(ipv6 bool, name string, index int) error {
+		var bindErr error
+		if err := raw.Control(func(fd uintptr) { bindErr = bindSocket(int(fd), ipv6, name, index) }); err != nil {
+			return err
+		}
+		return bindErr
+	})
+}
+
+// Dialer reaches anything that isn't on this machine.
+func (p *PhysicalPath) Dialer(timeout time.Duration) *net.Dialer {
+	return &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second, Control: p.Control}
+}
