@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	sdkagents "github.com/phasehq/cli/internal/agentsdk"
 	"github.com/phasehq/cli/internal/airuntime"
 	"github.com/phasehq/cli/internal/remoteapi"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
@@ -70,13 +71,19 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request, r
 		return
 	}
 	switch {
+	case req.Method == http.MethodGet && path == "/v1/connections":
+		h.connections(w)
 	case req.Method == http.MethodGet && strings.HasPrefix(path, "/v1/connections/"):
-		id, ok := exactControlID(path, "/v1/connections/", "/environment")
+		if id, ok := exactControlID(path, "/v1/connections/", "/environment"); ok {
+			h.connectionEnvironment(w, req, id)
+			return
+		}
+		id, ok := exactControlID(path, "/v1/connections/", "")
 		if !ok {
 			writeControlError(w, http.StatusBadRequest, "invalid_connection_id", "The Connection ID is invalid.", false)
 			return
 		}
-		h.connectionEnvironment(w, req, id)
+		h.connection(w, id)
 	case req.Method == http.MethodGet && path == "/v1/status":
 		h.status(w)
 	case remote && req.Method == http.MethodGet && path == "/v1/bootstrap":
@@ -125,6 +132,8 @@ func publicControlLinks() remoteapi.ControlLinks {
 		ListRequests:          phaseproxy.ControlURL + "/v1/requests",
 		CancelRequest:         phaseproxy.ControlURL + "/v1/requests/{requestId}/cancel",
 		ConnectionEnvironment: phaseproxy.ControlURL + "/v1/connections/{connectionId}/environment",
+		Connections:           phaseproxy.ControlURL + "/v1/connections",
+		Connection:            phaseproxy.ControlURL + "/v1/connections/{connectionId}",
 		Capabilities:          phaseproxy.ControlURL + "/v1/capabilities",
 		Status:                phaseproxy.ControlURL + "/v1/status",
 		Context:               phaseproxy.ControlURL + "/v1/context",
@@ -249,11 +258,15 @@ func (h *controlHandler) createRequest(w http.ResponseWriter, req *http.Request)
 	request.ConnectionID = strings.TrimSpace(request.ConnectionID)
 	request.CredentialID = strings.TrimSpace(request.CredentialID)
 	request.Markdown = strings.TrimSpace(request.Markdown)
+	request.Title = strings.TrimSpace(request.Title)
+	request.Action = sdkagents.NormalizeRequestAction(request.Action)
+	// The action is what a member reviews, so a request that carries one may
+	// leave the justification out; it is then forwarded as an empty string.
 	if (request.SchemaVersion != 0 && request.SchemaVersion != agentapi.SchemaVersion) ||
-		request.Markdown == "" || len(request.Markdown) > 16<<10 ||
+		(request.Markdown == "" && request.Action == nil) || len(request.Markdown) > 16<<10 ||
 		(request.DedupKey != "" && !controlIdentifier.MatchString(request.DedupKey)) ||
 		!validCreateRequest(request) {
-		writeControlError(w, http.StatusBadRequest, "invalid_control_request", "Use setup with serviceType or credential_update with connectionId and credentialId. credentialProvider, credentialName, markdown, and an optional dedupKey are required.", false)
+		writeControlError(w, http.StatusBadRequest, "invalid_control_request", "Use setup with serviceType or credential_update with connectionId and credentialId; credentialProvider, credentialName, markdown, and an optional dedupKey are required. Or send an action of a known type with version 1 under its request kind; an action never carries a secret value.", false)
 		return
 	}
 	response, statusCode, err := h.state.client.CreateRequestWithStatus(req.Context(), request, h.state.currentBackendCredential())
@@ -275,6 +288,12 @@ func validCreateRequest(request agentapi.CreateRequestRequest) bool {
 	if request.SchemaVersion != 0 && request.SchemaVersion != agentapi.SchemaVersion {
 		return false
 	}
+	if !sdkagents.ValidRequestTitle(request.Title) {
+		return false
+	}
+	if request.Action != nil {
+		return validActionRequest(request)
+	}
 	if len(request.CredentialProvider) > 64 || !controlIdentifier.MatchString(request.CredentialProvider) ||
 		request.CredentialName == "" || request.CredentialName != strings.TrimSpace(request.CredentialName) ||
 		len(request.CredentialName) > 64 || strings.IndexFunc(request.CredentialName, unicode.IsControl) >= 0 {
@@ -290,6 +309,29 @@ func validCreateRequest(request agentapi.CreateRequestRequest) bool {
 	default:
 		return false
 	}
+}
+
+// validActionRequest covers a request that proposes a change to a custom
+// Connection. The action stays opaque apart from its type, version and the
+// rule that it carries no secret value, so a member the Console adds later is
+// forwarded untouched. The packaged-service members are optional beside an
+// action and keep their usual limits when present.
+func validActionRequest(request agentapi.CreateRequestRequest) bool {
+	if sdkagents.ValidateRequestAction(sdkagents.RequestKind(request.Kind), request.Action) != nil {
+		return false
+	}
+	for _, identifier := range []string{request.CredentialProvider, request.ServiceType} {
+		if identifier != "" && (len(identifier) > 64 || !controlIdentifier.MatchString(identifier)) {
+			return false
+		}
+	}
+	for _, identifier := range []string{request.ConnectionID, request.CredentialID} {
+		if identifier != "" && !controlIdentifier.MatchString(identifier) {
+			return false
+		}
+	}
+	return request.CredentialName == strings.TrimSpace(request.CredentialName) && len(request.CredentialName) <= 64 &&
+		strings.IndexFunc(request.CredentialName, unicode.IsControl) < 0
 }
 
 func (h *controlHandler) pollRequest(w http.ResponseWriter, req *http.Request, requestID string) {
@@ -410,6 +452,11 @@ func (h *controlHandler) finishRequestWithin(req *http.Request, response *agenta
 		return response, nil
 	}
 	response.PollURL = ""
+	// A custom Connection is its own credential, so a request about one may
+	// name only the Connection.
+	if response.CredentialID == "" && len(response.Action) > 0 {
+		response.CredentialID = response.ConnectionID
+	}
 	if response.Kind == "credential_update" && strings.EqualFold(response.Status, "approved") {
 		if !controlIdentifier.MatchString(response.CredentialID) ||
 			!controlIdentifier.MatchString(response.ConnectionID) || !controlIdentifier.MatchString(response.GrantID) {
@@ -440,6 +487,25 @@ func (h *controlHandler) finishRequestWithin(req *http.Request, response *agenta
 		}
 		response.RuntimeAction = agentapi.RequestRuntimeActionRetry
 	}
+	if isConnectionChangeRequest(response.Kind) && strings.EqualFold(response.Status, "approved") {
+		if response.RuntimeAction != "" && response.RuntimeAction != agentapi.RequestRuntimeActionRestartRequired &&
+			response.RuntimeAction != agentapi.RequestRuntimeActionRetry {
+			return nil, errors.New("Phase returned an invalid runtime action for an approved Connection change request")
+		}
+		// The proxy decides what the approval means for this runtime. A change
+		// that leaves the Agent's environment alone, or a grant that is simply
+		// gone, is applied to the running session by this refresh; anything
+		// else needs a fresh session. A removed Connection may already have
+		// left with an earlier refresh, which is the same outcome.
+		if _, err := h.state.refreshConfig(req.Context()); err == nil {
+			response.RuntimeAction = agentapi.RequestRuntimeActionRetry
+		} else if errors.Is(err, airuntime.ErrSessionReprovisionRequired) {
+			response.RuntimeAction = agentapi.RequestRuntimeActionRestartRequired
+		} else {
+			h.handleConfigRefreshFailure(err)
+			return nil, errors.Join(errApprovedRequestRefreshFailed, err)
+		}
+	}
 	if isSetupRequest(response.Kind) && strings.EqualFold(response.Status, "approved") {
 		if !controlIdentifier.MatchString(response.CredentialID) ||
 			!controlIdentifier.MatchString(response.ConnectionID) ||
@@ -449,6 +515,16 @@ func (h *controlHandler) finishRequestWithin(req *http.Request, response *agenta
 		if response.RuntimeAction != "" && response.RuntimeAction != agentapi.RequestRuntimeActionRestartRequired &&
 			response.RuntimeAction != agentapi.RequestRuntimeActionRetry {
 			return nil, errors.New("Phase returned an invalid runtime action for an approved setup request")
+		}
+		// A new custom Connection that exports nothing is served by the
+		// running session as soon as the proxy has its configuration. Any
+		// other new grant changes the Agent's environment and is left to a
+		// fresh session, as before.
+		if len(response.Action) > 0 && !h.state.hasBindingTarget(response.GrantID, response.ConnectionID, response.CredentialID) {
+			if _, err := h.state.refreshConfig(req.Context()); err != nil && !errors.Is(err, airuntime.ErrSessionReprovisionRequired) {
+				h.handleConfigRefreshFailure(err)
+				return nil, errors.Join(errApprovedRequestRefreshFailed, err)
+			}
 		}
 		if h.state.hasBindingTarget(response.GrantID, response.ConnectionID, response.CredentialID) {
 			response.RuntimeAction = agentapi.RequestRuntimeActionRetry
@@ -507,7 +583,7 @@ func validApprovalURL(rawURL, requestID, requestKind string) bool {
 	if rawURL == "" || rawURL != strings.TrimSpace(rawURL) || !controlIdentifier.MatchString(requestID) {
 		return false
 	}
-	if !isSetupRequest(requestKind) && requestKind != "credential_update" {
+	if !isSetupRequest(requestKind) && requestKind != "credential_update" && !isConnectionChangeRequest(requestKind) {
 		return false
 	}
 	parsed, err := url.Parse(rawURL)
@@ -711,6 +787,12 @@ func writeControlError(w http.ResponseWriter, status int, code, message string, 
 }
 
 func isSetupRequest(kind string) bool { return kind == "setup" }
+
+// isConnectionChangeRequest covers the kinds that change a custom Connection
+// itself rather than its secret.
+func isConnectionChangeRequest(kind string) bool {
+	return kind == string(sdkagents.RequestConnectionUpdate) || kind == string(sdkagents.RequestConnectionRemoval)
+}
 
 func (h *controlHandler) listRequests(w http.ResponseWriter, req *http.Request) {
 	response, err := h.state.client.ListPendingRequests(req.Context(), h.state.currentBackendCredential())

@@ -111,7 +111,60 @@ Content-Type: application/json
 
 `credential_update` must not include `serviceType`. Base the proposal on the provider error and the human's requested operation. Ask for the narrowest practical provider permission; do not claim Phase can edit the third-party account itself.
 
-Only `setup` and `credential_update` are valid request kinds. Do not send a session ID, credential values, matchers, or fields not shown above. `relatedRequestId` may link a credential update to an earlier request when useful.
+Without an `action` (next section), only `setup` and `credential_update` are valid request kinds. Do not send a session ID, credential values, matchers, or fields not shown above. `relatedRequestId` may link a credential update to an earlier request when useful.
+
+## Custom HTTP Connections
+
+A member can define a Connection for any HTTP service Phase has no packaged Integration for: which hosts and paths, and where the secret goes (a header, Basic auth, or a query parameter). Its `serviceType` is `http`. Call the service normally. If the request carries nothing at the configured place, the proxy adds the live credential; if it carries the decoy from the environment, the proxy swaps it. Any other value there is refused.
+
+Read your Connections from the proxy. The answer is served locally and never contains a secret or a decoy:
+
+```bash
+curl --fail --silent --show-error http://phase.invalid/v1/connections
+curl --fail --silent --show-error http://phase.invalid/v1/connections/<connection-id>
+```
+
+Each entry has `id`, `name`, `serviceType`, and `state` (`ready`, `expired`, or `unavailable`, with a `stateReason` when its value cannot be used). An `http` Connection also has its full `definition`, `valueRevision`, and `keyVersion`.
+
+You never change a Connection yourself, and you can never supply a secret value. Propose the change as an `action` on a request; a member reviews it in the Console and enters any secret there. The `kind` must match the action:
+
+| To | `kind` | `action` |
+| --- | --- | --- |
+| propose a new Connection | `setup` | `{"type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "<name>", "definition": {…}}` |
+| propose a change | `connection_update` | `{"type": "agent_connection.update", "version": 1, "connectionId": "<id>", "name": "<optional new name>", "definition": {…}}` |
+| ask for a new secret | `credential_update` | `{"type": "agent_connection.secret_update", "version": 1, "connectionId": "<id>"}` |
+| ask to remove it from this Workflow | `connection_removal` | `{"type": "agent_connection.remove", "version": 1, "connectionId": "<id>"}` |
+
+```http
+POST http://phase.invalid/v1/requests
+Content-Type: application/json
+
+{
+  "kind": "setup",
+  "title": "Connect the Example API",
+  "markdown": "The task reads invoices from the Example API.",
+  "action": {
+    "type": "agent_connection.create",
+    "version": 1,
+    "serviceType": "http",
+    "name": "Example API",
+    "definition": {
+      "specVersion": 1,
+      "hosts": [{"match": "exact", "value": "api.example.com", "port": 443, "path": "/v1/*"}],
+      "fields": [{"name": "token", "kind": "secret", "source": {"type": "sealed"}, "env": "EXAMPLE_API_KEY"}],
+      "injections": [{"type": "header", "name": "Authorization", "prefix": "Bearer ", "field": "token", "whenAbsent": "attach"}]
+    }
+  }
+}
+```
+
+- The action is what the member reviews. A `title` (at most 120 characters) and a `markdown` reason are welcome but not required.
+- Send the whole proposed `definition`, never a patch. To change a Connection, start from the definition `/v1/connections/<connection-id>` returns and change only what the task needs. Ask for the narrowest hosts and paths.
+- An injection `type` is `header` (`name`, optional `prefix`), `query` (`name`), or `basic` (`usernameField` names an `identifier` field that carries its `value`; `field` names the secret). `whenAbsent` is `attach` or `block`. The Console validates the definition and says what to correct.
+- A `secret` field says where a value goes and never contains it. A request that puts a `value` on anything but an `identifier` field is refused before it leaves this machine. Never put a secret in a title, a reason, or a name, and never ask the human to paste one into chat.
+- A changed host list makes the member enter the secret again; that is expected.
+- The credential travels only over HTTPS. A plain `http://` request to the Connection is refused unless its definition sets `"allowPlainHttp": true`; propose that only for a service with no HTTPS endpoint.
+- After a member replaces a secret, the proxy picks it up within about 15 seconds, or right after the service answers 401 or 403. To fetch it immediately, send an empty `POST http://phase.invalid/v1/refresh`, then retry once.
 
 ## Show the Console link and wait
 
@@ -125,9 +178,11 @@ curl --fail --silent --show-error 'http://phase.invalid/v1/requests/request-456?
 
 Keep using the same request while it is pending. A denied response may include `resolutionNote`; surface it to the user. Resume pending work with `GET http://phase.invalid/v1/requests`. Cancel only when the user explicitly asks, using an empty JSON object at `POST http://phase.invalid/v1/requests/{requestId}/cancel`.
 
-An approved `setup` returns `credentialId`, `connectionId`, `grantId`, and normally `runtimeAction: "restart_required"`. The lifecycle helper can recycle its proxy runtime; retry the explicit `phase ai exec` operation as a new tool call. With `phase ai run`, ask the human to relaunch it.
+An approved `setup` returns `credentialId`, `connectionId`, `grantId`, and normally `runtimeAction: "restart_required"`. The lifecycle helper can recycle its proxy runtime; retry the explicit `phase ai exec` operation as a new tool call. With `phase ai run`, ask the human to relaunch it. The exception is a new custom Connection that exports no environment variable: the running session serves it at once and the approved `setup` returns `retry`.
 
-An approved `credential_update` hot-swaps live material and revision when the Agent-visible plan is unchanged and returns `runtimeAction: "retry"`. If identifiers, decoys, routes, or process environment changed, it returns `restart_required`. Do not call the refresh endpoint or re-inject environment values yourself.
+An approved `credential_update` hot-swaps live material and revision when the Agent-visible plan is unchanged and returns `runtimeAction: "retry"`. If identifiers, decoys, routes, or process environment changed, it returns `restart_required`. Do not re-inject environment values yourself; the refresh endpoint is only for the custom Connections described above.
+
+An approved `connection_update` or `connection_removal` is normally applied to the running session and returns `retry`: use the new host or path straight away. It returns `restart_required` only when the change alters what the Agent's environment carries, such as an identifier or an exported variable name.
 
 ## Sensitive manifest contract
 

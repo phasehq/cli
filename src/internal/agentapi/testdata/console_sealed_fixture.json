@@ -1,0 +1,28 @@
+{
+  "comment": "Test vector made with the Console's Python primitives; every value is random test data.",
+  "agentToken": "pss_agent:v1:4f1893ba95d7fa5db269b59e8ac9472c329806fd44efd541470c79cc7b40745a:d7640d934bf7a7be90563741767522836fd9124b640871b50a454afc92becf14:7bca85dd2b6dc167465d4e6cd698e44021b4265157db48f9543e6b06a99f0da8:05d614cb6096059ae5837b05ac3d7bfcb45e3dfda8964df447d7a473bfb1feaf",
+  "wrappedKeyShare": "c833f2b576beefca870fb159fc31a61e2d2500ea1165a4146bed68017f8b12065e7268c5697ee5c0e4d0f3d7411c7eb3cf63acb42d442cabdb13ddad72c6f65cb2376bfc6f2ba290293e87736e88befd312d72eb03fbac79e0688a19d6818e3556452dc67a123b55",
+  "sealedMaterial": {
+    "version": 1,
+    "keyVersion": 1,
+    "publicKey": "402c2bccf1139e9be5b010535e18a663dc960504c6214be49bcb4cfa779db45a",
+    "ciphertext": "ph:v1:8d34fc6b425f8e104f0a8132e2d109da72e4ae40fa580392ea8718989d838c72:1IsLZa3BBtITSqb4VD9LdGYIVHWYWKNrtfNAA55REn9LNV1OM78QXZYMOsetNeytM2M2alGQm95tRyOArar4zoVF3TFRckgHpSpYSGKCE43GNWDwAmBSKBCfXVaptIQ3CRdx8Y6ep/tBw8NQF/KxWchvUW8hOFpzyEJDkVpMLCCAT/5LRWP/PRL6lQQwY7S2sQ9MobQfuGQZZhNO1TaOq+ytwb+yDE3OUNRjMygQu3+UAY58Zr/2gMIDeLi+JZVib/Ty8LrH6RziVqmbrNw8A8oqkgs9+Tek1a2I+xk3Wy75T8RUeLLkJUPrcn4mxihC9At/nj2tTv1Tj7lS",
+    "wrappedKey": "ph:v1:724104c87626a12c1c4170aab611ad8342d06a92bb95fa8bc2c8d430f799a630:NE+StXYmcem0aLzqI3hT4kYjrs/5oFSLkDmGiVjdGIntW1WMN9+0AERsb7hMrutpYGvZ4rTt4CowfUdpCCV4GX0no2w4AjwyRgA+hbI2bz3slvI6c3hN8wkCugCg96F/yFRLDN7LqZc="
+  },
+  "hosts": [
+    {
+      "match": "exact",
+      "value": "api.example.com",
+      "port": 443,
+      "path": "/v1/*"
+    },
+    {
+      "match": "suffix",
+      "value": "example.org"
+    }
+  ],
+  "expectedFields": {
+    "token": "fixture-live-value-0001",
+    "password": "fixture-live-value-0002"
+  }
+}

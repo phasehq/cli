@@ -528,3 +528,223 @@ func (s *memoryPrivateKeyStore) Set(service, user, value string) error {
 	s.values[service+"/"+user] = value
 	return nil
 }
+
+type listInjectionEngine struct{ countingServeEngine }
+
+func (listInjectionEngine) Capabilities() EngineCapabilities {
+	return EngineCapabilities{
+		Protocols: []string{"http"}, InjectionActions: []string{"set_header", "basic_auth"},
+		Features: []string{agentapi.FeatureInjectionList, agentapi.FeatureWhenAbsent, agentapi.FeatureSealedMaterial},
+	}
+}
+
+// sealed_material is advertised only by a login the Agent key can be rebuilt
+// from. Every other login keeps receiving values the Console resolved.
+func TestOpenAdvertisesSealedMaterialOnlyWithAnAgentToken(t *testing.T) {
+	keyShares := ":" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
+	tests := []struct {
+		name     string
+		token    string
+		engine   Engine
+		features string
+	}{
+		{name: "Agent token", token: "pss_agent:v1" + keyShares, engine: listInjectionEngine{}, features: `["injection_list","when_absent","sealed_material"]`},
+		{name: "Personal Access Token", token: "pss_user:v1" + keyShares, engine: listInjectionEngine{}, features: `["injection_list","when_absent"]`},
+		{name: "Service Account token", token: "pss_service:v2" + keyShares, engine: listInjectionEngine{}, features: `["injection_list","when_absent"]`},
+		{name: "engine without features", token: "pss_agent:v1" + keyShares, engine: countingServeEngine{}, features: `[]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var client struct {
+				Features         json.RawMessage `json:"features"`
+				InjectionActions []string        `json:"injectionActions"`
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				var body struct {
+					Client json.RawMessage `json:"client"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if err := json.Unmarshal(body.Client, &client); err != nil {
+					t.Error(err)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"schemaVersion": 1, "sessionUid": "session-features"})
+			}))
+			defer server.Close()
+			apiClient, err := agentapi.NewClient(server.URL, test.token, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime := &Runtime{Client: apiClient, WorkflowID: "workflow-1"}
+			if _, err := runtime.open(context.Background(), test.engine.Capabilities()); err != nil {
+				t.Fatal(err)
+			}
+			if string(client.Features) != test.features {
+				t.Fatalf("features = %s, want %s", client.Features, test.features)
+			}
+			if len(client.InjectionActions) != len(test.engine.Capabilities().InjectionActions) {
+				t.Fatalf("injection actions = %v", client.InjectionActions)
+			}
+		})
+	}
+}
+
+func customEnvironmentConnection(t *testing.T, id, environmentName, decoy string) agentapi.Connection {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"grantId": "grant-" + id, "connectionId": id, "credentialId": id, "credentialName": id, "credentialProvider": "http",
+		"serviceType": "http", "protocol": "http",
+		"hosts": []any{map[string]any{"match": "exact", "value": id + ".example.test", "port": 443}},
+		"injections": []any{map[string]any{
+			"action": "set_header", "name": "Authorization", "valueFormat": "Bearer {value}",
+			"valueFrom": map[string]any{"source": "credential", "field": "token"}, "whenAbsent": "attach",
+		}},
+		"identifiers": map[string]string{}, "decoyMaterial": map[string]string{"token": decoy},
+		"configEnv": map[string]string{}, "agentEnv": map[string]string{environmentName: decoy},
+		"environmentBindings": []any{map[string]any{
+			"name": environmentName, "action": "set", "source": "decoy", "sourceField": "token", "sensitive": true, "systemManaged": false,
+		}},
+		"secretMaterial": map[string]string{"token": "live-" + id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connection agentapi.Connection
+	if err := json.Unmarshal(payload, &connection); err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+// Custom HTTP Connections share one service type but are different services,
+// so each exports its own decoy. Only a name two of them disagree on is left
+// for explicit per-Connection selection.
+func TestCustomConnectionsEachExportTheirEnvironment(t *testing.T) {
+	plan := func(connections ...agentapi.Connection) map[string]string {
+		t.Helper()
+		session := &ProxySession{Config: &agentapi.OpenSessionResponse{SessionConfig: agentapi.SessionConfig{
+			ConfigEnv: map[string]string{}, Connections: connections,
+		}}}
+		environment, err := session.ProviderProcessEnvironment()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return environment.Set
+	}
+	billing := customEnvironmentConnection(t, "billing", "BILLING_API_KEY", "decoy-billing-0123456789")
+	search := customEnvironmentConnection(t, "search", "SEARCH_API_KEY", "decoy-search-0123456789")
+	if set := plan(billing, search); set["BILLING_API_KEY"] != "decoy-billing-0123456789" || set["SEARCH_API_KEY"] != "decoy-search-0123456789" {
+		t.Fatalf("two custom Connections did not both export their decoys: %v", set)
+	}
+
+	clashing := customEnvironmentConnection(t, "clashing", "BILLING_API_KEY", "decoy-clashing-0123456789")
+	set := plan(billing, search, clashing)
+	if _, exported := set["BILLING_API_KEY"]; exported || set["SEARCH_API_KEY"] != "decoy-search-0123456789" {
+		t.Fatalf("a contested name was exported, or an uncontested one was dropped: %v", set)
+	}
+
+	// Packaged services are unchanged: two Connections of one service never
+	// pick a default identity.
+	first := customEnvironmentConnection(t, "first", "EXAMPLE_TOKEN", "decoy-first-0123456789")
+	second := customEnvironmentConnection(t, "second", "OTHER_TOKEN", "decoy-second-0123456789")
+	first.ServiceType, second.ServiceType = "github", "github"
+	if set := plan(first, second, search); len(set) != 1 || set["SEARCH_API_KEY"] == "" {
+		t.Fatalf("packaged Connections of one service exported a default identity: %v", set)
+	}
+}
+
+type capturingServeEngine struct {
+	countingServeEngine
+	served func(*ProxySession)
+}
+
+func (engine capturingServeEngine) Serve(_ context.Context, session *ProxySession) error {
+	engine.calls.Add(1)
+	engine.served(session)
+	return nil
+}
+
+// A custom Connection's value that collides with something the Agent can see
+// costs that Connection its material, not the Workflow its session. A
+// packaged value in the same position still stops the session before the
+// engine is reached.
+func TestRuntimeServesWhenOnlyACustomValueIsExposed(t *testing.T) {
+	const collidingValue = "member-entered-value-01"
+	sessionWith := func(connections ...any) map[string]any {
+		return map[string]any{
+			"schemaVersion": 1, "sessionUid": "session-exposed", "sessionCredential": "backend-capability",
+			"expiresAt": time.Now().Add(time.Hour).UTC(), "maxExpiresAt": time.Now().Add(2 * time.Hour).UTC(),
+			"configGeneration": 1, "configEnv": map[string]string{}, "connections": connections,
+		}
+	}
+	custom := map[string]any{
+		"grantId": "grant-custom", "connectionId": "connection-custom", "credentialId": "connection-custom",
+		"credentialName": "Example API", "credentialProvider": "http", "serviceType": "http", "protocol": "http",
+		"hosts": []any{map[string]any{"match": "exact", "value": "api.example.test", "port": 443}},
+		"injections": []any{map[string]any{
+			"action": "set_header", "name": "Authorization", "valueFormat": "Bearer {value}",
+			"valueFrom": map[string]any{"source": "credential", "field": "token"}, "whenAbsent": "attach",
+		}},
+		"identifiers": map[string]string{"account": "acct-" + collidingValue}, "decoyMaterial": map[string]string{"token": "sk-decoy-0123456789abcdef"},
+		"configEnv": map[string]string{}, "agentEnv": map[string]string{}, "environmentBindings": []any{},
+		"secretMaterial": map[string]string{"token": collidingValue},
+	}
+	packaged := map[string]any{
+		"grantId": "grant-pg", "connectionId": "connection-pg", "credentialId": "credential-pg",
+		"credentialName": "Postgres", "credentialProvider": "postgres", "serviceType": "postgres", "protocol": "postgres",
+		"hosts":     []any{map[string]any{"match": "exact", "value": "db.example", "port": 5432}},
+		"injection": map[string]any{"action": "pg_handshake"}, "identifiers": map[string]string{"username": "db-user"},
+		"decoyMaterial": map[string]string{"password": "pg-decoy-0123456789"}, "agentEnv": map[string]string{},
+		"configEnv": map[string]string{}, "environmentBindings": []any{},
+		"secretMaterial": map[string]string{"username": "db-user", "password": "pg-live-0123456789"},
+	}
+	serve := func(t *testing.T, payload map[string]any, served func(*ProxySession)) (error, int32) {
+		t.Helper()
+		console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions/") {
+				_ = json.NewEncoder(w).Encode(payload)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"schemaVersion": 1, "sessionUid": "session-exposed", "revokedAt": time.Now().UTC()})
+		}))
+		defer console.Close()
+		client, err := agentapi.NewClient(console.URL, "pss_user:v1:"+strings.Repeat("a", 64)+":"+strings.Repeat("b", 64)+":"+strings.Repeat("c", 64)+":"+strings.Repeat("d", 64), console.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var calls atomic.Int32
+		runtime := &Runtime{
+			Client: client, WorkflowID: "workflow-1",
+			CAStore: proxy.CAStore{Directory: t.TempDir(), Keyring: &memoryPrivateKeyStore{values: map[string]string{}}},
+		}
+		err = runtime.ServeManaged(context.Background(), capturingServeEngine{countingServeEngine: countingServeEngine{calls: &calls}, served: served})
+		return err, calls.Load()
+	}
+
+	err, calls := serve(t, sessionWith(custom, packaged), func(session *ProxySession) {
+		exposed, intact := session.Config.Connections[0], session.Config.Connections[1]
+		if exposed.MaterialFailure() != agentapi.MaterialFailureExposed || len(exposed.SecretMaterial.Clone()) != 0 {
+			t.Errorf("the exposed custom value reached the engine: %q", exposed.MaterialFailure())
+		}
+		if live, _ := intact.SecretMaterial.Get("password"); live != "pg-live-0123456789" {
+			t.Error("the packaged Connection lost its material")
+		}
+		if _, err := session.ProviderProcessEnvironment(); err != nil {
+			t.Errorf("the session environment no longer compiles: %v", err)
+		}
+	})
+	if err != nil || calls != 1 {
+		t.Fatalf("a custom value collision ended the session: calls=%d err=%v", calls, err)
+	}
+
+	leaking := map[string]any{}
+	for key, value := range packaged {
+		leaking[key] = value
+	}
+	leaking["identifiers"] = map[string]string{"username": "db-user", "note": "contains pg-live-0123456789"}
+	err, calls = serve(t, sessionWith(leaking), func(*ProxySession) {})
+	if !errors.Is(err, agentapi.ErrUnsafeAgentVisibleEnvironment) || calls != 0 || strings.Contains(err.Error(), "pg-live-0123456789") {
+		t.Fatalf("a packaged value collision reached the engine: calls=%d err=%v", calls, err)
+	}
+}

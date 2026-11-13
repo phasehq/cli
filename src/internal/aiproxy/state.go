@@ -48,6 +48,19 @@ type runtimeState struct {
 	// decoys is shared with the owning Engine so credential generations issued
 	// by earlier backend sessions of the same process stay translatable.
 	decoys *decoyHistory
+	// refreshRequests asks the monitor for one extra config refresh. It is fed
+	// only when an upstream refuses a custom Connection's credential.
+	refreshRequests      chan struct{}
+	rejectionMu          sync.Mutex
+	lastRejectionRefresh time.Time
+	// environmentHolds is supplied by the engine. It reports whether the
+	// process environment compiled for a refreshed configuration is already
+	// satisfied by the one this session started with; see replaceConfig.
+	environmentHolds func(*agentapi.SessionConfig) bool
+	// retiredEnvironment holds what custom Connections removed from the
+	// running session had exported. Those variables stay behind in processes
+	// that already started; they name decoys nothing accepts any more.
+	retiredEnvironment map[string]string
 
 	client *agentapi.Client
 	fatal  chan error
@@ -83,9 +96,33 @@ func newRuntimeStateWithCapability(session *airuntime.ProxySession, runtimeCapab
 		bindings:          bindings,
 		healthy:           true,
 		changed:           make(chan struct{}),
+		refreshRequests:   make(chan struct{}, 1),
 		client:            session.Client,
 		fatal:             make(chan error, 1),
 	}, nil
+}
+
+// upstreamRejectionRefreshInterval bounds the extra config refreshes a session
+// may trigger. Runtime API calls count against the plan rate limit.
+const upstreamRejectionRefreshInterval = 30 * time.Second
+
+// requestRefreshAfterRejection is called when an upstream answers 401 or 403
+// to a request carrying a custom Connection's credential: the value may have
+// been replaced in the Console since the last refresh. It asks the monitor
+// for one refresh, at most once per interval, and never waits for it.
+func (s *runtimeState) requestRefreshAfterRejection(now time.Time) bool {
+	s.rejectionMu.Lock()
+	defer s.rejectionMu.Unlock()
+	if !s.lastRejectionRefresh.IsZero() && now.Sub(s.lastRejectionRefresh) < upstreamRejectionRefreshInterval {
+		return false
+	}
+	select {
+	case s.refreshRequests <- struct{}{}:
+		s.lastRejectionRefresh = now
+		return true
+	default:
+		return false
+	}
 }
 
 func parseBindings(connections []agentapi.Connection) ([]*binding, error) {
@@ -108,20 +145,40 @@ func parseBindings(connections []agentapi.Connection) ([]*binding, error) {
 				return nil, fmt.Errorf("Agent binding %s: %w", connection.ConnectionID, err)
 			}
 		}
-		for _, role := range []string{"username", "password", "accessKeyId", "secretAccessKey", "sessionToken"} {
-			if _, status := agentapi.ResolveMaterial(connection.Injection.ValueFrom.Fields, role); status == agentapi.MaterialAmbiguous {
-				return nil, fmt.Errorf("Agent binding %s has an ambiguous credential role mapping", connection.ConnectionID)
+		for _, injection := range connection.EffectiveInjections() {
+			for _, role := range []string{"username", "password", "accessKeyId", "secretAccessKey", "sessionToken"} {
+				if _, status := agentapi.ResolveMaterial(injection.ValueFrom.Fields, role); status == agentapi.MaterialAmbiguous {
+					return nil, fmt.Errorf("Agent binding %s has an ambiguous credential role mapping", connection.ConnectionID)
+				}
+			}
+			switch injection.WhenAbsent {
+			case "", agentapi.WhenAbsentBlock, agentapi.WhenAbsentAttach:
+			default:
+				return nil, fmt.Errorf("Agent binding %s uses unsupported whenAbsent %q", connection.ConnectionID, injection.WhenAbsent)
 			}
 		}
+		listed := len(connection.Injections) > 0
 		switch connection.Protocol {
 		case "http":
-			switch connection.Injection.Action {
-			case "set_header", "replace_header", "remove_header", "set_param", "set_path", "replace_path_regex", "aws_sigv4":
-			default:
-				return nil, fmt.Errorf("Agent HTTP binding %s uses unsupported injection action %q", connection.ConnectionID, connection.Injection.Action)
+			// The single injection may repeat the first list entry for an older
+			// reader, but must never name a different finalizer. Request signing
+			// is a finalizer of its own and cannot be one entry of a list.
+			if listed && connection.Injection.Action != "" && connection.Injection.Action != connection.Injections[0].Action {
+				return nil, fmt.Errorf("Agent HTTP binding %s has conflicting injections", connection.ConnectionID)
+			}
+			for _, injection := range connection.EffectiveInjections() {
+				switch injection.Action {
+				case "set_header", "replace_header", "remove_header", "set_param", "set_path", "replace_path_regex", "basic_auth":
+					continue
+				case "aws_sigv4":
+					if !listed {
+						continue
+					}
+				}
+				return nil, fmt.Errorf("Agent HTTP binding %s uses unsupported injection action %q", connection.ConnectionID, injection.Action)
 			}
 		case "postgres":
-			if connection.Injection.Action != "pg_handshake" {
+			if listed || connection.Injection.Action != "pg_handshake" {
 				return nil, fmt.Errorf("Agent PostgreSQL binding %s has an invalid finalizer", connection.ConnectionID)
 			}
 			if connection.DecoyMaterial["password"] == "" {
@@ -411,12 +468,30 @@ func (s *runtimeState) replaceConfig(config *agentapi.SessionConfig) error {
 		}
 		return errors.New("Agent session refresh returned a stale generation")
 	}
-	if requiresEnvironmentReprovision(s.bindings, bindings, s.configEnv, config.ConfigEnv) {
+	change := classifyConfigChange(s.bindings, bindings, s.configEnv, config.ConfigEnv)
+	// Routing can still reach the Agent's environment: a host may fall under
+	// an inherited NO_PROXY entry, and a removal may free a variable name for
+	// another Connection. The engine compiles the environment to find out.
+	if !change.reprovision && change.reshaped && s.environmentHolds != nil && !s.environmentHolds(config) {
+		change.reprovision = true
+	}
+	if change.reprovision {
 		s.mu.Unlock()
 		for _, fresh := range bindings {
 			fresh.connection.SecretMaterial.Destroy()
 		}
 		return fmt.Errorf("%w: Agent-visible decoys, identifiers, adapters, or environment changed", airuntime.ErrSessionReprovisionRequired)
+	}
+	for _, removed := range change.removed {
+		if s.retiredEnvironment == nil {
+			s.retiredEnvironment = make(map[string]string)
+		}
+		for name, value := range removed.connection.ConfigEnv {
+			s.retiredEnvironment[name] = value
+		}
+		for name, value := range removed.connection.AgentEnv.Clone() {
+			s.retiredEnvironment[name] = value
+		}
 	}
 	oldBindings := s.bindings
 	s.bindings = bindings
@@ -456,13 +531,6 @@ func (s *runtimeState) statusConnections(now time.Time) []remoteapi.StatusConnec
 
 	connections := make([]remoteapi.StatusConnection, 0, len(s.bindings))
 	for _, candidate := range s.bindings {
-		decision := candidate.authorizationDecision(now)
-		state := "unavailable"
-		if decision.allowed {
-			state = "ready"
-		} else if decision.code == "agent_credential_expired" {
-			state = "expired"
-		}
 		connections = append(connections, remoteapi.StatusConnection{
 			ConnectionID:       candidate.connection.ConnectionID,
 			Name:               candidate.connection.ConnectionName,
@@ -472,38 +540,114 @@ func (s *runtimeState) statusConnections(now time.Time) []remoteapi.StatusConnec
 			CredentialRevision: candidate.connection.CredentialRevision,
 			ServiceType:        candidate.connection.ServiceType,
 			Protocol:           candidate.connection.Protocol,
-			State:              state,
+			State:              candidate.printableState(now),
 			ExpiresAt:          candidate.connection.CredentialExpiresAt,
 		})
 	}
 	return connections
 }
 
+// printableState is the state of a Connection in this proxy: ready, expired
+// (the credential expiry passed) or unavailable (not authorized, or its sealed
+// value could not be opened).
+func (b *binding) printableState(now time.Time) string {
+	decision := b.authorizationDecision(now)
+	switch {
+	case decision.code == "agent_credential_expired":
+		return "expired"
+	case !decision.allowed || b.connection.MaterialUnavailable():
+		return "unavailable"
+	default:
+		return "ready"
+	}
+}
+
 func requiresEnvironmentReprovision(oldBindings, newBindings []*binding, oldConfigEnv, newConfigEnv map[string]string) bool {
-	if !equalStringMap(oldConfigEnv, newConfigEnv) || len(oldBindings) != len(newBindings) {
-		return true
+	return classifyConfigChange(oldBindings, newBindings, oldConfigEnv, newConfigEnv).reprovision
+}
+
+// configChange says how a refreshed configuration relates to the running one.
+type configChange struct {
+	// reprovision: the session must be recycled, because what the Agent
+	// process was given changed or a packaged service changed shape.
+	reprovision bool
+	// reshaped: custom HTTP Connections changed their routing or injections,
+	// were removed, or were added without exporting anything, with the
+	// Agent-visible environment left as it was.
+	reshaped bool
+	removed  []*binding
+}
+
+// classifyConfigChange keeps the rule that a running process can never be
+// handed a different environment: any change to identifiers, decoys, exported
+// variables, or a new grant, needs a fresh session. Packaged services also
+// recycle when their hosts, configuration or injection change. A custom HTTP
+// Connection is built to be reshaped by approved requests, so its hosts,
+// definition, injections and plain-HTTP setting may change, and its grant may
+// go away, while the session keeps running. One that exports nothing may also
+// be added: the Agent's processes are given nothing new, the proxy only starts
+// serving it.
+func classifyConfigChange(oldBindings, newBindings []*binding, oldConfigEnv, newConfigEnv map[string]string) configChange {
+	if !equalStringMap(oldConfigEnv, newConfigEnv) {
+		return configChange{reprovision: true}
 	}
 	oldByGrant := make(map[string]*binding, len(oldBindings))
 	for _, candidate := range oldBindings {
 		oldByGrant[candidate.connection.GrantID] = candidate
 	}
+	var change configChange
+	kept := make(map[string]struct{}, len(newBindings))
 	for _, fresh := range newBindings {
 		old := oldByGrant[fresh.connection.GrantID]
 		if old == nil {
-			return true
+			if !exportsNothing(fresh.connection) {
+				return configChange{reprovision: true}
+			}
+			change.reshaped = true
+			continue
 		}
+		kept[fresh.connection.GrantID] = struct{}{}
 		left, right := old.connection, fresh.connection
 		if left.ConnectionID != right.ConnectionID || left.CredentialID != right.CredentialID ||
 			left.Protocol != right.Protocol || left.ServiceType != right.ServiceType || left.CredentialProvider != right.CredentialProvider || !reflect.DeepEqual(left.ConfigEnv, right.ConfigEnv) ||
-			!reflect.DeepEqual(left.Hosts, right.Hosts) || !reflect.DeepEqual(left.ConnectionConfig, right.ConnectionConfig) ||
-			!reflect.DeepEqual(left.Injection, right.Injection) ||
 			!equalStringMap(left.Identifiers, right.Identifiers) || !equalStringMap(left.DecoyMaterial, right.DecoyMaterial) ||
 			!equalStringMap(left.AgentEnv.Clone(), right.AgentEnv.Clone()) ||
 			!reflect.DeepEqual(left.EnvironmentBindings, right.EnvironmentBindings) {
-			return true
+			return configChange{reprovision: true}
+		}
+		if !reflect.DeepEqual(left.Hosts, right.Hosts) || !reflect.DeepEqual(left.ConnectionConfig, right.ConnectionConfig) ||
+			!reflect.DeepEqual(left.Injection, right.Injection) || !equalInjections(left.Injections, right.Injections) ||
+			left.AllowPlainHTTP != right.AllowPlainHTTP {
+			if right.ServiceType != agentapi.CustomHTTPServiceType {
+				return configChange{reprovision: true}
+			}
+			change.reshaped = true
 		}
 	}
-	return false
+	for _, old := range oldBindings {
+		if _, present := kept[old.connection.GrantID]; present {
+			continue
+		}
+		if old.connection.ServiceType != agentapi.CustomHTTPServiceType {
+			return configChange{reprovision: true}
+		}
+		change.reshaped = true
+		change.removed = append(change.removed, old)
+	}
+	return change
+}
+
+// exportsNothing reports whether a custom HTTP Connection contributes no
+// variable to the Agent's process environment.
+func exportsNothing(connection agentapi.Connection) bool {
+	return connection.ServiceType == agentapi.CustomHTTPServiceType && connection.Protocol == "http" &&
+		len(connection.ConfigEnv) == 0 && len(connection.AgentEnv.Clone()) == 0 && len(connection.EnvironmentBindings) == 0
+}
+
+// equalInjections treats an absent list and an empty one alike, since both
+// mean the Connection uses its single injection.
+func equalInjections(left, right []agentapi.Injection) bool {
+	return (len(left) == 0 && len(right) == 0) || reflect.DeepEqual(left, right)
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
@@ -524,6 +668,22 @@ func equalStringMap(left, right map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// setEnvironmentCheck is called once by the engine, before it serves traffic.
+func (s *runtimeState) setEnvironmentCheck(holds func(*agentapi.SessionConfig) bool) {
+	s.mu.Lock()
+	s.environmentHolds = holds
+	s.mu.Unlock()
+}
+
+// retiredEnvironmentValue returns what a removed custom Connection exported
+// under name, if anything.
+func (s *runtimeState) retiredEnvironmentValue(name string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	value, retired := s.retiredEnvironment[name]
+	return value, retired
 }
 
 func (s *runtimeState) setUnhealthy() {
@@ -622,7 +782,8 @@ func discoverConnectionMatchesRuntime(discover agentapi.DiscoverConnection, runt
 		discover.ServiceType == runtime.ServiceType && discover.Protocol == runtime.Protocol &&
 		reflect.DeepEqual(discover.Hosts, runtime.Hosts) &&
 		reflect.DeepEqual(discover.ConnectionConfig, runtime.ConnectionConfig) && reflect.DeepEqual(discover.ConfigEnv, runtime.ConfigEnv) && discover.CredentialID == runtime.CredentialID && discover.CredentialName == runtime.CredentialName && discover.CredentialProvider == runtime.CredentialProvider && discover.CredentialRevision == runtime.CredentialRevision && discover.MaterialGeneration == runtime.MaterialGeneration &&
-		reflect.DeepEqual(discover.Injection, runtime.Injection) && discover.OnRefresh == runtime.OnRefresh &&
+		reflect.DeepEqual(discover.Injection, runtime.Injection) && equalInjections(discover.Injections, runtime.Injections) &&
+		discover.AllowPlainHTTP == runtime.AllowPlainHTTP && discover.OnRefresh == runtime.OnRefresh &&
 		equalStringMap(discover.Identifiers, runtime.Identifiers) &&
 		equalStringMap(discover.DecoyMaterial, runtime.DecoyMaterial) &&
 		equalStringMap(discover.AgentEnv, runtime.AgentEnv.Clone()) &&

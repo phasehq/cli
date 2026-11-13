@@ -197,16 +197,18 @@ func proxyOnlyCredentialField(connection Connection, field string) bool {
 	if _, status := ResolveMaterial(connection.DecoyMaterial, field); status != MaterialMissing {
 		return true
 	}
-	if sameMaterialField(connection.Injection.ValueFrom.Field, field) {
-		return true
-	}
-	for _, role := range []string{"accessKeyId", "secretAccessKey", "sessionToken", "password"} {
-		mapped, status := ResolveMaterial(connection.Injection.ValueFrom.Fields, role)
-		if status == MaterialAmbiguous {
+	for _, injection := range connection.EffectiveInjections() {
+		if sameMaterialField(injection.ValueFrom.Field, field) {
 			return true
 		}
-		if status == MaterialFound && sameMaterialField(mapped, field) {
-			return true
+		for _, role := range []string{"accessKeyId", "secretAccessKey", "sessionToken", "password"} {
+			mapped, status := ResolveMaterial(injection.ValueFrom.Fields, role)
+			if status == MaterialAmbiguous {
+				return true
+			}
+			if status == MaterialFound && sameMaterialField(mapped, field) {
+				return true
+			}
 		}
 	}
 	return false
@@ -228,7 +230,15 @@ func sameMaterialField(left, right string) bool {
 // value containing proxy-only live credential material. Errors never include
 // the offending environment value or credential.
 func ValidateAgentVisibleEnvironment(configEnv map[string]string, connections []Connection) error {
-	forbidden := ProxyOnlyCredentialValues(connections)
+	if agentVisibleValueContains(configEnv, connections, ProxyOnlyCredentialValues(connections)) {
+		return ErrUnsafeAgentVisibleEnvironment
+	}
+	return nil
+}
+
+// agentVisibleValueContains reports whether any value the Agent process can
+// see, in the session or in any of its Connections, contains a forbidden one.
+func agentVisibleValueContains(configEnv map[string]string, connections []Connection, forbidden []string) bool {
 	containsForbidden := func(environment map[string]string) bool {
 		for _, value := range environment {
 			for _, secret := range forbidden {
@@ -240,15 +250,36 @@ func ValidateAgentVisibleEnvironment(configEnv map[string]string, connections []
 		return false
 	}
 	if containsForbidden(configEnv) {
-		return ErrUnsafeAgentVisibleEnvironment
+		return true
 	}
 	for _, connection := range connections {
 		if containsForbidden(connection.ConfigEnv) || containsForbidden(connection.AgentEnv.Clone()) ||
 			containsForbidden(connection.Identifiers) || containsForbidden(connection.DecoyMaterial) {
-			return ErrUnsafeAgentVisibleEnvironment
+			return true
 		}
 	}
-	return nil
+	return false
+}
+
+// withholdExposedCustomMaterial keeps one member-entered value from taking a
+// whole session down. A packaged service whose live value shows up in an
+// Agent-visible value still fails the session in ValidateAgentVisibleEnvironment.
+// A custom HTTP Connection in that position only loses its own material: it
+// becomes unavailable and every other Connection keeps working.
+func withholdExposedCustomMaterial(config *SessionConfig) {
+	for index := range config.Connections {
+		connection := &config.Connections[index]
+		if connection.ServiceType != CustomHTTPServiceType {
+			continue
+		}
+		live := ProxyOnlyCredentialValues([]Connection{*connection})
+		if len(live) == 0 || !agentVisibleValueContains(config.ConfigEnv, config.Connections, live) {
+			continue
+		}
+		connection.SecretMaterial.Destroy()
+		connection.SecretMaterial = SecretMaterial{}
+		connection.materialFailure = MaterialFailureExposed
+	}
 }
 
 type EnvironmentBindingAction string
@@ -414,12 +445,21 @@ func validEnvironmentName(name string) bool {
 	return true
 }
 
+// Client features advertised when a session is opened. The Console refuses a
+// session whose granted Connections need one the client did not list.
+const (
+	FeatureInjectionList  = string(sdkagents.FeatureInjectionList)
+	FeatureWhenAbsent     = string(sdkagents.FeatureWhenAbsent)
+	FeatureSealedMaterial = string(sdkagents.FeatureSealedMaterial)
+)
+
 type ClientCapabilities struct {
 	Name                    string   `json:"name"`
 	Version                 string   `json:"version"`
 	SupportedSchemaVersions []int    `json:"supportedSchemaVersions"`
 	Protocols               []string `json:"protocols"`
 	InjectionActions        []string `json:"injectionActions"`
+	Features                []string `json:"features"`
 }
 
 // IdentityResource is non-secret display metadata for an Agent-scoped
@@ -462,6 +502,14 @@ type ValueFrom struct {
 	Fields map[string]string `json:"fields"`
 }
 
+// Values of Injection.WhenAbsent: what the proxy does when a request carries
+// nothing at the injection point. An empty value means block, which is how
+// every packaged service behaves.
+const (
+	WhenAbsentAttach = "attach"
+	WhenAbsentBlock  = "block"
+)
+
 type Injection struct {
 	Action          string    `json:"action"`
 	Name            string    `json:"name,omitempty"`
@@ -473,6 +521,7 @@ type Injection struct {
 	PathReplacement string    `json:"pathReplacement,omitempty"`
 	Pattern         string    `json:"pattern,omitempty"`
 	Replacement     string    `json:"replacement,omitempty"`
+	WhenAbsent      string    `json:"whenAbsent,omitempty"`
 }
 
 // ConnectionAuthorization is the backend's versioned, policy-free allow
@@ -484,6 +533,12 @@ type ConnectionAuthorization struct {
 	State      string `json:"state"`
 }
 
+// Connection is one granted Connection of a session. A packaged service has a
+// single Injection; a custom HTTP Connection carries Injections instead (see
+// EffectiveInjections). SecretMaterial holds the live value for both lanes: the
+// Console sends it resolved, or the client fills it in memory once it has
+// opened SealedMaterial. Unless AllowPlainHTTP is set, a custom HTTP
+// Connection's value is never put on a plain-HTTP request.
 type Connection struct {
 	GrantID             string                  `json:"grantId"`
 	ConnectionID        string                  `json:"connectionId"`
@@ -500,13 +555,45 @@ type Connection struct {
 	ConnectionConfig    map[string]any          `json:"connectionConfig,omitempty"`
 	ConfigEnv           map[string]string       `json:"configEnv,omitempty"`
 	Injection           Injection               `json:"injection"`
+	Injections          []Injection             `json:"injections,omitempty"`
 	OnRefresh           string                  `json:"onRefresh,omitempty"`
 	Identifiers         map[string]string       `json:"identifiers"`
 	DecoyMaterial       map[string]string       `json:"decoyMaterial"`
 	AgentEnv            AgentEnvironment        `json:"agentEnv"`
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
 	SecretMaterial      SecretMaterial          `json:"secretMaterial"`
+	SealedMaterial      *SealedMaterial         `json:"sealedMaterial,omitempty"`
+	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
+
+	// materialFailure is set when the client withheld this Connection's value.
+	materialFailure string
+}
+
+// CustomHTTPServiceType is the service type of a member-defined HTTP
+// Connection. Packaged services keep their own service types.
+const CustomHTTPServiceType = sdkagents.CustomHTTPServiceType
+
+// EffectiveInjections returns what the proxy applies to a request: the list
+// when the payload carries one, otherwise the single packaged-service
+// injection.
+func (c Connection) EffectiveInjections() []Injection {
+	if len(c.Injections) > 0 {
+		return c.Injections
+	}
+	return []Injection{c.Injection}
+}
+
+// PrimaryInjectionAction names the Connection's first injection for events
+// and credential-family detection.
+func (c Connection) PrimaryInjectionAction() string {
+	return c.EffectiveInjections()[0].Action
+}
+
+// AgentKey carries the server's wrapped share of the Agent's key exchange
+// private key. It is useless without the matching Agent token.
+type AgentKey struct {
+	WrappedKeyShare SensitiveString `json:"wrappedKeyShare"`
 }
 
 type SessionConfig struct {
@@ -517,6 +604,7 @@ type SessionConfig struct {
 	ConfigGeneration int               `json:"configGeneration"`
 	ConfigEnv        map[string]string `json:"configEnv"`
 	Connections      []Connection      `json:"connections"`
+	AgentKey         *AgentKey         `json:"agentKey,omitempty"`
 }
 
 type OpenSessionResponse struct {
@@ -544,12 +632,14 @@ type DiscoverConnection struct {
 	CredentialExpiresAt *time.Time              `json:"credentialExpiresAt,omitempty"`
 	ConnectionConfig    map[string]any          `json:"connectionConfig,omitempty"`
 	ConfigEnv           map[string]string       `json:"configEnv,omitempty"`
-	Injection           Injection               `json:"injection"`
+	Injection           Injection               `json:"injection,omitzero"`
+	Injections          []Injection             `json:"injections,omitempty"`
 	OnRefresh           string                  `json:"onRefresh,omitempty"`
 	Identifiers         map[string]string       `json:"identifiers"`
 	DecoyMaterial       map[string]string       `json:"decoyMaterial"`
 	AgentEnv            map[string]string       `json:"agentEnv"`
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
+	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
 }
 
@@ -594,17 +684,22 @@ type RevokeResponse struct {
 	RevokedAt     time.Time `json:"revokedAt"`
 }
 
+// CreateRequestRequest asks a member for something. Action is the proposal for
+// a custom Connection, forwarded as opaque, versioned JSON; it never holds a
+// secret value. Beside an action the packaged-service members are optional.
 type CreateRequestRequest struct {
-	SchemaVersion      int    `json:"schemaVersion,omitempty"`
-	Kind               string `json:"kind"`
-	ConnectionID       string `json:"connectionId,omitempty"`
-	CredentialID       string `json:"credentialId,omitempty"`
-	CredentialProvider string `json:"credentialProvider"`
-	CredentialName     string `json:"credentialName"`
-	ServiceType        string `json:"serviceType,omitempty"`
-	Markdown           string `json:"markdown"`
-	DedupKey           string `json:"dedupKey,omitempty"`
-	RelatedRequestID   string `json:"relatedRequestId,omitempty"`
+	SchemaVersion      int             `json:"schemaVersion,omitempty"`
+	Kind               string          `json:"kind"`
+	Title              string          `json:"title,omitempty"`
+	ConnectionID       string          `json:"connectionId,omitempty"`
+	CredentialID       string          `json:"credentialId,omitempty"`
+	CredentialProvider string          `json:"credentialProvider,omitempty"`
+	CredentialName     string          `json:"credentialName,omitempty"`
+	ServiceType        string          `json:"serviceType,omitempty"`
+	Markdown           string          `json:"markdown"`
+	Action             json.RawMessage `json:"action,omitempty"`
+	DedupKey           string          `json:"dedupKey,omitempty"`
+	RelatedRequestID   string          `json:"relatedRequestId,omitempty"`
 }
 
 type RequestRuntimeAction string
@@ -633,6 +728,8 @@ type RequestResponse struct {
 	ApprovalURL        string               `json:"approvalUrl,omitempty"`
 	Status             string               `json:"status"`
 	Kind               string               `json:"kind,omitempty"`
+	Title              string               `json:"title,omitempty"`
+	Action             json.RawMessage      `json:"action,omitempty"`
 	CredentialProvider string               `json:"credentialProvider,omitempty"`
 	CredentialName     string               `json:"credentialName,omitempty"`
 	ServiceType        string               `json:"serviceType,omitempty"`

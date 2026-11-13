@@ -34,26 +34,45 @@ func (e *Engine) monitor(ctx context.Context, state *runtimeState) {
 			return
 		case <-ticker.C:
 			expiryTimer.Stop()
-			_, err := state.refreshConfig(ctx)
-			if err != nil {
-				state.setUnhealthy()
-				if errors.Is(err, errRefreshedConfigRejected) {
-					state.fail(err)
-					return
-				}
-				if terminalSessionError(err) {
-					cause := errors.New("Agent session was revoked during refresh")
-					var apiErr *agentapi.Error
-					if errors.As(err, &apiErr) && apiErr.Code == "agent_session_expired" {
-						cause = fmt.Errorf("%w: backend reported hard expiry", airuntime.ErrSessionExpired)
-					}
-					state.fail(cause)
-					return
-				}
-				continue
+			if refreshFromMonitor(ctx, state, true) {
+				return
+			}
+		case <-state.refreshRequests:
+			expiryTimer.Stop()
+			if refreshFromMonitor(ctx, state, false) {
+				return
 			}
 		}
 	}
+}
+
+// refreshFromMonitor applies one config refresh and reports whether the
+// monitor must stop. Only the periodic refresh decides session health on a
+// transient failure: an extra refresh that cannot reach the Console leaves the
+// session as the last periodic refresh found it.
+func refreshFromMonitor(ctx context.Context, state *runtimeState, periodic bool) bool {
+	_, err := state.refreshConfig(ctx)
+	if err == nil {
+		return false
+	}
+	rejected, terminal := errors.Is(err, errRefreshedConfigRejected), terminalSessionError(err)
+	if periodic || rejected || terminal {
+		state.setUnhealthy()
+	}
+	if rejected {
+		state.fail(err)
+		return true
+	}
+	if terminal {
+		cause := errors.New("Agent session was revoked during refresh")
+		var apiErr *agentapi.Error
+		if errors.As(err, &apiErr) && apiErr.Code == "agent_session_expired" {
+			cause = fmt.Errorf("%w: backend reported hard expiry", airuntime.ErrSessionExpired)
+		}
+		state.fail(cause)
+		return true
+	}
+	return false
 }
 
 func terminalSessionError(err error) bool {

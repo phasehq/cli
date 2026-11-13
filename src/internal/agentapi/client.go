@@ -77,6 +77,11 @@ type Client struct {
 	sessionMu     sync.RWMutex
 	sessionUID    string
 	workflowID    string
+	// agentKey is set only for an Agent token: it is what lets this client
+	// open sealed Connection material. wrappedKeyShare is the server's half,
+	// taken from the latest session payload that carried one.
+	agentKey        *agentKeyShares
+	wrappedKeyShare SensitiveString
 }
 
 func (c *Client) String() string   { return "agentapi.Client{credentials:[REDACTED]}" }
@@ -167,6 +172,7 @@ func NewClient(host, durableToken string, httpClient *http.Client) (*Client, err
 		httpClient:    &clonedHTTPClient,
 		userAgent:     userAgent,
 		requestClient: requestClient,
+		agentKey:      agentKeySharesFromToken(tokenType, durableToken),
 	}, nil
 }
 

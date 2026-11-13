@@ -152,6 +152,57 @@ func (c *connectionEnvironmentCompiler) compile(state *runtimeState, id string) 
 	return connectionEnvironmentResponse{SchemaVersion: agentapi.SchemaVersion, ConnectionID: id, ConfigGeneration: generation, ProcessEnvironment: plan}, nil
 }
 
+// holdsFor returns the check replaceConfig runs before it reshapes custom
+// Connections in place: the environment compiled for the refreshed
+// configuration must already be satisfied by baseline, the one the session's
+// processes were started with. A session pinned to one Connection also needs
+// that Connection to stay.
+func (c *connectionEnvironmentCompiler) holdsFor(baseline phaseproxy.ProcessEnvironmentPlan, pinned string) func(*agentapi.SessionConfig) bool {
+	return func(config *agentapi.SessionConfig) bool {
+		if pinned != "" && !sessionConfigHasConnection(config, pinned) {
+			return false
+		}
+		opened := *c.session.Config
+		opened.ConfigEnv = config.ConfigEnv
+		opened.Connections = config.Connections
+		session := *c.session
+		session.Config = &opened
+		next, err := session.CompileProcessEnvironment(c.proxyURL, c.base, c.adapters)
+		return err == nil && processEnvironmentHolds(baseline, next)
+	}
+}
+
+func sessionConfigHasConnection(config *agentapi.SessionConfig, id string) bool {
+	for _, connection := range config.Connections {
+		if connection.ConnectionID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// processEnvironmentHolds reports whether a process started with current
+// already has everything next would give it: every variable next sets has the
+// same value in current, and every variable next unsets is unset. Variables
+// only current sets are left behind, which is what removing a Connection does.
+func processEnvironmentHolds(current, next phaseproxy.ProcessEnvironmentPlan) bool {
+	for name, value := range next.Set {
+		if existing, set := current.Set[name]; !set || existing != value {
+			return false
+		}
+	}
+	unset := make(map[string]struct{}, len(current.Unset))
+	for _, name := range current.Unset {
+		unset[name] = struct{}{}
+	}
+	for _, name := range next.Unset {
+		if _, present := unset[name]; !present {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *controlHandler) connectionEnvironment(w http.ResponseWriter, req *http.Request, id string) {
 	if !controlIdentifier.MatchString(id) || h.environments == nil {
 		writeControlError(w, http.StatusNotFound, "connection_unavailable", "The Connection environment is unavailable.", false)

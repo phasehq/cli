@@ -121,14 +121,15 @@ func staleDecoyInjectionFailure(err error) bool {
 // applyHTTPInjectionWithHistory injects the live credential for a request that
 // presents either the current or a previously issued decoy generation. Every
 // injector validates before it mutates, so a failed attempt leaves the request
-// untouched for the next generation.
+// untouched for the next generation. A Connection with several injections is
+// matched one whole generation at a time.
 func applyHTTPInjectionWithHistory(req *http.Request, connection agentapi.Connection, previous []agentapi.Connection) (phaseproxy.InjectionResult, error) {
 	result, err := phaseproxy.ApplyHTTPInjection(req.Context(), req, connection)
 	if err == nil || !staleDecoyInjectionFailure(err) {
 		return result, err
 	}
 	for _, view := range previous {
-		retried, retryErr := phaseproxy.ApplyHTTPInjection(req.Context(), req, view)
+		retried, retryErr := phaseproxy.ApplyHTTPInjectionPresenting(req.Context(), req, connection, view)
 		if retryErr == nil {
 			return retried, nil
 		}

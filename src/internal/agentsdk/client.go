@@ -273,6 +273,15 @@ func (c *Client) CreateRequestWithStatus(ctx context.Context, session SessionAut
 	if err := validateSession(session); err != nil {
 		return nil, 0, err
 	}
+	if !ValidRequestTitle(input.Title) {
+		return nil, 0, fmt.Errorf("agents: request title must be at most 120 characters of plain text")
+	}
+	if input.Action = NormalizeRequestAction(input.Action); input.Action != nil {
+		if err := validateActionRequestInput(input); err != nil {
+			return nil, 0, err
+		}
+		return c.postRequest(ctx, session, input)
+	}
 	if input.Kind != RequestSetup && input.Kind != RequestCredentialUpdate {
 		return nil, 0, fmt.Errorf("agents: request kind must be setup or credential_update")
 	}
@@ -301,6 +310,10 @@ func (c *Client) CreateRequestWithStatus(ctx context.Context, session SessionAut
 			return nil, 0, fmt.Errorf("agents: service type is valid only for a setup request")
 		}
 	}
+	return c.postRequest(ctx, session, input)
+}
+
+func (c *Client) postRequest(ctx context.Context, session SessionAuth, input CreateRequestInput) (*AgentRequest, int, error) {
 	if input.SchemaVersion == 0 {
 		input.SchemaVersion = CurrentSchemaVersion
 	}
@@ -311,6 +324,26 @@ func (c *Client) CreateRequestWithStatus(ctx context.Context, session SessionAut
 		return nil, statusCode, err
 	}
 	return &output, statusCode, nil
+}
+
+// validateActionRequestInput covers a request that carries an action. The
+// action names its own target and is what the member reviews, so the
+// justification and the packaged-service members are optional; the latter
+// keep their usual limits when present.
+func validateActionRequestInput(input CreateRequestInput) error {
+	if err := ValidateRequestAction(input.Kind, input.Action); err != nil {
+		return err
+	}
+	if input.CredentialProvider != "" && !validRequestServiceType(input.CredentialProvider) {
+		return fmt.Errorf("agents: credential provider must contain 1-64 letters, digits, dots, underscores, or hyphens")
+	}
+	if input.CredentialName != strings.TrimSpace(input.CredentialName) || len(input.CredentialName) > 64 {
+		return fmt.Errorf("agents: credential name must contain at most 64 non-padding characters")
+	}
+	if input.ServiceType != "" && !validRequestServiceType(input.ServiceType) {
+		return fmt.Errorf("agents: service type must contain 1-64 letters, digits, dots, underscores, or hyphens")
+	}
+	return nil
 }
 
 func validRequestServiceType(value string) bool {

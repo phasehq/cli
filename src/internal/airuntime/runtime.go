@@ -40,6 +40,8 @@ type agentTokenRequiredEngine interface {
 type EngineCapabilities struct {
 	Protocols        []string
 	InjectionActions []string
+	// Features are the optional runtime capabilities the engine implements.
+	Features []string
 }
 
 type UnavailableEngine struct{}
@@ -159,6 +161,7 @@ func (r *Runtime) open(ctx context.Context, capabilities EngineCapabilities) (*a
 			SupportedSchemaVersions: []int{agentapi.SchemaVersion},
 			Protocols:               append([]string(nil), capabilities.Protocols...),
 			InjectionActions:        append([]string(nil), capabilities.InjectionActions...),
+			Features:                advertisedFeatures(capabilities.Features, r.Client),
 		},
 	})
 	if err != nil {
@@ -169,6 +172,21 @@ func (r *Runtime) open(ctx context.Context, capabilities EngineCapabilities) (*a
 		return nil, err
 	}
 	return session, nil
+}
+
+// advertisedFeatures is what the client tells the Console it can do for this
+// session. Opening sealed material needs the Agent key, which can be rebuilt
+// only from an Agent token, so a User or Service Account login never lists it
+// and keeps receiving values the Console resolved.
+func advertisedFeatures(engineFeatures []string, client *agentapi.Client) []string {
+	features := make([]string, 0, len(engineFeatures))
+	for _, feature := range engineFeatures {
+		if feature == agentapi.FeatureSealedMaterial && !client.CanOpenSealedMaterial() {
+			continue
+		}
+		features = append(features, feature)
+	}
+	return features
 }
 
 // ServeManaged runs one backend session without translating lifecycle errors
@@ -314,15 +332,16 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 	for key, value := range s.Config.ConfigEnv {
 		configEnv[key] = value
 	}
-	serviceCount := make(map[string]int)
+	identityCount := make(map[string]int)
 	for _, connection := range s.Config.Connections {
-		serviceCount[connection.ServiceType]++
+		identityCount[defaultIdentity(connection)]++
 	}
+	contested := contestedCustomEnvironmentNames(s.Config.Connections)
 	credentialFamilies := make([]string, 0)
 	environmentBindings := make([]proxy.EnvironmentBinding, 0)
 	proxyRequiredHosts := make([]string, 0)
 	for _, connection := range s.Config.Connections {
-		families := proxy.CredentialFamiliesForConnection(connection.ServiceType, connection.Injection.Action)
+		families := proxy.CredentialFamiliesForConnection(connection.ServiceType, connection.PrimaryInjectionAction())
 		credentialFamilies = append(credentialFamilies, families...)
 		for _, host := range connection.Hosts {
 			proxyRequiredHosts = append(proxyRequiredHosts, host.Value)
@@ -343,13 +362,19 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 		); err != nil {
 			return processEnvironmentInputs{}, fmt.Errorf("Agent connection %s: %w", connection.ConnectionID, err)
 		}
-		if serviceCount[connection.ServiceType] > 1 {
+		if identityCount[defaultIdentity(connection)] > 1 {
 			continue // Explicit selection is required; never pick a default identity.
 		}
 		for key, value := range connection.ConfigEnv {
+			if contested.claims(connection, key) {
+				continue
+			}
 			configEnv[key] = value
 		}
 		for key, value := range connection.AgentEnv.Clone() {
+			if contested.claims(connection, key) {
+				continue
+			}
 			for existingKey, existingValue := range agentEnv {
 				if strings.EqualFold(existingKey, key) {
 					if existingValue != value {
@@ -362,6 +387,9 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 			agentEnv[key] = value
 		}
 		for _, binding := range connection.EnvironmentBindings {
+			if contested.claims(connection, binding.Name) {
+				continue
+			}
 			environmentBindings = append(environmentBindings, proxy.EnvironmentBinding{
 				Name: binding.Name, Action: string(binding.Action), Source: string(binding.Source), SourceField: binding.SourceField,
 			})
@@ -371,6 +399,57 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 		configEnv: configEnv, agentEnv: agentEnv, credentialFamilies: credentialFamilies,
 		environmentBindings: environmentBindings, proxyRequiredHosts: proxyRequiredHosts,
 	}, nil
+}
+
+// defaultIdentity groups the Connections that compete to be the default
+// identity of one service. Packaged services compete per service type. Every
+// custom HTTP Connection is a service of its own, so two of them only compete
+// over an environment name they both use.
+func defaultIdentity(connection agentapi.Connection) string {
+	if connection.ServiceType == agentapi.CustomHTTPServiceType {
+		return connection.ServiceType + ":" + connection.ConnectionID
+	}
+	return connection.ServiceType
+}
+
+// contestedEnvironmentNames holds the environment names, upper-cased, that
+// more than one custom HTTP Connection would set to different values.
+type contestedEnvironmentNames map[string]struct{}
+
+func (c contestedEnvironmentNames) claims(connection agentapi.Connection, name string) bool {
+	if connection.ServiceType != agentapi.CustomHTTPServiceType {
+		return false
+	}
+	_, contested := c[strings.ToUpper(name)]
+	return contested
+}
+
+// contestedCustomEnvironmentNames finds names that custom HTTP Connections
+// disagree on. Such a name is left out of the default environment, like the
+// default identity of a service with several Connections; the per-Connection
+// environment still carries it.
+func contestedCustomEnvironmentNames(connections []agentapi.Connection) contestedEnvironmentNames {
+	values := make(map[string]string)
+	contested := make(contestedEnvironmentNames)
+	note := func(name, value string) {
+		name = strings.ToUpper(name)
+		if known, seen := values[name]; seen && known != value {
+			contested[name] = struct{}{}
+		}
+		values[name] = value
+	}
+	for _, connection := range connections {
+		if connection.ServiceType != agentapi.CustomHTTPServiceType {
+			continue
+		}
+		for name, value := range connection.ConfigEnv {
+			note(name, value)
+		}
+		for name, value := range connection.AgentEnv.Clone() {
+			note(name, value)
+		}
+	}
+	return contested
 }
 
 func randomID(prefix string) (string, error) {

@@ -209,8 +209,11 @@ func (e *Engine) Capabilities() airuntime.EngineCapabilities {
 	return airuntime.EngineCapabilities{
 		Protocols: []string{"http", "postgres"},
 		InjectionActions: []string{
-			"set_header", "replace_header", "remove_header", "set_param", "set_path", "replace_path_regex", "aws_sigv4", "pg_handshake",
+			"set_header", "replace_header", "remove_header", "set_param", "set_path", "replace_path_regex", "aws_sigv4", "pg_handshake", "basic_auth",
 		},
+		// sealed_material is what this engine can do with the right login; the
+		// runtime advertises it only when the client holds an Agent token.
+		Features: []string{agentapi.FeatureInjectionList, agentapi.FeatureWhenAbsent, agentapi.FeatureSealedMaterial},
 	}
 }
 
@@ -335,7 +338,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	baseEnvironment := os.Environ()
 	credentialFamilies := make([]string, 0)
 	for _, connection := range session.Config.Connections {
-		credentialFamilies = append(credentialFamilies, phaseproxy.CredentialFamiliesForConnection(connection.ServiceType, connection.Injection.Action)...)
+		credentialFamilies = append(credentialFamilies, phaseproxy.CredentialFamiliesForConnection(connection.ServiceType, connection.PrimaryInjectionAction())...)
 	}
 	preparedCABundle, prepareErr := phaseproxy.PrepareStableProcessCABundle(session.CAPaths.Bundle, baseEnvironment, credentialFamilies)
 	if prepareErr != nil {
@@ -375,6 +378,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		processEnvironment: processEnvironment, providerEnvironment: providerEnvironment,
 	}
 	environments := &connectionEnvironmentCompiler{session: session, proxyURL: proxyURL, base: baseEnvironment, adapters: adapters.environment}
+	state.setEnvironmentCheck(environments.holdsFor(processEnvironment, e.ConnectionID))
 	if e.ConnectionID != "" {
 		selected, err := environments.compile(state, e.ConnectionID)
 		if err != nil {

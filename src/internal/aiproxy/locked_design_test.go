@@ -170,7 +170,7 @@ func TestUnboundTunnelClosesWhenSessionBecomesUnhealthy(t *testing.T) {
 	defer upstreamPeer.Close()
 	stop := make(chan struct{})
 	proxy := &httpProxy{state: state}
-	go proxy.watchUnboundTunnel(context.Background(), clientProxy, upstreamProxy, stop)
+	go proxy.watchUnboundTunnel(context.Background(), clientProxy, upstreamProxy, stop, nil)
 
 	state.setUnhealthy()
 	_ = clientPeer.SetReadDeadline(time.Now().Add(time.Second))

@@ -82,7 +82,7 @@ func (h *manifestHandler) serveManifest(w http.ResponseWriter, req *http.Request
 		h.writeManifestFailure(w, req, http.StatusBadGateway, "invalid_agent_manifest_environment", "manifest_environment_invalid")
 		return
 	}
-	if !reflect.DeepEqual(providerEnvironment, h.providerEnvironment) {
+	if !reflect.DeepEqual(h.withRetiredEnvironment(providerEnvironment), h.providerEnvironment) {
 		h.writeManifestRefreshRequired(w, req)
 		return
 	}
@@ -113,6 +113,27 @@ func (h *manifestHandler) serveManifest(w http.ResponseWriter, req *http.Request
 	}
 }
 
+// withRetiredEnvironment puts back the variables that custom Connections
+// removed from the running session had exported, so their removal alone does
+// not read as drift. Every other difference from the environment the session
+// started with still recycles it.
+func (h *manifestHandler) withRetiredEnvironment(plan phaseproxy.ProcessEnvironmentPlan) phaseproxy.ProcessEnvironmentPlan {
+	restored, copied := plan, false
+	for name, value := range h.providerEnvironment.Set {
+		if _, set := plan.Set[name]; set {
+			continue
+		}
+		if retired, ok := h.state.retiredEnvironmentValue(name); !ok || retired != value {
+			continue
+		}
+		if !copied {
+			restored, copied = cloneProcessEnvironmentPlan(plan), true
+		}
+		restored.Set[name] = value
+	}
+	return restored
+}
+
 func cloneProcessEnvironmentPlan(plan phaseproxy.ProcessEnvironmentPlan) phaseproxy.ProcessEnvironmentPlan {
 	set := make(map[string]string, len(plan.Set))
 	for key, value := range plan.Set {
@@ -132,7 +153,7 @@ func manifestProcessEnvironment(discover *agentapi.DiscoverResponse) (phaseproxy
 		if err := json.Unmarshal(encoded, &env); err != nil {
 			return phaseproxy.ProcessEnvironmentPlan{}, err
 		}
-		config.Connections = append(config.Connections, agentapi.Connection{ConnectionID: c.ConnectionID, ServiceType: c.ServiceType, Hosts: c.Hosts, Injection: c.Injection, Identifiers: c.Identifiers, DecoyMaterial: c.DecoyMaterial, ConnectionConfig: c.ConnectionConfig, ConfigEnv: c.ConfigEnv, AgentEnv: env, EnvironmentBindings: c.EnvironmentBindings})
+		config.Connections = append(config.Connections, agentapi.Connection{ConnectionID: c.ConnectionID, ServiceType: c.ServiceType, Hosts: c.Hosts, Injection: c.Injection, Injections: c.Injections, Identifiers: c.Identifiers, DecoyMaterial: c.DecoyMaterial, ConnectionConfig: c.ConnectionConfig, ConfigEnv: c.ConfigEnv, AgentEnv: env, EnvironmentBindings: c.EnvironmentBindings})
 	}
 	return (&airuntime.ProxySession{Config: config}).ProviderProcessEnvironment()
 }
@@ -194,8 +215,11 @@ func sanitizeManifestDiscover(discover *agentapi.DiscoverResponse, backendCreden
 }
 
 func manifestPayloadContains(payload []byte, forbidden []string) bool {
-	if bytes.Contains(bytes.ToLower(payload), []byte("secretmaterial")) || bytes.Contains(bytes.ToLower(payload), []byte("sessioncredential")) {
-		return true
+	lowered := bytes.ToLower(payload)
+	for _, proxyOnlyMember := range []string{"secretmaterial", "sessioncredential", "sealedmaterial", "wrappedkey"} {
+		if bytes.Contains(lowered, []byte(proxyOnlyMember)) {
+			return true
+		}
 	}
 	for _, value := range forbidden {
 		if value == "" {

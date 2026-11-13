@@ -42,6 +42,7 @@ func (c *Client) OpenSession(ctx context.Context, request OpenSessionRequest) (*
 		return nil, err
 	}
 	c.rememberSessionUID(response.SessionUID)
+	c.prepareMaterial(&response.SessionConfig)
 	return &response, nil
 }
 
@@ -50,6 +51,7 @@ func (c *Client) RefreshSession(ctx context.Context, sessionUID string, credenti
 	if err := c.do(ctx, http.MethodGet, c.endpoint("sessions", sessionUID, "config"), nil, &response, credential); err != nil {
 		return nil, err
 	}
+	c.prepareMaterial(&response)
 	return &response, nil
 }
 
@@ -150,6 +152,8 @@ func (c *Client) CreateRequestWithStatus(ctx context.Context, request CreateRequ
 		response, statusCode, err := c.requestClient.CreateRequestWithStatus(ctx, session, sdkagents.CreateRequestInput{
 			SchemaVersion:      request.SchemaVersion,
 			Kind:               sdkagents.RequestKind(request.Kind),
+			Title:              request.Title,
+			Action:             request.Action,
 			ConnectionID:       request.ConnectionID,
 			CredentialID:       request.CredentialID,
 			CredentialProvider: request.CredentialProvider,
@@ -202,6 +206,8 @@ func requestResponseFromSDK(response *sdkagents.AgentRequest) *RequestResponse {
 		ApprovalURL:        response.ApprovalURL,
 		Status:             string(response.Status),
 		Kind:               string(response.Kind),
+		Title:              response.Title,
+		Action:             response.Action,
 		CredentialProvider: response.CredentialProvider,
 		CredentialName:     response.CredentialName,
 		ServiceType:        response.ServiceType,

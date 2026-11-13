@@ -1,6 +1,8 @@
 package ai
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -111,5 +113,80 @@ func TestAgentSkillStaysProviderNeutral(t *testing.T) {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("Agent skill embeds a provider-specific recipe %q; verification is the harness's call", forbidden)
 		}
+	}
+}
+
+func TestAgentSkillExplainsCustomConnectionRequests(t *testing.T) {
+	content := SkillContent()
+	for _, want := range []string{
+		"## Custom HTTP Connections",
+		"http://phase.invalid/v1/connections",
+		"http://phase.invalid/v1/connections/<connection-id>",
+		"you can never supply a secret value",
+		"`setup` | `{\"type\": \"agent_connection.create\", \"version\": 1, \"serviceType\": \"http\"",
+		"`connection_update` | `{\"type\": \"agent_connection.update\", \"version\": 1",
+		"`credential_update` | `{\"type\": \"agent_connection.secret_update\", \"version\": 1",
+		"`connection_removal` | `{\"type\": \"agent_connection.remove\", \"version\": 1",
+		"The action is what the member reviews",
+		"welcome but not required",
+		"Send the whole proposed `definition`, never a patch",
+		"is refused before it leaves this machine",
+		"never ask the human to paste one into chat",
+		"POST http://phase.invalid/v1/refresh",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("Agent skill is missing custom Connection guidance %q", want)
+		}
+	}
+	// The packaged request shapes keep their own rules.
+	if !strings.Contains(content, "Without an `action` (next section), only `setup` and `credential_update` are valid request kinds") {
+		t.Fatal("Agent skill no longer states the packaged request kinds")
+	}
+}
+
+// An installed skill is recognised by the hash it carries of its own body, not
+// by the contract version or by matching the text this build ships. So a skill
+// installed with earlier guidance is replaced on the next refresh although the
+// contract version has not moved; a file someone edited is left alone.
+func TestRefreshReplacesAnInstalledSkillWithEarlierTextAtTheSameVersion(t *testing.T) {
+	home := useSkillTestHome(t)
+	for name, test := range map[string]struct {
+		path        string
+		frontmatter string
+		current     string
+	}{
+		"Claude Code": {filepath.Join(home, ".claude", "skills", AgentSkillName, "SKILL.md"), agentClaudeFrontmatter, claudeCodeSkill()},
+		"Codex":       {filepath.Join(home, ".agents", "skills", AgentSkillName, "SKILL.md"), agentStandardFrontmatter, cursorSkill()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			earlier := renderOwnedSkill(test.frontmatter, AgentRuntimeSkillKind, "# Phase CLI — AI Agent Guide\n\nGuidance from before custom Connections.\n")
+			if !strings.Contains(earlier, versionHeader()) || strings.Contains(earlier, "## Custom HTTP Connections") {
+				t.Fatal("the earlier skill must carry the current version and the earlier text")
+			}
+			if err := writeSkillAtomic(test.path, earlier); err != nil {
+				t.Fatal(err)
+			}
+			if err := RefreshAgentSkillTo(test.path); err != nil {
+				t.Fatal(err)
+			}
+			refreshed, err := os.ReadFile(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(refreshed) != test.current || !strings.Contains(string(refreshed), "## Custom HTTP Connections") {
+				t.Fatal("an installed skill with earlier text was not replaced by the current guidance")
+			}
+
+			edited := strings.Replace(earlier, "Guidance from before", "My own notes from before", 1)
+			if err := os.WriteFile(test.path, []byte(edited), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := RefreshAgentSkillTo(test.path); err == nil {
+				t.Fatal("an edited skill was accepted for refresh")
+			}
+			if kept, err := os.ReadFile(test.path); err != nil || string(kept) != edited {
+				t.Fatalf("an edited skill was overwritten: err=%v", err)
+			}
+		})
 	}
 }

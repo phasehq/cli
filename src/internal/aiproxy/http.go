@@ -188,7 +188,7 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	// re-signed or injected. See pkg/proxy/minting.go for the rule table.
 	if blocked, inspectErr := phaseproxy.CredentialMintingBlocked(upstream, binding.connection); blocked != nil || inspectErr != nil {
 		failure := &requestFailure{status: http.StatusForbidden, code: "credential_minting_blocked", decision: "block", reason: "credential_minting_blocked", binding: binding}
-		event := makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.Injection.Action)
+		event := makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.PrimaryInjectionAction())
 		if blocked != nil {
 			failure.message = blocked.Message()
 			event.Detail["blocked_operation"] = blocked.Operation
@@ -211,12 +211,14 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	}
 	injection := phaseproxy.InjectionResult{Action: awsSSMTokenCredentialAction}
 	var injectionErr error
+	injected := false
 	if !isPresignedSSMDataChannelWebSocket(req, upstream, tunnelAuth, binding.connection, time.Now()) {
 		injection, injectionErr = applyHTTPInjectionWithHistory(upstream, binding.connection, p.state.previousDecoyViews(binding.connection))
+		injected = injectionErr == nil
 	}
 	if injectionErr != nil {
 		failure := &requestFailure{status: http.StatusForbidden, code: "agent_credential_injection_failed", message: injectionErr.Error(), decision: "block", reason: "credential_swap_failed", binding: binding}
-		event := makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.Injection.Action)
+		event := makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.PrimaryInjectionAction())
 		var typed *phaseproxy.InjectionError
 		if errors.As(injectionErr, &typed) && typed.AWSSigV4Failure != "" {
 			event.Detail["aws_sigv4_failure"] = string(typed.AWSSigV4Failure)
@@ -242,6 +244,13 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		}
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Header)
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Trailer)
+	}
+	// A custom Connection's value can be replaced in the Console at any time.
+	// A refusal is the cue to fetch it now rather than at the next periodic
+	// refresh; this request is returned as it is, neither retried nor delayed.
+	if injected && binding.connection.ServiceType == agentapi.CustomHTTPServiceType &&
+		(response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
+		p.state.requestRefreshAfterRejection(time.Now())
 	}
 	event := makeEvent(binding, req, "allow", "ok", authorization.reason, response.StatusCode, time.Since(started), injection.Action)
 	return processedResponse{response: response, event: event, snapshot: snapshot}
@@ -361,7 +370,11 @@ func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host
 	defer upstream.Close()
 	stateWatchDone := make(chan struct{})
 	defer close(stateWatchDone)
-	go p.watchUnboundTunnel(req.Context(), client, upstream, stateWatchDone)
+	selection := selectedConnection(req)
+	go p.watchUnboundTunnel(req.Context(), client, upstream, stateWatchDone, func() bool {
+		bound, err := p.state.hasBoundHost(host, port, selection)
+		return err == nil && !bound
+	})
 	_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	if buffered.Flush() != nil {
 		return
@@ -372,11 +385,13 @@ func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host
 // watchUnboundTunnel closes an already-established pass-through tunnel as
 // soon as Phase can no longer validate the active session. New requests are
 // rejected by the normal authentication/availability gate; this watcher makes
-// the same fail-closed guarantee apply to idle raw CONNECT streams.
-func (p *httpProxy) watchUnboundTunnel(ctx context.Context, client, upstream net.Conn, stop <-chan struct{}) {
+// the same fail-closed guarantee apply to idle raw CONNECT streams. It also
+// closes the tunnel once its target has become bound to a Connection, so a
+// client holding it open reconnects and gets the credential handling it lacks.
+func (p *httpProxy) watchUnboundTunnel(ctx context.Context, client, upstream net.Conn, stop <-chan struct{}, stillUnbound func() bool) {
 	for {
 		changed := p.state.changeSignal()
-		if p.state.availability() != nil {
+		if p.state.availability() != nil || (stillUnbound != nil && !stillUnbound()) {
 			_ = client.Close()
 			_ = upstream.Close()
 			return

@@ -20,6 +20,8 @@ type ControlLinks struct {
 	ListRequests          string `json:"listRequests"`
 	CancelRequest         string `json:"cancelRequest"`
 	ConnectionEnvironment string `json:"connectionEnvironment"`
+	Connections           string `json:"connections"`
+	Connection            string `json:"connection"`
 	Capabilities          string `json:"capabilities"`
 	Status                string `json:"status"`
 	Context               string `json:"context"`
@@ -46,6 +48,35 @@ type StatusResponse struct {
 	SafeToPrint   bool               `json:"safeToPrint"`
 	Connections   []StatusConnection `json:"connections"`
 	Links         ControlLinks       `json:"links"`
+}
+
+// ConnectionDetail is what an Agent may read about one of its Connections. It
+// never carries a secret, a decoy, or a host the definition does not name.
+type ConnectionDetail struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	ServiceType string `json:"serviceType"`
+	// State is ready, expired or unavailable; StateReason says why a sealed
+	// value could not be opened.
+	State       string `json:"state"`
+	StateReason string `json:"stateReason,omitempty"`
+	// Definition, ValueRevision and KeyVersion describe a custom HTTP
+	// Connection and are absent for packaged services.
+	Definition    map[string]any `json:"definition,omitempty"`
+	ValueRevision *int           `json:"valueRevision,omitempty"`
+	KeyVersion    *int           `json:"keyVersion,omitempty"`
+}
+
+type ConnectionsResponse struct {
+	SchemaVersion int                `json:"schemaVersion"`
+	Kind          string             `json:"kind"`
+	Connections   []ConnectionDetail `json:"connections"`
+}
+
+type ConnectionResponse struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
+	ConnectionDetail
 }
 
 type ManifestResponse struct {

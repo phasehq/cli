@@ -4,6 +4,7 @@
 package agentsdk
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -458,12 +459,28 @@ func (a Authentication) Format(state fmt.State, _ rune) {
 
 type StringMap map[string]string
 
+// ClientFeature names an optional runtime capability a client advertises when
+// it opens a session. The Console refuses a session whose granted Connections
+// need a feature the client did not list.
+type ClientFeature string
+
+const (
+	// FeatureInjectionList: the client applies a Connection's injections list.
+	FeatureInjectionList ClientFeature = "injection_list"
+	// FeatureWhenAbsent: the client honours whenAbsent on an injection.
+	FeatureWhenAbsent ClientFeature = "when_absent"
+	// FeatureSealedMaterial: the client holds an Agent token it can rebuild the
+	// Agent key from, so it can open sealedMaterial itself.
+	FeatureSealedMaterial ClientFeature = "sealed_material"
+)
+
 type ClientCapabilities struct {
 	Name                    string            `json:"name"`
 	Version                 string            `json:"version"`
 	SupportedSchemaVersions []int             `json:"supportedSchemaVersions"`
 	Protocols               []Protocol        `json:"protocols"`
 	InjectionActions        []InjectionAction `json:"injectionActions"`
+	Features                []ClientFeature   `json:"features,omitempty"`
 }
 
 type OpenSessionRequest struct {
@@ -483,6 +500,24 @@ type OpenSessionResponse struct {
 	ConfigGeneration  uint64              `json:"configGeneration"`
 	ConfigEnv         StringMap           `json:"configEnv"`
 	Connections       []RuntimeConnection `json:"connections"`
+	AgentKey          *AgentKey           `json:"agentKey,omitempty"`
+}
+
+// AgentKey carries the server's wrapped share of the Agent's key exchange
+// private key. Only a client holding the matching Agent token can open it.
+type AgentKey struct {
+	WrappedKeyShare SensitiveString `json:"wrappedKeyShare"`
+}
+
+// SealedMaterial is a Connection's credential value encrypted to that
+// Connection's own keypair, with the Agent's copy of the Connection private
+// key. Nothing in it is readable without the Agent key.
+type SealedMaterial struct {
+	Version    int             `json:"version"`
+	KeyVersion int             `json:"keyVersion"`
+	PublicKey  string          `json:"publicKey"`
+	Ciphertext SensitiveString `json:"ciphertext"`
+	WrappedKey SensitiveString `json:"wrappedKey"`
 }
 
 // SessionAuth identifies a live session and carries its short-lived #1 value.
@@ -515,8 +550,14 @@ type RefreshConfigResponse struct {
 	ConfigGeneration uint64              `json:"configGeneration"`
 	ConfigEnv        StringMap           `json:"configEnv"`
 	Connections      []RuntimeConnection `json:"connections"`
+	AgentKey         *AgentKey           `json:"agentKey,omitempty"`
 }
 
+// RuntimeConnection is one granted Connection of a session. A packaged service
+// has a single Injection; a custom HTTP Connection carries Injections instead,
+// which wins when present. Exactly one of SecretMaterial (resolved by the
+// Console) and SealedMaterial (opened by the client) carries the value. Unless
+// AllowPlainHTTP is set, that value is never put on a plain-HTTP request.
 type RuntimeConnection struct {
 	GrantID             string     `json:"grantId"`
 	ConnectionID        string     `json:"connectionId"`
@@ -534,13 +575,16 @@ type RuntimeConnection struct {
 	// an independently editable credential store.
 	ConnectionConfig    map[string]interface{}  `json:"connectionConfig,omitempty"`
 	ConfigEnv           StringMap               `json:"configEnv,omitzero"`
-	Injection           Injection               `json:"injection"`
+	Injection           Injection               `json:"injection,omitzero"`
+	Injections          []Injection             `json:"injections,omitempty"`
 	OnRefresh           RefreshBehavior         `json:"onRefresh,omitempty"`
 	Identifiers         StringMap               `json:"identifiers"`
 	DecoyMaterial       DecoyMaterial           `json:"decoyMaterial"`
 	AgentEnv            AgentEnvironment        `json:"agentEnv"`
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
 	SecretMaterial      SecretMaterial          `json:"secretMaterial"`
+	SealedMaterial      *SealedMaterial         `json:"sealedMaterial,omitempty"`
+	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
 }
 
@@ -603,6 +647,7 @@ const (
 	InjectionReplacePathRegex InjectionAction = "replace_path_regex"
 	InjectionAWSSigV4         InjectionAction = "aws_sigv4"
 	InjectionPGHandshake      InjectionAction = "pg_handshake"
+	InjectionBasicAuth        InjectionAction = "basic_auth"
 )
 
 func (a InjectionAction) IsKnown() bool {
@@ -614,7 +659,8 @@ func (a InjectionAction) IsKnown() bool {
 		InjectionSetPath,
 		InjectionReplacePathRegex,
 		InjectionAWSSigV4,
-		InjectionPGHandshake:
+		InjectionPGHandshake,
+		InjectionBasicAuth:
 		return true
 	default:
 		return false
@@ -641,6 +687,16 @@ func (e *UnsupportedInjectionActionError) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, e.Error())
 }
 
+// WhenAbsent says what the proxy does when a request carries nothing at an
+// injection point. An empty value means block, which is how every packaged
+// service behaves.
+type WhenAbsent string
+
+const (
+	WhenAbsentAttach WhenAbsent = "attach"
+	WhenAbsentBlock  WhenAbsent = "block"
+)
+
 type Injection struct {
 	Action      InjectionAction      `json:"action"`
 	Name        string               `json:"name,omitempty"`
@@ -650,6 +706,7 @@ type Injection struct {
 	Replacement string               `json:"replacement,omitempty"`
 	ServiceFrom string               `json:"serviceFrom,omitempty"`
 	RegionFrom  string               `json:"regionFrom,omitempty"`
+	WhenAbsent  WhenAbsent           `json:"whenAbsent,omitempty"`
 }
 
 func (i Injection) Validate() error { return i.Action.Validate() }
@@ -722,11 +779,13 @@ type DiscoverConnection struct {
 	ConnectionConfig    map[string]interface{}  `json:"connectionConfig,omitempty"`
 	ConfigEnv           StringMap               `json:"configEnv,omitzero"`
 	Injection           *Injection              `json:"injection,omitempty"`
+	Injections          []Injection             `json:"injections,omitempty"`
 	OnRefresh           RefreshBehavior         `json:"onRefresh,omitempty"`
 	Identifiers         StringMap               `json:"identifiers"`
 	DecoyMaterial       DecoyMaterial           `json:"decoyMaterial"`
 	AgentEnv            AgentEnvironment        `json:"agentEnv"`
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
+	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
 }
 
@@ -929,8 +988,10 @@ func (r RotateSessionResponse) SessionAuth() SessionAuth {
 type RequestKind string
 
 const (
-	RequestSetup            RequestKind = "setup"
-	RequestCredentialUpdate RequestKind = "credential_update"
+	RequestSetup             RequestKind = "setup"
+	RequestCredentialUpdate  RequestKind = "credential_update"
+	RequestConnectionUpdate  RequestKind = "connection_update"
+	RequestConnectionRemoval RequestKind = "connection_removal"
 )
 
 type RequestStatus string
@@ -953,17 +1014,25 @@ const (
 	RequestRuntimeActionRestartRequired RequestRuntimeAction = "restart_required"
 )
 
+// CreateRequestInput asks a member for something. A request without an Action
+// is a packaged-service setup or credential update and needs
+// CredentialProvider, CredentialName and Markdown. A request with an Action
+// proposes a change to a custom Connection: the action is what the member
+// reviews, so those members, Title and Markdown are all optional. Action is
+// opaque, versioned JSON; see ValidateRequestAction.
 type CreateRequestInput struct {
-	SchemaVersion      int         `json:"schemaVersion,omitempty"`
-	ConnectionID       string      `json:"connectionId,omitempty"`
-	CredentialID       string      `json:"credentialId,omitempty"`
-	Kind               RequestKind `json:"kind"`
-	CredentialProvider string      `json:"credentialProvider"`
-	CredentialName     string      `json:"credentialName"`
-	ServiceType        string      `json:"serviceType,omitempty"`
-	Markdown           string      `json:"markdown"`
-	DedupKey           string      `json:"dedupKey,omitempty"`
-	RelatedRequestID   string      `json:"relatedRequestId,omitempty"`
+	SchemaVersion      int             `json:"schemaVersion,omitempty"`
+	ConnectionID       string          `json:"connectionId,omitempty"`
+	CredentialID       string          `json:"credentialId,omitempty"`
+	Kind               RequestKind     `json:"kind"`
+	Title              string          `json:"title,omitempty"`
+	CredentialProvider string          `json:"credentialProvider,omitempty"`
+	CredentialName     string          `json:"credentialName,omitempty"`
+	ServiceType        string          `json:"serviceType,omitempty"`
+	Markdown           string          `json:"markdown"`
+	Action             json.RawMessage `json:"action,omitempty"`
+	DedupKey           string          `json:"dedupKey,omitempty"`
+	RelatedRequestID   string          `json:"relatedRequestId,omitempty"`
 }
 
 // RequestProgress carries safe, resumable setup selections. It deliberately
@@ -1003,10 +1072,12 @@ type AgentRequest struct {
 	ConnectionID       string               `json:"connectionId,omitempty"`
 	CredentialID       string               `json:"credentialId,omitempty"`
 	Kind               RequestKind          `json:"kind,omitempty"`
+	Title              string               `json:"title,omitempty"`
 	CredentialProvider string               `json:"credentialProvider,omitempty"`
 	CredentialName     string               `json:"credentialName,omitempty"`
 	ServiceType        string               `json:"serviceType,omitempty"`
 	Markdown           string               `json:"markdown,omitempty"`
+	Action             json.RawMessage      `json:"action,omitempty"`
 	Status             RequestStatus        `json:"status"`
 	Cooldown           bool                 `json:"cooldown,omitempty"`
 	ApprovalURL        string               `json:"approvalUrl,omitempty"`

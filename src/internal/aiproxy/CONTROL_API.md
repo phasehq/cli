@@ -4,8 +4,9 @@ The local proxy (`phase ai` daemon, `phase ai run/exec/serve`) serves a small HT
 control API on the reserved host `http://phase.invalid`. The host never resolves
 in DNS; requests only reach it *through the proxy*, so the proxy capability is
 the authentication. Everything below is implemented in
-`internal/aiproxy/control.go` (routes), `bootstrap.go` (manifest) and
-`selection.go` (per-Connection environment). Wire types live in
+`internal/aiproxy/control.go` (routes), `connections.go` (Connection reads),
+`bootstrap.go` (manifest) and `selection.go` (per-Connection environment). Wire
+types live in
 `internal/agentapi/types.go`, `internal/remoteapi/types.go` and the Go SDK
 (`phase/agents/types.go`).
 
@@ -23,7 +24,7 @@ All IDs, URLs and values in the examples are dummies.
 | Query strings | Rejected (400 `invalid_control_query`) except `?wait=` on request creation/polling and `?serviceType=` on context. |
 | Browser safety | A `POST` carrying `Origin`, `Referer` or a `Sec-Fetch-Site` other than `none` is refused with 403 `browser_control_mutation_rejected`. |
 | Remote (relay) mode | Same routes over the relay's TLS proxy (`phase relay start`), except `GET /v1/discover`, `POST /v1/revoke` and `POST /v1/rotate`, which are local-only. `GET /v1/bootstrap` exists only on a relay. |
-| Limits | Request bodies ≤ 64 KiB. IDs match `^[A-Za-z0-9._-]{1,128}$`. `markdown` ≤ 16 KiB. `wait` is 0–300 whole seconds. |
+| Limits | Request bodies ≤ 64 KiB. IDs match `^[A-Za-z0-9._-]{1,128}$`. `markdown` ≤ 16 KiB. `title` ≤ 120 characters. `wait` is 0–300 whole seconds. |
 
 Missing or wrong capability on **any** proxied request:
 
@@ -42,12 +43,14 @@ Content-Type: application/json
 |---|---|---|
 | The Agent, following the `phase-cli` skill | `GET /v1/capabilities`, `GET /v1/status` | When the human asks for Phase, or to find out whether Phase can manage a service. In transparent mode the per-prompt status line already names the ready Connections, so this is mostly for service discovery. |
 | The Agent | `GET /v1/context?serviceType=…` | Before using a service through Phase: provider-specific instructions and limitations, rendered by Console. |
-| The Agent | `POST /v1/requests`, `GET /v1/requests/{id}?wait=300`, `GET /v1/requests`, `POST /v1/requests/{id}/cancel` | No suitable Connection exists (`setup`), or the provider rejected the credential (`credential_update`). The Agent prints `approvalUrl` for the human, then long-polls. |
+| The Agent | `POST /v1/requests`, `GET /v1/requests/{id}?wait=300`, `GET /v1/requests`, `POST /v1/requests/{id}/cancel` | No suitable Connection exists (`setup`), the provider rejected the credential (`credential_update`), or the Agent proposes a change to a custom HTTP Connection (an `action`). The Agent prints `approvalUrl` for the human, then long-polls. |
+| The Agent | `GET /v1/connections`, `GET /v1/connections/{id}` | To read what its Connections are, and to get the current definition of a custom HTTP Connection before proposing a change. Served from the session the proxy already holds. |
+| The Agent | `POST /v1/refresh` | After a member replaced the secret of a custom HTTP Connection, to use the new value now instead of at the next periodic refresh. |
 | `phase ai exec --connection <id>` (the CLI, not the Agent) | `GET /v1/connections/{id}/environment` | Builds the per-Connection process environment (decoys + scoped proxy URL) for one command. Sensitive: contains the proxy password. |
 | Hook wrapper `phase ai __harness-exec` and `phase ai exec` attach | `GET /.well-known/agents` (manifest) | Right before running a wrapped command, to fetch the exact process environment of the live runtime. Sensitive; the skill forbids the Agent from fetching it. |
 | Claude Code hooks in transparent mode | nothing | SessionStart and heartbeat read local files only; the shell sources `~/.phase/ai/env.sh`. |
 | `phase ai disable`, daemon replacement | `POST /v1/revoke` | Authenticated local shutdown: Console revokes the session, the proxy stops. |
-| Nothing today | `POST /v1/rotate`, `POST /v1/refresh`, `GET /v1/discover` | Lifecycle/diagnostic routes kept for tooling and tests. The skill tells the Agent never to call refresh. |
+| Nothing today | `POST /v1/rotate`, `GET /v1/discover` | Lifecycle/diagnostic routes kept for tooling and tests. |
 
 ## 3. Error envelope
 
@@ -59,7 +62,7 @@ also sets `X-Phase-Error-Code`. Proxied failures that belong to a Connection add
 {
   "error": {
     "code": "invalid_control_request",
-    "message": "Use setup with serviceType or credential_update with connectionId and credentialId. credentialProvider, credentialName, markdown, and an optional dedupKey are required.",
+    "message": "Use setup with serviceType or credential_update with connectionId and credentialId; credentialProvider, credentialName, markdown, and an optional dedupKey are required. Or send an action of a known type with version 1 under its request kind; an action never carries a secret value.",
     "retryable": false,
     "details": {}
   }
@@ -115,6 +118,8 @@ Host: phase.invalid
     "listRequests": "http://phase.invalid/v1/requests",
     "cancelRequest": "http://phase.invalid/v1/requests/{requestId}/cancel",
     "connectionEnvironment": "http://phase.invalid/v1/connections/{connectionId}/environment",
+    "connections": "http://phase.invalid/v1/connections",
+    "connection": "http://phase.invalid/v1/connections/{connectionId}",
     "capabilities": "http://phase.invalid/v1/capabilities",
     "status": "http://phase.invalid/v1/status",
     "context": "http://phase.invalid/v1/context",
@@ -124,7 +129,75 @@ Host: phase.invalid
 }
 ```
 
-`state` is `ready`, `expired` (credential expiry passed) or `unavailable`.
+`state` is `ready`, `expired` (credential expiry passed) or `unavailable` (not
+authorized, or a sealed value the proxy could not open). A custom HTTP
+Connection appears with `serviceType` and `credentialProvider` `http`; its
+`credentialId` is the Connection ID and `credentialRevision` is the value
+revision.
+
+### GET /v1/connections and GET /v1/connections/{connectionId}
+
+What the Agent may read about its Connections. Both are answered from the
+session configuration the proxy already holds: no Console call, so they cost
+nothing against the plan rate limit. They never carry a secret, a decoy, or
+session material; a payload that would is refused with 502
+`unsafe_connection_response`.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "phase.ai.connections",
+  "connections": [
+    {
+      "id": "c0a80101-0000-4000-8000-0000000000b1",
+      "name": "Example API",
+      "serviceType": "http",
+      "state": "ready",
+      "definition": {
+        "specVersion": 1,
+        "hosts": [{ "match": "exact", "value": "api.example.com", "port": 443, "path": "/v1/*" }],
+        "fields": [
+          { "name": "token", "kind": "secret", "source": { "type": "sealed" }, "env": "EXAMPLE_API_KEY", "decoyPrefix": "sk-" },
+          { "name": "username", "kind": "identifier", "value": "alice" }
+        ],
+        "injections": [
+          { "type": "header", "name": "Authorization", "prefix": "Bearer ", "field": "token", "whenAbsent": "attach" }
+        ],
+        "preset": "bearer"
+      },
+      "valueRevision": 3,
+      "keyVersion": 2
+    },
+    {
+      "id": "c0a80101-0000-4000-8000-0000000000a1",
+      "name": "AWS identity checks for agent",
+      "serviceType": "aws",
+      "state": "ready"
+    }
+  ]
+}
+```
+
+`definition`, `valueRevision` and `keyVersion` exist only for `serviceType`
+`http`. `state` uses the same values as status. When a custom Connection's
+value cannot be used, `stateReason` names why, for example
+`sealed_material_host_mismatch` (the value was entered for a different set of
+hosts and a member must enter it again),
+`sealed_material_agent_key_unavailable`, `material_missing` (the session
+carried no value for it) or `material_exposed` (the value also appears inside
+something the Agent can see, such as an identifier or a decoy, so the proxy
+withheld it; a member must enter a different value). Only that Connection is
+affected. A packaged service in the same position still refuses the session.
+
+`GET /v1/connections/{connectionId}` returns one entry flat, with
+`"kind": "phase.ai.connection"`:
+
+```json
+{ "schemaVersion": 1, "kind": "phase.ai.connection", "id": "c0a80101-0000-4000-8000-0000000000b1", "name": "Example API", "serviceType": "http", "state": "ready", "definition": { "…": "…" }, "valueRevision": 3, "keyVersion": 2 }
+```
+
+Errors: 400 `invalid_connection_id`, 404 `connection_unavailable` when the ID
+is not part of this session.
 
 ### GET /v1/capabilities
 
@@ -235,6 +308,57 @@ Rules enforced by the proxy: `setup` needs `serviceType` and must not carry
 `credentialProvider`, `credentialName` (≤ 64 chars) and `markdown` are required;
 `dedupKey` and `relatedRequestId` are optional IDs. Anything else → 400
 `invalid_control_request`. Wrong content type → 415.
+
+Change to a custom HTTP Connection (an `action`). The Agent never changes a
+Connection and never supplies a secret: it proposes, a member reviews the action
+in Console and enters any secret there.
+
+```json
+{
+  "kind": "connection_update",
+  "title": "Allow /v2 on the Example API",
+  "markdown": "The v2 endpoints replaced v1 for the invoices the task reads.",
+  "action": {
+    "type": "agent_connection.update",
+    "version": 1,
+    "connectionId": "c0a80101-0000-4000-8000-0000000000b1",
+    "name": "Example API",
+    "definition": { "…": "the full proposed definition" }
+  }
+}
+```
+
+| `action.type` | `kind` | meaning |
+|---|---|---|
+| `agent_connection.create` | `setup` | propose a new custom Connection: `serviceType: "http"`, `name`, `definition` |
+| `agent_connection.update` | `connection_update` | propose a new definition and/or name for a granted Connection |
+| `agent_connection.secret_update` | `credential_update` | ask a member to enter a new secret; carries no value |
+| `agent_connection.remove` | `connection_removal` | ask to remove this Workflow's grant of a Connection |
+
+Rules enforced by the proxy for a request with an `action`: the type is one of
+the four above, `version` is `1`, `kind` is the one listed for the type, and the
+action carries no secret value (no `value` member on the action itself, and in
+`definition.fields` a `value` only on a field of kind `identifier`; a
+`definition` that is not an object is refused). Everything else inside `action`
+is forwarded to Console untouched, including members this CLI does not know, and
+Console validates it. `title` (≤ 120 characters, plain text) and `markdown` are
+optional beside an action; a missing `markdown` is forwarded as `""`.
+`credentialProvider` and `credentialName` are not needed. The two new kinds are
+valid only with an action. The response echoes `title` and `action`.
+
+After approval, `connection_update` and `connection_removal` make the proxy
+re-pull its configuration, and the proxy decides the `runtimeAction`. A custom
+HTTP Connection whose hosts, definition, injections or `allowPlainHttp` changed
+is reshaped in the running session, and a removed one is dropped from it:
+`retry`. An approved `agent_connection.create` is handled the same way: the
+proxy re-pulls its configuration, and a new custom Connection that exports
+nothing (no agent env, no environment bindings, no config env) is served by the
+running session, `retry`. Only a change to what the Agent process was given (an
+identifier, a decoy, an exported variable, any other new grant, or a host that
+an inherited `NO_PROXY` entry covers) answers `restart_required`. Packaged services still
+recycle on any change to their hosts, configuration or injection. A removed
+Connection's variable stays in processes that already run; it names a decoy
+nothing accepts any more, and the manifest does not treat it as drift.
 
 Pending (the normal first answer):
 
@@ -488,6 +612,11 @@ diagnostic view of what the proxy is configured to do.
 ### POST /v1/refresh
 
 Body empty or `{}`. Asks the proxy to re-pull the Workflow configuration now.
+This is how an Agent picks up a secret a member has just replaced on a custom
+HTTP Connection. The proxy also refreshes on its own every 15 seconds, and once
+(at most every 30 seconds per session) right after an upstream answers 401 or
+403 to a request it injected a custom Connection's credential into; that request
+is returned as it is, never retried or delayed.
 
 ```json
 { "schemaVersion": 1, "sessionUid": "sess_01HZX9K3M2", "configGeneration": 5, "refreshed": true }
@@ -515,7 +644,15 @@ No body. Revokes the session in Console and stops the proxy; used by
 
 Everything that is **not** `phase.invalid` is ordinary proxied traffic. Hosts
 bound to a Connection are intercepted and get the credential swap; unbound hosts
-are tunnelled untouched (unless `--lockdown`). Failures on bound traffic use the
+are tunnelled untouched (unless `--lockdown`). A packaged service must present
+its decoy. A custom HTTP Connection lists one or more injections (header, Basic
+auth, query parameter), each with `whenAbsent`: a request carrying exactly the
+decoy form is swapped, a request carrying nothing there gets the live value when
+`whenAbsent` is `attach`, and anything else is refused. All injections are
+checked before any is applied. A custom Connection's credential is neither
+swapped nor attached on a plain-HTTP request unless the Connection carries
+`allowPlainHttp: true`; the request is refused with
+`agent_credential_injection_failed`. Failures on bound traffic use the
 envelope from §3 for most services and an AWS-style XML error
 (`<Error><Code>PhaseProxyError|PhaseAccessDenied|PhaseCredentialMintingBlocked</Code>…`)
 for `aws_sigv4` Connections. Codes worth knowing: `agent_connection_denied`
