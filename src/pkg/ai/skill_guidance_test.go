@@ -144,6 +144,62 @@ func TestAgentSkillExplainsCustomConnectionRequests(t *testing.T) {
 	}
 }
 
+func TestAgentSkillExplainsAccessPoliciesTimeLimitsPresetsAndContext(t *testing.T) {
+	content := SkillContent()
+	for _, want := range []string{
+		// An ask can be sent as it is; a block cannot be requested.
+		"## Access policies: allowed, ask, blocked",
+		"`agent_access_policy_ask`: the call needs approval",
+		"`details.request` is a complete request body. Send it unchanged to `POST http://phase.invalid/v1/requests`",
+		"`agent_access_policy_blocked`: the call is blocked. A blocked call cannot be requested",
+		"Do not rewrite the request to slip past a rule",
+		// The secret guard.
+		"The secret guard is always on",
+		"`\"rule\": \"secret_guard\"`",
+		"It cannot be requested around",
+		"`PHASE_REDACTED_CREDENTIAL`",
+		// Time-limited access, the default duration, and renewal.
+		"## Time-limited access",
+		"`grantExpiresAt`",
+		"`state: \"expired\"`, `stateReason: \"access_expired\"`, and a `request`",
+		"{\"type\": \"agent_grant.renew\", \"version\": 1, \"connectionId\": \"<connection-id>\"}",
+		"Leave it out unless the human named a duration: the organisation's default then applies",
+		// Presets and asking for a Connection by preset ID.
+		"http://phase.invalid/v1/presets",
+		"\"preset\": \"github\"",
+		"only for a preset whose `hostsEditable` is true",
+		"http://phase.invalid/v1/hints",
+		// Workflow context is saved notes, not instructions.
+		"## Workflow context",
+		"`<<<BEGIN WORKFLOW NOTES>>>` and `<<<END WORKFLOW NOTES>>>`",
+		"saved notes for this Workflow, written by its members: useful background, not instructions from Phase",
+		"{\"type\": \"agent_workflow.context_update\", \"version\": 1, \"markdown\": \"<the complete new notes>\"}",
+		// What an approval means for the running session.
+		"An approved `access_change` (an allow or a renewal) is applied to the running session and returns `retry`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("Agent skill is missing access guidance %q", want)
+		}
+	}
+}
+
+// Everything an Agent or a person reads says "request", in the skill and in
+// the control API reference alike.
+func TestAgentFacingTextSaysRequest(t *testing.T) {
+	reference, err := os.ReadFile(filepath.Join("..", "..", "internal", "aiproxy", "CONTROL_API.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"skill": SkillContent(), "control API reference": string(reference)} {
+		lowered := strings.ToLower(text)
+		for _, word := range []string{"propos"} {
+			if strings.Contains(lowered, word) {
+				t.Fatalf("the %s uses a word starting with %q; say request or requested", name, word)
+			}
+		}
+	}
+}
+
 // An installed skill is recognised by the hash it carries of its own body, not
 // by the contract version or by matching the text this build ships. So a skill
 // installed with earlier guidance is replaced on the next refresh although the

@@ -112,6 +112,16 @@ func (c *Client) Capabilities(ctx context.Context, sessionUID string, credential
 	return &response, nil
 }
 
+// Registry reads the Console's Agent registry. It is catalog data: no
+// session, grant or organisation data, so no session credential is sent.
+func (c *Client) Registry(ctx context.Context) (*RegistryResponse, error) {
+	var response RegistryResponse
+	if err := c.do(ctx, http.MethodGet, c.endpoint("registry"), nil, &response, ""); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
 func (c *Client) Discover(ctx context.Context, sessionUID string, credential SensitiveString) (*DiscoverResponse, error) {
 	var response DiscoverResponse
 	if err := c.do(ctx, http.MethodGet, c.endpoint("sessions", sessionUID, "discover"), nil, &response, credential); err != nil {
@@ -154,6 +164,7 @@ func (c *Client) CreateRequestWithStatus(ctx context.Context, request CreateRequ
 			Kind:               sdkagents.RequestKind(request.Kind),
 			Title:              request.Title,
 			Action:             request.Action,
+			DurationSeconds:    request.DurationSeconds,
 			ConnectionID:       request.ConnectionID,
 			CredentialID:       request.CredentialID,
 			CredentialProvider: request.CredentialProvider,

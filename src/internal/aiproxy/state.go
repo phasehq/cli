@@ -61,6 +61,14 @@ type runtimeState struct {
 	// running session had exported. Those variables stay behind in processes
 	// that already started; they name decoys nothing accepts any more.
 	retiredEnvironment map[string]string
+	// expired are this Workflow's grants whose time limit passed recently, as
+	// the Console last listed them. They carry nothing the Agent's processes
+	// were given, so they change in place.
+	expired []agentapi.ExpiredConnection
+	// presets and hints are session-local memory: the Console's preset list,
+	// and recent dead ends with what to ask for to get past them.
+	presets *presetCache
+	hints   *hintLog
 
 	client *agentapi.Client
 	fatal  chan error
@@ -97,6 +105,9 @@ func newRuntimeStateWithCapability(session *airuntime.ProxySession, runtimeCapab
 		healthy:           true,
 		changed:           make(chan struct{}),
 		refreshRequests:   make(chan struct{}, 1),
+		expired:           append([]agentapi.ExpiredConnection(nil), session.Config.ExpiredConnections...),
+		presets:           newPresetCache(session.Client),
+		hints:             &hintLog{},
 		client:            session.Client,
 		fatal:             make(chan error, 1),
 	}, nil
@@ -217,6 +228,21 @@ func (b *binding) authorizationDecision(now time.Time) connectionAuthorizationDe
 	}
 	if b.connection.CredentialExpiresAt != nil && !now.Before(*b.connection.CredentialExpiresAt) {
 		return connectionAuthorizationDecision{code: "agent_credential_expired", reason: "credential_expired", message: "The Connection credential has expired.", status: http.StatusForbidden}
+	}
+	// Time-limited access ends by the clock, whether or not a refresh has
+	// removed the Connection yet.
+	if b.connection.GrantExpired(now) {
+		return connectionAuthorizationDecision{
+			code: codeAccessExpired, reason: agentapi.AccessExpired, status: http.StatusForbidden,
+			message: "This Workflow's access to the Connection has expired. To ask a member to renew it, send the JSON in details.request unchanged to POST " + requestsURL + ".",
+		}
+	}
+	// A policy this client cannot read is never enforced in part.
+	if failure := b.connection.AccessPolicyFailure(); failure != "" {
+		return connectionAuthorizationDecision{
+			code: codeAccessPolicyUnsupported, reason: failure, status: http.StatusForbidden,
+			message: "This Phase CLI cannot enforce the access policy on the Connection. Update the Phase CLI.",
+		}
 	}
 	authorization := b.connection.Authorization
 	if validateConnectionAuthorization(authorization) == nil {
@@ -495,6 +521,7 @@ func (s *runtimeState) replaceConfig(config *agentapi.SessionConfig) error {
 	}
 	oldBindings := s.bindings
 	s.bindings = bindings
+	s.expired = append([]agentapi.ExpiredConnection(nil), config.ExpiredConnections...)
 	s.expiresAt = config.ExpiresAt
 	s.generation = config.ConfigGeneration
 	s.configEnv = cloneStringMap(config.ConfigEnv)
@@ -541,24 +568,39 @@ func (s *runtimeState) statusConnections(now time.Time) []remoteapi.StatusConnec
 			ServiceType:        candidate.connection.ServiceType,
 			Protocol:           candidate.connection.Protocol,
 			State:              candidate.printableState(now),
+			StateReason:        candidate.stateReason(now),
 			ExpiresAt:          candidate.connection.CredentialExpiresAt,
+			GrantExpiresAt:     candidate.connection.GrantExpiresAt,
 		})
 	}
 	return connections
 }
 
 // printableState is the state of a Connection in this proxy: ready, expired
-// (the credential expiry passed) or unavailable (not authorized, or its sealed
-// value could not be opened).
+// (the credential expiry or the grant's time limit passed) or unavailable (not
+// authorized, a policy this client cannot enforce, or a sealed value that
+// could not be opened).
 func (b *binding) printableState(now time.Time) string {
 	decision := b.authorizationDecision(now)
 	switch {
-	case decision.code == "agent_credential_expired":
+	case decision.code == "agent_credential_expired" || decision.code == codeAccessExpired:
 		return "expired"
 	case !decision.allowed || b.connection.MaterialUnavailable():
 		return "unavailable"
 	default:
 		return "ready"
+	}
+}
+
+// stateReason says why a Connection is not ready, when the proxy can name it.
+func (b *binding) stateReason(now time.Time) string {
+	switch {
+	case b.connection.GrantExpired(now):
+		return agentapi.AccessExpired
+	case b.connection.AccessPolicyFailure() != "":
+		return b.connection.AccessPolicyFailure()
+	default:
+		return b.connection.MaterialFailure()
 	}
 }
 
@@ -587,6 +629,11 @@ type configChange struct {
 // go away, while the session keeps running. One that exports nothing may also
 // be added: the Agent's processes are given nothing new, the proxy only starts
 // serving it.
+//
+// A grant's access policy, its temporary allows, a definition's operation
+// classes, the grant's time limit and the list of expired Connections are
+// deliberately not compared: none of them is visible to the Agent's
+// processes, the proxy alone enforces them, so they always apply in place.
 func classifyConfigChange(oldBindings, newBindings []*binding, oldConfigEnv, newConfigEnv map[string]string) configChange {
 	if !equalStringMap(oldConfigEnv, newConfigEnv) {
 		return configChange{reprovision: true}
@@ -775,7 +822,10 @@ func (s *runtimeState) applyTrustedDiscoverAuthorization(discover *agentapi.Disc
 
 // discoverConnectionMatchesRuntime checks the Agent-visible shape of a
 // Connection. The credential expiry is left out: assumed-role credentials get
-// a fresh expiry on every refresh without the environment changing.
+// a fresh expiry on every refresh without the environment changing. The
+// policy, operation classes and grant expiry are left out too: they are not
+// part of the environment, a temporary allow or a renewal changes them between
+// two reads, and the proxy enforces its own copy, never the discover one.
 func discoverConnectionMatchesRuntime(discover agentapi.DiscoverConnection, runtime agentapi.Connection) bool {
 	return discover.ConnectionID == runtime.ConnectionID &&
 		discover.ConnectionName == runtime.ConnectionName &&

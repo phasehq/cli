@@ -13,7 +13,10 @@ import (
 
 // connectionDetails projects the session's Connections for an Agent to read.
 // It is served from the configuration the proxy already holds, so it costs no
-// Console call. An empty id returns every Connection.
+// Console call. An empty id returns every Connection. A Connection whose
+// time-limited access has ended is listed as expired with the request that
+// asks to renew it: one still in the configuration because no refresh has
+// removed it yet, and those the Console lists as recently expired.
 func (s *runtimeState) connectionDetails(now time.Time, id string) []remoteapi.ConnectionDetail {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -25,17 +28,42 @@ func (s *runtimeState) connectionDetails(now time.Time, id string) []remoteapi.C
 			continue
 		}
 		detail := remoteapi.ConnectionDetail{
-			ID:          connection.ConnectionID,
-			Name:        connection.ConnectionName,
-			ServiceType: connection.ServiceType,
-			State:       candidate.printableState(now),
-			StateReason: connection.MaterialFailure(),
+			ID:             connection.ConnectionID,
+			Name:           connection.ConnectionName,
+			ServiceType:    connection.ServiceType,
+			State:          candidate.printableState(now),
+			StateReason:    candidate.stateReason(now),
+			Policy:         connection.Policy,
+			GrantExpiresAt: connection.GrantExpiresAt,
 		}
 		if connection.ServiceType == agentapi.CustomHTTPServiceType {
 			detail.Definition = connection.ConnectionConfig
 			detail.KeyVersion, detail.ValueRevision = customConnectionVersions(connection)
 		}
+		if connection.GrantExpired(now) {
+			detail.ExpiredAt = connection.GrantExpiresAt
+			detail.Request = renewRequest(connection.ConnectionID, connection.ConnectionName)
+		}
 		details = append(details, detail)
+	}
+	for _, expired := range s.expired {
+		if (id != "" && expired.ConnectionID != id) || !controlIdentifier.MatchString(expired.ConnectionID) {
+			continue
+		}
+		// Access that was renewed since is live again and listed above.
+		renewed := false
+		for _, candidate := range s.bindings {
+			renewed = renewed || candidate.connection.ConnectionID == expired.ConnectionID
+		}
+		if renewed {
+			continue
+		}
+		expiredAt := expired.ExpiredAt
+		details = append(details, remoteapi.ConnectionDetail{
+			ID: expired.ConnectionID, Name: expired.ConnectionName, ServiceType: expired.ServiceType,
+			State: "expired", StateReason: agentapi.AccessExpired, ExpiredAt: &expiredAt,
+			Request: renewRequest(expired.ConnectionID, expired.ConnectionName),
+		})
 	}
 	return details
 }

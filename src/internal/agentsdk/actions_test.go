@@ -21,16 +21,19 @@ func TestRequestActionRegistryMapsEveryTypeToItsKind(t *testing.T) {
 		"agent_connection.update":        "connection_update",
 		"agent_connection.secret_update": "credential_update",
 		"agent_connection.remove":        "connection_removal",
+		"agent_grant.allow":              "access_change",
+		"agent_grant.renew":              "access_change",
+		"agent_workflow.context_update":  "context_update",
 	}
 	if !reflect.DeepEqual(requestActionKinds, want) {
 		t.Fatalf("action registry = %v", requestActionKinds)
 	}
 	for actionType, kind := range want {
-		action := json.RawMessage(`{"type":"` + string(actionType) + `","version":1,"connectionId":"connection-1"}`)
+		action := json.RawMessage(`{"type":"` + string(actionType) + `","version":1,"connectionId":"connection-1","allow":{"class":"delete"},"markdown":"# Notes"}`)
 		if err := ValidateRequestAction(kind, action); err != nil {
 			t.Errorf("%s under %s: %v", actionType, kind, err)
 		}
-		for _, other := range []RequestKind{RequestSetup, RequestCredentialUpdate, RequestConnectionUpdate, RequestConnectionRemoval, "access"} {
+		for _, other := range []RequestKind{RequestSetup, RequestCredentialUpdate, RequestConnectionUpdate, RequestConnectionRemoval, RequestAccessChange, RequestContextUpdate, "access"} {
 			if other != kind && ValidateRequestAction(other, action) == nil {
 				t.Errorf("%s was accepted under request kind %s", actionType, other)
 			}

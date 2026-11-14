@@ -5,7 +5,9 @@ control API on the reserved host `http://phase.invalid`. The host never resolves
 in DNS; requests only reach it *through the proxy*, so the proxy capability is
 the authentication. Everything below is implemented in
 `internal/aiproxy/control.go` (routes), `connections.go` (Connection reads),
-`bootstrap.go` (manifest) and `selection.go` (per-Connection environment). Wire
+`presets.go` and `hints.go` (presets and hints), `policy.go` (access policy
+answers), `bootstrap.go` (manifest) and `selection.go` (per-Connection
+environment). Wire
 types live in
 `internal/agentapi/types.go`, `internal/remoteapi/types.go` and the Go SDK
 (`phase/agents/types.go`).
@@ -24,7 +26,7 @@ All IDs, URLs and values in the examples are dummies.
 | Query strings | Rejected (400 `invalid_control_query`) except `?wait=` on request creation/polling and `?serviceType=` on context. |
 | Browser safety | A `POST` carrying `Origin`, `Referer` or a `Sec-Fetch-Site` other than `none` is refused with 403 `browser_control_mutation_rejected`. |
 | Remote (relay) mode | Same routes over the relay's TLS proxy (`phase relay start`), except `GET /v1/discover`, `POST /v1/revoke` and `POST /v1/rotate`, which are local-only. `GET /v1/bootstrap` exists only on a relay. |
-| Limits | Request bodies ≤ 64 KiB. IDs match `^[A-Za-z0-9._-]{1,128}$`. `markdown` ≤ 16 KiB. `title` ≤ 120 characters. `wait` is 0–300 whole seconds. |
+| Limits | Request bodies ≤ 128 KiB. IDs match `^[A-Za-z0-9._-]{1,128}$`. `markdown` ≤ 16 KiB. `title` ≤ 120 characters. A Workflow context ≤ 16384 characters. `wait` is 0–300 whole seconds. |
 
 Missing or wrong capability on **any** proxied request:
 
@@ -43,9 +45,11 @@ Content-Type: application/json
 |---|---|---|
 | The Agent, following the `phase-cli` skill | `GET /v1/capabilities`, `GET /v1/status` | When the human asks for Phase, or to find out whether Phase can manage a service. In transparent mode the per-prompt status line already names the ready Connections, so this is mostly for service discovery. |
 | The Agent | `GET /v1/context?serviceType=…` | Before using a service through Phase: provider-specific instructions and limitations, rendered by Console. |
-| The Agent | `POST /v1/requests`, `GET /v1/requests/{id}?wait=300`, `GET /v1/requests`, `POST /v1/requests/{id}/cancel` | No suitable Connection exists (`setup`), the provider rejected the credential (`credential_update`), or the Agent requests a change to a custom HTTP Connection (an `action`). The Agent prints `approvalUrl` for the human, then long-polls. |
+| The Agent | `POST /v1/requests`, `GET /v1/requests/{id}?wait=300`, `GET /v1/requests`, `POST /v1/requests/{id}/cancel` | No suitable Connection exists (`setup`), the provider rejected the credential (`credential_update`), or the Agent requests a change with an `action`: to a custom HTTP Connection, to this Workflow's access (allow a call the policy asks about, renew time-limited access), or to the Workflow's saved context. The Agent prints `approvalUrl` for the human, then long-polls. |
 | The Agent | `GET /v1/connections`, `GET /v1/connections/{id}` | To read what its Connections are, and to get the current definition of a custom HTTP Connection before requesting a change. Served from the session the proxy already holds. |
 | The Agent | `POST /v1/refresh` | After a member replaced the secret of a custom HTTP Connection, to use the new value now instead of at the next periodic refresh. |
+| The Agent | `GET /v1/presets` | To ask for a Connection to a well-known service by preset ID instead of writing a definition. |
+| The Agent | `GET /v1/hints` | After a refusal whose body its client hid, or after a service answered 401 or 403 on a host no Connection covers: the ready-to-send requests for recent dead ends. |
 | `phase ai exec --connection <id>` (the CLI, not the Agent) | `GET /v1/connections/{id}/environment` | Builds the per-Connection process environment (decoys + scoped proxy URL) for one command. Sensitive: contains the proxy password. |
 | Hook wrapper `phase ai __harness-exec` and `phase ai exec` attach | `GET /.well-known/agents` (manifest) | Right before running a wrapped command, to fetch the exact process environment of the live runtime. Sensitive; the skill forbids the Agent from fetching it. |
 | Claude Code hooks in transparent mode | nothing | SessionStart and heartbeat read local files only; the shell sources `~/.phase/ai/env.sh`. |
@@ -62,7 +66,7 @@ also sets `X-Phase-Error-Code`. Proxied failures that belong to a Connection add
 {
   "error": {
     "code": "invalid_control_request",
-    "message": "Use setup with serviceType or credential_update with connectionId and credentialId; credentialProvider, credentialName, markdown, and an optional dedupKey are required. Or send an action of a known type with version 1 under its request kind; an action never carries a secret value.",
+    "message": "Use setup with serviceType or credential_update with connectionId and credentialId; credentialProvider, credentialName, markdown, and an optional dedupKey are required. Or send an action of a known type with version 1 under its request kind; an action never carries a secret value. durationSeconds, when sent, is a positive whole number on a request that ends in access.",
     "retryable": false,
     "details": {}
   }
@@ -101,7 +105,8 @@ Host: phase.invalid
       "serviceType": "aws",
       "protocol": "http",
       "state": "ready",
-      "expiresAt": "2026-10-17T18:00:00Z"
+      "expiresAt": "2026-10-17T18:00:00Z",
+      "grantExpiresAt": "2026-10-18T09:00:00Z"
     },
     {
       "connectionId": "c0a80101-0000-4000-8000-0000000000a2",
@@ -124,13 +129,19 @@ Host: phase.invalid
     "status": "http://phase.invalid/v1/status",
     "context": "http://phase.invalid/v1/context",
     "createRequest": "http://phase.invalid/v1/requests",
-    "pollRequest": "http://phase.invalid/v1/requests/{requestId}"
+    "pollRequest": "http://phase.invalid/v1/requests/{requestId}",
+    "presets": "http://phase.invalid/v1/presets",
+    "hints": "http://phase.invalid/v1/hints"
   }
 }
 ```
 
-`state` is `ready`, `expired` (credential expiry passed) or `unavailable` (not
-authorized, or a sealed value the proxy could not open). A custom HTTP
+`state` is `ready`, `expired` (the credential expiry or the time limit on this
+Workflow's access passed) or `unavailable` (not authorized, an access policy
+this CLI cannot enforce, or a sealed value the proxy could not open).
+`stateReason` names the cause when the proxy knows it, for example
+`access_expired`. `grantExpiresAt` is present when access to the Connection is
+time-limited; `expiresAt` is the credential's own expiry. A custom HTTP
 Connection appears with `serviceType` and `credentialProvider` `http`; its
 `credentialId` is the Connection ID and `credentialRevision` is the value
 revision.
@@ -153,6 +164,14 @@ session material; a payload that would is refused with 502
       "name": "Example API",
       "serviceType": "http",
       "state": "ready",
+      "policy": {
+        "version": 1,
+        "default": "allow",
+        "rules": [{ "class": "delete", "effect": "ask" }, { "match": { "methods": ["POST"], "path": "/v1/charges/*" }, "effect": "block" }],
+        "temporaryAllows": [{ "id": "allow-1", "match": { "methods": ["DELETE"], "path": "/v1/items/42" }, "expiresAt": "2026-10-17T19:00:00Z" }],
+        "managed": [{ "id": "secret_guard", "locked": true, "rules": [{ "class": "credential_minting", "effect": "block" }] }]
+      },
+      "grantExpiresAt": "2026-10-18T09:00:00Z",
       "definition": {
         "specVersion": 1,
         "hosts": [{ "match": "exact", "value": "api.example.com", "port": 443, "path": "/v1/*" }],
@@ -173,10 +192,33 @@ session material; a payload that would is refused with 502
       "name": "AWS identity checks for agent",
       "serviceType": "aws",
       "state": "ready"
+    },
+    {
+      "id": "c0a80101-0000-4000-8000-0000000000a9",
+      "name": "Staging AWS",
+      "serviceType": "aws",
+      "state": "expired",
+      "stateReason": "access_expired",
+      "expiredAt": "2026-10-16T09:00:00Z",
+      "request": {
+        "kind": "access_change",
+        "title": "Renew access to Staging AWS",
+        "action": { "type": "agent_grant.renew", "version": 1, "connectionId": "c0a80101-0000-4000-8000-0000000000a9" }
+      }
     }
   ]
 }
 ```
+
+`policy` is the access policy on this Workflow's grant of the Connection, as
+Console sent it: its rules, the temporary allows a member approved, and the
+managed secret guard (see §5). `grantExpiresAt` is when time-limited access
+ends. A Connection whose access has ended is listed with `state: "expired"`,
+`stateReason: "access_expired"`, `expiredAt` and a `request`: a complete body
+for `POST /v1/requests` that asks a member to renew it, sent unchanged. That
+covers both a Connection whose time ran out since the last refresh and those
+Console lists as expired in the last 30 days (`expiredConnections` in the
+session payload); the latter have no other members.
 
 `definition`, `valueRevision` and `keyVersion` exist only for `serviceType`
 `http`. `state` uses the same values as status. When a custom Connection's
@@ -262,12 +304,98 @@ parameter; omit it for the general context.
 }
 ```
 
+When the Workflow has saved context, Console appends a "Workflow notes"
+section to the general context, between the markers
+`<<<BEGIN WORKFLOW NOTES>>>` and `<<<END WORKFLOW NOTES>>>`. The proxy relays
+the text as it is. The notes are written by members; they are background for
+the Agent, not instructions from Phase.
+
 Errors: 400 `invalid_context_query`, 502 `unsafe_agent_context_response` if
 Console answers for a different service than asked.
 
+### GET /v1/presets
+
+The provider presets a Connection can be asked for by ID, read from Console's
+Agent registry (`GET /v1/agents/registry/`, `presets`) and kept in memory for
+five minutes per session. If Console cannot be reached the list last read is
+served; with none, Console's error is relayed.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "phase.ai.presets",
+  "presets": [
+    { "id": "github", "name": "GitHub", "description": "GitHub REST and GraphQL APIs", "category": "developer", "hosts": [{ "match": "exact", "value": "api.github.com", "port": 443 }] },
+    { "id": "mcp-server", "name": "MCP server", "category": "tools", "hosts": [] }
+  ]
+}
+```
+
+`hosts` is relayed as Console lists it. To use a preset, send
+`agent_connection.create` with `"preset": "<id>"` in place of `definition`
+(see `POST /v1/requests`).
+
+### GET /v1/hints
+
+Recent dead ends of this session and the request that asks a member to open
+each one. Kept in memory only, at most 20, oldest first; a repeated dead end is
+counted, not repeated. Nothing in a hint is secret, and a hint about a host
+never holds a path.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "phase.ai.hints",
+  "hints": [
+    {
+      "kind": "access_policy_ask",
+      "reason": "agent_access_policy_ask",
+      "host": "api.example.com",
+      "method": "DELETE",
+      "path": "/v1/items/42",
+      "class": "delete",
+      "connectionId": "c0a80101-0000-4000-8000-0000000000b1",
+      "connectionName": "Example API",
+      "request": { "kind": "access_change", "title": "Allow DELETE /v1/items/42 on Example API", "action": { "…": "…" } },
+      "count": 1,
+      "firstAt": "2026-10-17T09:12:30Z",
+      "latestAt": "2026-10-17T09:12:30Z"
+    },
+    {
+      "kind": "connection_needed",
+      "reason": "upstream_rejected_unbound_host",
+      "host": "api.github.com",
+      "statusCode": 401,
+      "preset": "github",
+      "request": { "kind": "setup", "title": "Connect GitHub", "action": { "type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "GitHub", "preset": "github" } },
+      "count": 2,
+      "firstAt": "2026-10-17T09:13:02Z",
+      "latestAt": "2026-10-17T09:13:40Z"
+    }
+  ]
+}
+```
+
+| `kind` | `reason` | recorded when |
+|---|---|---|
+| `access_policy_ask` | `agent_access_policy_ask` | the access policy asked about a call (§5); `request` is the one the 403 carried |
+| `access_expired` | `access_expired` | a call reached a Connection whose time-limited access has ended; `request` asks to renew it |
+| `connection_needed` | `lockdown_unbound_host` | `--lockdown` refused a host no Connection covers |
+| `connection_needed` | `upstream_rejected_unbound_host` | a service answered 401 or 403 to a plain-HTTP request on a host no Connection covers; its answer was passed on untouched |
+| `connection_needed` | `unbound_preset_host` | the Agent tunnelled to a host no Connection covers that belongs to a preset. The proxy cannot see the answers inside such a tunnel, so this is how an HTTPS 401 or 403 is addressed |
+
+For `connection_needed` the `request` is built when the hints are read: by
+preset ID when the host belongs to a preset, otherwise an
+`agent_connection.create` whose definition has the host filled in and a bearer
+token attached in the `Authorization` header (it exports no variable, so an
+approval is served by the running session). Adjust the definition before
+sending when the service authenticates differently. A host a Connection covers
+by now is no longer listed.
+
 ### POST /v1/requests
 
-Ask the human for something through Console. Two kinds. Optional `?wait=N`
+Ask the human for something through Console: a packaged request (the two
+kinds below) or a request with an `action`. Optional `?wait=N`
 (0–300 s) makes the proxy long-poll before answering, so a quick approval comes
 back in the same response.
 
@@ -334,17 +462,54 @@ in Console and enters any secret there.
 | `agent_connection.update` | `connection_update` | request a new definition and/or name for a granted Connection |
 | `agent_connection.secret_update` | `credential_update` | ask a member to enter a new secret; carries no value |
 | `agent_connection.remove` | `connection_removal` | ask to remove this Workflow's grant of a Connection |
+| `agent_connection.create` with `preset` | `setup` | request a new Connection from a preset: `preset` (an ID from `GET /v1/presets`) in place of `definition`; `hosts` only for a preset whose hosts are editable |
+| `agent_grant.allow` | `access_change` | ask to allow, for a limited time, a call the access policy asks about: `connectionId`, `allow` (exactly one of `class` or `match`), optional `blockedCall` |
+| `agent_grant.renew` | `access_change` | ask to renew time-limited access: `connectionId` |
+| `agent_workflow.context_update` | `context_update` | ask to replace the Workflow's saved context: `markdown`, the complete new text |
 
 Rules enforced by the proxy for a request with an `action`: the type is one of
-the four above, `version` is `1`, `kind` is the one listed for the type, and the
+those above, `version` is `1`, `kind` is the one listed for the type, and the
 action carries no secret value (no `value` member on the action itself, and in
 `definition.fields` a `value` only on a field of kind `identifier`; a
-`definition` that is not an object is refused). Everything else inside `action`
-is forwarded to Console untouched, including members this CLI does not know, and
-Console validates it. `title` (≤ 120 characters, plain text) and `markdown` are
+`definition` that is not an object is refused). Three types have one more local
+check each: a `preset` is an ID and stands in place of `definition`, never
+beside it; `allow` has exactly one of `class` or `match`, and its class is
+never `credential_minting`; `markdown` of a context update is text of at most
+16384 characters. Everything else inside `action` is forwarded to Console
+untouched, including members this CLI does not know, and Console validates it. `title` (≤ 120 characters, plain text) and `markdown` are
 optional beside an action; a missing `markdown` is forwarded as `""`.
-`credentialProvider` and `credentialName` are not needed. The two new kinds are
-valid only with an action. The response echoes `title` and `action`.
+`credentialProvider` and `credentialName` are not needed. `connection_update`,
+`connection_removal`, `access_change` and `context_update` are valid only with
+an action. The response echoes `title` and `action`.
+
+Time-limited access. A request that ends in access (`setup`, packaged or with
+an action, and `access_change`) may carry a top-level `durationSeconds`:
+
+```json
+{
+  "kind": "access_change",
+  "title": "Allow DELETE /v1/items/42 on Example API",
+  "durationSeconds": 3600,
+  "action": {
+    "type": "agent_grant.allow",
+    "version": 1,
+    "connectionId": "c0a80101-0000-4000-8000-0000000000b1",
+    "allow": { "match": { "methods": ["DELETE"], "path": "/v1/items/42" } },
+    "blockedCall": { "method": "DELETE", "host": "api.example.com", "path": "/v1/items/42", "class": "delete" }
+  }
+}
+```
+
+Absent, the organisation's default applies; the requests the proxy builds leave
+it out. The proxy refuses only what can never be valid (zero, negative, not a
+whole number, or on a kind that does not end in access); Console owns the
+bounds and answers `invalid_duration` with the maximum in the message. The
+member who approves may change the duration. Other Console codes relayed as
+they are: `invalid_access_allow`, `access_policy_blocks_allow` (a block rule
+covers the allow, so approval could not help), `secret_guard_blocks_call`,
+`access_policy_not_supported`, `connection_not_renewable`,
+`invalid_connection_preset`, `invalid_workflow_context`,
+`credential_in_workflow_context`.
 
 After approval, `connection_update` and `connection_removal` make the proxy
 re-pull its configuration, and the proxy decides the `runtimeAction`. A custom
@@ -359,6 +524,17 @@ an inherited `NO_PROXY` entry covers) answers `restart_required`. Packaged servi
 recycle on any change to their hosts, configuration or injection. A removed
 Connection's variable stays in processes that already run; it names a decoy
 nothing accepts any more, and the manifest does not treat it as drift.
+
+An approved `access_change` also makes the proxy re-pull its configuration. A
+temporary allow and a later expiry are enforced by the proxy alone and never
+reach the Agent's environment, so they apply to the running session: `retry`,
+and the refused call goes through when repeated. The same holds for every
+change to a policy, to `operationClasses`, to `grantExpiresAt` and to the list
+of expired Connections, whoever made it: they apply at the next refresh, never
+recycle the session, and are not compared by the manifest or by discover.
+Only a renewal that creates a new grant for a Connection that exports
+something answers `restart_required`. An approved `context_update` changes
+nothing in the proxy and answers `retry`.
 
 Pending (the normal first answer):
 
@@ -607,7 +783,9 @@ decoy are translated to the live credential of the same Connection.
 
 The Console discovery payload for this session: Connections with hosts,
 injection action, identifiers, decoys and bindings, never live material. A
-diagnostic view of what the proxy is configured to do.
+diagnostic view of what the proxy is configured to do. `policy`,
+`operationClasses`, `grantExpiresAt` and `expiredConnections` are relayed as
+Console sent them and are not checked against the proxy's configuration.
 
 ### POST /v1/refresh
 
@@ -654,12 +832,158 @@ swapped nor attached on a plain-HTTP request unless the Connection carries
 `allowPlainHttp: true`; the request is refused with
 `agent_credential_injection_failed`. Failures on bound traffic use the
 envelope from §3 for most services and an AWS-style XML error
-(`<Error><Code>PhaseProxyError|PhaseAccessDenied|PhaseCredentialMintingBlocked</Code>…`)
+(`<Error><Code>PhaseProxyError|PhaseAccessDenied|PhaseCredentialMintingBlocked|PhaseAccessPolicyAsk|PhaseAccessPolicyBlocked|PhaseAccessExpired</Code>…`)
 for `aws_sigv4` Connections. Codes worth knowing: `agent_connection_denied`
-(403, Connection not authorized), `credential_minting_blocked` (403, see
-`pkg/proxy/minting.go`), `agent_credential_injection_failed` (403, e.g. the
+(403, Connection not authorized), `agent_access_policy_ask` and
+`agent_access_policy_blocked` (403, below), `agent_access_expired` (403,
+time-limited access ended), `agent_credential_injection_failed` (403, e.g. the
 request was not signed with the decoy), `agent_binding_unavailable` (503, session
 recycling), `upstream_unavailable` (502), `unbound_host_blocked` (403, lockdown).
+
+### Access policy
+
+A grant's `policy` is evaluated for every request to an HTTP Connection before
+its credential is swapped in or attached. A policy that only allows (the
+default) is not evaluated at all, and the Connection behaves as without one.
+
+1. The call is classified. For the `aws` service by action name
+   (`pkg/proxy/aws_classes.go`: a read verb is `read`; a write in IAM,
+   Organizations, an account service, or to a policy, permission or ACL is
+   `admin`; then `create` and `delete` verbs; anything else `update`), read
+   from `X-Amz-Target`, the `Action` query parameter and the `Action` field of
+   a form body. A request that names no action (S3 and the other REST
+   services) is classified by method, with S3's `?delete`, `?policy`, `?acl`
+   and similar sub-resources called out. For any other HTTP Connection: the
+   definition's `operationClasses`, first match wins, then the method (`GET`,
+   `HEAD`, `OPTIONS` read; `POST` create; `PUT`, `PATCH` update; `DELETE`
+   delete; anything else update).
+2. The secret guard runs first (below).
+3. Every matching rule is collected and the strongest effect wins: `block`,
+   then `ask`, then `allow`. No matching rule: the policy's `default`.
+4. An `ask` becomes an `allow` when a temporary allow matches the call and its
+   `expiresAt` has not passed. That is read from the clock on every request. A
+   temporary allow never changes a `block`.
+
+A request that could belong to several classes (an AWS request naming two
+actions, a path the proxy cannot bring into canonical form) is judged by the
+most restricted one. Such a path matches every `ask` or `block` path rule and
+no `allow` path rule. An AWS query-protocol body too large to read (256 KiB) is
+refused with `agent_access_policy_uninspectable`. A policy this CLI cannot read
+in full (an unknown version, effect, class or rule member) is never enforced in
+part: the Connection is `unavailable` with `stateReason`
+`access_policy_unsupported` and its calls answer 403
+`agent_access_policy_unsupported`.
+
+The answer when the policy stops a call is 403, at once; the proxy never holds
+a call open waiting for approval:
+
+```json
+{
+  "error": {
+    "code": "agent_access_policy_ask",
+    "message": "Phase did not send this call: this DELETE (a delete call) on Example API needs a member's approval under this Workflow's access policy. To ask for it, send the JSON in details.request unchanged to POST http://phase.invalid/v1/requests, show the human the approvalUrl, and retry the call once the request is approved.",
+    "retryable": false,
+    "details": {
+      "connectionId": "c0a80101-0000-4000-8000-0000000000b1",
+      "grantId": "c0a80101-0000-4000-8000-0000000000e1",
+      "connectionName": "Example API",
+      "class": "delete",
+      "method": "DELETE",
+      "path": "/v1/items/42",
+      "rule": { "class": "delete", "effect": "ask" },
+      "request": {
+        "kind": "access_change",
+        "title": "Allow DELETE /v1/items/42 on Example API",
+        "action": {
+          "type": "agent_grant.allow",
+          "version": 1,
+          "connectionId": "c0a80101-0000-4000-8000-0000000000b1",
+          "allow": { "match": { "methods": ["DELETE"], "path": "/v1/items/42" } },
+          "blockedCall": { "method": "DELETE", "host": "api.example.com", "path": "/v1/items/42", "class": "delete" }
+        }
+      }
+    }
+  }
+}
+```
+
+`rule` is the rule that decided, `"default"`, or `"secret_guard"`. `operation`
+is added when an AWS request names its action (`"ec2:TerminateInstances"`).
+`agent_access_policy_blocked` has the same details without `request`: a blocked
+call cannot be requested.
+
+`request` names the narrowest thing that covers the call: its method and its
+exact path (glob characters escaped). It names the call's class instead when
+that is narrower or the path cannot be used: an AWS action carried in a header
+or a body shares `POST /` with every other action of the service; a path that
+is not canonical, is longer than 1024 characters, or holds a decoy or
+something shaped like a credential is never repeated (`blockedCall.path` is
+then `/redacted`). No `durationSeconds` is set. An AWS client shows only an
+error code and message, so for `aws_sigv4` Connections the message ends with
+the same request as `JSON: {…}`; `GET /v1/hints` lists it too.
+
+### Secret guard
+
+Calls that mint a new credential or assume another identity (AWS STS
+`AssumeRole*`, `GetSessionToken`, `GetFederationToken`, IAM `CreateAccessKey`,
+ECR `GetAuthorizationToken`, a GitHub App installation token and the rest of
+the table in `pkg/proxy/minting.go`) are blocked on every Connection, with or
+without a policy. No rule, temporary allow or Connection setting turns the
+guard off. The answer is 403 `agent_access_policy_blocked` with
+`"class": "credential_minting"` and `"rule": "secret_guard"`
+(`PhaseCredentialMintingBlocked` in the AWS envelope); a request the proxy
+cannot inspect for it keeps `credential_minting_uninspectable`.
+
+As a backstop, responses on `aws_sigv4` Connections are scanned for credential
+material in the shape STS uses: a `SecretAccessKey` (or `SecretKey`) value with
+an `AccessKeyId` value within 8 KiB of it, as XML elements or JSON members, in
+any letter case. That secret key, the nearest access key ID and the nearest
+`SessionToken` are replaced with `PHASE_REDACTED_CREDENTIAL` before the
+response reaches the Agent, and an event with reason
+`credential_response_scrubbed` and the number of values is recorded. A lone
+`AccessKeyId`, as in a list of a user's keys, is left as it is. Only XML and
+JSON bodies (or bodies with no `Content-Type`) are scanned; custom HTTP
+Connections are never scanned. The scan runs as the body streams, so chunked
+and arbitrarily large bodies are covered with a bounded window and
+`Content-Length` is dropped (the proxy frames the body itself). A gzip body is
+decoded to look and re-encoded only when something was replaced; a body in any
+other encoding, or a gzip body above 8 MiB, cannot be inspected and is refused
+with 502 `unsafe_aws_response`.
+
+### Time-limited access
+
+A Connection past its `grantExpiresAt` is refused by the clock on every
+request, before the next refresh removes it: 403 `agent_access_expired`
+(`PhaseAccessExpired`), with `details.request` holding the renew request and
+`details.expiredAt`. Open WebSocket and PostgreSQL streams of that Connection
+are closed.
+
+### Hosts no Connection covers
+
+Under `--lockdown` the 403 `unbound_host_blocked` names how to ask for a
+Connection: `details.host`, `details.hints` (the hints URL) and, once the
+session holds the preset list, `details.request` (by preset ID when the host
+belongs to a preset, `details.preset`). The proxy never waits for Console to
+answer a proxied request: the first refusal starts reading the preset list in
+the background and carries no `request`; `GET /v1/hints` always has it. A
+refused CONNECT rarely shows its body to the caller, which is the other reason
+the hints route exists.
+
+Without lockdown, a service's own 401 or 403 on such a host is passed on
+untouched, body and headers; the proxy only records a hint.
+
+### Events
+
+An asked call is recorded with `proxyDecision: "ask"` and reason
+`agent_access_policy_ask`; a blocked one, the secret guard included, with
+`"block"` and `agent_access_policy_blocked`. `detail` carries `connectionId`,
+`connectionName`, `class`, `method`, `path`, `rule` (`"default"`,
+`"secret_guard"` or the one rule object) and `operation` when known. The
+ready-to-send request is never part of an event. A scrubbed response is an
+event of its own: `proxyDecision: "allow"`, `outcome: "scrubbed"`, reason
+`credential_response_scrubbed`, `detail.rule: "secret_guard"` and
+`detail.scrubbedValues`. All of these are spooled to disk like denials until
+Console has them.
 
 Every response to bound traffic, success or refusal, carries `X-Phase-Event-Id:
 event-…`, the ID of the event the proxy reports to the Console for that request

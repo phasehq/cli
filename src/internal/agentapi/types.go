@@ -451,6 +451,7 @@ const (
 	FeatureInjectionList  = string(sdkagents.FeatureInjectionList)
 	FeatureWhenAbsent     = string(sdkagents.FeatureWhenAbsent)
 	FeatureSealedMaterial = string(sdkagents.FeatureSealedMaterial)
+	FeatureAccessPolicy   = string(sdkagents.FeatureAccessPolicy)
 )
 
 type ClientCapabilities struct {
@@ -565,6 +566,13 @@ type Connection struct {
 	SealedMaterial      *SealedMaterial         `json:"sealedMaterial,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
+	// Policy, OperationClasses and GrantExpiresAt limit how this grant may be
+	// used. The proxy enforces them before it swaps in or attaches the
+	// credential. None of them reaches the Agent's environment, so a change to
+	// any of them applies to a running session.
+	Policy           *AccessPolicy    `json:"policy,omitempty"`
+	OperationClasses OperationClasses `json:"operationClasses,omitzero"`
+	GrantExpiresAt   *time.Time       `json:"grantExpiresAt,omitempty"`
 
 	// materialFailure is set when the client withheld this Connection's value.
 	materialFailure string
@@ -605,6 +613,9 @@ type SessionConfig struct {
 	ConfigEnv        map[string]string `json:"configEnv"`
 	Connections      []Connection      `json:"connections"`
 	AgentKey         *AgentKey         `json:"agentKey,omitempty"`
+	// ExpiredConnections are this Workflow's grants whose time limit passed
+	// recently; the proxy lists them so the Agent knows what to ask to renew.
+	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
 }
 
 type OpenSessionResponse struct {
@@ -641,14 +652,22 @@ type DiscoverConnection struct {
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
+	// Policy, OperationClasses and GrantExpiresAt are relayed as the Console
+	// sent them. The proxy enforces the copies in its own configuration and
+	// never compares these against it: none of them is part of the Agent's
+	// environment.
+	Policy           json.RawMessage `json:"policy,omitempty"`
+	OperationClasses json.RawMessage `json:"operationClasses,omitempty"`
+	GrantExpiresAt   *time.Time      `json:"grantExpiresAt,omitempty"`
 }
 
 type DiscoverResponse struct {
-	SchemaVersion    int                  `json:"schemaVersion"`
-	SessionUID       string               `json:"sessionUid"`
-	ConfigGeneration int                  `json:"configGeneration"`
-	ConfigEnv        map[string]string    `json:"configEnv"`
-	Connections      []DiscoverConnection `json:"connections"`
+	SchemaVersion      int                  `json:"schemaVersion"`
+	SessionUID         string               `json:"sessionUid"`
+	ConfigGeneration   int                  `json:"configGeneration"`
+	ConfigEnv          map[string]string    `json:"configEnv"`
+	Connections        []DiscoverConnection `json:"connections"`
+	ExpiredConnections []ExpiredConnection  `json:"expiredConnections,omitempty"`
 }
 
 type ContextResponse struct {
@@ -684,9 +703,10 @@ type RevokeResponse struct {
 	RevokedAt     time.Time `json:"revokedAt"`
 }
 
-// CreateRequestRequest asks a member for something. Action is the change to
-// a custom Connection, forwarded as opaque, versioned JSON; it never holds a
-// secret value. Beside an action the packaged-service members are optional.
+// CreateRequestRequest asks a member for something. Action is the requested
+// change, forwarded as opaque, versioned JSON; it never holds a secret value.
+// Beside an action the packaged-service members are optional. DurationSeconds
+// asks for time-limited access; absent, the organisation's default applies.
 type CreateRequestRequest struct {
 	SchemaVersion      int             `json:"schemaVersion,omitempty"`
 	Kind               string          `json:"kind"`
@@ -698,6 +718,7 @@ type CreateRequestRequest struct {
 	ServiceType        string          `json:"serviceType,omitempty"`
 	Markdown           string          `json:"markdown"`
 	Action             json.RawMessage `json:"action,omitempty"`
+	DurationSeconds    *int            `json:"durationSeconds,omitempty"`
 	DedupKey           string          `json:"dedupKey,omitempty"`
 	RelatedRequestID   string          `json:"relatedRequestId,omitempty"`
 }

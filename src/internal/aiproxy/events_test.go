@@ -120,6 +120,11 @@ func TestLockdownUnboundCONNECTEmitsDurableEventWithPort(t *testing.T) {
 	)
 	batches := make(chan agentapi.EventBatchRequest, 1)
 	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A lockdown refusal also reads the preset list in the background.
+		if !strings.HasSuffix(r.URL.Path, "/events/") {
+			http.NotFound(w, r)
+			return
+		}
 		var batch agentapi.EventBatchRequest
 		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
 			t.Errorf("decode event batch: %v", err)

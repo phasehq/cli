@@ -38,6 +38,8 @@ type httpProxy struct {
 	events           *eventBuffer
 	manifest         *manifestHandler
 	control          *controlHandler
+	// clock is the time source for expiry checks; nil means time.Now.
+	clock func() time.Time
 	// lifecycle ends with the engine run. Requests read off a hijacked CONNECT
 	// tunnel have no context of their own, so they borrow this one and their
 	// upstream round trips stop when the proxy does.
@@ -57,6 +59,9 @@ type requestFailure struct {
 	// eventID is the credential-free ID of the event recorded for this
 	// request, returned to the client so a human can find it in the Console.
 	eventID string
+	// details are added to the error envelope's details: what the access
+	// policy decided, and a request the Agent can send to get past it.
+	details map[string]any
 }
 
 // eventIDHeader carries the proxy's per-request event ID back to the client.
@@ -89,6 +94,13 @@ type bufferedReadWriteCloser struct {
 }
 
 func (e *requestFailure) Error() string { return e.message }
+
+func (p *httpProxy) now() time.Time {
+	if p.clock != nil {
+		return p.clock()
+	}
+	return time.Now()
+}
 
 func (p *httpProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !p.authenticateProxyRequest(w, req) {
@@ -142,7 +154,12 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	}
 	if binding == nil {
 		if p.lockdown {
-			failure := &requestFailure{status: http.StatusForbidden, code: "unbound_host_blocked", message: "The host is not bound to this Agent Workflow.", decision: "block", reason: "lockdown_unbound_host"}
+			failure := &requestFailure{
+				status: http.StatusForbidden, code: "unbound_host_blocked", decision: "block", reason: "lockdown_unbound_host",
+				message: "The host is not bound to this Agent Workflow." + connectionNeededGuidance,
+				details: p.state.connectionNeededDetails(host, port),
+			}
+			p.state.noteConnectionNeeded(hintReasonLockdown, host, port, 0)
 			return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
 		}
 		upstream, cloneErr := cloneUpstreamRequest(req)
@@ -162,6 +179,12 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 			}
 			return processedResponse{failure: &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The upstream service is unavailable."}}
 		}
+		// The service refused a request no Connection covers. Its answer is
+		// passed on untouched; how to ask for a Connection is kept for
+		// GET /v1/hints.
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			p.state.noteConnectionNeeded(hintReasonUpstreamRejected, host, port, response.StatusCode)
+		}
 		return processedResponse{response: response}
 	}
 	snapshot, snapshotErr := p.state.snapshotForBinding(binding, "http")
@@ -171,9 +194,18 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	}
 	binding = snapshot.binding
 	defer snapshot.release()
-	authorization := binding.authorizationDecision(time.Now())
+	now := p.now()
+	authorization := binding.authorizationDecision(now)
 	if !authorization.allowed {
 		failure := &requestFailure{status: authorization.status, code: authorization.code, message: authorization.message, decision: "block", reason: authorization.reason, binding: binding}
+		if authorization.code == codeAccessExpired {
+			failure.details = accessExpiredDetails(binding.connection)
+			p.state.hints.record(proxyHint{
+				kind: hintAccessExpired, reason: agentapi.AccessExpired, host: host,
+				connectionID: binding.connection.ConnectionID, connectionName: binding.connection.ConnectionName,
+				request: renewRequest(binding.connection.ConnectionID, binding.connection.ConnectionName),
+			}, now)
+		}
 		return processedResponse{event: makeEvent(binding, req, "block", "denied", authorization.reason, authorization.status, time.Since(started), ""), failure: failure}
 	}
 	upstream, cloneErr := cloneUpstreamRequest(req)
@@ -184,19 +216,13 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	if tunnelAuth != nil {
 		restoreWebSocketUpgrade(req, upstream)
 	}
-	// Refuse calls that would mint a new credential before anything is
-	// re-signed or injected. See pkg/proxy/minting.go for the rule table.
-	if blocked, inspectErr := phaseproxy.CredentialMintingBlocked(upstream, binding.connection); blocked != nil || inspectErr != nil {
-		failure := &requestFailure{status: http.StatusForbidden, code: "credential_minting_blocked", decision: "block", reason: "credential_minting_blocked", binding: binding}
-		event := makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.PrimaryInjectionAction())
-		if blocked != nil {
-			failure.message = blocked.Message()
-			event.Detail["blocked_operation"] = blocked.Operation
-		} else {
-			failure.code = "credential_minting_uninspectable"
-			failure.message = "Phase could not inspect this request to rule out credential minting (the body is too large or unreadable). Split the request or use a smaller body."
-		}
-		return processedResponse{event: event, failure: failure}
+	// The secret guard, then the grant's access policy, both before anything
+	// is re-signed, swapped in or attached.
+	if stopped := p.enforceSecretGuard(req, upstream, binding, started); stopped != nil {
+		return *stopped
+	}
+	if stopped := p.enforceAccessPolicy(req, upstream, binding, host, started, now); stopped != nil {
+		return *stopped
 	}
 	if binding.connection.Injection.Action == "aws_sigv4" {
 		// The re-signed request carries the live key ID, session token and a
@@ -242,6 +268,13 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 			failure := &requestFailure{status: http.StatusBadGateway, code: "unsafe_aws_response", message: "The AWS response could not be safely returned.", decision: "error", reason: "upstream_response_redaction_failed", binding: binding}
 			return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
 		}
+		// The secret guard's backstop: credential material in the shape STS
+		// uses never reaches the Agent, whatever call returned it.
+		if err := phaseproxy.ScrubAWSCredentialResponse(response, p.recordScrubbedResponse(binding, req, response.StatusCode)); err != nil {
+			_ = response.Body.Close()
+			failure := &requestFailure{status: http.StatusBadGateway, code: "unsafe_aws_response", message: "The AWS response could not be safely returned.", decision: "error", reason: "upstream_response_uninspectable", binding: binding}
+			return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
+		}
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Header)
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Trailer)
 	}
@@ -276,6 +309,24 @@ func (p *httpProxy) authenticateProxyRequest(w http.ResponseWriter, req *http.Re
 	}
 	writeProxyError(w, failure)
 	return false
+}
+
+// recordScrubbedResponse returns what the response scrubber calls once it has
+// replaced credential material: an event of its own, since the request's
+// event was recorded before its body was read. It carries a count and never a
+// value.
+func (p *httpProxy) recordScrubbedResponse(binding *binding, req *http.Request, status int) func(int) {
+	return func(values int) {
+		if p.events == nil {
+			return
+		}
+		event := makeEvent(binding, req, "allow", outcomeScrubbed, reasonCredentialScrubbed, status, 0, binding.connection.PrimaryInjectionAction())
+		event.Detail = map[string]any{
+			"connectionId": binding.connection.ConnectionID, "connectionName": binding.connection.ConnectionName,
+			"class": agentapi.ClassCredentialMinting, "rule": phaseproxy.SecretGuardRule, "scrubbedValues": values,
+		}
+		p.events.Emit(event)
+	}
 }
 
 // agentEvent is an alias boundary that keeps the HTTP worker independent of
@@ -320,15 +371,21 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	if !bound {
 		if p.lockdown {
 			failure := &requestFailure{
-				status: http.StatusForbidden, code: "unbound_host_blocked", message: "The CONNECT target is not bound.",
-				decision: "block", reason: "lockdown_unbound_host",
+				status: http.StatusForbidden, code: "unbound_host_blocked",
+				message:  "The CONNECT target is not bound." + connectionNeededGuidance,
+				decision: "block", reason: "lockdown_unbound_host", details: p.state.connectionNeededDetails(host, port),
 			}
+			p.state.noteConnectionNeeded(hintReasonLockdown, host, port, 0)
 			if p.events != nil {
 				p.events.Emit(newRequestEvent(nil, http.MethodConnect, host, port, "/", failure.decision, "denied", failure.reason, failure.status, 0, ""))
 			}
 			writeProxyError(w, failure)
 			return
 		}
+		// A raw tunnel hides the service's answer from the proxy, so the host
+		// is only remembered: GET /v1/hints names the preset it belongs to,
+		// should the service turn the Agent away.
+		p.state.hints.noteUnboundHost(host, port)
 		p.tunnelUnbound(w, req, host, port)
 		return
 	}
@@ -953,10 +1010,26 @@ func proxyFailurePayload(failure *requestFailure) (string, []byte) {
 		switch failure.code {
 		case "agent_connection_denied":
 			code = "PhaseAccessDenied"
-		case "credential_minting_blocked", "credential_minting_uninspectable":
+		case "credential_minting_uninspectable":
 			code = "PhaseCredentialMintingBlocked"
+		case codeAccessPolicyBlocked:
+			code = "PhaseAccessPolicyBlocked"
+			if failure.details["rule"] == phaseproxy.SecretGuardRule {
+				code = "PhaseCredentialMintingBlocked"
+			}
+		case codeAccessPolicyAsk:
+			code = "PhaseAccessPolicyAsk"
+		case codeAccessPolicyUninspectable, codeAccessPolicyUnsupported:
+			code = "PhaseAccessPolicyBlocked"
+		case codeAccessExpired:
+			code = "PhaseAccessExpired"
 		}
 		message := failure.message
+		// An AWS client shows only the code and the message, so the request
+		// the JSON envelope carries in details.request is spelled out here.
+		if request, ok := failure.details["request"].(json.RawMessage); ok && len(request) > 0 {
+			message = strings.Replace(message, "the JSON in details.request", "this JSON", 1) + " JSON: " + string(request)
+		}
 		if failure.binding.connection.ConnectionID != "" {
 			message += " Connection: " + failure.binding.connection.ConnectionID + "."
 		}
@@ -984,6 +1057,11 @@ func proxyFailurePayload(failure *requestFailure) (string, []byte) {
 		return "text/xml; charset=utf-8", append([]byte(xml.Header), payload...)
 	}
 	details := map[string]any{}
+	if failure != nil {
+		for name, value := range failure.details {
+			details[name] = value
+		}
+	}
 	if failure != nil && failure.binding != nil {
 		details["connectionId"] = failure.binding.connection.ConnectionID
 		details["grantId"] = failure.binding.connection.GrantID

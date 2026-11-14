@@ -13,13 +13,18 @@ import (
 	"github.com/phasehq/cli/internal/agentapi"
 )
 
-// Credential-minting block.
+// Secret guard: the credential-minting block.
 //
 // A Phase-managed Connection lends the Agent exactly one credential for one
 // service. Some calls on that service hand back a brand-new, real credential
 // (an STS session, an IAM access key, a registry login token). Letting those
 // through would give the Agent material that Phase neither issued nor can
 // revoke, so the proxy refuses them before anything is re-signed or injected.
+//
+// The guard is a managed policy: it is always on, no Connection setting turns
+// it off, and no access policy rule or temporary allow overrides it. Calls it
+// stops belong to the class credential_minting. Response scrubbing in
+// scrub.go is its backstop for AWS Connections.
 //
 // Rules are data, keyed by the Connection's serviceType. To cover another
 // service, add an entry to credentialMintingRules:
@@ -31,13 +36,13 @@ import (
 //   - Paths (any HTTP API): method plus path pattern, matched with path.Match,
 //     and optionally a query parameter the request must carry.
 //
-// A Connection whose connectionConfig carries allowCredentialMinting: true is
-// exempt. Console does not set that today; it is the hook for a per-Connection
-// toggle later. Postgres (ALTER ROLE ... PASSWORD) is not covered here; it
-// needs statement inspection in the protocol adapter.
+// Postgres (ALTER ROLE ... PASSWORD) is not covered here; it needs statement
+// inspection in the protocol adapter.
 
 const (
-	allowCredentialMintingConfigKey = "allowCredentialMinting"
+	// SecretGuardRule names the guard wherever a stopped call reports the rule
+	// that stopped it.
+	SecretGuardRule = "secret_guard"
 	// Query-protocol AWS bodies (sts, iam, redshift) are small; SAML assertions
 	// are the largest legitimate payload and stay well under this bound.
 	maximumMintingInspectionBytes = int64(256 << 10)
@@ -62,7 +67,7 @@ type MintingRules struct {
 var credentialMintingRules = map[string]MintingRules{
 	"aws": {
 		Operations: map[string][]string{
-			"sts":                 {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity", "AssumeRoot", "GetFederationToken", "GetSessionToken"},
+			"sts":                 {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity", "AssumeRoot", "GetFederationToken", "GetSessionToken", "GetWebIdentityToken"},
 			"iam":                 {"CreateAccessKey", "CreateLoginProfile", "UpdateLoginProfile", "CreateServiceSpecificCredential", "ResetServiceSpecificCredential", "UploadSSHPublicKey", "UploadSigningCertificate"},
 			"ecr":                 {"GetAuthorizationToken"},
 			"ecr-public":          {"GetAuthorizationToken"},
@@ -70,6 +75,7 @@ var credentialMintingRules = map[string]MintingRules{
 			"redshift-serverless": {"GetCredentials"},
 			"cognito-identity":    {"GetCredentialsForIdentity", "GetOpenIdToken", "GetOpenIdTokenForDeveloperIdentity"},
 			"ec2":                 {"CreateKeyPair"},
+			"elasticmapreduce":    {"GetClusterSessionCredentials"},
 			"lightsail":           {"GetInstanceAccessDetails", "CreateKeyPair", "DownloadDefaultKeyPair", "CreateBucketAccessKey"},
 		},
 		Paths: []MintingPathRule{
@@ -93,6 +99,7 @@ type CredentialMintingBlock struct {
 func (b *CredentialMintingBlock) Message() string {
 	return "Phase blocked " + b.Operation + ": this call would mint a new credential that Phase did not issue and cannot revoke. " +
 		"A Phase-managed Connection only permits calls that use the Connection's own credential. " +
+		"This block is always on and cannot be requested around. " +
 		"If the task needs this operation, ask the human for a Connection or role that already has the required access."
 }
 
@@ -106,9 +113,6 @@ var ErrMintingInspectionUnavailable = errors.New("request could not be inspected
 // the AWS Action parameter, and always leaves req forwardable.
 func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection) (*CredentialMintingBlock, error) {
 	if req == nil || req.URL == nil {
-		return nil, nil
-	}
-	if allowed, _ := connection.ConnectionConfig[allowCredentialMintingConfigKey].(bool); allowed {
 		return nil, nil
 	}
 	rules, ok := credentialMintingRules[strings.ToLower(strings.TrimSpace(connection.ServiceType))]
@@ -175,6 +179,19 @@ func awsScopeService(req *http.Request) string {
 // protocol; a request that names a blocked operation through any of them is
 // refused, so a decoy selector cannot hide the one the service will act on.
 func awsOperations(req *http.Request) ([]string, error) {
+	operations, err := awsHeaderAndQueryOperations(req)
+	if err != nil {
+		return nil, err
+	}
+	fromBody, err := awsFormBodyOperations(req)
+	if err != nil {
+		return nil, err
+	}
+	return append(operations, fromBody...), nil
+}
+
+// awsHeaderAndQueryOperations reads the selectors that need no body.
+func awsHeaderAndQueryOperations(req *http.Request) ([]string, error) {
 	var operations []string
 	if target, present, err := singleHeader(req.Header, "X-Amz-Target"); present {
 		if err != nil {
@@ -191,16 +208,14 @@ func awsOperations(req *http.Request) ([]string, error) {
 	for _, action := range req.URL.Query()["Action"] {
 		operations = appendOperation(operations, action)
 	}
-	if req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
-		return operations, nil
-	}
-	// JSON-protocol bodies name their operation in X-Amz-Target, checked
-	// above. Every other body on a guarded service is read as a form: the
-	// query protocol takes its Action from the body, and a missing or odd
-	// Content-Type must not hide it.
-	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
-	if mediaType == "application/json" || strings.HasPrefix(mediaType, "application/x-amz-json-") {
-		return operations, nil
+	return operations, nil
+}
+
+// awsFormBodyOperations reads the Action field of a body the query protocol
+// would act on. It buffers a bounded body and leaves req forwardable.
+func awsFormBodyOperations(req *http.Request) ([]string, error) {
+	if !awsBodyMaySelectOperation(req) {
+		return nil, nil
 	}
 	if req.ContentLength < 0 || req.ContentLength > maximumMintingInspectionBytes {
 		return nil, ErrMintingInspectionUnavailable
@@ -213,10 +228,23 @@ func awsOperations(req *http.Request) ([]string, error) {
 	req.Body = io.NopCloser(bytes.NewReader(data))
 	// A malformed body still yields the pairs that parsed; those are checked too.
 	form, _ := url.ParseQuery(string(data))
+	var operations []string
 	for _, action := range form["Action"] {
 		operations = appendOperation(operations, action)
 	}
 	return operations, nil
+}
+
+// awsBodyMaySelectOperation reports whether the request has a body that could
+// name the operation. JSON-protocol bodies name it in X-Amz-Target instead.
+// Every other body is read as a form: the query protocol takes its Action
+// from the body, and a missing or odd Content-Type must not hide it.
+func awsBodyMaySelectOperation(req *http.Request) bool {
+	if req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
+		return false
+	}
+	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	return mediaType != "application/json" && !strings.HasPrefix(mediaType, "application/x-amz-json-")
 }
 
 func appendOperation(operations []string, operation string) []string {

@@ -20,12 +20,22 @@ const (
 	ActionConnectionUpdate       RequestActionType = "agent_connection.update"
 	ActionConnectionSecretUpdate RequestActionType = "agent_connection.secret_update"
 	ActionConnectionRemove       RequestActionType = "agent_connection.remove"
+	// ActionGrantAllow asks to allow, for a limited time, a call the access
+	// policy asks about. ActionGrantRenew asks to renew time-limited access.
+	ActionGrantAllow RequestActionType = "agent_grant.allow"
+	ActionGrantRenew RequestActionType = "agent_grant.renew"
+	// ActionWorkflowContextUpdate asks to replace the Workflow's saved context.
+	ActionWorkflowContextUpdate RequestActionType = "agent_workflow.context_update"
 
 	// CustomHTTPServiceType is the service type of a member-defined HTTP
 	// Connection.
 	CustomHTTPServiceType = "http"
 
 	maxRequestTitleLength = 120
+	// MaxWorkflowContextLength is the most characters a Workflow's saved
+	// context may hold.
+	MaxWorkflowContextLength = 16384
+	maxPresetIDLength        = 64
 )
 
 // requestActionKinds is the action registry: every action type this client
@@ -36,6 +46,22 @@ var requestActionKinds = map[RequestActionType]RequestKind{
 	ActionConnectionUpdate:       RequestConnectionUpdate,
 	ActionConnectionSecretUpdate: RequestCredentialUpdate,
 	ActionConnectionRemove:       RequestConnectionRemoval,
+	ActionGrantAllow:             RequestAccessChange,
+	ActionGrantRenew:             RequestAccessChange,
+	ActionWorkflowContextUpdate:  RequestContextUpdate,
+}
+
+// RequestKindEndsInAccess reports whether an approved request of this kind
+// grants access, which is what a requested duration limits.
+func RequestKindEndsInAccess(kind RequestKind) bool {
+	return kind == RequestSetup || kind == RequestAccessChange
+}
+
+// ValidRequestDuration reports whether a requested duration may accompany a
+// request of this kind. The Console owns the bounds and states them when it
+// refuses one; the client only refuses what can never be valid.
+func ValidRequestDuration(kind RequestKind, durationSeconds *int) bool {
+	return durationSeconds == nil || (*durationSeconds > 0 && RequestKindEndsInAccess(kind))
 }
 
 // NormalizeRequestAction maps an absent or JSON null action to nil so callers
@@ -50,8 +76,9 @@ func NormalizeRequestAction(action json.RawMessage) json.RawMessage {
 
 // ValidateRequestAction checks the only things a client decides about an
 // action: its type is known, its version is 1, it arrived under the request
-// kind that type uses, and it carries no secret value. Every other member is
-// the Console's to validate and is passed through unchanged.
+// kind that type uses, it carries no secret value, and the few members a type
+// defines locally have the right shape (see validateActionMembers). Every
+// other member is the Console's to validate and is passed through unchanged.
 func ValidateRequestAction(kind RequestKind, action json.RawMessage) error {
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(action, &members); err != nil || members == nil {
@@ -72,7 +99,73 @@ func ValidateRequestAction(kind RequestKind, action json.RawMessage) error {
 	if kind != wantKind {
 		return fmt.Errorf("agents: action %s requires request kind %s", actionType, wantKind)
 	}
-	return validateActionCarriesNoSecret(members)
+	if err := validateActionCarriesNoSecret(members); err != nil {
+		return err
+	}
+	return validateActionMembers(RequestActionType(actionType), members)
+}
+
+// validateActionMembers holds the per-type checks: a preset stands in place
+// of a definition, an allow names exactly one class or match and never the
+// secret guard's class, and a Workflow context is text within the size cap.
+func validateActionMembers(actionType RequestActionType, members map[string]json.RawMessage) error {
+	switch actionType {
+	case ActionConnectionCreate:
+		rawPreset, present := members["preset"]
+		if !present {
+			return nil
+		}
+		var preset string
+		if err := json.Unmarshal(rawPreset, &preset); err != nil || !validPresetID(preset) {
+			return fmt.Errorf("agents: preset must be the ID of a preset")
+		}
+		if _, both := members["definition"]; both {
+			return fmt.Errorf("agents: send a preset or a definition, not both")
+		}
+	case ActionGrantAllow:
+		var allow map[string]json.RawMessage
+		if err := json.Unmarshal(members["allow"], &allow); err != nil || allow == nil {
+			return fmt.Errorf("agents: allow must be an object with a class or a match")
+		}
+		rawClass, hasClass := allow["class"]
+		_, hasMatch := allow["match"]
+		if hasClass == hasMatch {
+			return fmt.Errorf("agents: allow must have exactly one of class or match")
+		}
+		if hasClass {
+			var class string
+			if err := json.Unmarshal(rawClass, &class); err != nil || class == "" {
+				return fmt.Errorf("agents: allow.class must name a class")
+			}
+			if OperationClass(class) == ClassCredentialMinting {
+				return fmt.Errorf("agents: calls that mint credentials are always blocked and cannot be requested")
+			}
+		}
+	case ActionWorkflowContextUpdate:
+		var markdown string
+		if err := json.Unmarshal(members["markdown"], &markdown); err != nil || members["markdown"] == nil ||
+			bytes.Equal(bytes.TrimSpace(members["markdown"]), []byte("null")) {
+			return fmt.Errorf("agents: markdown must be the complete new context text")
+		}
+		if utf8.RuneCountInString(markdown) > MaxWorkflowContextLength {
+			return fmt.Errorf("agents: the Workflow context holds at most %d characters", MaxWorkflowContextLength)
+		}
+	}
+	return nil
+}
+
+func validPresetID(value string) bool {
+	if len(value) < 1 || len(value) > maxPresetIDLength {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 var errActionCarriesSecret = fmt.Errorf("agents: a request action must not carry a secret value; a member enters it in the Console")

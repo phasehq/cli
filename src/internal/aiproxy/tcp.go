@@ -208,6 +208,10 @@ func (a *protocolAdapters) watchProtocolRoute(ctx context.Context, connection ne
 				if credentialExpiry := snapshot.binding.connection.CredentialExpiresAt; credentialExpiry != nil && credentialExpiry.Before(expiresAt) {
 					expiresAt = *credentialExpiry
 				}
+				// Time-limited access ends by the clock as well.
+				if grantExpiry := snapshot.binding.connection.GrantExpiresAt; grantExpiry != nil && grantExpiry.Before(expiresAt) {
+					expiresAt = *grantExpiry
+				}
 				if delay := time.Until(expiresAt); delay <= 0 {
 					err = errors.New("Agent connection or source expired")
 				} else {

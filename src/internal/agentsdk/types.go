@@ -472,6 +472,9 @@ const (
 	// FeatureSealedMaterial: the client holds an Agent token it can rebuild the
 	// Agent key from, so it can open sealedMaterial itself.
 	FeatureSealedMaterial ClientFeature = "sealed_material"
+	// FeatureAccessPolicy: the client enforces a Connection's access policy
+	// (allow, ask, block) and its time limit before it uses the credential.
+	FeatureAccessPolicy ClientFeature = "access_policy"
 )
 
 type ClientCapabilities struct {
@@ -501,6 +504,9 @@ type OpenSessionResponse struct {
 	ConfigEnv         StringMap           `json:"configEnv"`
 	Connections       []RuntimeConnection `json:"connections"`
 	AgentKey          *AgentKey           `json:"agentKey,omitempty"`
+	// ExpiredConnections are grants of this Workflow whose time limit passed
+	// recently, so the client can say what may be renewed.
+	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
 }
 
 // AgentKey carries the server's wrapped share of the Agent's key exchange
@@ -551,6 +557,8 @@ type RefreshConfigResponse struct {
 	ConfigEnv        StringMap           `json:"configEnv"`
 	Connections      []RuntimeConnection `json:"connections"`
 	AgentKey         *AgentKey           `json:"agentKey,omitempty"`
+	// ExpiredConnections: see OpenSessionResponse.
+	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
 }
 
 // RuntimeConnection is one granted Connection of a session. A packaged service
@@ -586,6 +594,11 @@ type RuntimeConnection struct {
 	SealedMaterial      *SealedMaterial         `json:"sealedMaterial,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
+	// Policy, OperationClasses and GrantExpiresAt limit how the grant may be
+	// used. None of them is visible in the Agent's environment.
+	Policy           *AccessPolicy        `json:"policy,omitempty"`
+	OperationClasses []OperationClassRule `json:"operationClasses,omitempty"`
+	GrantExpiresAt   *time.Time           `json:"grantExpiresAt,omitempty"`
 }
 
 // ValidateEnvironmentBindings verifies this runtime connection's binding
@@ -604,12 +617,88 @@ func (c RuntimeConnection) ValidateEnvironmentBindings() error {
 	)
 }
 
-// AllowsUse checks both the Connection's authorization and the validity of its
-// currently resolved credential. A missing expiry represents a credential
-// without a declared expiration.
+// AllowsUse checks the Connection's authorization, the validity of its
+// currently resolved credential and the grant's time limit. A missing expiry
+// represents a credential, or a grant, without a declared expiration.
 func (c RuntimeConnection) AllowsUse(now time.Time) bool {
 	return c.Authorization.AllowsUse() &&
-		(c.CredentialExpiresAt == nil || c.CredentialExpiresAt.After(now))
+		(c.CredentialExpiresAt == nil || c.CredentialExpiresAt.After(now)) &&
+		(c.GrantExpiresAt == nil || c.GrantExpiresAt.After(now))
+}
+
+// PolicyEffect is what an access policy decides for a call.
+type PolicyEffect string
+
+const (
+	PolicyAllow PolicyEffect = "allow"
+	PolicyAsk   PolicyEffect = "ask"
+	PolicyBlock PolicyEffect = "block"
+)
+
+// OperationClass groups calls by what they do. Classification is owned by the
+// provider type and shipped with the client; credential_minting belongs to the
+// secret guard and never appears in a stored policy.
+type OperationClass string
+
+const (
+	ClassRead              OperationClass = "read"
+	ClassCreate            OperationClass = "create"
+	ClassUpdate            OperationClass = "update"
+	ClassDelete            OperationClass = "delete"
+	ClassAdmin             OperationClass = "admin"
+	ClassCredentialMinting OperationClass = "credential_minting"
+)
+
+// PolicyMatch selects calls by HTTP method, by path glob, or by both.
+type PolicyMatch struct {
+	Methods []string `json:"methods,omitempty"`
+	Path    string   `json:"path,omitempty"`
+}
+
+// PolicyRule has exactly one of Class or Match.
+type PolicyRule struct {
+	Class  OperationClass `json:"class,omitempty"`
+	Match  *PolicyMatch   `json:"match,omitempty"`
+	Effect PolicyEffect   `json:"effect"`
+}
+
+// TemporaryAllow is an approved, time-limited exception to an ask.
+type TemporaryAllow struct {
+	ID        string         `json:"id"`
+	Class     OperationClass `json:"class,omitempty"`
+	Match     *PolicyMatch   `json:"match,omitempty"`
+	ExpiresAt time.Time      `json:"expiresAt"`
+}
+
+// ManagedPolicy is an always-on entry such as the secret guard.
+type ManagedPolicy struct {
+	ID     string       `json:"id"`
+	Locked bool         `json:"locked"`
+	Rules  []PolicyRule `json:"rules"`
+}
+
+// AccessPolicy is the policy on one Workflow-to-Connection grant.
+type AccessPolicy struct {
+	Version         int              `json:"version"`
+	Default         PolicyEffect     `json:"default"`
+	Rules           []PolicyRule     `json:"rules"`
+	TemporaryAllows []TemporaryAllow `json:"temporaryAllows,omitempty"`
+	Managed         []ManagedPolicy  `json:"managed,omitempty"`
+}
+
+// OperationClassRule overrides how a custom HTTP Connection's call is
+// classified. The first matching entry wins.
+type OperationClassRule struct {
+	Match PolicyMatch    `json:"match"`
+	Class OperationClass `json:"class"`
+}
+
+// ExpiredConnection names a grant whose time limit passed.
+type ExpiredConnection struct {
+	ConnectionID   string    `json:"connectionId"`
+	ConnectionName string    `json:"connectionName,omitempty"`
+	ServiceType    string    `json:"serviceType"`
+	ExpiredAt      time.Time `json:"expiredAt"`
 }
 
 type RefreshBehavior string
@@ -761,6 +850,8 @@ type DiscoverResponse struct {
 	ConfigGeneration uint64               `json:"configGeneration"`
 	ConfigEnv        StringMap            `json:"configEnv"`
 	Connections      []DiscoverConnection `json:"connections"`
+	// ExpiredConnections: see OpenSessionResponse.
+	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
 }
 
 type DiscoverConnection struct {
@@ -787,6 +878,9 @@ type DiscoverConnection struct {
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
+	Policy              *AccessPolicy           `json:"policy,omitempty"`
+	OperationClasses    []OperationClassRule    `json:"operationClasses,omitempty"`
+	GrantExpiresAt      *time.Time              `json:"grantExpiresAt,omitempty"`
 }
 
 // ValidateEnvironmentBindings verifies this agent-facing connection's binding
@@ -992,6 +1086,11 @@ const (
 	RequestCredentialUpdate  RequestKind = "credential_update"
 	RequestConnectionUpdate  RequestKind = "connection_update"
 	RequestConnectionRemoval RequestKind = "connection_removal"
+	// RequestAccessChange asks to allow a call the access policy asks about,
+	// or to renew time-limited access.
+	RequestAccessChange RequestKind = "access_change"
+	// RequestContextUpdate asks to change the Workflow's saved context text.
+	RequestContextUpdate RequestKind = "context_update"
 )
 
 type RequestStatus string
@@ -1017,9 +1116,11 @@ const (
 // CreateRequestInput asks a member for something. A request without an Action
 // is a packaged-service setup or credential update and needs
 // CredentialProvider, CredentialName and Markdown. A request with an Action
-// asks for a change to a custom Connection: the action is what the member
-// reviews, so those members, Title and Markdown are all optional. Action is
-// opaque, versioned JSON; see ValidateRequestAction.
+// asks for a change a member reviews: the action is what they review, so
+// those members, Title and Markdown are all optional. Action is opaque,
+// versioned JSON; see ValidateRequestAction. DurationSeconds asks for
+// time-limited access and is valid only on a request that ends in access;
+// absent, the organisation's default applies.
 type CreateRequestInput struct {
 	SchemaVersion      int             `json:"schemaVersion,omitempty"`
 	ConnectionID       string          `json:"connectionId,omitempty"`
@@ -1031,6 +1132,7 @@ type CreateRequestInput struct {
 	ServiceType        string          `json:"serviceType,omitempty"`
 	Markdown           string          `json:"markdown"`
 	Action             json.RawMessage `json:"action,omitempty"`
+	DurationSeconds    *int            `json:"durationSeconds,omitempty"`
 	DedupKey           string          `json:"dedupKey,omitempty"`
 	RelatedRequestID   string          `json:"relatedRequestId,omitempty"`
 }

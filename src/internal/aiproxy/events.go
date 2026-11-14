@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 const (
@@ -142,10 +143,30 @@ func containsControlCharacter(value string) bool {
 	return false
 }
 
+// outcomeScrubbed marks a response the proxy passed on only after replacing
+// credential material in it. It is kept like a denial: it must reach the
+// Console.
+const outcomeScrubbed = "scrubbed"
+
 func durableAuditEvent(event agentapi.Event) bool {
 	return event.Outcome == "denied" || event.Outcome == "error" || event.ProxyDecision == "block" ||
-		event.ProxyDecision == "auth_deny"
+		event.ProxyDecision == "auth_deny" || event.Outcome == outcomeScrubbed
 }
+
+// eventDetailText and eventDetailNumbers are the only detail members an event
+// may carry besides aws_sigv4_failure, path and rule: what the access policy
+// or the secret guard decided, flat and bounded. An event never carries a
+// request or response value, nor the request an ask offers.
+var (
+	eventDetailText    = []string{"connectionId", "connectionName", "class", "method", "operation"}
+	eventDetailNumbers = []string{"scrubbedValues"}
+)
+
+// Console's limits for detail values.
+const (
+	maxEventDetailTextLength = 512
+	maxEventRulePathLength   = 1024
+)
 
 func safeEventDetail(detail map[string]any, secrets []string) map[string]any {
 	result := map[string]any{}
@@ -153,7 +174,111 @@ func safeEventDetail(detail map[string]any, secrets []string) map[string]any {
 		controlIdentifier.MatchString(value) && safeEventText(value, secrets) {
 		result["aws_sigv4_failure"] = value
 	}
+	for _, name := range eventDetailText {
+		if value, ok := detail[name].(string); ok && value != "" && len(value) <= maxEventDetailTextLength &&
+			!containsControlCharacter(value) && safeEventText(value, secrets) {
+			result[name] = value
+		}
+	}
+	if value, ok := detail["path"].(string); ok && value != "" && len(value) <= maxEventPathLength &&
+		!containsControlCharacter(value) && safeEventText(value, secrets) {
+		result["path"] = value
+	}
+	if rule, ok := safeEventRule(detail["rule"], secrets); ok {
+		result["rule"] = rule
+	}
+	for _, name := range eventDetailNumbers {
+		switch value := detail[name].(type) {
+		case int:
+			result[name] = value
+		case float64:
+			// A spooled event comes back from JSON with every number a float.
+			if value >= 0 && value <= 1<<31 && value == float64(int(value)) {
+				result[name] = int(value)
+			}
+		}
+	}
 	return result
+}
+
+// safeEventRule accepts the rule a policy answer names: "default",
+// "secret_guard", or one rule object with a class or a match and an effect.
+// It returns the rule rebuilt from its known members only, so nothing else
+// rides along. A spooled event comes back from JSON with generic values, so
+// both forms are read.
+func safeEventRule(value any, secrets []string) (any, bool) {
+	text := func(raw any, limit int) (string, bool) {
+		value, ok := raw.(string)
+		return value, ok && value != "" && len(value) <= limit && !containsControlCharacter(value) && safeEventText(value, secrets)
+	}
+	switch rule := value.(type) {
+	case string:
+		return rule, rule == "default" || rule == phaseproxy.SecretGuardRule
+	case agentapi.PolicyRule:
+		encoded := map[string]any{"effect": rule.Effect}
+		if rule.Match != nil {
+			match := map[string]any{}
+			if len(rule.Match.Methods) > 0 {
+				methods := make([]any, 0, len(rule.Match.Methods))
+				for _, method := range rule.Match.Methods {
+					methods = append(methods, method)
+				}
+				match["methods"] = methods
+			}
+			if rule.Match.Path != "" {
+				match["path"] = rule.Match.Path
+			}
+			encoded["match"] = match
+		} else {
+			encoded["class"] = rule.Class
+		}
+		return safeEventRule(encoded, secrets)
+	case map[string]any:
+		effect, ok := text(rule["effect"], 16)
+		if !ok {
+			return nil, false
+		}
+		result := map[string]any{"effect": effect}
+		rawMatch, hasMatch := rule["match"].(map[string]any)
+		class, hasClass := text(rule["class"], 32)
+		if hasMatch == hasClass {
+			return nil, false
+		}
+		if hasClass {
+			result["class"] = class
+			return result, true
+		}
+		match := map[string]any{}
+		if rawMethods, present := rawMatch["methods"]; present {
+			list, ok := rawMethods.([]any)
+			if !ok || len(list) == 0 || len(list) > 9 {
+				return nil, false
+			}
+			methods := make([]string, 0, len(list))
+			for _, raw := range list {
+				method, ok := text(raw, maxEventMethodLength)
+				if !ok {
+					return nil, false
+				}
+				methods = append(methods, method)
+			}
+			match["methods"] = methods
+		}
+		if rawPath, present := rawMatch["path"]; present {
+			path, ok := text(rawPath, maxEventRulePathLength)
+			if !ok {
+				return nil, false
+			}
+			match["path"] = path
+		}
+		if len(match) == 0 {
+			return nil, false
+		}
+		result["match"] = match
+		return result, true
+	default:
+		return nil, false
+	}
 }
 
 func safeEventText(value string, secrets []string) bool {

@@ -276,6 +276,9 @@ func (c *Client) CreateRequestWithStatus(ctx context.Context, session SessionAut
 	if !ValidRequestTitle(input.Title) {
 		return nil, 0, fmt.Errorf("agents: request title must be at most 120 characters of plain text")
 	}
+	if !ValidRequestDuration(input.Kind, input.DurationSeconds) {
+		return nil, 0, fmt.Errorf("agents: durationSeconds must be a positive number of seconds on a request that ends in access")
+	}
 	if input.Action = NormalizeRequestAction(input.Action); input.Action != nil {
 		if err := validateActionRequestInput(input); err != nil {
 			return nil, 0, err

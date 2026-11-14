@@ -112,11 +112,15 @@ func TestCredentialMintingResolvesTargetHeaderQueryAndPathRules(t *testing.T) {
 	}
 }
 
-func TestCredentialMintingHonoursConnectionExemptionAndFailsClosedWhenUninspectable(t *testing.T) {
-	exempt := mintingAWSConnection(map[string]any{"allowCredentialMinting": true})
+// The guard is always on: nothing in a Connection's configuration exempts it.
+func TestSecretGuardCannotBeDisabledAndFailsClosedWhenUninspectable(t *testing.T) {
+	configured := mintingAWSConnection(map[string]any{"allowCredentialMinting": true})
 	req := signedQueryRequest(t, "sts.eu-central-1.amazonaws.com", "Action=GetSessionToken&Version=2011-06-15")
-	if blocked, err := CredentialMintingBlocked(req, exempt); err != nil || blocked != nil {
-		t.Fatalf("exempt connection: blocked=%#v err=%v", blocked, err)
+	if blocked, err := CredentialMintingBlocked(req, configured); err != nil || blocked == nil || blocked.Operation != "sts:GetSessionToken" {
+		t.Fatalf("a Connection setting turned the secret guard off: blocked=%#v err=%v", blocked, err)
+	}
+	if !strings.Contains(mustBeGuarded(t, req, configured).Message(), "cannot be requested around") {
+		t.Fatal("the secret guard message no longer says it cannot be requested around")
 	}
 	huge, _ := http.NewRequest(http.MethodPost, "https://sts.eu-central-1.amazonaws.com/", strings.NewReader("Action=GetCallerIdentity"))
 	huge.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -280,4 +284,13 @@ func TestCredentialMintingBlocksKeyPairDatabaseAndSessionCredentials(t *testing.
 			t.Fatalf("%s: blocked=%#v err=%v", name, blocked, err)
 		}
 	}
+}
+
+func mustBeGuarded(t *testing.T, req *http.Request, connection agentapi.Connection) *CredentialMintingBlock {
+	t.Helper()
+	block, err := CredentialMintingBlocked(req, connection)
+	if err != nil || block == nil {
+		t.Fatalf("expected the secret guard to stop the call: block=%#v err=%v", block, err)
+	}
+	return block
 }

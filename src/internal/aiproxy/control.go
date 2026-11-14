@@ -25,7 +25,9 @@ import (
 )
 
 const (
-	maxControlBodyBytes        = 64 << 10
+	// A Workflow context of 16384 characters can take up to four bytes each,
+	// before JSON escaping.
+	maxControlBodyBytes        = 128 << 10
 	maxControlWaitSeconds      = 300
 	defaultControlPollInterval = 3 * time.Second
 )
@@ -86,6 +88,10 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request, r
 		h.connection(w, id)
 	case req.Method == http.MethodGet && path == "/v1/status":
 		h.status(w)
+	case req.Method == http.MethodGet && path == "/v1/presets":
+		h.presets(w, req)
+	case req.Method == http.MethodGet && path == "/v1/hints":
+		h.hints(w, req)
 	case remote && req.Method == http.MethodGet && path == "/v1/bootstrap":
 		h.serveBootstrap(w, req)
 	case req.Method == http.MethodGet && path == "/v1/capabilities":
@@ -139,6 +145,8 @@ func publicControlLinks() remoteapi.ControlLinks {
 		Context:               phaseproxy.ControlURL + "/v1/context",
 		CreateRequest:         phaseproxy.ControlURL + "/v1/requests",
 		PollRequest:           phaseproxy.ControlURL + "/v1/requests/{requestId}",
+		Presets:               phaseproxy.ControlURL + "/v1/presets",
+		Hints:                 phaseproxy.ControlURL + "/v1/hints",
 	}
 }
 
@@ -266,7 +274,7 @@ func (h *controlHandler) createRequest(w http.ResponseWriter, req *http.Request)
 		(request.Markdown == "" && request.Action == nil) || len(request.Markdown) > 16<<10 ||
 		(request.DedupKey != "" && !controlIdentifier.MatchString(request.DedupKey)) ||
 		!validCreateRequest(request) {
-		writeControlError(w, http.StatusBadRequest, "invalid_control_request", "Use setup with serviceType or credential_update with connectionId and credentialId; credentialProvider, credentialName, markdown, and an optional dedupKey are required. Or send an action of a known type with version 1 under its request kind; an action never carries a secret value.", false)
+		writeControlError(w, http.StatusBadRequest, "invalid_control_request", "Use setup with serviceType or credential_update with connectionId and credentialId; credentialProvider, credentialName, markdown, and an optional dedupKey are required. Or send an action of a known type with version 1 under its request kind; an action never carries a secret value. durationSeconds, when sent, is a positive whole number on a request that ends in access.", false)
 		return
 	}
 	response, statusCode, err := h.state.client.CreateRequestWithStatus(req.Context(), request, h.state.currentBackendCredential())
@@ -288,7 +296,8 @@ func validCreateRequest(request agentapi.CreateRequestRequest) bool {
 	if request.SchemaVersion != 0 && request.SchemaVersion != agentapi.SchemaVersion {
 		return false
 	}
-	if !sdkagents.ValidRequestTitle(request.Title) {
+	if !sdkagents.ValidRequestTitle(request.Title) ||
+		!sdkagents.ValidRequestDuration(sdkagents.RequestKind(request.Kind), request.DurationSeconds) {
 		return false
 	}
 	if request.Action != nil {
@@ -311,9 +320,11 @@ func validCreateRequest(request agentapi.CreateRequestRequest) bool {
 	}
 }
 
-// validActionRequest covers a request that asks for a change to a custom
-// Connection. The action stays opaque apart from its type, version and the
-// rule that it carries no secret value, so a member the Console adds later is
+// validActionRequest covers a request that carries an action: a change to a
+// custom Connection, to this Workflow's access, or to its saved context. The
+// action stays opaque apart from its type, version, the rule that it carries
+// no secret value and the few members a type checks locally (see
+// agentsdk.ValidateRequestAction), so a member the Console adds later is
 // forwarded untouched. The packaged-service members are optional beside an
 // action and keep their usual limits when present.
 func validActionRequest(request agentapi.CreateRequestRequest) bool {
@@ -506,6 +517,33 @@ func (h *controlHandler) finishRequestWithin(req *http.Request, response *agenta
 			return nil, errors.Join(errApprovedRequestRefreshFailed, err)
 		}
 	}
+	if isAccessChangeRequest(response.Kind) && strings.EqualFold(response.Status, "approved") {
+		if response.RuntimeAction != "" && response.RuntimeAction != agentapi.RequestRuntimeActionRestartRequired &&
+			response.RuntimeAction != agentapi.RequestRuntimeActionRetry {
+			return nil, errors.New("Phase returned an invalid runtime action for an approved access change request")
+		}
+		// A temporary allow and a later expiry are enforced by the proxy alone,
+		// so this refresh applies them to the running session: retry. Only
+		// renewed access to a Connection that had already left the session,
+		// and that exports something to the Agent's environment, needs a fresh
+		// session.
+		if _, err := h.state.refreshConfig(req.Context()); err == nil {
+			response.RuntimeAction = agentapi.RequestRuntimeActionRetry
+		} else if errors.Is(err, airuntime.ErrSessionReprovisionRequired) {
+			response.RuntimeAction = agentapi.RequestRuntimeActionRestartRequired
+		} else {
+			h.handleConfigRefreshFailure(err)
+			return nil, errors.Join(errApprovedRequestRefreshFailed, err)
+		}
+	}
+	if response.Kind == string(sdkagents.RequestContextUpdate) && strings.EqualFold(response.Status, "approved") {
+		// The context is read from the Console each time it is asked for, so
+		// there is nothing to apply here.
+		if response.RuntimeAction != "" && response.RuntimeAction != agentapi.RequestRuntimeActionRetry {
+			return nil, errors.New("Phase returned an invalid runtime action for an approved context update request")
+		}
+		response.RuntimeAction = agentapi.RequestRuntimeActionRetry
+	}
 	if isSetupRequest(response.Kind) && strings.EqualFold(response.Status, "approved") {
 		if !controlIdentifier.MatchString(response.CredentialID) ||
 			!controlIdentifier.MatchString(response.ConnectionID) ||
@@ -583,7 +621,8 @@ func validApprovalURL(rawURL, requestID, requestKind string) bool {
 	if rawURL == "" || rawURL != strings.TrimSpace(rawURL) || !controlIdentifier.MatchString(requestID) {
 		return false
 	}
-	if !isSetupRequest(requestKind) && requestKind != "credential_update" && !isConnectionChangeRequest(requestKind) {
+	if !isSetupRequest(requestKind) && requestKind != "credential_update" && !isConnectionChangeRequest(requestKind) &&
+		!isAccessChangeRequest(requestKind) && requestKind != string(sdkagents.RequestContextUpdate) {
 		return false
 	}
 	parsed, err := url.Parse(rawURL)
@@ -792,6 +831,12 @@ func isSetupRequest(kind string) bool { return kind == "setup" }
 // itself rather than its secret.
 func isConnectionChangeRequest(kind string) bool {
 	return kind == string(sdkagents.RequestConnectionUpdate) || kind == string(sdkagents.RequestConnectionRemoval)
+}
+
+// isAccessChangeRequest covers a temporary allow and a renewal of
+// time-limited access.
+func isAccessChangeRequest(kind string) bool {
+	return kind == string(sdkagents.RequestAccessChange)
 }
 
 func (h *controlHandler) listRequests(w http.ResponseWriter, req *http.Request) {

@@ -3,6 +3,7 @@
 package remoteapi
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
@@ -27,19 +28,26 @@ type ControlLinks struct {
 	Context               string `json:"context"`
 	CreateRequest         string `json:"createRequest"`
 	PollRequest           string `json:"pollRequest"`
+	Presets               string `json:"presets"`
+	Hints                 string `json:"hints"`
 }
 
 type StatusConnection struct {
-	ConnectionID       string     `json:"connectionId"`
-	Name               string     `json:"name,omitempty"`
-	CredentialID       string     `json:"credentialId"`
-	CredentialName     string     `json:"credentialName,omitempty"`
-	CredentialProvider string     `json:"credentialProvider"`
-	CredentialRevision string     `json:"credentialRevision,omitempty"`
-	ServiceType        string     `json:"serviceType"`
-	Protocol           string     `json:"protocol"`
-	State              string     `json:"state"`
-	ExpiresAt          *time.Time `json:"expiresAt,omitempty"`
+	ConnectionID       string `json:"connectionId"`
+	Name               string `json:"name,omitempty"`
+	CredentialID       string `json:"credentialId"`
+	CredentialName     string `json:"credentialName,omitempty"`
+	CredentialProvider string `json:"credentialProvider"`
+	CredentialRevision string `json:"credentialRevision,omitempty"`
+	ServiceType        string `json:"serviceType"`
+	Protocol           string `json:"protocol"`
+	State              string `json:"state"`
+	// StateReason says why a Connection is not ready, for example
+	// access_expired.
+	StateReason string     `json:"stateReason,omitempty"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	// GrantExpiresAt is when time-limited access to the Connection ends.
+	GrantExpiresAt *time.Time `json:"grantExpiresAt,omitempty"`
 }
 
 type StatusResponse struct {
@@ -65,6 +73,48 @@ type ConnectionDetail struct {
 	Definition    map[string]any `json:"definition,omitempty"`
 	ValueRevision *int           `json:"valueRevision,omitempty"`
 	KeyVersion    *int           `json:"keyVersion,omitempty"`
+	// Policy is the access policy on this Workflow's grant, as the Console
+	// sent it: rules, temporary allows and the managed secret guard.
+	Policy *agentapi.AccessPolicy `json:"policy,omitempty"`
+	// GrantExpiresAt is when time-limited access ends; ExpiredAt is when it
+	// ended. Request is a complete body for POST /v1/requests that asks to
+	// renew expired access.
+	GrantExpiresAt *time.Time      `json:"grantExpiresAt,omitempty"`
+	ExpiredAt      *time.Time      `json:"expiredAt,omitempty"`
+	Request        json.RawMessage `json:"request,omitempty"`
+}
+
+// PresetsResponse lists the provider presets a Connection can be asked for by
+// ID.
+type PresetsResponse struct {
+	SchemaVersion int               `json:"schemaVersion"`
+	Kind          string            `json:"kind"`
+	Presets       []agentapi.Preset `json:"presets"`
+}
+
+// Hint is one recent dead end and, where there is one, the request that asks
+// a member to open it.
+type Hint struct {
+	Kind           string          `json:"kind"`
+	Reason         string          `json:"reason"`
+	Host           string          `json:"host,omitempty"`
+	StatusCode     int             `json:"statusCode,omitempty"`
+	Method         string          `json:"method,omitempty"`
+	Path           string          `json:"path,omitempty"`
+	Class          string          `json:"class,omitempty"`
+	ConnectionID   string          `json:"connectionId,omitempty"`
+	ConnectionName string          `json:"connectionName,omitempty"`
+	Preset         string          `json:"preset,omitempty"`
+	Request        json.RawMessage `json:"request,omitempty"`
+	Count          int             `json:"count"`
+	FirstAt        time.Time       `json:"firstAt"`
+	LatestAt       time.Time       `json:"latestAt"`
+}
+
+type HintsResponse struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
+	Hints         []Hint `json:"hints"`
 }
 
 type ConnectionsResponse struct {

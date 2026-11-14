@@ -213,7 +213,7 @@ func (e *Engine) Capabilities() airuntime.EngineCapabilities {
 		},
 		// sealed_material is what this engine can do with the right login; the
 		// runtime advertises it only when the client holds an Agent token.
-		Features: []string{agentapi.FeatureInjectionList, agentapi.FeatureWhenAbsent, agentapi.FeatureSealedMaterial},
+		Features: []string{agentapi.FeatureInjectionList, agentapi.FeatureWhenAbsent, agentapi.FeatureSealedMaterial, agentapi.FeatureAccessPolicy},
 	}
 }
 

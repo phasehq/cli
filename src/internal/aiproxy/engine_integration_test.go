@@ -236,7 +236,8 @@ func TestExecutableProxyCONNECTInjectionPolicyControlAndEventRedaction(t *testin
 	}
 	mintingBody, _ := io.ReadAll(response.Body)
 	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden || !strings.Contains(string(mintingBody), "credential_minting_blocked") ||
+	if response.StatusCode != http.StatusForbidden || response.Header.Get("X-Phase-Error-Code") != "agent_access_policy_blocked" ||
+		!strings.Contains(string(mintingBody), `"rule":"secret_guard"`) || !strings.Contains(string(mintingBody), `"class":"credential_minting"`) ||
 		!strings.Contains(string(mintingBody), "mint a new credential") {
 		t.Fatalf("credential minting status = %d body=%s", response.StatusCode, mintingBody)
 	}
