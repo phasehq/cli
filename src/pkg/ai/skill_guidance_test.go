@@ -129,7 +129,7 @@ func TestAgentSkillExplainsCustomConnectionRequests(t *testing.T) {
 		"`connection_removal` | `{\"type\": \"agent_connection.remove\", \"version\": 1",
 		"The action is what the member reviews",
 		"welcome but not required",
-		"Send the whole proposed `definition`, never a patch",
+		"Send the whole requested `definition`, never a patch",
 		"is refused before it leaves this machine",
 		"never ask the human to paste one into chat",
 		"POST http://phase.invalid/v1/refresh",

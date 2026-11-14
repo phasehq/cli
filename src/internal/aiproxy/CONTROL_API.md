@@ -43,8 +43,8 @@ Content-Type: application/json
 |---|---|---|
 | The Agent, following the `phase-cli` skill | `GET /v1/capabilities`, `GET /v1/status` | When the human asks for Phase, or to find out whether Phase can manage a service. In transparent mode the per-prompt status line already names the ready Connections, so this is mostly for service discovery. |
 | The Agent | `GET /v1/context?serviceType=…` | Before using a service through Phase: provider-specific instructions and limitations, rendered by Console. |
-| The Agent | `POST /v1/requests`, `GET /v1/requests/{id}?wait=300`, `GET /v1/requests`, `POST /v1/requests/{id}/cancel` | No suitable Connection exists (`setup`), the provider rejected the credential (`credential_update`), or the Agent proposes a change to a custom HTTP Connection (an `action`). The Agent prints `approvalUrl` for the human, then long-polls. |
-| The Agent | `GET /v1/connections`, `GET /v1/connections/{id}` | To read what its Connections are, and to get the current definition of a custom HTTP Connection before proposing a change. Served from the session the proxy already holds. |
+| The Agent | `POST /v1/requests`, `GET /v1/requests/{id}?wait=300`, `GET /v1/requests`, `POST /v1/requests/{id}/cancel` | No suitable Connection exists (`setup`), the provider rejected the credential (`credential_update`), or the Agent requests a change to a custom HTTP Connection (an `action`). The Agent prints `approvalUrl` for the human, then long-polls. |
+| The Agent | `GET /v1/connections`, `GET /v1/connections/{id}` | To read what its Connections are, and to get the current definition of a custom HTTP Connection before requesting a change. Served from the session the proxy already holds. |
 | The Agent | `POST /v1/refresh` | After a member replaced the secret of a custom HTTP Connection, to use the new value now instead of at the next periodic refresh. |
 | `phase ai exec --connection <id>` (the CLI, not the Agent) | `GET /v1/connections/{id}/environment` | Builds the per-Connection process environment (decoys + scoped proxy URL) for one command. Sensitive: contains the proxy password. |
 | Hook wrapper `phase ai __harness-exec` and `phase ai exec` attach | `GET /.well-known/agents` (manifest) | Right before running a wrapped command, to fetch the exact process environment of the live runtime. Sensitive; the skill forbids the Agent from fetching it. |
@@ -310,7 +310,7 @@ Rules enforced by the proxy: `setup` needs `serviceType` and must not carry
 `invalid_control_request`. Wrong content type → 415.
 
 Change to a custom HTTP Connection (an `action`). The Agent never changes a
-Connection and never supplies a secret: it proposes, a member reviews the action
+Connection and never supplies a secret: it asks, a member reviews the action
 in Console and enters any secret there.
 
 ```json
@@ -323,15 +323,15 @@ in Console and enters any secret there.
     "version": 1,
     "connectionId": "c0a80101-0000-4000-8000-0000000000b1",
     "name": "Example API",
-    "definition": { "…": "the full proposed definition" }
+    "definition": { "…": "the full requested definition" }
   }
 }
 ```
 
 | `action.type` | `kind` | meaning |
 |---|---|---|
-| `agent_connection.create` | `setup` | propose a new custom Connection: `serviceType: "http"`, `name`, `definition` |
-| `agent_connection.update` | `connection_update` | propose a new definition and/or name for a granted Connection |
+| `agent_connection.create` | `setup` | request a new custom Connection: `serviceType: "http"`, `name`, `definition` |
+| `agent_connection.update` | `connection_update` | request a new definition and/or name for a granted Connection |
 | `agent_connection.secret_update` | `credential_update` | ask a member to enter a new secret; carries no value |
 | `agent_connection.remove` | `connection_removal` | ask to remove this Workflow's grant of a Connection |
 

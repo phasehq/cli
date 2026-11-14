@@ -684,7 +684,7 @@ type RevokeResponse struct {
 	RevokedAt     time.Time `json:"revokedAt"`
 }
 
-// CreateRequestRequest asks a member for something. Action is the proposal for
+// CreateRequestRequest asks a member for something. Action is the change to
 // a custom Connection, forwarded as opaque, versioned JSON; it never holds a
 // secret value. Beside an action the packaged-service members are optional.
 type CreateRequestRequest struct {

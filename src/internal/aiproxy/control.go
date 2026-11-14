@@ -311,7 +311,7 @@ func validCreateRequest(request agentapi.CreateRequestRequest) bool {
 	}
 }
 
-// validActionRequest covers a request that proposes a change to a custom
+// validActionRequest covers a request that asks for a change to a custom
 // Connection. The action stays opaque apart from its type, version and the
 // rule that it carries no secret value, so a member the Console adds later is
 // forwarded untouched. The packaged-service members are optional beside an

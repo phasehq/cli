@@ -1017,7 +1017,7 @@ const (
 // CreateRequestInput asks a member for something. A request without an Action
 // is a packaged-service setup or credential update and needs
 // CredentialProvider, CredentialName and Markdown. A request with an Action
-// proposes a change to a custom Connection: the action is what the member
+// asks for a change to a custom Connection: the action is what the member
 // reviews, so those members, Title and Markdown are all optional. Action is
 // opaque, versioned JSON; see ValidateRequestAction.
 type CreateRequestInput struct {

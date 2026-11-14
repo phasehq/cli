@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-const proposedDefinition = `{"specVersion":1,"hosts":[{"match":"exact","value":"api.example.com","port":443,"path":"/v1/*"}],` +
+const requestedDefinition = `{"specVersion":1,"hosts":[{"match":"exact","value":"api.example.com","port":443,"path":"/v1/*"}],` +
 	`"fields":[{"name":"token","kind":"secret","source":{"type":"sealed"},"env":"EXAMPLE_API_KEY"},{"name":"username","kind":"identifier","value":"alice"}],` +
 	`"injections":[{"type":"header","name":"Authorization","prefix":"Bearer ","field":"token","whenAbsent":"attach"}],"preset":"bearer"}`
 
@@ -40,7 +40,7 @@ func TestRequestActionRegistryMapsEveryTypeToItsKind(t *testing.T) {
 
 func TestRequestActionIsOpaqueApartFromTypeVersionAndSecrets(t *testing.T) {
 	accepted := map[string]string{
-		"create":                            `{"type":"agent_connection.create","version":1,"serviceType":"http","name":"Example API","definition":` + proposedDefinition + `}`,
+		"create":                            `{"type":"agent_connection.create","version":1,"serviceType":"http","name":"Example API","definition":` + requestedDefinition + `}`,
 		"members this client does not know": `{"type":"agent_connection.create","version":1,"access":{"durationSeconds":3600},"reviewers":["ops"],"definition":{"specVersion":7,"later":{"nested":[1,2,3]}}}`,
 		"identifier value":                  `{"type":"agent_connection.create","version":1,"definition":{"fields":[{"name":"username","kind":"identifier","value":"alice"}]}}`,
 		"host rule value":                   `{"type":"agent_connection.create","version":1,"definition":{"hosts":[{"match":"exact","value":"api.example.com"}],"fields":[]}}`,
@@ -123,7 +123,7 @@ func TestCreateRequestForwardsTitleAndActionAndRelaxesOnlyActionRequests(t *test
 	defer server.Close()
 	client := newTestClient(t, server.URL, AgentAuthentication("durable-token"))
 
-	update := json.RawMessage(`{"type":"agent_connection.update","version":1,"connectionId":"connection-1","definition":` + proposedDefinition + `,"access":{"durationSeconds":3600}}`)
+	update := json.RawMessage(`{"type":"agent_connection.update","version":1,"connectionId":"connection-1","definition":` + requestedDefinition + `,"access":{"durationSeconds":3600}}`)
 	created, status, err := client.CreateRequestWithStatus(context.Background(), session, CreateRequestInput{
 		Kind: RequestConnectionUpdate, Title: "Allow /v2 on the Example API", Markdown: "The v2 endpoints replaced v1.", Action: update,
 	})

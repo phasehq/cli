@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// RequestActionType names the change a request proposes. A member reviews and
+// RequestActionType names the change a request asks for. A member reviews and
 // applies it in the Console; an Agent never changes anything directly.
 type RequestActionType string
 
@@ -91,7 +91,7 @@ func validateActionCarriesNoSecret(members map[string]json.RawMessage) error {
 	}
 	var definition map[string]json.RawMessage
 	if err := json.Unmarshal(rawDefinition, &definition); err != nil || definition == nil {
-		return fmt.Errorf("agents: the proposed definition must be a JSON object")
+		return fmt.Errorf("agents: the requested definition must be a JSON object")
 	}
 	rawFields, present := definition["fields"]
 	if !present {
@@ -99,7 +99,7 @@ func validateActionCarriesNoSecret(members map[string]json.RawMessage) error {
 	}
 	var fields []map[string]json.RawMessage
 	if err := json.Unmarshal(rawFields, &fields); err != nil {
-		return fmt.Errorf("agents: the proposed definition has invalid fields")
+		return fmt.Errorf("agents: the requested definition has invalid fields")
 	}
 	for _, field := range fields {
 		if _, carriesValue := field["value"]; carriesValue {

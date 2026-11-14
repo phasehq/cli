@@ -109,7 +109,7 @@ Content-Type: application/json
 }
 ```
 
-`credential_update` must not include `serviceType`. Base the proposal on the provider error and the human's requested operation. Ask for the narrowest practical provider permission; do not claim Phase can edit the third-party account itself.
+`credential_update` must not include `serviceType`. Base the request on the provider error and the human's requested operation. Ask for the narrowest practical provider permission; do not claim Phase can edit the third-party account itself.
 
 Without an `action` (next section), only `setup` and `credential_update` are valid request kinds. Do not send a session ID, credential values, matchers, or fields not shown above. `relatedRequestId` may link a credential update to an earlier request when useful.
 
@@ -126,12 +126,12 @@ curl --fail --silent --show-error http://phase.invalid/v1/connections/<connectio
 
 Each entry has `id`, `name`, `serviceType`, and `state` (`ready`, `expired`, or `unavailable`, with a `stateReason` when its value cannot be used). An `http` Connection also has its full `definition`, `valueRevision`, and `keyVersion`.
 
-You never change a Connection yourself, and you can never supply a secret value. Propose the change as an `action` on a request; a member reviews it in the Console and enters any secret there. The `kind` must match the action:
+You never change a Connection yourself, and you can never supply a secret value. Ask for the change as an `action` on a request; a member reviews it in the Console and enters any secret there. The `kind` must match the action:
 
 | To | `kind` | `action` |
 | --- | --- | --- |
-| propose a new Connection | `setup` | `{"type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "<name>", "definition": {…}}` |
-| propose a change | `connection_update` | `{"type": "agent_connection.update", "version": 1, "connectionId": "<id>", "name": "<optional new name>", "definition": {…}}` |
+| request a new Connection | `setup` | `{"type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "<name>", "definition": {…}}` |
+| request a change | `connection_update` | `{"type": "agent_connection.update", "version": 1, "connectionId": "<id>", "name": "<optional new name>", "definition": {…}}` |
 | ask for a new secret | `credential_update` | `{"type": "agent_connection.secret_update", "version": 1, "connectionId": "<id>"}` |
 | ask to remove it from this Workflow | `connection_removal` | `{"type": "agent_connection.remove", "version": 1, "connectionId": "<id>"}` |
 
@@ -159,11 +159,11 @@ Content-Type: application/json
 ```
 
 - The action is what the member reviews. A `title` (at most 120 characters) and a `markdown` reason are welcome but not required.
-- Send the whole proposed `definition`, never a patch. To change a Connection, start from the definition `/v1/connections/<connection-id>` returns and change only what the task needs. Ask for the narrowest hosts and paths.
+- Send the whole requested `definition`, never a patch. To change a Connection, start from the definition `/v1/connections/<connection-id>` returns and change only what the task needs. Ask for the narrowest hosts and paths.
 - An injection `type` is `header` (`name`, optional `prefix`), `query` (`name`), or `basic` (`usernameField` names an `identifier` field that carries its `value`; `field` names the secret). `whenAbsent` is `attach` or `block`. The Console validates the definition and says what to correct.
 - A `secret` field says where a value goes and never contains it. A request that puts a `value` on anything but an `identifier` field is refused before it leaves this machine. Never put a secret in a title, a reason, or a name, and never ask the human to paste one into chat.
 - A changed host list makes the member enter the secret again; that is expected.
-- The credential travels only over HTTPS. A plain `http://` request to the Connection is refused unless its definition sets `"allowPlainHttp": true`; propose that only for a service with no HTTPS endpoint.
+- The credential travels only over HTTPS. A plain `http://` request to the Connection is refused unless its definition sets `"allowPlainHttp": true`; request that only for a service with no HTTPS endpoint.
 - After a member replaces a secret, the proxy picks it up within about 15 seconds, or right after the service answers 401 or 403. To fetch it immediately, send an empty `POST http://phase.invalid/v1/refresh`, then retry once.
 
 ## Show the Console link and wait

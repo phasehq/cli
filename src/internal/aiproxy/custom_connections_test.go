@@ -852,11 +852,11 @@ func TestControlRequestsForwardTitleAndActionUntouched(t *testing.T) {
 		reason string
 	}{
 		{
-			name: "propose a new custom Connection", kind: "setup", title: "Connect the Example API", reason: "The task reads invoices from the Example API.",
+			name: "request a new custom Connection", kind: "setup", title: "Connect the Example API", reason: "The task reads invoices from the Example API.",
 			action: `{"type":"agent_connection.create","version":1,"serviceType":"http","name":"Example API","definition":` + string(definition) + `}`,
 		},
 		{
-			name: "propose a change", kind: "connection_update", title: "Allow /v2 on the Example API", reason: "The v2 endpoints replaced v1.",
+			name: "request a change", kind: "connection_update", title: "Allow /v2 on the Example API", reason: "The v2 endpoints replaced v1.",
 			action: `{"type":"agent_connection.update","version":1,"connectionId":"connection-example","name":"Example API v2","definition":` + string(definition) + `}`,
 		},
 		{
