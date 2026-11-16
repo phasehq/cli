@@ -106,7 +106,7 @@ func ValidateRequestAction(kind RequestKind, action json.RawMessage) error {
 }
 
 // validateActionMembers holds the per-type checks: a preset stands in place
-// of a definition, an allow names exactly one class or match and never the
+// of a definition, an allow names exactly one class, match or operation and never the
 // secret guard's class, and a Workflow context is text within the size cap.
 func validateActionMembers(actionType RequestActionType, members map[string]json.RawMessage) error {
 	switch actionType {
@@ -125,12 +125,19 @@ func validateActionMembers(actionType RequestActionType, members map[string]json
 	case ActionGrantAllow:
 		var allow map[string]json.RawMessage
 		if err := json.Unmarshal(members["allow"], &allow); err != nil || allow == nil {
-			return fmt.Errorf("agents: allow must be an object with a class or a match")
+			return fmt.Errorf("agents: allow must be an object with a class, a match or an operation")
 		}
 		rawClass, hasClass := allow["class"]
 		_, hasMatch := allow["match"]
-		if hasClass == hasMatch {
-			return fmt.Errorf("agents: allow must have exactly one of class or match")
+		rawOperation, hasOperation := allow["operation"]
+		if countTrue(hasClass, hasMatch, hasOperation) != 1 {
+			return fmt.Errorf("agents: allow must have exactly one of class, match or operation")
+		}
+		if hasOperation {
+			var operation string
+			if err := json.Unmarshal(rawOperation, &operation); err != nil || !ValidAWSOperation(operation) {
+				return fmt.Errorf("agents: allow.operation must be an AWS action such as ec2:TerminateInstances")
+			}
 		}
 		if hasClass {
 			var class string
@@ -152,6 +159,37 @@ func validateActionMembers(actionType RequestActionType, members map[string]json
 		}
 	}
 	return nil
+}
+
+func countTrue(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
+	}
+	return count
+}
+
+// ValidAWSOperation reports whether value is an AWS action in the form a
+// policy rule or an allow may name: "<service>:<Action>", the service in
+// lower case, no wildcards.
+func ValidAWSOperation(value string) bool {
+	service, action, found := strings.Cut(value, ":")
+	if !found || len(service) < 1 || len(service) > 64 || len(action) < 1 || len(action) > 128 {
+		return false
+	}
+	for _, character := range service {
+		if !((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-') {
+			return false
+		}
+	}
+	for _, character := range action {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func validPresetID(value string) bool {

@@ -19,6 +19,7 @@ func TestAccessAndContextActionsHaveLocalChecksAndStayOpaqueOtherwise(t *testing
 		action string
 	}{
 		"allow by match":           {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"match":{"methods":["DELETE"],"path":"/repos/acme/x"}},"blockedCall":{"method":"DELETE","host":"api.github.com","path":"/repos/acme/x","class":"delete"}}`},
+		"allow by operation":       {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"ec2:TerminateInstances"},"blockedCall":{"method":"POST","host":"ec2.eu-central-1.amazonaws.com","path":"/","class":"delete","operation":"ec2:TerminateInstances"}}`},
 		"allow by class":           {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete"}}`},
 		"allow with later members": {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete"},"blockedCall":{"anything":["at","all"]},"reviewers":["ops"]}`},
 		"renew":                    {RequestAccessChange, `{"type":"agent_grant.renew","version":1,"connectionId":"connection-1"}`},
@@ -39,6 +40,12 @@ func TestAccessAndContextActionsHaveLocalChecksAndStayOpaqueOtherwise(t *testing
 	}{
 		"allow naming the secret guard's class": {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"credential_minting"}}`},
 		"allow with class and match":            {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete","match":{"methods":["DELETE"]}}}`},
+		"allow with class and operation":        {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete","operation":"ec2:TerminateInstances"}}`},
+		"allow with match and operation":        {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"match":{"methods":["DELETE"]},"operation":"ec2:TerminateInstances"}}`},
+		"allow operation with a wildcard":       {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"ec2:*"}}`},
+		"allow operation with no service":       {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"TerminateInstances"}}`},
+		"allow operation with an upper service": {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"EC2:TerminateInstances"}}`},
+		"allow operation is not text":           {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":7}}`},
 		"allow with neither":                    {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{}}`},
 		"allow missing":                         {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1"}`},
 		"allow is text":                         {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":"delete"}`},

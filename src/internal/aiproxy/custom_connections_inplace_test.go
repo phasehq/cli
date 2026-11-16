@@ -616,7 +616,7 @@ func TestExposedCustomValueIsWithheldOnRefreshWithoutEndingTheSession(t *testing
 	}
 }
 
-func TestCustomConnectionRefusesPlainHTTPUnlessAllowed(t *testing.T) {
+func TestHTTPConnectionRefusesPlainHTTPUnlessAllowed(t *testing.T) {
 	anyPort := func(allow bool) map[string]any {
 		payload := customConnectionPayload(customDecoyToken, customLiveToken)
 		payload["hosts"] = []any{map[string]any{"match": "exact", "value": "api.example.test"}}
@@ -654,20 +654,27 @@ func TestCustomConnectionRefusesPlainHTTPUnlessAllowed(t *testing.T) {
 		})
 	}
 
-	// A packaged header service keeps swapping on whatever scheme it is asked on.
-	session := headerInjectionSession(t, "backend-packaged-plain", "packaged-decoy")
-	session.Config.Connections[0].Hosts[0].Port = 0
-	state, err := newRuntimeStateWithCapability(session, "runtime-packaged-plain")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer state.destroy()
-	upstream := &recordingUpstream{}
-	request, _ := http.NewRequest(http.MethodGet, "http://api.example.test/v1/me", nil)
-	request.Header.Set("Authorization", "Bearer packaged-decoy")
-	if result := processThrough(&httpProxy{state: state, transport: upstream}, request); result.failure != nil ||
-		upstream.last.Load().Header.Get("Authorization") != "Bearer live-token" {
-		t.Fatalf("a packaged service was affected by the plain-HTTP rule: %+v", result.failure)
+	// A packaged header service is held to the same rule: HTTPS only unless
+	// the Connection allows plain HTTP.
+	for _, allow := range []bool{false, true} {
+		session := headerInjectionSession(t, "backend-packaged-plain", "packaged-decoy")
+		session.Config.Connections[0].Hosts[0].Port = 0
+		session.Config.Connections[0].AllowPlainHTTP = allow
+		state, err := newRuntimeStateWithCapability(session, "runtime-packaged-plain")
+		if err != nil {
+			t.Fatal(err)
+		}
+		upstream := &recordingUpstream{}
+		request, _ := http.NewRequest(http.MethodGet, "http://api.example.test/v1/me", nil)
+		request.Header.Set("Authorization", "Bearer packaged-decoy")
+		result := processThrough(&httpProxy{state: state, transport: upstream}, request)
+		if allow && (result.failure != nil || upstream.last.Load().Header.Get("Authorization") != "Bearer live-token") {
+			t.Fatalf("a packaged service allowing plain HTTP was refused: %+v", result.failure)
+		}
+		if !allow && (result.failure == nil || upstream.calls.Load() != 0 || !strings.Contains(result.failure.message, "HTTPS")) {
+			t.Fatalf("a packaged service's credential went out over plain HTTP: %+v", result.failure)
+		}
+		state.destroy()
 	}
 }
 

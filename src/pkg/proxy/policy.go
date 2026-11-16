@@ -11,13 +11,13 @@ import (
 
 // Access policy enforcement.
 //
-// A policy lives on the Workflow's grant of a Connection and says which calls
+// A policy lives on the Connection and says which calls
 // are allowed, need a member's approval (ask), or are blocked. The proxy
 // evaluates it for every request it would inject a credential into, before
 // the credential is swapped in or attached:
 //
 //  1. Classify the call (ClassifyCall): by AWS action for the aws service;
-//     for any other HTTP Connection by the definition's operationClasses, if
+//     for any other HTTP Connection by the Connection's operationClasses, if
 //     it has any, and then the HTTP method.
 //  2. The secret guard runs first and is not part of this file's evaluation:
 //     a credential-minting call never reaches it (see minting.go).
@@ -43,10 +43,9 @@ type ClassifiedCall struct {
 }
 
 // PolicyApplies reports whether the Connection's calls are evaluated against
-// its policy: any HTTP Connection whose policy can stop something. The
-// Console sets policies on the aws service and on custom HTTP Connections;
-// should another HTTP service carry one, it is enforced by method rather
-// than ignored.
+// its policy: any HTTP Connection whose policy can stop something. Every
+// HTTP service takes one; a service with no action-based classification is
+// judged by its operationClasses and then the method.
 func PolicyApplies(connection agentapi.Connection) bool {
 	return connection.Protocol == "http" && connection.Policy.Restricts()
 }
@@ -61,14 +60,14 @@ func ClassifyCall(req *http.Request, connection agentapi.Connection) ([]Classifi
 	if strings.EqualFold(connection.ServiceType, "aws") {
 		return classifyAWSCall(req)
 	}
-	return classifyCustomHTTPCall(req, connection.OperationClasses.Entries), nil
+	return classifyHTTPCall(req, connection.OperationClasses.Entries), nil
 }
 
-// classifyCustomHTTPCall applies the definition's operationClasses, first
+// classifyHTTPCall applies the Connection's operationClasses, first
 // match wins, then falls back to the method. An override whose path cannot be
 // compared with the request's (see policyPath) may or may not apply, so its
 // class is kept as a further candidate rather than guessed away.
-func classifyCustomHTTPCall(req *http.Request, overrides []agentapi.OperationClassRule) []ClassifiedCall {
+func classifyHTTPCall(req *http.Request, overrides []agentapi.OperationClassRule) []ClassifiedCall {
 	path, comparable := policyPath(req)
 	var calls []ClassifiedCall
 	add := func(class string) {
@@ -141,7 +140,7 @@ func evaluateCall(policy *agentapi.AccessPolicy, call ClassifiedCall, method, pa
 	decision := PolicyDecision{Class: call.Class, Operation: call.Operation, RuleIndex: -1}
 	for index := range policy.Rules {
 		rule := &policy.Rules[index]
-		if !ruleMatches(rule, call.Class, method, path, comparable) {
+		if !ruleMatches(rule, call, method, path, comparable) {
 			continue
 		}
 		if decision.Rule == nil || effectRank(rule.Effect) > effectRank(decision.Effect) {
@@ -161,7 +160,7 @@ func evaluateCall(policy *agentapi.AccessPolicy, call ClassifiedCall, method, pa
 		if !now.Before(allow.ExpiresAt) {
 			continue
 		}
-		if targetMatches(allow.Class, allow.Match, call.Class, method, path, comparable) {
+		if targetMatches(allow.Class, allow.Match, allow.Operation, call, method, path, comparable) {
 			decision.Effect, decision.TemporaryAllowID = agentapi.PolicyAllow, allow.ID
 			break
 		}
@@ -173,16 +172,23 @@ func evaluateCall(policy *agentapi.AccessPolicy, call ClassifiedCall, method, pa
 // be compared with a path the proxy cannot bring into canonical form. Such a
 // request is then treated as matching every ask or block path rule and no
 // allow path rule, so an odd spelling of a path never slips past a rule.
-func ruleMatches(rule *agentapi.PolicyRule, class, method, path string, comparable bool) bool {
+func ruleMatches(rule *agentapi.PolicyRule, call ClassifiedCall, method, path string, comparable bool) bool {
 	if rule.Match != nil && rule.Match.Path != "" && !comparable {
 		return rule.Effect != agentapi.PolicyAllow && methodMatches(rule.Match.Methods, method)
 	}
-	return targetMatches(rule.Class, rule.Match, class, method, path, comparable)
+	return targetMatches(rule.Class, rule.Match, rule.Operation, call, method, path, comparable)
 }
 
-func targetMatches(ruleClass string, match *agentapi.PolicyMatch, class, method, path string, comparable bool) bool {
+// targetMatches is true when a rule's or an allow's one target (class, match
+// or operation) covers the call. An operation covers only a call whose AWS
+// action the proxy named, compared without regard to case; calls on any other
+// service never carry one.
+func targetMatches(ruleClass string, match *agentapi.PolicyMatch, operation string, call ClassifiedCall, method, path string, comparable bool) bool {
+	if operation != "" {
+		return call.Operation != "" && strings.EqualFold(operation, call.Operation)
+	}
 	if match == nil {
-		return ruleClass != "" && ruleClass == class
+		return ruleClass != "" && ruleClass == call.Class
 	}
 	if !methodMatches(match.Methods, method) {
 		return false

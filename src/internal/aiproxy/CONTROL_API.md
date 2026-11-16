@@ -210,8 +210,8 @@ session material; a payload that would is refused with 502
 }
 ```
 
-`policy` is the access policy on this Workflow's grant of the Connection, as
-Console sent it: its rules, the temporary allows a member approved, and the
+`policy` is the access policy on the Connection, with this Workflow's
+temporary allows, as Console sent it: its rules, the temporary allows a member approved, and the
 managed secret guard (see §5). `grantExpiresAt` is when time-limited access
 ends. A Connection whose access has ended is listed with `state: "expired"`,
 `stateReason: "access_expired"`, `expiredAt` and a `request`: a complete body
@@ -325,13 +325,16 @@ served; with none, Console's error is relayed.
   "schemaVersion": 1,
   "kind": "phase.ai.presets",
   "presets": [
-    { "id": "github", "name": "GitHub", "description": "GitHub REST and GraphQL APIs", "category": "developer", "hosts": [{ "match": "exact", "value": "api.github.com", "port": 443 }] },
+    { "id": "stripe", "name": "Stripe", "description": "Stripe API", "category": "payments", "hosts": [{ "match": "exact", "value": "api.stripe.com", "port": 443 }] },
     { "id": "mcp-server", "name": "MCP server", "category": "tools", "hosts": [] }
   ]
 }
 ```
 
-`hosts` is relayed as Console lists it. To use a preset, send
+`hosts` is relayed as Console lists it. GitHub, GitLab, Cloudflare, Vercel,
+Render, Railway and Supabase are not presets: they are ordinary Phase services
+asked for by service type (a `setup` request with `serviceType`, found in
+`GET /v1/capabilities`), with no custom definition. To use a preset, send
 `agent_connection.create` with `"preset": "<id>"` in place of `definition`
 (see `POST /v1/requests`).
 
@@ -364,10 +367,10 @@ never holds a path.
     {
       "kind": "connection_needed",
       "reason": "upstream_rejected_unbound_host",
-      "host": "api.github.com",
+      "host": "api.stripe.com",
       "statusCode": 401,
-      "preset": "github",
-      "request": { "kind": "setup", "title": "Connect GitHub", "action": { "type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "GitHub", "preset": "github" } },
+      "preset": "stripe",
+      "request": { "kind": "setup", "title": "Connect Stripe", "action": { "type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "Stripe", "preset": "stripe" } },
       "count": 2,
       "firstAt": "2026-10-17T09:13:02Z",
       "latestAt": "2026-10-17T09:13:40Z"
@@ -463,7 +466,7 @@ in Console and enters any secret there.
 | `agent_connection.secret_update` | `credential_update` | ask a member to enter a new secret; carries no value |
 | `agent_connection.remove` | `connection_removal` | ask to remove this Workflow's grant of a Connection |
 | `agent_connection.create` with `preset` | `setup` | request a new Connection from a preset: `preset` (an ID from `GET /v1/presets`) in place of `definition`; `hosts` only for a preset whose hosts are editable |
-| `agent_grant.allow` | `access_change` | ask to allow, for a limited time, a call the access policy asks about: `connectionId`, `allow` (exactly one of `class` or `match`), optional `blockedCall` |
+| `agent_grant.allow` | `access_change` | ask to allow, for a limited time, a call the access policy asks about: `connectionId`, `allow` (exactly one of `class`, `match` or `operation`), optional `blockedCall` |
 | `agent_grant.renew` | `access_change` | ask to renew time-limited access: `connectionId` |
 | `agent_workflow.context_update` | `context_update` | ask to replace the Workflow's saved context: `markdown`, the complete new text |
 
@@ -473,8 +476,9 @@ action carries no secret value (no `value` member on the action itself, and in
 `definition.fields` a `value` only on a field of kind `identifier`; a
 `definition` that is not an object is refused). Three types have one more local
 check each: a `preset` is an ID and stands in place of `definition`, never
-beside it; `allow` has exactly one of `class` or `match`, and its class is
-never `credential_minting`; `markdown` of a context update is text of at most
+beside it; `allow` has exactly one of `class`, `match` or `operation` (an AWS
+action such as `ec2:TerminateInstances`), and its class is never
+`credential_minting`; `markdown` of a context update is text of at most
 16384 characters. Everything else inside `action` is forwarded to Console
 untouched, including members this CLI does not know, and Console validates it. `title` (≤ 120 characters, plain text) and `markdown` are
 optional beside an action; a missing `markdown` is forwarded as `""`.
@@ -827,9 +831,10 @@ its decoy. A custom HTTP Connection lists one or more injections (header, Basic
 auth, query parameter), each with `whenAbsent`: a request carrying exactly the
 decoy form is swapped, a request carrying nothing there gets the live value when
 `whenAbsent` is `attach`, and anything else is refused. All injections are
-checked before any is applied. A custom Connection's credential is neither
-swapped nor attached on a plain-HTTP request unless the Connection carries
-`allowPlainHttp: true`; the request is refused with
+checked before any is applied. A header, query or Basic credential of any HTTP
+Connection (custom or packaged) is neither swapped nor attached on a
+plain-HTTP request unless the Connection carries `allowPlainHttp: true`
+(AWS request signing is handled on its own); the request is refused with
 `agent_credential_injection_failed`. Failures on bound traffic use the
 envelope from §3 for most services and an AWS-style XML error
 (`<Error><Code>PhaseProxyError|PhaseAccessDenied|PhaseCredentialMintingBlocked|PhaseAccessPolicyAsk|PhaseAccessPolicyBlocked|PhaseAccessExpired</Code>…`)
@@ -842,7 +847,8 @@ recycling), `upstream_unavailable` (502), `unbound_host_blocked` (403, lockdown)
 
 ### Access policy
 
-A grant's `policy` is evaluated for every request to an HTTP Connection before
+The Connection's `policy` (rules from the Connection, temporary allows from
+this Workflow's grant) is evaluated for every request to an HTTP Connection before
 its credential is swapped in or attached. A policy that only allows (the
 default) is not evaluated at all, and the Connection behaves as without one.
 
@@ -853,12 +859,19 @@ default) is not evaluated at all, and the Connection behaves as without one.
    from `X-Amz-Target`, the `Action` query parameter and the `Action` field of
    a form body. A request that names no action (S3 and the other REST
    services) is classified by method, with S3's `?delete`, `?policy`, `?acl`
-   and similar sub-resources called out. For any other HTTP Connection: the
-   definition's `operationClasses`, first match wins, then the method (`GET`,
+   and similar sub-resources called out. `operationClasses` is ignored on the
+   `aws` service. For any other HTTP Connection, packaged or custom: the
+   Connection's `operationClasses` (a custom definition's, or a packaged
+   service's own, for example its single GraphQL endpoint as `update`), first
+   match wins, then the method (`GET`,
    `HEAD`, `OPTIONS` read; `POST` create; `PUT`, `PATCH` update; `DELETE`
    delete; anything else update).
 2. The secret guard runs first (below).
-3. Every matching rule is collected and the strongest effect wins: `block`,
+3. A rule or temporary allow is one of a `class`, a `match` or an `operation`.
+   An `operation` (`{"operation": "ec2:TerminateInstances"}`) matches an `aws`
+   call whose classified action equals it, compared without regard to case; it
+   never matches a call on another service, and a policy with an `operation`
+   rule on a non-`aws` Connection is unsupported (below). Every matching rule is collected and the strongest effect wins: `block`,
    then `ask`, then `allow`. No matching rule: the policy's `default`.
 4. An `ask` becomes an `allow` when a temporary allow matches the call and its
    `expiresAt` has not passed. That is read from the clock on every request. A
@@ -912,10 +925,15 @@ is added when an AWS request names its action (`"ec2:TerminateInstances"`).
 `agent_access_policy_blocked` has the same details without `request`: a blocked
 call cannot be requested.
 
-`request` names the narrowest thing that covers the call: its method and its
-exact path (glob characters escaped). It names the call's class instead when
-that is narrower or the path cannot be used: an AWS action carried in a header
-or a body shares `POST /` with every other action of the service; a path that
+`request` names the narrowest thing that covers the call. For an AWS call
+whose action the proxy can name it is that one action,
+`"allow": {"operation": "ec2:TerminateInstances"}`, and `blockedCall` carries
+the same `operation`: an action carried in a header or a body shares `POST /`
+with every other action of the service, so a path would cover them all. For any
+other call it is the method and the exact path (glob characters escaped), as
+for an AWS request that names no action (S3 object paths). It names the call's
+class instead when the path cannot be used or the action name is not one an
+allow may carry: a path that
 is not canonical, is longer than 1024 characters, or holds a decoy or
 something shaped like a credential is never repeated (`blockedCall.path` is
 then `/redacted`). No `durationSeconds` is set. An AWS client shows only an

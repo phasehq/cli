@@ -121,6 +121,12 @@ func TestUnreadablePolicyMakesTheConnectionUnavailable(t *testing.T) {
 		"path too long":               `{"version":1,"rules":[{"match":{"path":"/` + strings.Repeat("a", 1024) + `"},"effect":"block"}]}`,
 		"rules is not a list":         `{"version":1,"rules":{"class":"delete"}}`,
 		"not an object":               `["allow"]`,
+		"operation and class":         `{"version":1,"rules":[{"operation":"ec2:TerminateInstances","class":"delete","effect":"block"}]}`,
+		"operation and match":         `{"version":1,"rules":[{"operation":"ec2:TerminateInstances","match":{"methods":["POST"]},"effect":"block"}]}`,
+		"operation with a wildcard":   `{"version":1,"rules":[{"operation":"ec2:Terminate*","effect":"block"}]}`,
+		"operation without a service": `{"version":1,"rules":[{"operation":"TerminateInstances","effect":"block"}]}`,
+		"operation, upper service":    `{"version":1,"rules":[{"operation":"EC2:TerminateInstances","effect":"block"}]}`,
+		"operation with a space":      `{"version":1,"rules":[{"operation":"ec2: TerminateInstances","effect":"block"}]}`,
 	} {
 		var connection Connection
 		payload := `{"connectionId":"connection-1","serviceType":"http","protocol":"http","policy":` + document + `}`
@@ -248,5 +254,36 @@ func TestCreateRequestCarriesDurationOnlyWhenSet(t *testing.T) {
 	without, err := json.Marshal(CreateRequestRequest{Kind: "access_change", Action: json.RawMessage(`{"type":"agent_grant.renew","version":1,"connectionId":"c"}`)})
 	if err != nil || strings.Contains(string(without), "durationSeconds") {
 		t.Fatalf("without duration = %s err=%v", without, err)
+	}
+}
+
+// An operation names an AWS action. It is decoded strictly, kept on rules and
+// allows, and is unusable on any Connection that is not the aws service.
+func TestOperationMatcherIsReadStrictlyAndLimitedToAWS(t *testing.T) {
+	document := `{"version":1,"default":"allow","rules":[{"operation":"ec2:TerminateInstances","effect":"ask"}],` +
+		`"temporaryAllows":[{"id":"a1","operation":"s3:DeleteBucket","expiresAt":"2026-11-15T10:00:00Z"},` +
+		`{"id":"both","operation":"s3:DeleteBucket","class":"delete","expiresAt":"2026-11-15T10:00:00Z"},` +
+		`{"id":"wild","operation":"s3:Delete*","expiresAt":"2026-11-15T10:00:00Z"}]}`
+	var aws Connection
+	if err := json.Unmarshal([]byte(`{"connectionId":"c","serviceType":"aws","protocol":"http","policy":`+document+`}`), &aws); err != nil {
+		t.Fatal(err)
+	}
+	if aws.Policy.Unsupported() || len(aws.Policy.Rules) != 1 || aws.Policy.Rules[0].Operation != "ec2:TerminateInstances" ||
+		len(aws.Policy.TemporaryAllows) != 1 || aws.Policy.TemporaryAllows[0].Operation != "s3:DeleteBucket" || aws.AccessPolicyFailure() != "" {
+		t.Fatalf("aws policy = %+v failure=%q", aws.Policy, aws.AccessPolicyFailure())
+	}
+	for _, serviceType := range []string{"http", "github", "gitlab"} {
+		var other Connection
+		if err := json.Unmarshal([]byte(`{"connectionId":"c","serviceType":"`+serviceType+`","protocol":"http","policy":`+document+`}`), &other); err != nil {
+			t.Fatal(err)
+		}
+		if other.AccessPolicyFailure() != AccessPolicyUnsupported {
+			t.Errorf("%s: a rule by AWS action was accepted on a non-AWS Connection", serviceType)
+		}
+	}
+	// The rule is shown to the Agent as the Console sent it.
+	encoded, err := json.Marshal(aws.Policy)
+	if err != nil || !strings.Contains(string(encoded), `"operation":"ec2:TerminateInstances"`) {
+		t.Fatalf("policy encoding = %s err=%v", encoded, err)
 	}
 }

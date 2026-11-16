@@ -447,14 +447,14 @@ func TestAWSConnectionPolicyAnswers(t *testing.T) {
 	}
 
 	// An action named in the body shares its method and path with every
-	// other action of the service, so the request asks for the class.
+	// other action of the service, so the request asks for that one action.
 	terminate := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=TerminateInstances&InstanceId.1=i-0abc&Version=2016-11-15", form)
 	asked := processThrough(proxy, terminate)
 	if asked.failure == nil || upstream.calls.Load() != 1 {
 		t.Fatalf("an asked AWS call was forwarded: %+v", asked.failure)
 	}
 	code, message := awsErrorBody(t, asked.failure)
-	wantRequest := `{"action":{"allow":{"class":"delete"},"blockedCall":{"class":"delete","host":"ec2.aws.example.test","method":"POST","path":"/"},"connectionId":"connection-aws","type":"agent_grant.allow","version":1},"kind":"access_change","title":"Allow delete calls (ec2:TerminateInstances) on Staging AWS"}`
+	wantRequest := `{"action":{"allow":{"operation":"ec2:TerminateInstances"},"blockedCall":{"class":"delete","host":"ec2.aws.example.test","method":"POST","operation":"ec2:TerminateInstances","path":"/"},"connectionId":"connection-aws","type":"agent_grant.allow","version":1},"kind":"access_change","title":"Allow ec2:TerminateInstances on Staging AWS"}`
 	if code != "PhaseAccessPolicyAsk" || !strings.Contains(message, "ec2:TerminateInstances (a delete call) on Staging AWS needs a member's approval") ||
 		!strings.Contains(message, "send this JSON unchanged to POST http://phase.invalid/v1/requests") || !strings.HasSuffix(message, " JSON: "+wantRequest+" Connection: connection-aws. Grant: grant-aws.") {
 		t.Fatalf("AWS ask answer: code=%s message=%s", code, message)

@@ -178,12 +178,13 @@ func describeCall(req *http.Request, decision phaseproxy.PolicyDecision) string 
 
 // askRequest builds the body an Agent sends unchanged to POST /v1/requests to
 // ask a member to allow the call for a limited time. It names the narrowest
-// thing that covers the call: its method and exact path. Where that would be
-// wider than the call's class, or cannot be written down, it names the class:
-// an AWS action carried in a header or a body shares its method and path with
-// every other action of the service, and a path the proxy cannot spell as an
-// exact glob, or must not repeat, cannot be matched. No duration is sent, so
-// the organisation's default applies; the reviewer may change it.
+// thing that covers the call. For an AWS call whose action the proxy named,
+// that is the one action ("ec2:TerminateInstances"): the action travels in a
+// header or a body and shares its method and path with every other action of
+// the service. Otherwise it is the call's method and exact path. Where the
+// path cannot be spelled as an exact glob or must not be repeated, or an
+// action name is not one an allow may carry, it names the class. No duration
+// is sent, so the organisation's default applies; the reviewer may change it.
 func (p *httpProxy) askRequest(connection agentapi.Connection, req *http.Request, host string, decision phaseproxy.PolicyDecision) json.RawMessage {
 	method := strings.ToUpper(req.Method)
 	name := plainTitleText(connection.ConnectionName)
@@ -193,8 +194,15 @@ func (p *httpProxy) askRequest(connection agentapi.Connection, req *http.Request
 	reportedPath := p.reportablePath(req)
 	allow := map[string]any{"class": decision.Class}
 	title := "Allow " + decision.Class + " calls on " + name
+	blockedCall := map[string]any{"method": method, "host": host, "path": reportedPath, "class": decision.Class}
 	if decision.Operation != "" {
-		title = "Allow " + decision.Class + " calls (" + decision.Operation + ") on " + name
+		blockedCall["operation"] = decision.Operation
+		if sdkagents.ValidAWSOperation(decision.Operation) {
+			allow = map[string]any{"operation": decision.Operation}
+			title = "Allow " + decision.Operation + " on " + name
+		} else {
+			title = "Allow " + decision.Class + " calls (" + decision.Operation + ") on " + name
+		}
 	} else if glob, exact := phaseproxy.ExactPathGlob(req); exact && policyMethod(method) && p.pathIsReportable(glob) {
 		allow = map[string]any{"match": map[string]any{"methods": []string{method}, "path": glob}}
 		title = "Allow " + method + " " + reportedPath + " on " + name
@@ -205,7 +213,7 @@ func (p *httpProxy) askRequest(connection agentapi.Connection, req *http.Request
 			"type": string(sdkagents.ActionGrantAllow), "version": sdkagents.RequestActionVersion,
 			"connectionId": connection.ConnectionID,
 			"allow":        allow,
-			"blockedCall":  map[string]any{"method": method, "host": host, "path": reportedPath, "class": decision.Class},
+			"blockedCall":  blockedCall,
 		},
 	})
 }

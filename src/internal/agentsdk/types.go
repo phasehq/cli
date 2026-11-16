@@ -655,11 +655,13 @@ type PolicyMatch struct {
 	Path    string   `json:"path,omitempty"`
 }
 
-// PolicyRule has exactly one of Class or Match.
+// PolicyRule has exactly one of Class, Match or Operation (an AWS action,
+// valid on AWS Connections only).
 type PolicyRule struct {
-	Class  OperationClass `json:"class,omitempty"`
-	Match  *PolicyMatch   `json:"match,omitempty"`
-	Effect PolicyEffect   `json:"effect"`
+	Class     OperationClass `json:"class,omitempty"`
+	Match     *PolicyMatch   `json:"match,omitempty"`
+	Operation string         `json:"operation,omitempty"`
+	Effect    PolicyEffect   `json:"effect"`
 }
 
 // TemporaryAllow is an approved, time-limited exception to an ask.
@@ -667,6 +669,7 @@ type TemporaryAllow struct {
 	ID        string         `json:"id"`
 	Class     OperationClass `json:"class,omitempty"`
 	Match     *PolicyMatch   `json:"match,omitempty"`
+	Operation string         `json:"operation,omitempty"`
 	ExpiresAt time.Time      `json:"expiresAt"`
 }
 
@@ -686,7 +689,7 @@ type AccessPolicy struct {
 	Managed         []ManagedPolicy  `json:"managed,omitempty"`
 }
 
-// OperationClassRule overrides how a custom HTTP Connection's call is
+// OperationClassRule overrides how a call on an HTTP Connection is
 // classified. The first matching entry wins.
 type OperationClassRule struct {
 	Match PolicyMatch    `json:"match"`

@@ -90,6 +90,8 @@ Content-Type: application/json
 
 Use the exact identifiers returned by capabilities. `setup` must not include a `connectionId` or `credentialId`. The Console link lets the human create or choose the third-party Integration credential and confirm the Connection.
 
+GitHub, GitLab, Cloudflare, Vercel, Render, Railway and Supabase are ordinary Phase services. When one is listed in capabilities, ask for it with this `setup` request and its `serviceType` (`github`, `gitlab`, `cloudflare`, `vercel`, `render`, `railway`, `supabase`). Do not write a custom definition for them and do not look for a preset. Call the provider normally: the proxy adds the credential when the request carries none, swaps the decoy from the environment, and refuses any other value.
+
 ## Request a credential update
 
 If a provider rejects an operation because the current credential is expired, invalid, or lacks scope, use the exact IDs and credential context returned by status:
@@ -163,14 +165,14 @@ Content-Type: application/json
 - An injection `type` is `header` (`name`, optional `prefix`), `query` (`name`), or `basic` (`usernameField` names an `identifier` field that carries its `value`; `field` names the secret). `whenAbsent` is `attach` or `block`. The Console validates the definition and says what to correct.
 - A `secret` field says where a value goes and never contains it. A request that puts a `value` on anything but an `identifier` field is refused before it leaves this machine. Never put a secret in a title, a reason, or a name, and never ask the human to paste one into chat.
 - A changed host list makes the member enter the secret again; that is expected.
-- The credential travels only over HTTPS. A plain `http://` request to the Connection is refused unless its definition sets `"allowPlainHttp": true`; request that only for a service with no HTTPS endpoint.
+- The credential travels only over HTTPS. A plain `http://` request to the Connection is refused unless the Connection sets `"allowPlainHttp": true`; request that only for a service with no HTTPS endpoint.
 - After a member replaces a secret, the proxy picks it up within about 15 seconds, or right after the service answers 401 or 403. To fetch it immediately, send an empty `POST http://phase.invalid/v1/refresh`, then retry once.
 
 ## Access policies: allowed, ask, blocked
 
 A member can set a policy on this Workflow's access to a Connection. It sorts each call into a class (`read`, `create`, `update`, `delete`, `admin`) and decides per class, method, or path whether the call is allowed, needs a member's approval, or is blocked. `GET http://phase.invalid/v1/connections` shows each Connection's `policy`. The proxy decides before it uses the credential and answers at once with HTTP 403; it never holds a call open.
 
-- `agent_access_policy_ask`: the call needs approval. The answer's `details.request` is a complete request body. Send it unchanged to `POST http://phase.invalid/v1/requests`, show the human the `approvalUrl`, wait as described below, then retry the call. Approval allows that call for a limited time only. AWS clients show the same JSON inside the error message, and `GET http://phase.invalid/v1/hints` lists it again if your client hid the answer.
+- `agent_access_policy_ask`: the call needs approval. The answer's `details.request` is a complete request body. Send it unchanged to `POST http://phase.invalid/v1/requests`, show the human the `approvalUrl`, wait as described below, then retry the call. Approval allows that call for a limited time only. For an AWS call whose action Phase can name, the request asks for that one action (`"allow": {"operation": "ec2:TerminateInstances"}`), not every call of its class; the matching `blockedCall` names the same `operation`. For other calls it asks for that method and exact path. AWS clients show the same JSON inside the error message, and `GET http://phase.invalid/v1/hints` lists it again if your client hid the answer.
 - `agent_access_policy_blocked`: the call is blocked. A blocked call cannot be requested, and approval of anything else does not lift it. Tell the human what the task needs; do not look for another route to the same effect.
 - Do not rewrite the request to slip past a rule, for example with another method, another spelling of the path, or another credential. Ask, or stop.
 - The secret guard is always on for every Connection: calls that mint new credentials or assume another identity (for example AWS STS `AssumeRole` or `GetSessionToken`) are blocked with `"rule": "secret_guard"`. It cannot be requested around; ask the human for a Connection that already has the access the task needs.
@@ -187,14 +189,14 @@ Any request that ends in access (a `setup`, an allow, a renewal) may carry a top
 
 ## Presets and hosts without a Connection
 
-For well-known services a Connection can be asked for by preset, without writing a definition. List the presets, then name one in place of `definition`:
+For some well-known services (Anthropic, Stripe, Slack, Linear, Sentry, OpenAI, Datadog, a generic MCP server) a Connection can be asked for by preset, without writing a definition. List the presets, then name one in place of `definition`:
 
 ```bash
 curl --fail --silent --show-error http://phase.invalid/v1/presets
 ```
 
 ```json
-{"kind": "setup", "title": "Connect GitHub", "action": {"type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "GitHub", "preset": "github"}}
+{"kind": "setup", "title": "Connect Stripe", "action": {"type": "agent_connection.create", "version": 1, "serviceType": "http", "name": "Stripe", "preset": "stripe"}}
 ```
 
 Send `hosts` beside `preset` only for a preset whose `hostsEditable` is true, such as a self-hosted service. A member still enters the secret in the Console.

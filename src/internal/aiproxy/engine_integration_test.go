@@ -120,6 +120,8 @@ func TestExecutableProxyCONNECTInjectionPolicyControlAndEventRedaction(t *testin
 			"identifiers": map[string]string{}, "decoyMaterial": map[string]string{"access_token": decoyToken},
 			"configEnv": map[string]string{}, "agentEnv": map[string]string{}, "environmentBindings": []any{},
 			"secretMaterial": map[string]string{"access_token": liveToken},
+			// This upstream is a plain-HTTP test server.
+			"allowPlainHttp": true,
 		}},
 	})
 	ca, certPEM, _, err := phaseproxy.GenerateCA(24 * time.Hour)

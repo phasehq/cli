@@ -68,14 +68,17 @@ func ApplyHTTPInjectionPresenting(ctx context.Context, req *http.Request, live, 
 	if req == nil || req.URL == nil {
 		return InjectionResult{}, &InjectionError{Code: InjectionInvalidTemplate}
 	}
-	// A custom Connection's value is neither swapped in nor attached on a
-	// request that would carry it in the clear, unless its definition says so.
-	if live.ServiceType == agentapi.CustomHTTPServiceType && !live.AllowPlainHTTP && !strings.EqualFold(req.URL.Scheme, "https") {
-		return InjectionResult{}, &InjectionError{Code: InjectionPlainHTTP}
-	}
 	injections := live.EffectiveInjections()
 	if len(live.Injections) == 0 && injections[0].Action == "aws_sigv4" {
 		return applyAWSSigV4(ctx, req, presented)
+	}
+	// A header-style credential is neither swapped in nor attached on a
+	// request that would carry it in the clear, unless the Connection says
+	// so. That holds for every HTTP Connection, custom or packaged: the
+	// rule follows the payload (an injection that is not request signing),
+	// not the service type. AWS request signing keeps its own handling above.
+	if !live.AllowPlainHTTP && !strings.EqualFold(req.URL.Scheme, "https") {
+		return InjectionResult{}, &InjectionError{Code: InjectionPlainHTTP}
 	}
 	claimed := make(map[string]struct{}, len(injections))
 	rewrites := make([]func(), 0, len(injections))

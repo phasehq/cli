@@ -438,9 +438,10 @@ func TestPackagedSingleInjectionStillRequiresTheDecoy(t *testing.T) {
 	}
 }
 
-// A custom Connection's value never travels in the clear unless its
-// definition allows it: on plain HTTP nothing is swapped and nothing is
-// attached. Packaged services are not covered by the rule.
+// An HTTP Connection's value never travels in the clear unless the
+// Connection allows it: on plain HTTP nothing is swapped and nothing is
+// attached. The rule covers packaged HTTP services as well as custom ones;
+// AWS request signing keeps its own handling.
 func TestCustomConnectionNeverInjectsOverPlainHTTPUnlessAllowed(t *testing.T) {
 	carry := map[string]func(*http.Request){
 		"swap":   func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+customDecoy) },
@@ -488,7 +489,12 @@ func TestCustomConnectionNeverInjectsOverPlainHTTPUnlessAllowed(t *testing.T) {
 	})
 	request, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
 	request.Header.Set("Authorization", "Bearer decoy-value")
+	if _, err := ApplyHTTPInjection(context.Background(), request, packaged); injectionCode(err) != InjectionPlainHTTP || request.Header.Get("Authorization") != "Bearer decoy-value" {
+		t.Fatalf("a packaged service was sent over plain HTTP: err=%v header=%q", err, request.Header.Get("Authorization"))
+	}
+	request, _ = http.NewRequest(http.MethodGet, "https://example.test/", nil)
+	request.Header.Set("Authorization", "Bearer decoy-value")
 	if _, err := ApplyHTTPInjection(context.Background(), request, packaged); err != nil || request.Header.Get("Authorization") != "Bearer live-value" {
-		t.Fatalf("a packaged service was affected: err=%v header=%q", err, request.Header.Get("Authorization"))
+		t.Fatalf("a packaged service over HTTPS: err=%v header=%q", err, request.Header.Get("Authorization"))
 	}
 }
