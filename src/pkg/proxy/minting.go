@@ -7,7 +7,6 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 
 	"github.com/phasehq/cli/internal/agentapi"
@@ -30,11 +29,15 @@ import (
 // service, add an entry to credentialMintingRules:
 //   - Operations (AWS): SigV4 scope service -> operation names. Every operation
 //     selector the request carries is checked: X-Amz-Target, the Action query
-//     parameter and the Action field of a form-encoded body, which the proxy
-//     buffers and restores. AWS services differ in which selector they honour,
-//     so a request is refused when any of them names a blocked operation.
+//     parameter, a Smithy RPC v2 path and the Action field of a form-encoded
+//     body, which the proxy buffers and restores. AWS services differ in which
+//     selector they honour, so a request is refused when any of them names a
+//     blocked operation. A query-protocol service acts on a form body whatever
+//     Content-Type the request claims, so there the body is always read, and a
+//     body that names no operation at all cannot be inspected.
 //   - Paths (any HTTP API): method plus path pattern, matched with path.Match,
-//     and optionally a query parameter the request must carry.
+//     and optionally a query parameter the request must carry. The path is
+//     compared as loosePathMatch reads it, so a respelling does not get past.
 //
 // Postgres (ALTER ROLE ... PASSWORD) is not covered here; it needs statement
 // inspection in the protocol adapter.
@@ -53,10 +56,13 @@ type MintingPathRule struct {
 	Pattern   string
 	Query     string
 	Operation string
-	// Service limits an AWS rule to requests for that service, so an S3 object
-	// key that happens to share the path is not blocked. An unknown service
-	// still matches, failing closed.
-	Service string
+	// Services limits an AWS rule to requests signed for one of these
+	// services, so an S3 object key that happens to share the path is not
+	// blocked. An unknown service still matches, failing closed.
+	Services []string
+	// HostLabel further limits a rule to hosts that carry this DNS label,
+	// for a service whose signing name is shared with unrelated APIs.
+	HostLabel string
 }
 
 type MintingRules struct {
@@ -79,8 +85,16 @@ var credentialMintingRules = map[string]MintingRules{
 			"lightsail":           {"GetInstanceAccessDetails", "CreateKeyPair", "DownloadDefaultKeyPair", "CreateBucketAccessKey"},
 		},
 		Paths: []MintingPathRule{
-			{Method: http.MethodPost, Pattern: "/v1/authorization-token", Operation: "codeartifact:GetAuthorizationToken", Service: "codeartifact"},
-			{Method: http.MethodGet, Pattern: "/*", Query: "session", Operation: "s3express:CreateSession", Service: "s3express"},
+			{Method: http.MethodPost, Pattern: "/v1/authorization-token", Operation: "codeartifact:GetAuthorizationToken", Services: []string{"codeartifact"}},
+			{Method: http.MethodGet, Pattern: "/*", Query: "session", Operation: "s3express:CreateSession", Services: []string{"s3express"}},
+			// The IoT control plane is signed as iot or, by older clients, as
+			// execute-api, which API Gateway also uses: hence the host label.
+			{Method: http.MethodPost, Pattern: "/keys-and-certificate", Operation: "iot:CreateKeysAndCertificate", Services: []string{"iot", "execute-api"}, HostLabel: "iot"},
+			{Method: http.MethodPost, Pattern: "/apikeys", Operation: "apigateway:CreateApiKey", Services: []string{"apigateway"}},
+			{Method: http.MethodPost, Pattern: "/clitoken/*", Operation: "airflow:CreateCliToken", Services: []string{"airflow"}},
+			{Method: http.MethodPost, Pattern: "/webtoken/*", Operation: "airflow:CreateWebLoginToken", Services: []string{"airflow"}},
+			{Method: http.MethodPost, Pattern: "/workspaces/*/apikeys", Operation: "grafana:CreateWorkspaceApiKey", Services: []string{"grafana"}},
+			{Method: http.MethodPost, Pattern: "/virtualclusters/*/endpoints/*/credentials", Operation: "emr-containers:GetManagedEndpointSessionCredentials", Services: []string{"emr-containers"}},
 		},
 	},
 	"github": {
@@ -123,15 +137,18 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 		if rule.Method != "" && !strings.EqualFold(rule.Method, req.Method) {
 			continue
 		}
-		if rule.Service != "" {
-			if service := awsScopeService(req); service != "" && service != rule.Service {
+		if len(rule.Services) > 0 {
+			if service := awsScopeService(req); service != "" && !containsString(rule.Services, service) {
 				continue
 			}
+		}
+		if rule.HostLabel != "" && !hostHasLabel(req, rule.HostLabel) {
+			continue
 		}
 		if rule.Query != "" && !req.URL.Query().Has(rule.Query) {
 			continue
 		}
-		if matched, _ := path.Match(rule.Pattern, req.URL.Path); matched {
+		if loosePathMatch(rule.Pattern, req.URL.Path) {
 			return &CredentialMintingBlock{Operation: rule.Operation}, nil
 		}
 	}
@@ -143,7 +160,7 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 	if !guarded {
 		return nil, nil
 	}
-	operations, err := awsOperations(req)
+	operations, err := awsOperations(req, service, true)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +172,21 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 		}
 	}
 	return nil, nil
+}
+
+// hostHasLabel reports whether the request's host carries the DNS label, with
+// or without the -fips suffix AWS endpoints use.
+func hostHasLabel(req *http.Request, label string) bool {
+	host := req.URL.Hostname()
+	if host == "" {
+		host = req.Host
+	}
+	for _, candidate := range strings.Split(strings.ToLower(host), ".") {
+		if strings.TrimSuffix(candidate, "-fips") == label {
+			return true
+		}
+	}
+	return false
 }
 
 // awsScopeService prefers the SigV4 credential scope the client signed with and
@@ -174,20 +206,32 @@ func awsScopeService(req *http.Request) string {
 }
 
 // awsOperations resolves every operation selector the request carries: the
-// JSON X-Amz-Target header, the Action query parameter and the Action field of
-// a form-encoded body. The selectors are not reconciled against the service's
-// protocol; a request that names a blocked operation through any of them is
-// refused, so a decoy selector cannot hide the one the service will act on.
-func awsOperations(req *http.Request) ([]string, error) {
+// JSON X-Amz-Target header, the Action query parameter, a Smithy RPC v2 path
+// and the Action field of a form-encoded body. The selectors are not
+// reconciled against the service's protocol; a request that names a blocked
+// operation through any of them is refused, so a decoy selector cannot hide
+// the one the service will act on. guarded says the caller is the secret
+// guard on a service it has rules for, which reads a body of any type that is
+// not JSON.
+func awsOperations(req *http.Request, service string, guarded bool) ([]string, error) {
 	operations, err := awsHeaderAndQueryOperations(req)
 	if err != nil {
 		return nil, err
 	}
-	fromBody, err := awsFormBodyOperations(req)
-	if err != nil {
-		return nil, err
+	if awsBodyReadAsForm(req, service, guarded) {
+		fromBody, err := awsFormBodyOperations(req)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, fromBody...)
 	}
-	return append(operations, fromBody...), nil
+	// A call to a query-protocol service always names its action. A body with
+	// no selector beside it hides the action from the proxy (an encoding it
+	// does not read, for one), so the call cannot be judged.
+	if len(operations) == 0 && awsRequestHasBody(req) && awsQueryProtocolCall(req, service) {
+		return nil, ErrMintingInspectionUnavailable
+	}
+	return operations, nil
 }
 
 // awsHeaderAndQueryOperations reads the selectors that need no body.
@@ -208,15 +252,27 @@ func awsHeaderAndQueryOperations(req *http.Request) ([]string, error) {
 	for _, action := range req.URL.Query()["Action"] {
 		operations = appendOperation(operations, action)
 	}
+	if operation, named := smithyRPCOperation(req.URL.Path); named {
+		operations = appendOperation(operations, operation)
+	}
 	return operations, nil
+}
+
+// smithyRPCOperation reads the operation of a Smithy RPC v2 request, which
+// names it in the path: /service/<Service>/operation/<Name>, under any prefix.
+func smithyRPCOperation(requestPath string) (string, bool) {
+	segments := strings.Split(strings.Trim(requestPath, "/"), "/")
+	count := len(segments)
+	if count < 4 || segments[count-4] != "service" || segments[count-3] == "" ||
+		segments[count-2] != "operation" || segments[count-1] == "" {
+		return "", false
+	}
+	return segments[count-1], true
 }
 
 // awsFormBodyOperations reads the Action field of a body the query protocol
 // would act on. It buffers a bounded body and leaves req forwardable.
 func awsFormBodyOperations(req *http.Request) ([]string, error) {
-	if !awsBodyMaySelectOperation(req) {
-		return nil, nil
-	}
 	if req.ContentLength < 0 || req.ContentLength > maximumMintingInspectionBytes {
 		return nil, ErrMintingInspectionUnavailable
 	}
@@ -235,16 +291,36 @@ func awsFormBodyOperations(req *http.Request) ([]string, error) {
 	return operations, nil
 }
 
-// awsBodyMaySelectOperation reports whether the request has a body that could
-// name the operation. JSON-protocol bodies name it in X-Amz-Target instead.
-// Every other body is read as a form: the query protocol takes its Action
-// from the body, and a missing or odd Content-Type must not hide it.
-func awsBodyMaySelectOperation(req *http.Request) bool {
-	if req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
+func awsRequestHasBody(req *http.Request) bool {
+	return req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0
+}
+
+// awsBodyReadAsForm reports whether the body has to be read to know the
+// action.
+//
+// A query-protocol service takes its Action from a form body whatever
+// Content-Type the request claims, so its body is always read. The exception
+// is a service that also speaks a JSON or CBOR protocol and is sent that
+// protocol's own content type: the body is then not a form, and the action is
+// in X-Amz-Target or the path.
+//
+// On any other service the body is read only when it says it is a form, so an
+// S3 upload is never buffered. The secret guard, and a request whose service
+// the proxy cannot name, read every body that is not JSON: a missing or odd
+// Content-Type must not hide an Action.
+func awsBodyReadAsForm(req *http.Request, service string, guarded bool) bool {
+	if !awsRequestHasBody(req) {
 		return false
 	}
 	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
-	return mediaType != "application/json" && !strings.HasPrefix(mediaType, "application/x-amz-json-")
+	protocolBody := strings.HasPrefix(mediaType, "application/x-amz-json-") || mediaType == "application/cbor"
+	if awsQueryProtocolCall(req, service) {
+		return !(protocolBody && containsString(awsClasses.DualProtocolServices, service))
+	}
+	if guarded || service == "" {
+		return !protocolBody && mediaType != "application/json"
+	}
+	return mediaType == "application/x-www-form-urlencoded"
 }
 
 func appendOperation(operations []string, operation string) []string {

@@ -143,6 +143,13 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The proxy request target is invalid.", decision: "block", reason: "unclassifiable_request"}
 		return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
 	}
+	// A request-target in the "scheme:opaque" form has no path: the transport
+	// would send the opaque text as the request line while every check below
+	// reads an empty path. It is refused before a binding is looked for.
+	if req.URL.Opaque != "" {
+		failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The request target must be a path, or an absolute URL of the host the request is sent to.", decision: "block", reason: "unclassifiable_request"}
+		return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
+	}
 	selection := selectedConnection(req)
 	if tunnelAuth != nil {
 		selection = tunnelAuth.connectionID
@@ -704,7 +711,7 @@ func selectedProxyAuthorization(header http.Header) (string, string, bool) {
 }
 
 func cloneUpstreamRequest(req *http.Request) (*http.Request, error) {
-	if req.URL == nil || req.URL.User != nil || req.URL.Host == "" {
+	if req.URL == nil || req.URL.User != nil || req.URL.Host == "" || req.URL.Opaque != "" {
 		return nil, errors.New("invalid upstream request")
 	}
 	clone := req.Clone(req.Context())

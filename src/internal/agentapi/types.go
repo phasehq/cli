@@ -261,11 +261,20 @@ func agentVisibleValueContains(configEnv map[string]string, connections []Connec
 	return false
 }
 
+// minimumCustomValueBytes is the shortest value a custom HTTP Connection may
+// hold. The Console refuses a shorter one when it is entered; this is the
+// backstop. A value this short can be found by trying, and it turns up by
+// chance inside the text every redaction check compares it with.
+const minimumCustomValueBytes = 8
+
 // withholdExposedCustomMaterial keeps one member-entered value from taking a
 // whole session down. A packaged service whose live value shows up in an
 // Agent-visible value still fails the session in ValidateAgentVisibleEnvironment.
 // A custom HTTP Connection in that position only loses its own material: it
-// becomes unavailable and every other Connection keeps working.
+// becomes unavailable and every other Connection keeps working. The same
+// holds for a custom value that is too short to be a secret, and for one that
+// the Connection's own description (its name, definition or policy, all of
+// which the Agent can read) already contains.
 func withholdExposedCustomMaterial(config *SessionConfig) {
 	for index := range config.Connections {
 		connection := &config.Connections[index]
@@ -273,13 +282,47 @@ func withholdExposedCustomMaterial(config *SessionConfig) {
 			continue
 		}
 		live := ProxyOnlyCredentialValues([]Connection{*connection})
-		if len(live) == 0 || !agentVisibleValueContains(config.ConfigEnv, config.Connections, live) {
+		if len(live) == 0 {
+			continue
+		}
+		if !shorterThan(live, minimumCustomValueBytes) && !agentVisibleValueContains(config.ConfigEnv, config.Connections, live) &&
+			!descriptionContains(*connection, live) {
 			continue
 		}
 		connection.SecretMaterial.Destroy()
 		connection.SecretMaterial = SecretMaterial{}
 		connection.materialFailure = MaterialFailureExposed
 	}
+}
+
+func shorterThan(values []string, minimum int) bool {
+	for _, value := range values {
+		if len(value) < minimum {
+			return true
+		}
+	}
+	return false
+}
+
+// descriptionContains reports whether what an Agent can read about the
+// Connection contains one of the values, as text or as JSON would escape it.
+func descriptionContains(connection Connection, values []string) bool {
+	described, err := json.Marshal([]any{
+		connection.ConnectionName, connection.CredentialName, connection.Hosts,
+		connection.ConnectionConfig, connection.Policy, connection.OperationClasses,
+	})
+	if err != nil {
+		return true
+	}
+	for _, value := range values {
+		if bytes.Contains(described, []byte(value)) {
+			return true
+		}
+		if escaped, err := json.Marshal(value); err == nil && bytes.Contains(described, escaped[1:len(escaped)-1]) {
+			return true
+		}
+	}
+	return false
 }
 
 type EnvironmentBindingAction string

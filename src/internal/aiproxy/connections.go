@@ -92,11 +92,12 @@ func customConnectionVersions(connection agentapi.Connection) (keyVersion, value
 }
 
 func (h *controlHandler) connections(w http.ResponseWriter) {
+	details := h.state.connectionDetails(time.Now(), "")
 	h.writeConnectionRead(w, remoteapi.ConnectionsResponse{
 		SchemaVersion: agentapi.SchemaVersion,
 		Kind:          "phase.ai.connections",
-		Connections:   h.state.connectionDetails(time.Now(), ""),
-	})
+		Connections:   details,
+	}, details)
 }
 
 func (h *controlHandler) connection(w http.ResponseWriter, id string) {
@@ -107,17 +108,38 @@ func (h *controlHandler) connection(w http.ResponseWriter, id string) {
 	}
 	h.writeConnectionRead(w, remoteapi.ConnectionResponse{
 		SchemaVersion: agentapi.SchemaVersion, Kind: "phase.ai.connection", ConnectionDetail: details[0],
-	})
+	}, details)
 }
 
-// writeConnectionRead refuses to serve a projection that contains any live
-// value, decoy or session credential. A definition holds none of them, so a
-// hit means the payload is not what the contract says it is.
-func (h *controlHandler) writeConnectionRead(w http.ResponseWriter, response any) {
+// writeConnectionRead refuses to serve a projection that contains a decoy, a
+// session credential or a packaged Connection's live value anywhere, or a
+// custom Connection's live value in what the Console said about that
+// Connection. A definition holds none of them, so a hit means the payload is
+// not what the contract says it is. A custom value is a member's choice and is
+// compared only with its own Connection's description: one that reads like an
+// ordinary word must not cost every other Connection its read.
+func (h *controlHandler) writeConnectionRead(w http.ResponseWriter, response any, details []remoteapi.ConnectionDetail) {
 	payload, err := json.Marshal(response)
-	if err != nil || manifestPayloadContains(payload, h.state.eventSecrets()) {
+	if err != nil || manifestPayloadContains(payload, h.state.readTripwireSecrets()) ||
+		detailsCarryOwnValue(details, h.state.customLiveValues()) {
 		writeControlError(w, http.StatusBadGateway, "unsafe_connection_response", "The Connection data contained proxy-only material.", false)
 		return
 	}
 	h.writeRelay(w, response, nil)
+}
+
+// detailsCarryOwnValue reports whether a custom Connection's name, definition
+// or policy, as it would be served, contains that Connection's own live value.
+func detailsCarryOwnValue(details []remoteapi.ConnectionDetail, custom map[string][]string) bool {
+	for _, detail := range details {
+		own := custom[detail.ID]
+		if len(own) == 0 {
+			continue
+		}
+		described, err := json.Marshal([]any{detail.Name, detail.Definition, detail.Policy})
+		if err != nil || manifestPayloadContains(described, own) {
+			return true
+		}
+	}
+	return false
 }

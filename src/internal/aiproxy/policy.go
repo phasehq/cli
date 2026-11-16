@@ -89,7 +89,7 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 	if decision.Rule != nil {
 		rule = *decision.Rule
 	}
-	what := describeCall(req, decision)
+	what := describeCall(p.reportableMethod(req.Method), decision)
 	name := connection.ConnectionName
 	if name == "" {
 		name = connection.ConnectionID
@@ -104,7 +104,7 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 			", show the human the approvalUrl, and retry the call once the request is approved."
 		failure.details["request"] = request
 		p.state.hints.record(proxyHint{
-			kind: hintAccessPolicyAsk, reason: codeAccessPolicyAsk, host: host, method: req.Method,
+			kind: hintAccessPolicyAsk, reason: codeAccessPolicyAsk, host: host, method: failure.details["method"].(string),
 			path: failure.details["path"].(string), class: decision.Class,
 			connectionID: connection.ConnectionID, connectionName: connection.ConnectionName, request: request,
 		}, now)
@@ -124,7 +124,7 @@ func (p *httpProxy) policyDetails(connection agentapi.Connection, req *http.Requ
 	details := map[string]any{
 		"connectionName": connection.ConnectionName,
 		"class":          class,
-		"method":         req.Method,
+		"method":         p.reportableMethod(req.Method),
 		"path":           p.reportablePath(req),
 		"rule":           rule,
 	}
@@ -155,6 +155,16 @@ func (p *httpProxy) pathIsReportable(path string) bool {
 	return !containsControlCharacter(path) && safeEventText(path, p.state.eventSecrets())
 }
 
+// reportableMethod is a method name as it may be repeated in an answer, a
+// hint or a request: a short token that holds nothing secret.
+func (p *httpProxy) reportableMethod(method string) string {
+	if method == "" || len(method) > maxEventMethodLength || !eventIdentifier.MatchString(method) ||
+		!safeEventText(method, p.state.eventSecrets()) {
+		return "UNKNOWN"
+	}
+	return method
+}
+
 // policyEventDetail is what the event for a stopped call carries: the same
 // members as the answer, with the Connection's ID, and without the request an
 // ask offers, which is never part of an event. The rule is "default",
@@ -169,11 +179,17 @@ func policyEventDetail(details map[string]any, connection agentapi.Connection) m
 	return detail
 }
 
-func describeCall(req *http.Request, decision phaseproxy.PolicyDecision) string {
+func describeCall(method string, decision phaseproxy.PolicyDecision) string {
 	if decision.Operation != "" {
 		return decision.Operation + " (a " + decision.Class + " call)"
 	}
-	return "this " + strings.ToUpper(req.Method) + " (a " + decision.Class + " call)"
+	method = strings.ToUpper(method)
+	// A method override asks the service to run the request as another
+	// method, and that is the call the policy stopped.
+	if policyMethod(decision.Method) && decision.Method != method {
+		return "this " + method + ", which asks to be run as " + decision.Method + " (a " + decision.Class + " call)"
+	}
+	return "this " + method + " (a " + decision.Class + " call)"
 }
 
 // askRequest builds the body an Agent sends unchanged to POST /v1/requests to
@@ -186,7 +202,12 @@ func describeCall(req *http.Request, decision phaseproxy.PolicyDecision) string 
 // action name is not one an allow may carry, it names the class. No duration
 // is sent, so the organisation's default applies; the reviewer may change it.
 func (p *httpProxy) askRequest(connection agentapi.Connection, req *http.Request, host string, decision phaseproxy.PolicyDecision) json.RawMessage {
-	method := strings.ToUpper(req.Method)
+	// The allow names the method the stopped candidate runs as: the request's
+	// own, or the one a method override asks for.
+	method := strings.ToUpper(p.reportableMethod(req.Method))
+	if policyMethod(decision.Method) {
+		method = decision.Method
+	}
 	name := plainTitleText(connection.ConnectionName)
 	if name == "" {
 		name = connection.ConnectionID

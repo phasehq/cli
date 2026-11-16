@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	sdkagents "github.com/phasehq/cli/internal/agentsdk"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
@@ -92,22 +93,28 @@ func (b *eventBuffer) Emit(event agentapi.Event) {
 	}
 }
 
+// safe is the last check before an event is kept. The request-derived fields
+// carry text the Agent supplied, so they are compared with every secret the
+// session holds. The other fields are written by the proxy from its own
+// constants and the Console's identifiers; they are compared with what the
+// Console and the proxy issued (session credentials, decoys) and not with
+// live Connection values. A member chooses a custom Connection's value, and
+// one that happened to be a substring of "request" or of a random event ID
+// would otherwise fail every such event, and the session with it.
 func (b *eventBuffer) safe(event *agentapi.Event) bool {
 	if event.Port < 0 || event.Port > 65535 {
 		return false
 	}
-	fields := []string{event.EventID, event.GrantID, event.EventType, event.Protocol, event.Method,
-		event.Host, event.Path, event.Provider, event.ProxyDecision, event.Outcome,
-		event.CredentialAction, event.Reason}
-	secrets := b.state.eventSecrets()
-	for _, field := range fields {
-		if credentialShape.MatchString(field) {
+	issued, secrets := b.state.issuedSecrets(), b.state.eventSecrets()
+	for _, field := range []string{event.EventID, event.GrantID, event.EventType, event.Protocol, event.Provider,
+		event.ProxyDecision, event.Outcome, event.CredentialAction, event.Reason} {
+		if credentialShape.MatchString(field) || containsAny(field, issued) {
 			return false
 		}
-		for _, secret := range secrets {
-			if secret != "" && strings.Contains(field, secret) {
-				return false
-			}
+	}
+	for _, field := range []string{event.Method, event.Host, event.Path} {
+		if credentialShape.MatchString(field) || containsAny(field, secrets) {
+			return false
 		}
 	}
 	event.Detail = safeEventDetail(event.Detail, secrets)
@@ -202,7 +209,8 @@ func safeEventDetail(detail map[string]any, secrets []string) map[string]any {
 }
 
 // safeEventRule accepts the rule a policy answer names: "default",
-// "secret_guard", or one rule object with a class or a match and an effect.
+// "secret_guard", or one rule object with an effect and exactly one of a
+// class, a match or an operation (an AWS action).
 // It returns the rule rebuilt from its known members only, so nothing else
 // rides along. A spooled event comes back from JSON with generic values, so
 // both forms are read.
@@ -216,7 +224,9 @@ func safeEventRule(value any, secrets []string) (any, bool) {
 		return rule, rule == "default" || rule == phaseproxy.SecretGuardRule
 	case agentapi.PolicyRule:
 		encoded := map[string]any{"effect": rule.Effect}
-		if rule.Match != nil {
+		if rule.Operation != "" {
+			encoded["operation"] = rule.Operation
+		} else if rule.Match != nil {
 			match := map[string]any{}
 			if len(rule.Match.Methods) > 0 {
 				methods := make([]any, 0, len(rule.Match.Methods))
@@ -241,11 +251,25 @@ func safeEventRule(value any, secrets []string) (any, bool) {
 		result := map[string]any{"effect": effect}
 		rawMatch, hasMatch := rule["match"].(map[string]any)
 		class, hasClass := text(rule["class"], 32)
-		if hasMatch == hasClass {
+		operation, hasOperation := text(rule["operation"], maxEventDetailTextLength)
+		targets := 0
+		for _, present := range []bool{hasMatch, hasClass, hasOperation} {
+			if present {
+				targets++
+			}
+		}
+		if targets != 1 {
 			return nil, false
 		}
 		if hasClass {
 			result["class"] = class
+			return result, true
+		}
+		if hasOperation {
+			if !sdkagents.ValidAWSOperation(operation) {
+				return nil, false
+			}
+			result["operation"] = operation
 			return result, true
 		}
 		match := map[string]any{}

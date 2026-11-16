@@ -152,7 +152,14 @@ What the Agent may read about its Connections. Both are answered from the
 session configuration the proxy already holds: no Console call, so they cost
 nothing against the plan rate limit. They never carry a secret, a decoy, or
 session material; a payload that would is refused with 502
-`unsafe_connection_response`.
+`unsafe_connection_response`. A decoy, a session credential or a packaged
+Connection's live value is looked for anywhere in the payload. A custom
+Connection's value is one a member chose and may read like an ordinary word,
+so it is compared only with what the Console said about that Connection (its
+name, definition and policy). A match refuses that Connection's own read and
+the list, never the read of another Connection; in a session opened through
+the Console such a value has already been withheld (`material_exposed`,
+below), so the reads answer and show the Connection as `unavailable`.
 
 ```json
 {
@@ -226,10 +233,13 @@ value cannot be used, `stateReason` names why, for example
 `sealed_material_host_mismatch` (the value was entered for a different set of
 hosts and a member must enter it again),
 `sealed_material_agent_key_unavailable`, `material_missing` (the session
-carried no value for it) or `material_exposed` (the value also appears inside
-something the Agent can see, such as an identifier or a decoy, so the proxy
-withheld it; a member must enter a different value). Only that Connection is
-affected. A packaged service in the same position still refuses the session.
+carried no value for it) or `material_exposed` (the proxy withheld the value
+and a member must enter a different one: it also appears inside something the
+Agent can see, such as an identifier, a decoy, or the Connection's own name,
+definition or policy, or it is shorter than 8 bytes, which the Console refuses
+when a value is entered). Only that Connection is affected. A packaged service
+whose value appears inside something the Agent can see still refuses the
+session.
 
 `GET /v1/connections/{connectionId}` returns one entry flat, with
 `"kind": "phase.ai.connection"`:
@@ -386,6 +396,9 @@ never holds a path.
 | `connection_needed` | `lockdown_unbound_host` | `--lockdown` refused a host no Connection covers |
 | `connection_needed` | `upstream_rejected_unbound_host` | a service answered 401 or 403 to a plain-HTTP request on a host no Connection covers; its answer was passed on untouched |
 | `connection_needed` | `unbound_preset_host` | the Agent tunnelled to a host no Connection covers that belongs to a preset. The proxy cannot see the answers inside such a tunnel, so this is how an HTTPS 401 or 403 is addressed |
+
+A hint repeats text the Agent sent (a host, a method, a path). One in which
+that text holds a Connection's live value is left out of the list.
 
 For `connection_needed` the `request` is built when the hints are read. When the
 host belongs to a packaged service in the Console's registry (`services`, read
@@ -848,7 +861,16 @@ for `aws_sigv4` Connections. Codes worth knowing: `agent_connection_denied`
 `agent_access_policy_blocked` (403, below), `agent_access_expired` (403,
 time-limited access ended), `agent_credential_injection_failed` (403, e.g. the
 request was not signed with the decoy), `agent_binding_unavailable` (503, session
-recycling), `upstream_unavailable` (502), `unbound_host_blocked` (403, lockdown).
+recycling), `upstream_unavailable` (502), `unbound_host_blocked` (403, lockdown),
+`invalid_proxy_request` (400, the request cannot be judged or forwarded as it
+is written).
+
+The request-target of a proxied request is a path, or an absolute `http` or
+`https` URL of the host the request is sent to. Any other form, such as
+`scheme:rest` with no `//`, has no path the proxy could check against a host
+rule, an access policy or the secret guard, and is refused with 400
+`invalid_proxy_request` inside a tunnel and outside one; the refusal is
+recorded as an event with reason `unclassifiable_request`.
 
 ### Access policy
 
@@ -860,17 +882,37 @@ default) is not evaluated at all, and the Connection behaves as without one.
 1. The call is classified. For the `aws` service by action name
    (`pkg/proxy/aws_classes.go`: a read verb is `read`; a write in IAM,
    Organizations, an account service, or to a policy, permission or ACL is
-   `admin`; then `create` and `delete` verbs; anything else `update`), read
-   from `X-Amz-Target`, the `Action` query parameter and the `Action` field of
-   a form body. A request that names no action (S3 and the other REST
-   services) is classified by method, with S3's `?delete`, `?policy`, `?acl`
-   and similar sub-resources called out. `operationClasses` is ignored on the
-   `aws` service. For any other HTTP Connection, packaged or custom: the
-   Connection's `operationClasses` (a custom definition's, or a packaged
-   service's own, for example its single GraphQL endpoint as `update`), first
-   match wins, then the method (`GET`,
+   `admin`, as are the listed calls that share a resource or open it to
+   others, such as `ec2:ModifySnapshotAttribute` or
+   `lambda:CreateFunctionUrlConfig`; then `create` and `delete` verbs; anything
+   else `update`), read from `X-Amz-Target`, the `Action` query parameter, the
+   `Action` field of a form body, and the path of a Smithy RPC v2 request
+   (`/service/<Service>/operation/<Name>`). Names are compared without regard
+   to letter case, except that only a read verb spelled as AWS spells it makes
+   a `read`. A query-protocol service (EC2, IAM, STS and the others listed
+   there) has its body read for `Action` whatever `Content-Type` the request
+   claims. A request that names no action (S3 and the other REST services) is
+   classified by method, with the sub-resources of the S3 family (`?delete`,
+   `?policy`, `?acl` and similar) and an ACL set in headers (`x-amz-acl`,
+   `x-amz-grant-*`, `admin`) called out; `POST ?select&select-type=…` is a
+   `read` only when those are its whole query. An action selector decides on
+   its own only on a query-protocol or JSON-target service. On any other
+   service the method and sub-resource class is a further candidate, so an
+   `X-Amz-Target` or `Action` added to a REST call hides nothing.
+   `operationClasses` is ignored on the `aws` service. For any other HTTP
+   Connection, packaged or custom: the Connection's `operationClasses` (a
+   custom definition's, or a packaged service's own, for example its single
+   GraphQL endpoint as `update`), first match wins, then the method (`GET`,
    `HEAD`, `OPTIONS` read; `POST` create; `PUT`, `PATCH` update; `DELETE`
    delete; anything else update).
+
+   On every HTTP Connection two things add a further candidate. A method
+   override (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, or
+   a `_method` query parameter) adds the class of the method it names, and
+   rules by method are matched against that method too; a name that is no HTTP
+   method counts as `update`. A protocol upgrade (a WebSocket handshake) adds
+   `update`, because the proxy does not see what travels afterwards, unless an
+   `operationClasses` entry classifies that request.
 2. The secret guard runs first (below).
 3. A rule or temporary allow is one of a `class`, a `match` or an `operation`.
    An `operation` (`{"operation": "ec2:TerminateInstances"}`) matches an `aws`
@@ -883,9 +925,20 @@ default) is not evaluated at all, and the Connection behaves as without one.
    temporary allow never changes a `block`.
 
 A request that could belong to several classes (an AWS request naming two
-actions, a path the proxy cannot bring into canonical form) is judged by the
-most restricted one. Such a path matches every `ask` or `block` path rule and
-no `allow` path rule. An AWS query-protocol body too large to read (256 KiB) is
+actions, a method override, an upgrade, a path the proxy cannot bring into
+canonical form) is judged by the most restricted one. Such a path matches every
+`ask` or `block` path rule and no `allow` path rule.
+
+Path globs are compared in two ways, on purpose. An `ask` or `block` rule and
+an `operationClasses` entry also match a path that differs only in letter case,
+one trailing slash, or a `;params` tail on its last segment (`/v1/admin`,
+`/V1/Admin/` and `/v1/admin;x` are one path to many servers); an entry of
+`operationClasses` that matches only this way adds its class as a further
+candidate. An `allow` rule and a temporary allow match the path exactly as it
+was sent, so a respelled path never borrows an allow written for another one.
+
+An AWS query-protocol body that is too large to read (256 KiB), or that names
+no action at all (in an encoding the proxy does not read, for one), is
 refused with `agent_access_policy_uninspectable`. A policy this CLI cannot read
 in full (an unknown version, effect, class or rule member) is never enforced in
 part: the Connection is `unavailable` with `stateReason`
@@ -927,6 +980,8 @@ a call open waiting for approval:
 
 `rule` is the rule that decided, `"default"`, or `"secret_guard"`. `operation`
 is added when an AWS request names its action (`"ec2:TerminateInstances"`).
+`method` is the request's own method, or `UNKNOWN` when that is not a short
+token or holds a live value.
 `agent_access_policy_blocked` has the same details without `request`: a blocked
 call cannot be requested.
 
@@ -936,7 +991,9 @@ whose action the proxy can name it is that one action,
 the same `operation`: an action carried in a header or a body shares `POST /`
 with every other action of the service, so a path would cover them all. For any
 other call it is the method and the exact path (glob characters escaped), as
-for an AWS request that names no action (S3 object paths). It names the call's
+for an AWS request that names no action (S3 object paths); when a method
+override decided, the method is the one it names, and the message says so
+("this POST, which asks to be run as DELETE"). It names the call's
 class instead when the path cannot be used or the action name is not one an
 allow may carry: a path that
 is not canonical, is longer than 1024 characters, or holds a decoy or
@@ -955,7 +1012,9 @@ without a policy. No rule, temporary allow or Connection setting turns the
 guard off. The answer is 403 `agent_access_policy_blocked` with
 `"class": "credential_minting"` and `"rule": "secret_guard"`
 (`PhaseCredentialMintingBlocked` in the AWS envelope); a request the proxy
-cannot inspect for it keeps `credential_minting_uninspectable`.
+cannot inspect for it keeps `credential_minting_uninspectable`. The guard's
+path rules are compared like `ask` and `block` rules, and with repeated
+slashes and dot segments removed, so a respelled path is still the same call.
 
 As a backstop, responses on `aws_sigv4` Connections are scanned for credential
 material in the shape STS uses: a `SecretAccessKey` (or `SecretKey`) value with

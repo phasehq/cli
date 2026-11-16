@@ -30,8 +30,57 @@ func canonicalHTTPPath(value string) (string, error) {
 }
 
 func globMatch(pattern, value string) bool {
+	return globMatchWith(pattern, value, false)
+}
+
+// looseGlobMatch is globMatch for the comparisons that must not be dodged by
+// respelling a path: it also matches when the pattern covers the path with
+// letter case, one trailing slash and a ";params" tail on the last segment
+// left out, which is how many servers route a request. Only what stops or
+// reclassifies a call is compared this way (see ruleMatches in policy.go).
+func looseGlobMatch(pattern, value string) bool {
+	if globMatch(pattern, value) {
+		return true
+	}
+	if len(pattern) > 1 {
+		pattern = strings.TrimSuffix(pattern, "/")
+	}
+	return globMatchWith(pattern, loosePath(value), true)
+}
+
+// loosePath drops a ";params" tail on the last segment and one trailing slash.
+func loosePath(value string) string {
+	value = trimPathParams(value)
+	if len(value) > 1 && strings.HasSuffix(value, "/") {
+		value = trimPathParams(value[:len(value)-1])
+	}
+	return value
+}
+
+func trimPathParams(value string) string {
+	segment := strings.LastIndex(value, "/") + 1
+	if parameters := strings.Index(value[segment:], ";"); parameters >= 0 {
+		return value[:segment+parameters]
+	}
+	return value
+}
+
+// loosePathMatch compares a path.Match pattern with a request path the way
+// looseGlobMatch does, after cleaning repeated slashes and dot segments. It is
+// for the fixed path tables that name one operation of a service.
+func loosePathMatch(pattern, requestPath string) bool {
+	cleaned := strings.ToLower(loosePath(path.Clean("/" + requestPath)))
+	matched, err := path.Match(strings.ToLower(pattern), cleaned)
+	return err == nil && matched
+}
+
+func globMatchWith(pattern, value string, foldCase bool) bool {
 	var expression strings.Builder
-	expression.WriteString("(?s)^")
+	if foldCase {
+		expression.WriteString("(?is)^")
+	} else {
+		expression.WriteString("(?s)^")
+	}
 	characters := []rune(pattern)
 	for index := 0; index < len(characters); {
 		character := characters[index]

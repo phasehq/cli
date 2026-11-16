@@ -132,7 +132,18 @@ func (h *controlHandler) hints(w http.ResponseWriter, req *http.Request) {
 	presets, services, _ := h.state.presets.registry(presetContext)
 	cancel()
 	response := remoteapi.HintsResponse{SchemaVersion: agentapi.SchemaVersion, Kind: "phase.ai.hints", Hints: []remoteapi.Hint{}}
+	// A hint repeats text the Agent supplied: a host, a method, a path. One
+	// that holds a custom Connection's live value is left out. Those values
+	// are not compared with the whole payload below, where a member-chosen
+	// value could match an ordinary word and cost every hint.
+	var customValues []string
+	for _, values := range h.state.customLiveValues() {
+		customValues = append(customValues, values...)
+	}
 	for _, hint := range h.state.hints.snapshot() {
+		if containsAny(hint.host, customValues) || containsAny(hint.method, customValues) || containsAny(hint.path, customValues) {
+			continue
+		}
 		entry := remoteapi.Hint{
 			Kind: hint.kind, Reason: hint.reason, Host: hint.host, StatusCode: hint.statusCode,
 			Method: hint.method, Path: hint.path, Class: hint.class,
@@ -151,7 +162,7 @@ func (h *controlHandler) hints(w http.ResponseWriter, req *http.Request) {
 	}
 	for _, unbound := range h.state.hints.unboundHosts() {
 		match := matchRegistry(presets, services, unbound.host, unbound.port)
-		if (match.preset == nil && match.service == nil) || hintsName(response.Hints, unbound.host) {
+		if (match.preset == nil && match.service == nil) || hintsName(response.Hints, unbound.host) || containsAny(unbound.host, customValues) {
 			continue
 		}
 		if bound, err := h.state.hasBoundHost(unbound.host, unbound.port); err != nil || bound {
@@ -165,7 +176,7 @@ func (h *controlHandler) hints(w http.ResponseWriter, req *http.Request) {
 		})
 	}
 	payload, err := json.Marshal(response)
-	if err != nil || manifestPayloadContains(payload, h.state.eventSecrets()) {
+	if err != nil || manifestPayloadContains(payload, h.state.readTripwireSecrets()) {
 		writeControlError(w, http.StatusBadGateway, "unsafe_hints_response", "The hints contained proxy-only material.", false)
 		return
 	}

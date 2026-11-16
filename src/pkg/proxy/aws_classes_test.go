@@ -273,9 +273,11 @@ func TestAWSUploadBodiesAreNotReadForClassification(t *testing.T) {
 	if classes, _ := classesOf(t, unknownLength); !reflect.DeepEqual(classes, []string{"update"}) {
 		t.Fatalf("s3 streamed upload = %v", classes)
 	}
+	// A body that says it is a form is read on any service. A REST service
+	// does not act on the action it names, so the method stays a candidate.
 	form, _ := http.NewRequest(http.MethodPost, "https://lambda.eu-central-1.amazonaws.com/", strings.NewReader("Action=DeleteFunction"))
 	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if classes, operations := classesOf(t, form); !reflect.DeepEqual(classes, []string{"delete"}) || operations[0] != "lambda:DeleteFunction" {
+	if classes, operations := classesOf(t, form); !reflect.DeepEqual(classes, []string{"delete", "create"}) || operations[0] != "lambda:DeleteFunction" {
 		t.Fatalf("a form body on a REST service = %v %v", classes, operations)
 	}
 }

@@ -165,7 +165,7 @@ func (h *controlHandler) presets(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	payload, err := json.Marshal(response)
-	if err != nil || manifestPayloadContains(payload, h.state.eventSecrets()) {
+	if err != nil || manifestPayloadContains(payload, h.state.readTripwireSecrets()) {
 		writeControlError(w, http.StatusBadGateway, "unsafe_presets_response", "The preset list contained proxy-only material.", false)
 		return
 	}

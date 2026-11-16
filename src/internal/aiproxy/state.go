@@ -761,9 +761,25 @@ func (s *runtimeState) hasBindingTarget(grantID, connectionID, credentialID stri
 	return false
 }
 
+// eventSecrets is everything that must not appear in text the Agent supplied
+// or may read back: the session credentials, every decoy and every live
+// Connection value.
 func (s *runtimeState) eventSecrets() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return append(s.issuedSecretsLocked(), s.liveNonIdentifierSecretsLocked()...)
+}
+
+// issuedSecrets is what the Console and the proxy issued for this session:
+// the session credentials and every decoy. They are long random values, so
+// finding one inside a proxy-written field is never a coincidence.
+func (s *runtimeState) issuedSecrets() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.issuedSecretsLocked()
+}
+
+func (s *runtimeState) issuedSecretsLocked() []string {
 	values := []string{s.backendCredential.Reveal(), s.runtimeCapability.Reveal()}
 	for _, binding := range s.bindings {
 		for _, value := range binding.connection.DecoyMaterial {
@@ -772,7 +788,41 @@ func (s *runtimeState) eventSecrets() []string {
 			}
 		}
 	}
-	return append(values, s.liveNonIdentifierSecretsLocked()...)
+	return values
+}
+
+// readTripwireSecrets is what a control read is refused for when its payload
+// contains it anywhere: everything issued, and the live values of packaged
+// Connections. A custom Connection's value is chosen by a member and can
+// coincide with ordinary words of a payload, so it is not compared with a
+// whole payload: customLiveValues lists those values by Connection, to be
+// compared with that Connection's own description and with text the Agent
+// supplied.
+func (s *runtimeState) readTripwireSecrets() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	packaged := make([]agentapi.Connection, 0, len(s.bindings))
+	for _, binding := range s.bindings {
+		if binding.connection.ServiceType != agentapi.CustomHTTPServiceType {
+			packaged = append(packaged, binding.connection)
+		}
+	}
+	return append(s.issuedSecretsLocked(), agentapi.ProxyOnlyCredentialValues(packaged)...)
+}
+
+func (s *runtimeState) customLiveValues() map[string][]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	values := make(map[string][]string)
+	for _, binding := range s.bindings {
+		if binding.connection.ServiceType != agentapi.CustomHTTPServiceType {
+			continue
+		}
+		if live := agentapi.ProxyOnlyCredentialValues([]agentapi.Connection{binding.connection}); len(live) > 0 {
+			values[binding.connection.ConnectionID] = live
+		}
+	}
+	return values
 }
 
 func (s *runtimeState) manifestForbiddenSecrets() []string {
