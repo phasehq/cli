@@ -65,8 +65,9 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 
 	var newValue string
 	if toggleOverride {
-		// No value needed for toggle or change in secret type
-	} else if secretType != "" && randomType == "" && !override {
+		// No value needed for toggle
+	} else if changesTypeOnly(secretType, randomType, override, term.IsTerminal(int(syscall.Stdin))) {
+		// No value needed for a change in secret type
 	} else if randomType != "" {
 		validTypes := map[string]bool{"hex": true, "alphanumeric": true, "base64": true, "base64url": true, "key128": true, "key256": true}
 		if !validTypes[randomType] {
@@ -141,4 +142,11 @@ func runSecretsUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// changesTypeOnly reports whether an update with --type only changes the
+// secret type, so no new value is read. A value piped on stdin is still read
+// and stored, as it is without --type.
+func changesTypeOnly(secretType, randomType string, override, stdinIsTerminal bool) bool {
+	return secretType != "" && randomType == "" && !override && stdinIsTerminal
 }
