@@ -63,12 +63,9 @@ func openEventSpool(baseDirectory, sessionUID string, maxBytes int64) (*eventSpo
 	}
 	digest := sha256.Sum256([]byte(sessionUID))
 	directory := filepath.Join(baseDirectory, hex.EncodeToString(digest[:16]))
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("create Agent event spool: %w", err)
-	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("secure Agent event spool: %w", err)
-	}
+	// The session's folder is created by the first event that needs spooling
+	// and removed once the spool drains, so a session with nothing to spool
+	// leaves nothing behind.
 	spool := &eventSpool{directory: directory, sessionUID: sessionUID, maxBytes: maxBytes, records: make(map[string]spoolRecord)}
 	if _, err := spool.loadLocked(); err != nil {
 		return nil, err
@@ -92,7 +89,7 @@ func (s *eventSpool) Persist(event agentapi.Event) error {
 	}
 	nameDigest := sha256.Sum256([]byte(event.EventID))
 	destination := filepath.Join(s.directory, hex.EncodeToString(nameDigest[:])+".json")
-	temporary, err := os.CreateTemp(s.directory, ".event-*")
+	temporary, err := s.createTemporaryLocked()
 	if err != nil {
 		return fmt.Errorf("create Agent audit spool file: %w", err)
 	}
@@ -124,6 +121,32 @@ func (s *eventSpool) Persist(event agentapi.Event) error {
 	return nil
 }
 
+// createTemporaryLocked creates the spool folder when needed. The sweep may
+// remove an empty folder at any moment, so a create that finds the folder gone
+// makes it again rather than failing the session.
+func (s *eventSpool) createTemporaryLocked() (*os.File, error) {
+	for attempt := 0; ; attempt++ {
+		if err := os.MkdirAll(s.directory, 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.Chmod(s.directory, 0o700); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		temporary, err := os.CreateTemp(s.directory, ".event-*")
+		if err == nil || !errors.Is(err, os.ErrNotExist) || attempt == 2 {
+			return temporary, err
+		}
+	}
+}
+
+// removeIfDrainedLocked deletes the session's folder once nothing is spooled.
+// Remove refuses a folder that still holds anything.
+func (s *eventSpool) removeIfDrainedLocked() {
+	if len(s.records) == 0 {
+		_ = os.Remove(s.directory)
+	}
+}
+
 func (s *eventSpool) Load() ([]agentapi.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,6 +155,11 @@ func (s *eventSpool) Load() ([]agentapi.Event, error) {
 
 func (s *eventSpool) loadLocked() ([]agentapi.Event, error) {
 	entries, err := os.ReadDir(s.directory)
+	if errors.Is(err, os.ErrNotExist) {
+		s.records = make(map[string]spoolRecord)
+		s.bytes = 0
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read Agent event spool: %w", err)
 	}
@@ -180,6 +208,7 @@ func (s *eventSpool) loadLocked() ([]agentapi.Event, error) {
 	}
 	s.records = records
 	s.bytes = total
+	s.removeIfDrainedLocked()
 	return events, nil
 }
 
@@ -199,10 +228,14 @@ func (s *eventSpool) Acknowledge(events []agentapi.Event) error {
 		s.bytes -= record.size
 		changed = true
 	}
-	if changed {
-		return syncDirectory(s.directory)
+	if !changed {
+		return nil
 	}
-	return nil
+	if len(s.records) == 0 {
+		s.removeIfDrainedLocked()
+		return nil
+	}
+	return syncDirectory(s.directory)
 }
 
 func syncDirectory(directory string) error {

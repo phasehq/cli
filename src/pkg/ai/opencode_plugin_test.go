@@ -402,8 +402,4 @@ func TestOpenCodePathsFollowItsConfigDirectory(t *testing.T) {
 	check(filepath.Join(root, "xdg", "opencode"))
 	t.Setenv("OPENCODE_CONFIG_DIR", filepath.Join(root, "override"))
 	check(filepath.Join(root, "override"))
-	sandbox := filepath.Join(root, "sandbox")
-	if target, _ := skillTargetByID(SandboxSkillTargets(sandbox), HarnessOpenCode); target.Path != filepath.Join(sandbox, ".config", "opencode", "skills", AgentSkillName, "SKILL.md") {
-		t.Fatalf("sandbox skill path = %q; it must not follow this machine's OpenCode settings", target.Path)
-	}
 }

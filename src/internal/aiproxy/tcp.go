@@ -21,9 +21,8 @@ type protocolAdapters struct {
 	ca     interface {
 		CertificateForHost(string) (*tls.Certificate, error)
 	}
-	tlsConfig         *tls.Config
-	dial              func(context.Context, string, string) (net.Conn, error)
-	serverCertificate *tls.Certificate
+	tlsConfig *tls.Config
+	dial      func(context.Context, string, string) (net.Conn, error)
 
 	mu               sync.Mutex
 	listeners        []net.Listener
@@ -37,11 +36,8 @@ type protocolAdapters struct {
 
 func (e *Engine) startProtocolAdapters(ctx context.Context, state *runtimeState, events *eventBuffer, ca interface {
 	CertificateForHost(string) (*tls.Certificate, error)
-}, dial func(context.Context, string, string) (net.Conn, error), remoteIdentity *remoteTLSIdentity) (*protocolAdapters, error) {
+}, dial func(context.Context, string, string) (net.Conn, error)) (*protocolAdapters, error) {
 	adapters := &protocolAdapters{state: state, events: events, ca: ca, tlsConfig: e.UpstreamTLSConfig, dial: dial, connections: make(map[net.Conn]struct{}), environment: make(map[string]string)}
-	if remoteIdentity != nil {
-		adapters.serverCertificate = remoteIdentity.certificate
-	}
 	postgres := state.protocolBindings("postgres")
 	if len(postgres) > 0 {
 		for _, binding := range postgres {
@@ -53,19 +49,9 @@ func (e *Engine) startProtocolAdapters(ctx context.Context, state *runtimeState,
 		if listenAddress == "" {
 			listenAddress = DefaultPostgresListenAddress
 		}
-		if e.Remote {
-			if e.PostgresListenAddress == "" {
-				return nil, errors.New("remote PostgreSQL binding requires a PostgreSQL listen address")
-			}
-			listenAddress = e.PostgresListenAddress
-		}
 		listener, err := net.Listen("tcp", listenAddress)
 		if err != nil {
 			return nil, err
-		}
-		if e.Remote && !listenerIsNonLoopback(listener) {
-			_ = listener.Close()
-			return nil, errors.New("remote PostgreSQL listener resolved on loopback")
 		}
 		adapters.listeners = append(adapters.listeners, listener)
 		adapterHost := "127.0.0.1"
@@ -75,18 +61,7 @@ func (e *Engine) startProtocolAdapters(ctx context.Context, state *runtimeState,
 			return nil, endpointErr
 		}
 		adapters.postgresEndpoint = &localEndpoint
-		if e.Remote {
-			endpoint, endpointErr := advertisedEndpoint(remoteIdentity.host, listener)
-			if endpointErr != nil {
-				adapters.Close()
-				return nil, endpointErr
-			}
-			adapters.postgresEndpoint = &endpoint
-			adapters.postgresAddress = net.JoinHostPort(endpoint.Host, strconv.Itoa(endpoint.Port))
-			adapterHost = endpoint.Host
-		} else {
-			adapters.postgresAddress = listener.Addr().String()
-		}
+		adapters.postgresAddress = listener.Addr().String()
 		_, port, _ := net.SplitHostPort(listener.Addr().String())
 		adapters.environment["PGHOST"] = adapterHost
 		adapters.environment["PGPORT"] = port

@@ -37,21 +37,13 @@ func TestAIRuntimeCommandsAreRegistered(t *testing.T) {
 	}
 }
 
-func TestRemoteModeLivesOnlyUnderRelayStart(t *testing.T) {
+func TestAIRuntimeHasNoRemoteModeFlags(t *testing.T) {
 	for _, command := range []*cobra.Command{aiRunCmd, aiExecCmd} {
 		for _, name := range []string{"remote", "advertise-host", "tls-cert", "tls-key", "postgres-listen"} {
 			if command.Flags().Lookup(name) != nil {
-				t.Fatalf("phase ai %s unexpectedly exposes --%s; remote mode is phase relay start", command.Name(), name)
+				t.Fatalf("phase ai %s unexpectedly exposes --%s", command.Name(), name)
 			}
 		}
-	}
-	for _, name := range []string{"advertise-host", "tls-cert", "tls-key", "listen", "lockdown"} {
-		if relayStartCmd.Flags().Lookup(name) == nil {
-			t.Fatalf("phase relay start is missing --%s", name)
-		}
-	}
-	if relayStartCmd.Flags().Lookup("postgres-listen") != nil {
-		t.Fatal("phase relay start must derive the PostgreSQL listener instead of taking --postgres-listen")
 	}
 }
 
@@ -582,7 +574,7 @@ func TestRefreshConfiguredAISkillPreservesUnrecognizedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := config.SaveAIConfig(&config.AIConfig{
-		Enabled: true, ProxyMode: config.AIProxyModeLocal, SkillInstallPath: skillPath,
+		Enabled: true, SkillInstallPaths: []string{skillPath},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -612,7 +604,7 @@ func TestRefreshConfiguredAISkillUpdatesEveryConfiguredTarget(t *testing.T) {
 		}
 	}
 	if err := config.SaveAIConfig(&config.AIConfig{
-		Enabled: true, ProxyMode: config.AIProxyModeLocal,
+		Enabled:           true,
 		SkillInstallPaths: []string{first, second},
 	}); err != nil {
 		t.Fatal(err)

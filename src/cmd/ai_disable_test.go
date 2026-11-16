@@ -44,7 +44,7 @@ func TestOpenCodePluginIsRefreshedAndRemovedWhereItWasInstalled(t *testing.T) {
 	customRoot := filepath.Join(t.TempDir(), "opencode")
 	t.Setenv("OPENCODE_CONFIG_DIR", customRoot)
 	customPlugin := filepath.Join(customRoot, "plugins", ai.OpenCodePluginName+".js")
-	cfg := &config.AIConfig{Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{ai.HarnessOpenCode}}
+	cfg := &config.AIConfig{Enabled: true, HarnessIDs: []string{ai.HarnessOpenCode}}
 	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessOpenCode, source); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestOpenCodePluginOfAnEarlierBuildIsFoundBesideItsSkill(t *testing.T) {
 	installEarlierBuild := func() []byte {
 		t.Helper()
 		if err := config.SaveAIConfig(&config.AIConfig{
-			Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{ai.HarnessOpenCode},
+			Enabled: true, HarnessIDs: []string{ai.HarnessOpenCode},
 			SkillInstallPaths: []string{filepath.Join(customRoot, "skills", ai.AgentSkillName, "SKILL.md")},
 		}); err != nil {
 			t.Fatal(err)
@@ -143,7 +143,7 @@ func TestOpenCodePluginOfAnEarlierBuildIsFoundBesideItsSkill(t *testing.T) {
 
 func TestOpenCodePluginIsRecordedBeforeALaterAdapterFails(t *testing.T) {
 	_, source := isolateAISetup(t)
-	cfg := &config.AIConfig{Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{ai.HarnessOpenCode, ai.HarnessCursor}}
+	cfg := &config.AIConfig{Enabled: true, HarnessIDs: []string{ai.HarnessOpenCode, ai.HarnessCursor}}
 	if err := config.SaveAIConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestForeignOpenCodePluginIsNotRecordedForCleanup(t *testing.T) {
 	if err := os.WriteFile(plugin, foreign, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.AIConfig{Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{ai.HarnessOpenCode}}
+	cfg := &config.AIConfig{Enabled: true, HarnessIDs: []string{ai.HarnessOpenCode}}
 	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessOpenCode, source); err == nil {
 		t.Fatal("enable replaced a foreign OpenCode plugin")
 	}

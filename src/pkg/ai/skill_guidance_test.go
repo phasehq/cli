@@ -42,7 +42,7 @@ func TestAgentSkillKeepsUnrelatedToolsOutsidePhase(t *testing.T) {
 func TestAgentSkillExplainsAutomaticEnvironmentWithoutCredentialSwitching(t *testing.T) {
 	content := SkillContent()
 	for _, want := range []string{
-		"## Automatic Phase environment (Claude Code, OpenCode, relay sandboxes)",
+		"## Automatic Phase environment (Claude Code, OpenCode)",
 		"sources the Phase AI environment before every Bash command while the Phase proxy is running",
 		"No wrapper and no `phase ai exec` is needed",
 		"Never unset, override, print, or copy `PHASE_AI_*`, `HTTPS_PROXY`",

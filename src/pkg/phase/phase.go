@@ -34,6 +34,7 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 		if err != nil {
 			return nil, err
 		}
+		warnAIToolBroadToken(creds)
 		pss = creds
 		h, err := config.GetDefaultUserHost()
 		if err != nil {

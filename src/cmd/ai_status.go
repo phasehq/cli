@@ -45,7 +45,7 @@ func renderAIStatus(ctx context.Context) string {
 	if cfg == nil || !cfg.Enabled {
 		out.WriteString("Phase AI:    disabled (run phase ai enable)\n")
 	} else {
-		out.WriteString("Phase AI:    enabled, " + cfg.ProxyMode + " proxy\n")
+		out.WriteString("Phase AI:    enabled, local proxy\n")
 		if harnesses := cfg.ConfiguredHarnessIDs(); len(harnesses) > 0 {
 			out.WriteString("Harnesses:   " + strings.Join(harnesses, ", ") + "\n")
 		} else {
@@ -139,7 +139,11 @@ func renderAIStatus(ctx context.Context) string {
 			}
 			out.WriteString("Environment: " + claudeEnvironmentPath(directory) + " (" + routing + ")\n")
 		}
-		out.WriteString("CA:          " + describeCACertificate(filepath.Join(directory, "ca.pem")) + "\n")
+		if aiCAStore.KeystoreAvailable() {
+			out.WriteString("CA:          " + describeCACertificate(filepath.Join(directory, "ca.pem")) + "\n")
+		} else {
+			out.WriteString("CA:          " + phaseproxy.NoKeystoreNotice + "\n")
+		}
 	}
 	if cfg != nil {
 		if paths := cfg.ConfiguredSkillInstallPaths(); len(paths) > 0 {
@@ -153,7 +157,7 @@ func aiStatusConnections(ctx context.Context, rawProxyURL string) []remoteapi.St
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	client, err := phaseProxyHTTPClient(rawProxyURL, true)
+	client, err := phaseProxyHTTPClient(rawProxyURL)
 	if err != nil {
 		return nil
 	}

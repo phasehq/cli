@@ -33,10 +33,6 @@ type Engine interface {
 	Run(context.Context, *ProxySession, []string) error
 }
 
-type agentTokenRequiredEngine interface {
-	RequiresAgentToken() bool
-}
-
 type EngineCapabilities struct {
 	Protocols        []string
 	InjectionActions []string
@@ -72,9 +68,6 @@ func New(workflowOverride string) (*Runtime, error) {
 	if aiConfig == nil || !aiConfig.Enabled {
 		return nil, errors.New("Phase AI mode is disabled; a user must run phase ai enable")
 	}
-	if aiConfig.ProxyMode != config.AIProxyModeLocal {
-		return nil, fmt.Errorf("unsupported AI proxy mode %q", aiConfig.ProxyMode)
-	}
 	host, err := config.GetDefaultUserHost()
 	if err != nil {
 		return nil, ErrAuthenticationRequired
@@ -97,28 +90,6 @@ func New(workflowOverride string) (*Runtime, error) {
 		workflowID = aiConfig.DefaultWorkflowID
 	}
 	return &Runtime{Client: client, WorkflowID: workflowID}, nil
-}
-
-// NewForRelay builds the runtime for `phase relay start`. A relay is a server:
-// it does not depend on the per-user `phase ai enable` setup, and it must be
-// logged in with an Agent token so the Workflow comes from the token itself.
-func NewForRelay() (*Runtime, error) {
-	host, err := config.GetDefaultUserHost()
-	if err != nil {
-		return nil, ErrAuthenticationRequired
-	}
-	token, err := keyring.GetCredentials()
-	if err != nil {
-		return nil, ErrAuthenticationRequired
-	}
-	client, err := clientForSavedLogin(host, token)
-	if err != nil {
-		return nil, err
-	}
-	if client.TokenType() != agentapi.TokenAgent {
-		return nil, errors.New("phase relay start requires an Agent token login; run phase auth --mode token with an Agent token")
-	}
-	return &Runtime{Client: client}, nil
 }
 
 func clientForSavedLogin(host, token string) (*agentapi.Client, error) {
@@ -190,8 +161,8 @@ func advertisedFeatures(engineFeatures []string, client *agentapi.Client) []stri
 }
 
 // ServeManaged runs one backend session without translating lifecycle errors
-// into foreground-harness restart guidance. Hook-owned daemons and the relay
-// use this entry point to drain one proxy engine completely before opening a
+// into foreground-harness restart guidance. Hook-owned daemons use this entry
+// point to drain one proxy engine completely before opening a
 // successor session in the same supervising process. Run and Exec retain
 // their terminal semantics because their child environments are immutable
 // after launch.
@@ -239,10 +210,6 @@ func (r *Runtime) withSession(ctx context.Context, engine Engine, command []stri
 	if err := engine.Ready(); err != nil {
 		return err
 	}
-	if required, ok := engine.(agentTokenRequiredEngine); ok && required.RequiresAgentToken() &&
-		(r.Client == nil || r.Client.TokenType() != agentapi.TokenAgent) {
-		return errors.New("remote Phase AI mode requires Agent-token login")
-	}
 	session, err := r.open(ctx, engine.Capabilities())
 	if err != nil {
 		return err
@@ -274,7 +241,7 @@ func (r *Runtime) withSession(ctx context.Context, engine Engine, command []stri
 }
 
 // CompileProcessEnvironment is the single session-to-process compiler used by
-// phase ai run, phase ai exec, the hook daemons and phase relay start. It resolves only Phase-owned changes;
+// phase ai run, phase ai exec and the hook daemons. It resolves only Phase-owned changes;
 // ApplyProcessEnvironment is the separate child-launch boundary which retains
 // unrelated inherited variables.
 func (s *ProxySession) CompileProcessEnvironment(proxyURL string, base []string, adapterEnv map[string]string) (proxy.ProcessEnvironmentPlan, error) {
@@ -285,7 +252,6 @@ func (s *ProxySession) CompileProcessEnvironment(proxyURL string, base []string,
 	return proxy.CompileProcessEnvironment(proxy.EnvironmentOptions{
 		Base:                base,
 		ProxyURL:            proxyURL,
-		CertificatePath:     s.CAPaths.Certificate,
 		CABundlePath:        s.CAPaths.Bundle,
 		CABundleComplete:    s.CAPaths.BundleComplete,
 		ConfigEnv:           inputs.configEnv,

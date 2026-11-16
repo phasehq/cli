@@ -29,11 +29,8 @@ var aiEnableCmd = &cobra.Command{
 }
 
 func init() {
-	aiEnableCmd.Flags().Bool("mask", false, "Mask secret values from AI (non-interactive)")
-	aiEnableCmd.Flags().Bool("no-mask", false, "Allow AI to read secret values (non-interactive)")
 	aiEnableCmd.Flags().String("path", "", "Install skill doc to a specific path")
 	aiEnableCmd.Flags().String("harness", "", "Agent harness for automatic integration (claude-code, cursor, codex, devin, opencode, or copilot)")
-	aiEnableCmd.Flags().String("mode", config.AIProxyModeLocal, "AI proxy mode")
 	aiEnableCmd.Flags().String("workflow", "", "Default Agent Workflow ID (User auth)")
 	aiEnableCmd.Flags().Bool("trust-ca", false, "Trust the Phase AI CA for the current user without prompting (use --trust-ca=false to decline)")
 	aiCmd.AddCommand(aiEnableCmd)
@@ -46,74 +43,17 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	previousAIConfig := config.LoadAIConfig()
 
 	targetFlag, _ := cmd.Flags().GetString("path")
-	maskFlag, _ := cmd.Flags().GetBool("mask")
-	noMaskFlag, _ := cmd.Flags().GetBool("no-mask")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
-	proxyMode, _ := cmd.Flags().GetString("mode")
 	workflowID, _ := cmd.Flags().GetString("workflow")
-	if proxyMode != config.AIProxyModeLocal {
-		return fmt.Errorf("unsupported AI proxy mode %q; only local is supported", proxyMode)
-	}
 
-	// Create or load the persistent per-installation CA before offering to
-	// trust its public certificate. CAStore prefers the OS keyring and uses an
-	// owner-only fallback only on headless machines without keyring service.
-	_, caPaths, err := (phaseproxy.CAStore{}).Ensure()
-	if err != nil {
-		return fmt.Errorf("prepare Phase AI CA: %w", err)
-	}
-	fmt.Printf("🔐 Phase AI CA ready: %s\n", caPaths.Certificate)
-	if caPaths.Renewed {
-		fmt.Println("   The CA was renewed. Trusting the new one below replaces the previous CA in your trust store.")
-	}
-
-	trustFlag, _ := cmd.Flags().GetBool("trust-ca")
-	trustFlagChanged := cmd.Flags().Changed("trust-ca")
-	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	// Stock Linux installs ship without NSS certutil; macOS and Windows always
-	// have their tools. Find out before offering trust, so a missing tool skips
-	// the offer with an install hint instead of failing the whole enable after
-	// the user accepted it.
-	trustTool := phaseproxy.UserCATrustAvailability(goruntime.GOOS)
-	if trustTool == nil && trustAttemptPossible(trustFlagChanged, trustFlag, interactive) {
-		if notice := phaseproxy.UserCATrustNotice(goruntime.GOOS); notice != "" {
-			fmt.Println("   If the CA is not trusted yet: " + notice)
+	if aiCAStore.KeystoreAvailable() {
+		if err := prepareAIEnableCA(cmd); err != nil {
+			return err
 		}
-	}
-	trustCA, prompted, err := resolveAIEnableCATrust(
-		trustFlagChanged,
-		trustFlag,
-		interactive,
-		trustTool == nil,
-		promptForAIEnableCATrust,
-	)
-	if err != nil {
-		return err
-	}
-	switch {
-	case trustCA && trustTool != nil:
-		if errors.Is(trustTool, phaseproxy.ErrUserCATrustUnsupported) {
-			return fmt.Errorf("trust Phase AI CA: %w; rerun with --trust-ca=false to use process-scoped CA settings", trustTool)
-		}
-		return fmt.Errorf("trust Phase AI CA for current user: %s; install it and rerun, or pass --trust-ca=false", phaseproxy.UserCATrustToolHint(trustTool))
-	case trustCA:
-		result, err := phaseproxy.TrustCAForCurrentUser(caPaths.Certificate)
-		if err != nil {
-			return fmt.Errorf("trust Phase AI CA for current user: %w", err)
-		}
-		if result.AlreadyTrusted {
-			fmt.Printf("🔐 Phase AI CA is already trusted in the %s.\n", result.Store)
-		} else {
-			fmt.Printf("🔐 Phase AI CA trusted in the %s.\n", result.Store)
-		}
-	case errors.Is(trustTool, phaseproxy.ErrUserCATrustToolMissing) && !trustFlagChanged:
-		fmt.Println("   Browser CA trust skipped: " + phaseproxy.UserCATrustToolHint(trustTool) + ".")
-		fmt.Println("   Command-line tools and SDKs trust the Phase AI CA through the proxy environment regardless;")
-		fmt.Println("   install the package and rerun `phase ai enable --trust-ca` to cover Chrome and Chromium.")
-	case prompted || trustFlagChanged:
-		fmt.Println("   Phase AI CA trust unchanged. run/exec will use process-scoped CA settings.")
-	default:
-		fmt.Println("   Phase AI CA trust unchanged in non-interactive mode; pass --trust-ca to opt in.")
+	} else {
+		// Without a keystore the CA key lives only in each proxy process, so
+		// there is no lasting CA to create here or to trust.
+		fmt.Println("🔐 " + phaseproxy.NoKeystoreNotice)
 	}
 	fmt.Println()
 
@@ -195,17 +135,10 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	} else if cmd.Flags().Changed("workflow") {
 		cfg.DefaultWorkflowID = workflowID
 	}
-	cfg.SkillInstallPath = ai.CanonicalAgentSkillPath(cfg.SkillInstallPath)
 	for index, path := range cfg.SkillInstallPaths {
 		cfg.SkillInstallPaths[index] = ai.CanonicalAgentSkillPath(path)
 	}
 	cfg.Enabled = true
-	cfg.ProxyMode = proxyMode
-	maskSecretValues, err := resolveAIEnableMasking(maskFlag, noMaskFlag, previousAIConfig, term.IsTerminal(int(os.Stdin.Fd())), promptForAIEnableMasking)
-	if err != nil {
-		return err
-	}
-	cfg.MaskSecretValues = maskSecretValues
 	cfg.AddHarnessInstallation(selectedTarget.ID, installPath)
 
 	// Re-enabling may change the Phase host, principal, Workflow, or CLI binary.
@@ -248,7 +181,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		}
 	}
 	fmt.Printf("🪄 Phase skills (v%s) installed to: %s\n", ai.SkillVersion(), filepath.Dir(filepath.Dir(installPath)))
-	fmt.Printf("   %s (Phase AI proxy and relay) and %s (application secrets)\n", ai.AgentSkillName, ai.SecretsSkillName)
+	fmt.Printf("   %s (Phase AI proxy) and %s (application secrets)\n", ai.AgentSkillName, ai.SecretsSkillName)
 	for _, migratedPath := range migratedSecretsPaths {
 		fmt.Printf("   Earlier Phase skill migrated to: %s\n", migratedPath)
 	}
@@ -260,6 +193,10 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	if err := config.SaveAIConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save AI config: %w", err)
 	}
+	// The adapters now run the helper in bin/, so the earlier top-level copy
+	// can go with the other leftovers. An adapter that was skipped may still
+	// run that copy, so it stays until every adapter has been rewritten.
+	sweepAIDirectoryQuietly(cmd.Context(), len(skipped) == 0)
 	if detail := installations[selectedTarget.ID]; detail != "" {
 		fmt.Printf("🪝 %s\n", detail)
 	}
@@ -275,6 +212,77 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// aiCAStore is the per-installation CA store; tests replace its keystore.
+var aiCAStore = phaseproxy.CAStore{}
+
+// prepareAIEnableCA creates or loads the per-installation CA, whose key is in
+// the system keystore, and offers to trust its public certificate.
+func prepareAIEnableCA(cmd *cobra.Command) error {
+	_, caPaths, err := aiCAStore.Ensure()
+	if err != nil {
+		return fmt.Errorf("prepare Phase AI CA: %w", err)
+	}
+	if caPaths.MemoryOnly {
+		// The keystore answered the probe but would not store the key.
+		fmt.Println("🔐 " + phaseproxy.NoKeystoreNotice)
+		return nil
+	}
+	fmt.Printf("🔐 Phase AI CA ready: %s\n", caPaths.Certificate)
+	if caPaths.Renewed {
+		fmt.Println("   The CA was renewed. Trusting the new one below replaces the previous CA in your trust store.")
+	}
+
+	trustFlag, _ := cmd.Flags().GetBool("trust-ca")
+	trustFlagChanged := cmd.Flags().Changed("trust-ca")
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	// Stock Linux installs ship without NSS certutil; macOS and Windows always
+	// have their tools. Find out before offering trust, so a missing tool skips
+	// the offer with an install hint instead of failing the whole enable after
+	// the user accepted it.
+	trustTool := phaseproxy.UserCATrustAvailability(goruntime.GOOS)
+	if trustTool == nil && trustAttemptPossible(trustFlagChanged, trustFlag, interactive) {
+		if notice := phaseproxy.UserCATrustNotice(goruntime.GOOS); notice != "" {
+			fmt.Println("   If the CA is not trusted yet: " + notice)
+		}
+	}
+	trustCA, prompted, err := resolveAIEnableCATrust(
+		trustFlagChanged,
+		trustFlag,
+		interactive,
+		trustTool == nil,
+		promptForAIEnableCATrust,
+	)
+	if err != nil {
+		return err
+	}
+	switch {
+	case trustCA && trustTool != nil:
+		if errors.Is(trustTool, phaseproxy.ErrUserCATrustUnsupported) {
+			return fmt.Errorf("trust Phase AI CA: %w; rerun with --trust-ca=false to use process-scoped CA settings", trustTool)
+		}
+		return fmt.Errorf("trust Phase AI CA for current user: %s; install it and rerun, or pass --trust-ca=false", phaseproxy.UserCATrustToolHint(trustTool))
+	case trustCA:
+		result, err := phaseproxy.TrustCAForCurrentUser(caPaths.Certificate)
+		if err != nil {
+			return fmt.Errorf("trust Phase AI CA for current user: %w", err)
+		}
+		if result.AlreadyTrusted {
+			fmt.Printf("🔐 Phase AI CA is already trusted in the %s.\n", result.Store)
+		} else {
+			fmt.Printf("🔐 Phase AI CA trusted in the %s.\n", result.Store)
+		}
+	case errors.Is(trustTool, phaseproxy.ErrUserCATrustToolMissing) && !trustFlagChanged:
+		fmt.Println("   Browser CA trust skipped: " + phaseproxy.UserCATrustToolHint(trustTool) + ".")
+		fmt.Println("   Command-line tools and SDKs trust the Phase AI CA through the proxy environment regardless;")
+		fmt.Println("   install the package and rerun `phase ai enable --trust-ca` to cover Chrome and Chromium.")
+	case prompted || trustFlagChanged:
+		fmt.Println("   Phase AI CA trust unchanged. run/exec will use process-scoped CA settings.")
+	default:
+		fmt.Println("   Phase AI CA trust unchanged in non-interactive mode; pass --trust-ca to opt in.")
+	}
+	return nil
+}
+
 // trustAttemptPossible reports whether this run may touch the trust store, so
 // the dialog notice is printed only when a dialog can actually appear.
 func trustAttemptPossible(flagChanged, flagValue, interactive bool) bool {
@@ -284,10 +292,14 @@ func trustAttemptPossible(flagChanged, flagValue, interactive bool) bool {
 	return interactive
 }
 
+// aiEnableTryPrompt is what the final step asks the human to say, so the
+// harness exercises Phase end to end on its first prompt.
+const aiEnableTryPrompt = "Set up an AWS connection using Phase and run get caller identity"
+
 // formatAIEnableSummary is the closing block of `phase ai enable`: one status
-// line, then the steps the human must take before the harness can use Phase.
-// It is separated from the install log by blank lines so the next steps are
-// the last thing on screen.
+// line, any step the human must take before the harness can use Phase, then
+// the final step. It is separated from the install log by blank lines so the
+// final step is the last thing on screen.
 func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principal *config.UserConfig, installations, skipped map[string]string) string {
 	var out strings.Builder
 	out.WriteString("\n")
@@ -295,37 +307,6 @@ func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principa
 		out.WriteString(util.BoldGreen("✅ Phase AI enabled for "+target.Name) + "\n")
 	} else {
 		out.WriteString(util.BoldGreen("✅ Phase AI enabled") + "\n")
-	}
-	visibility := "secret values masked"
-	if cfg != nil && !cfg.MaskSecretValues {
-		visibility = "AI tools can read secret values"
-	}
-	out.WriteString("   Local proxy · " + visibility + " · sealed values always hidden · live credentials never leave the proxy.\n")
-	switch {
-	case principal != nil && principal.IsAgentPrincipal():
-		out.WriteString("   Workflow: scoped by your Agent-token login.\n")
-	case cfg != nil && strings.TrimSpace(cfg.DefaultWorkflowID) != "":
-		out.WriteString("   Default Workflow: " + strings.TrimSpace(cfg.DefaultWorkflowID) + "\n")
-	default:
-		out.WriteString("   No default Workflow yet: rerun `phase ai enable --workflow <id>`, or pass --workflow to phase ai run/exec.\n")
-	}
-
-	steps := aiEnableNextSteps(target.ID)
-	if len(steps) > 0 {
-		out.WriteString("\n")
-		out.WriteString(util.Bold("👉 Before "+target.Name+" can use Phase:") + "\n")
-		if len(steps) == 1 {
-			out.WriteString("   " + steps[0] + "\n")
-		} else {
-			for index, step := range steps {
-				out.WriteString(fmt.Sprintf("   %d. %s\n", index+1, step))
-			}
-		}
-		if note := aiEnableHarnessNote(target.ID); note != "" {
-			out.WriteString("   " + note + "\n")
-		}
-	} else if target.ID == "" {
-		out.WriteString("\n   Give an Agent Phase-managed credentials with `phase ai run -- <agent>` or `phase ai exec -- <command>`.\n")
 	}
 	if target.ID != ai.HarnessCodex && codexHookReviewRequired(installations) {
 		out.WriteString("\n")
@@ -337,61 +318,64 @@ func formatAIEnableSummary(target ai.SkillTarget, cfg *config.AIConfig, principa
 		out.WriteString(util.BoldYellow("⚠️  Codex: its Phase plugin is out of date and was not refreshed, because "+reason+".") + "\n")
 		out.WriteString("   Rerun `phase ai enable --harness codex` with the Codex CLI on PATH to refresh it.\n")
 	}
-	if target.ID != "" {
-		out.WriteString("\n   Add another harness with `phase ai enable --harness <name>`; existing integrations stay installed.\n")
+
+	steps := aiEnableRequiredSteps(target.ID, cfg, principal)
+	if len(steps) > 0 {
+		out.WriteString("\n")
+		if target.Name != "" {
+			out.WriteString(util.Bold("Before "+target.Name+" can use Phase:") + "\n")
+		} else {
+			out.WriteString(util.Bold("Before an Agent can use Phase:") + "\n")
+		}
+		for index, step := range steps {
+			out.WriteString(fmt.Sprintf("   %d. %s\n", index+1, step))
+		}
 	}
+	out.WriteString("\n")
+	if target.ID == "" {
+		out.WriteString(util.Bold("👉 Final step: give an Agent Phase-managed credentials with `phase ai run -- <agent>` or `phase ai exec -- <command>`.") + "\n")
+		return out.String()
+	}
+	open, restart := aiEnableHarnessLaunch(target)
+	out.WriteString(util.Bold("👉 Final step: "+open+" and say:") + "\n")
+	out.WriteString("   \"" + aiEnableTryPrompt + "\"\n")
+	out.WriteString("   " + restart + "\n")
 	return out.String()
 }
 
-// aiEnableNextSteps lists what the human must do before the harness picks up
-// Phase. Codex additionally has to trust the hook it just received.
-func aiEnableNextSteps(harness string) []string {
-	switch harness {
-	case ai.HarnessCodex:
-		return []string{
-			fmt.Sprintf("Open the Codex CLI, run /hooks, and trust every hook from %s@%s.", ai.CodexBootstrapPluginName, ai.CodexBootstrapMarketplaceName),
-			aiEnableHarnessRestartMessage(ai.HarnessCodex),
-		}
-	case ai.HarnessClaudeCode, ai.HarnessCursor, ai.HarnessOpenCode, ai.HarnessDevin:
-		return []string{aiEnableHarnessRestartMessage(harness)}
-	case ai.HarnessCopilot:
-		return []string{"Start a new Copilot chat so it loads the skill."}
-	default:
-		return nil
+// aiEnableRequiredSteps lists what must happen before the harness can use
+// Phase: Codex runs a hook only after the human trusts it, and a User login
+// needs a default Workflow for the automatic proxy.
+func aiEnableRequiredSteps(harness string, cfg *config.AIConfig, principal *config.UserConfig) []string {
+	steps := make([]string, 0, 2)
+	agentLogin := principal != nil && principal.IsAgentPrincipal()
+	if !agentLogin && (cfg == nil || strings.TrimSpace(cfg.DefaultWorkflowID) == "") {
+		steps = append(steps, "Set a default Workflow with `phase ai enable --workflow <id>`.")
 	}
+	if harness == ai.HarnessCodex {
+		steps = append(steps, fmt.Sprintf("Open the Codex CLI, run /hooks, and trust every hook from %s@%s.", ai.CodexBootstrapPluginName, ai.CodexBootstrapMarketplaceName))
+	}
+	return steps
 }
 
-// aiEnableHarnessNote says how Phase shows up in that harness afterwards.
-func aiEnableHarnessNote(harness string) string {
-	switch harness {
-	case ai.HarnessClaudeCode, ai.HarnessOpenCode:
-		return "Shell commands then use Phase-managed credentials automatically while the proxy runs; `phase ai status` shows it."
-	case ai.HarnessCodex:
-		return "It can then discover and run explicitly chosen Phase-managed Connections; ordinary shell commands stay ambient. " +
-			"Each Phase call needs Codex's network approval in the default sandbox; set `network_access = true` under `[sandbox_workspace_write]` in ~/.codex/config.toml to skip that."
-	case ai.HarnessCursor, ai.HarnessDevin:
-		return "It can then discover and run explicitly chosen Phase-managed Connections; ordinary shell commands stay ambient."
-	case ai.HarnessCopilot:
-		return "Copilot uses the skill only: run Phase-managed commands with `phase ai exec -- <command>`."
-	default:
-		return ""
-	}
-}
-
-func aiEnableHarnessRestartMessage(harness string) string {
-	switch harness {
+// aiEnableHarnessLaunch says where the human starts the harness and what to do
+// if an already running instance has not loaded the new integration.
+func aiEnableHarnessLaunch(target ai.SkillTarget) (open, restart string) {
+	switch target.ID {
 	case ai.HarnessClaudeCode:
-		return "Fully quit and restart Claude Code or Claude Desktop, start a new chat, then repeat the original prompt."
+		return "open Claude Code (desktop or CLI)", "Restart Claude Code only if it does not pick up Phase."
 	case ai.HarnessCursor:
-		return "Reload or fully restart Cursor, start a new Agent chat, then repeat the original prompt."
+		return "open a new Agent chat in Cursor", "Reload the Cursor window only if it does not pick up Phase."
 	case ai.HarnessCodex:
-		return "Fully quit and restart Codex Desktop or the Codex CLI, start a new task, then repeat the original prompt."
+		return "start a new task in Codex (desktop or CLI)", "Restart Codex only if it does not pick up Phase."
 	case ai.HarnessOpenCode:
-		return "Fully quit and restart OpenCode, start a new session, then repeat the original prompt."
+		return "start a new OpenCode session", "Restart OpenCode only if it does not pick up Phase."
 	case ai.HarnessDevin:
-		return "Fully quit and restart local Devin, start a new session, verify /hooks, then repeat the original prompt."
+		return "start a new session in local Devin", "Restart Devin only if it does not pick up Phase."
+	case ai.HarnessCopilot:
+		return "start a new Copilot chat in VS Code", "Reload VS Code only if Copilot does not pick up the Phase skill."
 	default:
-		return ""
+		return "open " + target.Name, "Restart " + target.Name + " only if it does not pick up Phase."
 	}
 }
 
@@ -557,50 +541,4 @@ func promptForAIEnableCATrust() (bool, error) {
 		return false, fmt.Errorf("CA trust prompt cancelled")
 	}
 	return true, nil
-}
-
-// resolveAIEnableMasking keeps the released secret-visibility choice: explicit
-// flags win, an interactive run asks, and a non-interactive run keeps the
-// previous preference or masks by default.
-func resolveAIEnableMasking(maskFlag, noMaskFlag bool, previous *config.AIConfig, interactive bool, prompt func() (bool, error)) (bool, error) {
-	switch {
-	case maskFlag && noMaskFlag:
-		return false, fmt.Errorf("cannot use both --mask and --no-mask")
-	case maskFlag:
-		return true, nil
-	case noMaskFlag:
-		return false, nil
-	case !interactive:
-		if previous != nil {
-			return previous.MaskSecretValues, nil
-		}
-		return true, nil
-	}
-	return prompt()
-}
-
-func promptForAIEnableMasking() (bool, error) {
-	fmt.Println()
-	fmt.Println("   Secret visibility for AI agents:")
-	fmt.Println("   ┌─────────────┬────────────────────┬──────────────────────────┐")
-	fmt.Println("   │ Secret type │ Example            │ AI Visibility            │")
-	fmt.Println("   ├─────────────┼────────────────────┼──────────────────────────┤")
-	fmt.Println("   │ config      │ REDIS_PORT=6379    │ always visible           │")
-	fmt.Println(util.BoldMagenta("   │ secret      │ REDIS_HOST=?.?.?.? │ 👈 mask secret value?    │"))
-	fmt.Println("   │ sealed      │ REDIS_PASSWORD=███ │ never visible!           │")
-	fmt.Println("   └─────────────┴────────────────────┴──────────────────────────┘")
-	fmt.Println()
-
-	maskPrompt := promptui.Select{
-		Label: "🔒 Mask secret values from AI agents?",
-		Items: []string{
-			"Yes — mask secret values",
-			"No — allow AI to read secret values (e.g. development environments)",
-		},
-	}
-	maskIdx, _, err := maskPrompt.Run()
-	if err != nil {
-		return false, fmt.Errorf("prompt cancelled")
-	}
-	return maskIdx == 0, nil
 }

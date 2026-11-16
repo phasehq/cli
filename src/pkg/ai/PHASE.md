@@ -4,9 +4,9 @@ Phase is an optional credential source for workflow-scoped third-party Integrati
 
 Use this skill when the human asks to use Phase, asks what Phase can manage, or needs a Phase Connection created or updated. Plain shell and provider commands use the harness's ambient credentials and do not depend on Phase health, unless the harness sources the Phase AI environment automatically (next section).
 
-## Automatic Phase environment (Claude Code, OpenCode, relay sandboxes)
+## Automatic Phase environment (Claude Code, OpenCode)
 
-When the Phase hook or plugin is installed for Claude Code or OpenCode, the human has already chosen Phase-managed execution for this machine by running `phase ai enable`. The harness's shell sources the Phase AI environment before every Bash command while the Phase proxy is running. A sandbox bootstrapped from a Phase relay (`phase relay start`) loads the same environment in every login shell. Session context and each prompt carry a `Phase AI:` status line where the harness supports it; `http://phase.invalid/v1/status` lists the Connections.
+When the Phase hook or plugin is installed for Claude Code or OpenCode, the human has already chosen Phase-managed execution for this machine by running `phase ai enable`. The harness's shell sources the Phase AI environment before every Bash command while the Phase proxy is running. Session context and each prompt carry a `Phase AI:` status line where the harness supports it; `http://phase.invalid/v1/status` lists the Connections.
 
 - Run provider CLIs and HTTP clients directly. No wrapper and no `phase ai exec` is needed; `phase ai exec` still works and simply reuses the same environment.
 - Do not try to switch credential source per command. Never unset, override, print, or copy `PHASE_AI_*`, `HTTPS_PROXY`, `NO_PROXY`, CA bundle variables, or provider credential variables, and never pass an ambient profile, key, or token instead.
@@ -24,7 +24,7 @@ When the Phase hook or plugin is installed for Claude Code or OpenCode, the huma
 - Never inspect, print, log, persist, or transmit decoys, the authenticated proxy URL, the full manifest, or credential-like environment values.
 - Never run `phase ai enable` or `phase ai disable`; those are human setup commands.
 
-The durable Phase login token and backend session credential stay inside the Phase CLI. The proxy URL password authenticates only to the active `phase ai run`, `phase ai exec`, hook daemon or relay process.
+The durable Phase login token and backend session credential stay inside the Phase CLI. The proxy URL password authenticates only to the active `phase ai run`, `phase ai exec` or hook daemon process.
 
 ## Discover Phase capabilities dynamically
 

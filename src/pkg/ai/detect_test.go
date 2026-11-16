@@ -85,3 +85,28 @@ func TestShouldRedactFailsClosedForAnUnreadableAIConfig(t *testing.T) {
 		t.Fatal("an unreadable ai.json must mask sealed and secret values")
 	}
 }
+
+func TestShouldRedactHidesSecretAndSealedWhenAIModeIsEnabled(t *testing.T) {
+	for _, name := range []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE", "AGENT"} {
+		t.Setenv(name, "")
+	}
+	original := config.AIConfigPath
+	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
+	t.Cleanup(func() { config.AIConfigPath = original })
+	if err := config.SaveAIConfig(&config.AIConfig{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if ShouldRedact("sealed") || ShouldRedact("secret") {
+		t.Fatal("redacted without an AI tool")
+	}
+	t.Setenv("CURSOR_AGENT", "1")
+	if !ShouldRedact("sealed") || !ShouldRedact("secret") || ShouldRedact("config") {
+		t.Fatal("enabled AI mode must hide sealed and secret values and show config values")
+	}
+	if err := config.SaveAIConfig(&config.AIConfig{Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	if ShouldRedact("sealed") || ShouldRedact("secret") {
+		t.Fatal("redacted while AI mode is disabled")
+	}
+}

@@ -171,7 +171,7 @@ func TestMultiplePostgresConnectionsAuthenticateOnOneListener(t *testing.T) {
 	engine.UpstreamTLSConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	adapters, err := engine.startProtocolAdapters(ctx, state, nil, ca, (&net.Dialer{}).DialContext, nil)
+	adapters, err := engine.startProtocolAdapters(ctx, state, nil, ca, (&net.Dialer{}).DialContext)
 	if err != nil {
 		t.Fatal(err)
 	}

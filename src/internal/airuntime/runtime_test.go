@@ -16,6 +16,7 @@ import (
 
 	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/pkg/proxy"
+	gokeyring "github.com/zalando/go-keyring"
 )
 
 func TestUnavailableEngineFailsBeforeOpeningSession(t *testing.T) {
@@ -55,27 +56,6 @@ func TestSavedLoginRejectsInvalidHostAsAuthenticationRequired(t *testing.T) {
 	_, err := clientForSavedLogin("not-a-url", token)
 	if !errors.Is(err, ErrAuthenticationRequired) {
 		t.Fatalf("invalid saved host error = %v, want ErrAuthenticationRequired", err)
-	}
-}
-
-func TestAgentTokenRequiredEngineFailsBeforeSessionProvisioning(t *testing.T) {
-	var opened atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		opened.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-	token := "pss_user:v1:" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
-	client, err := agentapi.NewClient(server.URL, token, server.Client())
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := &Runtime{Client: client, WorkflowID: "workflow-1"}
-	if err := runtime.ServeManaged(context.Background(), requiresAgentTokenEngine{}); err == nil || !strings.Contains(err.Error(), "Agent-token") {
-		t.Fatalf("remote auth error=%v", err)
-	}
-	if opened.Load() != 0 {
-		t.Fatal("remote mode provisioned a session before rejecting non-Agent auth")
 	}
 }
 
@@ -140,11 +120,6 @@ func TestRuntimeRejectsUnsafeOpenSessionBeforeEngineHandoff(t *testing.T) {
 		t.Fatalf("unsafe open session handoff: calls=%d err=%v", calls.Load(), err)
 	}
 }
-
-type requiresAgentTokenEngine struct{ UnavailableEngine }
-
-func (requiresAgentTokenEngine) Ready() error             { return nil }
-func (requiresAgentTokenEngine) RequiresAgentToken() bool { return true }
 
 type countingServeEngine struct{ calls *atomic.Int32 }
 
@@ -517,7 +492,7 @@ func (s *memoryPrivateKeyStore) Get(service, user string) (string, error) {
 	defer s.mu.Unlock()
 	value, ok := s.values[service+"/"+user]
 	if !ok {
-		return "", errors.New("not found")
+		return "", gokeyring.ErrNotFound
 	}
 	return value, nil
 }

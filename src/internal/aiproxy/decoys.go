@@ -17,7 +17,7 @@ const maxDecoyHistoryPerConnection = 512
 
 // decoyHistory remembers every Agent-visible identifier and decoy set this
 // proxy process has handed out, per Connection. The Console mints decoys per
-// backend session, so a relay that outlives its sessions keeps serving clients
+// backend session, so a proxy process that outlives its sessions keeps serving clients
 // whose environment still carries an older generation: the request is
 // translated to the live credential of the same Connection at injection time.
 //

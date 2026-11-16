@@ -180,7 +180,7 @@ func TestEngineKeepsCapabilityAndHistoryAcrossSessions(t *testing.T) {
 	}
 	second, err := engine.processRuntimeCapability("backend-two")
 	if err != nil || second.Reveal() != first.Reveal() {
-		t.Fatalf("relay capability must be stable across sessions: %v", err)
+		t.Fatalf("runtime capability must be stable across sessions: %v", err)
 	}
 	if engine.decoyHistory() != engine.decoyHistory() {
 		t.Fatal("decoy history must be shared by every session of one Engine")

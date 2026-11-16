@@ -40,17 +40,15 @@ var errApprovedRequestRefreshFailed = errors.New("approved Agent request refresh
 type controlHandler struct {
 	state        *runtimeState
 	environments *connectionEnvironmentCompiler
-	// relayBootstrap is present in remote (relay) mode only.
-	relayBootstrap *bootstrapMaterial
 }
 
 // ServeProxyHTTP serves control routes at the reserved phase.invalid origin.
 // The proxy boundary has already authenticated the process-local capability,
 // and this origin is intercepted before any resolver or upstream transport.
-func (h *controlHandler) ServeProxyHTTP(w http.ResponseWriter, req *http.Request, remote bool) {
+func (h *controlHandler) ServeProxyHTTP(w http.ResponseWriter, req *http.Request) {
 	if req == nil || req.URL == nil || !req.URL.IsAbs() || req.URL.Scheme != "http" ||
 		!strings.EqualFold(req.URL.Host, ManifestHost) || req.URL.User != nil ||
-		req.URL.Fragment != "" || (remote && req.TLS == nil) {
+		req.URL.Fragment != "" {
 		writeControlError(w, http.StatusBadRequest, "invalid_proxy_control_request", "The Phase AI control request is invalid.", false)
 		return
 	}
@@ -60,10 +58,10 @@ func (h *controlHandler) ServeProxyHTTP(w http.ResponseWriter, req *http.Request
 		writeControlError(w, http.StatusForbidden, "browser_control_mutation_rejected", "Browser-originated Phase AI control mutations are not accepted.", false)
 		return
 	}
-	h.serveRoutes(w, req, remote)
+	h.serveRoutes(w, req)
 }
 
-func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request, remote bool) {
+func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request) {
 	path := req.URL.EscapedPath()
 	waitRoute := (req.Method == http.MethodPost && path == "/v1/requests") ||
 		(req.Method == http.MethodGet && strings.HasPrefix(path, "/v1/requests/"))
@@ -92,13 +90,11 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request, r
 		h.presets(w, req)
 	case req.Method == http.MethodGet && path == "/v1/hints":
 		h.hints(w, req)
-	case remote && req.Method == http.MethodGet && path == "/v1/bootstrap":
-		h.serveBootstrap(w, req)
 	case req.Method == http.MethodGet && path == "/v1/capabilities":
 		h.capabilities(w, req)
 	case req.Method == http.MethodGet && path == "/v1/context":
 		h.context(w, req)
-	case !remote && req.Method == http.MethodGet && path == "/v1/discover":
+	case req.Method == http.MethodGet && path == "/v1/discover":
 		h.discover(w, req)
 	case req.Method == http.MethodGet && path == "/v1/requests":
 		h.listRequests(w, req)
@@ -118,18 +114,14 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request, r
 			return
 		}
 		h.pollRequest(w, req, requestID)
-	case !remote && req.Method == http.MethodPost && path == "/v1/revoke":
+	case req.Method == http.MethodPost && path == "/v1/revoke":
 		h.revoke(w, req)
-	case !remote && req.Method == http.MethodPost && path == "/v1/rotate":
+	case req.Method == http.MethodPost && path == "/v1/rotate":
 		h.rotate(w, req)
 	case req.Method == http.MethodPost && path == "/v1/refresh":
 		h.refresh(w, req)
 	default:
-		message := "The local control route was not found."
-		if remote {
-			message = "The remote control route was not found."
-		}
-		writeControlError(w, http.StatusNotFound, "control_route_not_found", message, false)
+		writeControlError(w, http.StatusNotFound, "control_route_not_found", "The local control route was not found.", false)
 	}
 }
 
@@ -728,7 +720,7 @@ func (h *controlHandler) rotate(w http.ResponseWriter, req *http.Request) {
 		h.writeRelay(w, nil, err)
 		return
 	}
-	// Backend session credential #1 is proxy-only. Rotation updates the relay's
+	// Backend session credential #1 is proxy-only. Rotation updates the proxy's
 	// credential without changing or revealing the process-local capability.
 	h.state.setBackendCredential(response.SessionCredential)
 	h.writeRelay(w, map[string]any{

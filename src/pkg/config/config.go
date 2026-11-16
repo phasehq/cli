@@ -204,19 +204,12 @@ func SetDefaultUser(accountID string) error {
 
 var AIConfigPath = filepath.Join(homeDir(), ".phase", "ai.json")
 
-const (
-	AIConfigVersion  = "3"
-	AIProxyModeLocal = "local"
-)
+const AIConfigVersion = "3"
 
 type AIConfig struct {
 	Version           string   `json:"version"`
 	Enabled           bool     `json:"enabled"`
-	ProxyMode         string   `json:"proxyMode"`
-	MaskSecretValues  bool     `json:"maskSecretValues"`
 	DefaultWorkflowID string   `json:"defaultWorkflowId,omitempty"`
-	SkillInstallPath  string   `json:"skillInstallPath,omitempty"`
-	HarnessID         string   `json:"harnessId,omitempty"`
 	SkillInstallPaths []string `json:"skillInstallPaths,omitempty"`
 	HarnessIDs        []string `json:"harnessIds,omitempty"`
 	// OpenCode's root follows its environment, so refresh and disable use the
@@ -232,70 +225,43 @@ func LoadAIConfig() *AIConfig {
 	var raw struct {
 		Version           string   `json:"version"`
 		Enabled           *bool    `json:"enabled"`
-		ProxyMode         string   `json:"proxyMode"`
 		DefaultWorkflowID string   `json:"defaultWorkflowId"`
-		SkillInstallPath  string   `json:"skillInstallPath"`
-		HarnessID         string   `json:"harnessId"`
 		SkillInstallPaths []string `json:"skillInstallPaths"`
 		HarnessIDs        []string `json:"harnessIds"`
-		MaskSecretValues  *bool    `json:"maskSecretValues"`
 		OpenCodePlugins   []string `json:"openCodePlugins"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
-
-	// Version 1 files hold only the masking preference. They are read in the
-	// current format and rewritten by the next save; loading never writes, so a
-	// reader cannot overwrite a concurrent save.
-	if raw.Version == "" || raw.Version == "1" {
-		return &AIConfig{
-			Version:          AIConfigVersion,
-			Enabled:          true,
-			ProxyMode:        AIProxyModeLocal,
-			MaskSecretValues: maskPreference(raw.MaskSecretValues),
-		}
-	}
 	if raw.Version != AIConfigVersion || raw.Enabled == nil {
 		return nil
-	}
-
-	mode := raw.ProxyMode
-	if mode == "" {
-		mode = AIProxyModeLocal
 	}
 	return &AIConfig{
 		Version:           AIConfigVersion,
 		Enabled:           *raw.Enabled,
-		ProxyMode:         mode,
-		MaskSecretValues:  maskPreference(raw.MaskSecretValues),
 		DefaultWorkflowID: raw.DefaultWorkflowID,
-		SkillInstallPath:  raw.SkillInstallPath,
-		HarnessID:         raw.HarnessID,
-		SkillInstallPaths: uniqueNonEmpty(raw.SkillInstallPaths, raw.SkillInstallPath),
-		HarnessIDs:        uniqueNonEmpty(raw.HarnessIDs, raw.HarnessID),
+		SkillInstallPaths: uniqueNonEmpty(raw.SkillInstallPaths),
+		HarnessIDs:        uniqueNonEmpty(raw.HarnessIDs),
 		OpenCodePlugins:   uniqueNonEmpty(raw.OpenCodePlugins),
 	}
 }
 
 // ConfiguredHarnessIDs returns every harness configured for automatic Phase
-// integration. HarnessID holds the most recently selected harness; callers
-// should use the plural list through this helper.
+// integration.
 func (cfg *AIConfig) ConfiguredHarnessIDs() []string {
 	if cfg == nil {
 		return nil
 	}
-	return uniqueNonEmpty(cfg.HarnessIDs, cfg.HarnessID)
+	return uniqueNonEmpty(cfg.HarnessIDs)
 }
 
 // ConfiguredSkillInstallPaths returns every skill copy Phase should keep
-// refreshed. SkillInstallPath is retained as a backwards-compatible alias for
-// the most recently selected target.
+// refreshed.
 func (cfg *AIConfig) ConfiguredSkillInstallPaths() []string {
 	if cfg == nil {
 		return nil
 	}
-	return uniqueNonEmpty(cfg.SkillInstallPaths, cfg.SkillInstallPath)
+	return uniqueNonEmpty(cfg.SkillInstallPaths)
 }
 
 // HarnessEnabled reports whether an installed harness integration may start
@@ -313,16 +279,7 @@ func (cfg *AIConfig) HarnessConfigured(harness string) bool {
 	if cfg == nil {
 		return false
 	}
-	configured := cfg.ConfiguredHarnessIDs()
-	if len(configured) == 0 {
-		return false
-	}
-	for _, candidate := range configured {
-		if candidate == harness {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(cfg.ConfiguredHarnessIDs(), harness)
 }
 
 // AddHarnessInstallation records one additional integration without replacing
@@ -333,25 +290,16 @@ func (cfg *AIConfig) AddHarnessInstallation(harness, skillPath string) {
 	}
 	cfg.HarnessIDs = uniqueNonEmpty(cfg.ConfiguredHarnessIDs(), harness)
 	cfg.SkillInstallPaths = uniqueNonEmpty(cfg.ConfiguredSkillInstallPaths(), skillPath)
-	// Keep the singular fields for older CLI builds and human-readable config.
-	if harness != "" {
-		cfg.HarnessID = harness
-	}
-	if skillPath != "" {
-		cfg.SkillInstallPath = skillPath
-	}
 }
 
 // ClearHarnessInstallations forgets adapters and skill copies after a
-// successful global disable. Proxy mode and Workflow defaults are retained for
-// the next enable.
+// successful global disable. The Workflow default is retained for the next
+// enable.
 func (cfg *AIConfig) ClearHarnessInstallations() {
 	if cfg == nil {
 		return
 	}
-	cfg.HarnessID = ""
 	cfg.HarnessIDs = nil
-	cfg.SkillInstallPath = ""
 	cfg.SkillInstallPaths = nil
 	cfg.OpenCodePlugins = nil
 }
@@ -367,7 +315,7 @@ func RecordOpenCodePlugin(path string) error {
 		if _, err := os.Stat(AIConfigPath); !errors.Is(err, os.ErrNotExist) {
 			return errors.New("Phase AI configuration cannot be read")
 		}
-		cfg = &AIConfig{ProxyMode: AIProxyModeLocal}
+		cfg = &AIConfig{}
 	}
 	if slices.Contains(cfg.OpenCodePlugins, path) {
 		return nil
@@ -396,9 +344,6 @@ func uniqueNonEmpty(values []string, extras ...string) []string {
 func SaveAIConfig(cfg *AIConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("AI config is required")
-	}
-	if cfg.ProxyMode != AIProxyModeLocal {
-		return fmt.Errorf("unsupported AI proxy mode: %s", cfg.ProxyMode)
 	}
 	cfg.Version = AIConfigVersion
 	cfg.HarnessIDs = cfg.ConfiguredHarnessIDs()
@@ -476,13 +421,4 @@ func RemoveUser(id string) error {
 		config.DefaultUser = remaining[0].ID
 	}
 	return SaveConfig(config)
-}
-
-// maskPreference reads the stored secret-visibility choice; a missing value
-// masks, which is the safer default.
-func maskPreference(stored *bool) bool {
-	if stored == nil {
-		return true
-	}
-	return *stored
 }

@@ -43,7 +43,6 @@ Commands:
   ai skill                          📄 Print the Phase AI skill document
   ai run                            🚀 Launch an AI Agent behind the Phase AI credential proxy
   ai exec                           ⚡ Execute one command behind a transient Phase AI credential proxy
-  relay start                       🛰️ Run a Phase AI relay for remote Agent sandboxes
   console                           🖥️ Open the Phase Console in your browser
   docs                              📖 Open the Phase CLI Docs in your browser
   completion                        ⌨️ Generate the autocompletion script for the specified shell
@@ -56,7 +55,7 @@ Flags:
 ## Features
 
 - **End-to-end encryption** — App secrets in E2E mode are encrypted client-side before leaving your machine
-- **Secret types** — `config` (non-sensitive), `secret` (sensitive), and `sealed` (write-only) with enforced visibility rules
+- **Secret types** — `config` (non-sensitive), `secret` (sensitive), and `sealed` (write-only) with enforced visibility rules; when an AI tool runs the CLI with Phase AI enabled, `secret` and `sealed` values are hidden
 - **`phase run`** — inject secrets as environment variables into any command without code changes
 - **`phase shell`** — launch a sub-shell (bash, zsh, fish, etc.) with secrets preloaded
 - **Dynamic secrets** — generate short-lived credentials (e.g. AWS IAM) with automatic lease management (generate, renew, revoke)
@@ -141,10 +140,9 @@ phase ai disable
 
 - **Claude Code and OpenCode** get the Phase environment automatically: provider CLIs just work while the proxy runs, and fall back to failing on the decoy (never to ambient credentials) when it is down.
 - **Cursor, Codex and Devin** run Phase-managed commands explicitly with `phase ai exec -- <command>` (`--connection <id>` picks one of several identities for a service); `phase ai run -- <agent>` launches a harness inside the environment.
-- **Remote sandboxes** that cannot run the CLI use a relay: `phase relay start --advertise-host <host> --tls-cert <pem> --tls-key <pem>` on a machine logged in with an Agent token prints one line that bootstraps a sandbox over curl.
 - Two skills are installed per harness: `phase-cli-ai-relay` (the proxy, Connections and requests) and `phase-cli-app-secrets` (Phase app secrets). Agents reach the proxy's control API at `http://phase.invalid` and can request new Connections, which a human approves in the Console.
 
-`phase ai enable` creates a per-installation CA (valid 90 days, renewed automatically) and offers to trust it for the current user; it never changes system-wide trust or requires sudo. Command-line tools and SDKs trust the CA through the proxy environment either way; the user trust store matters for browsers and for Go programs on macOS and Windows. On Linux the offer needs NSS certutil (`libnss3-tools` on Debian/Ubuntu, `nss-tools` on Fedora/RHEL/Alpine, `nss` on Arch, `mozilla-nss-tools` on openSUSE) and is skipped with a hint when it is missing.
+`phase ai enable` creates a per-installation CA (valid 90 days, renewed automatically) and offers to trust it for the current user; it never changes system-wide trust or requires sudo. Command-line tools and SDKs trust the CA through the proxy environment either way; the user trust store matters for browsers and for Go programs on macOS and Windows. On Linux the offer needs NSS certutil (`libnss3-tools` on Debian/Ubuntu, `nss-tools` on Fedora/RHEL/Alpine, `nss` on Arch, `mozilla-nss-tools` on openSUSE) and is skipped with a hint when it is missing. On a machine with no system keystore the CA key is kept in memory only: each proxy start creates a new CA, and `phase ai enable` creates none and offers no trust.
 
 ## Development
 

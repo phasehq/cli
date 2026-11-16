@@ -252,7 +252,7 @@ func stringContainsAny(value string, candidates ...string) bool {
 	return false
 }
 
-func TestUnauthenticatedRequestFieldsAreRedactedInsteadOfStoppingTheRelay(t *testing.T) {
+func TestUnauthenticatedRequestFieldsAreRedactedInsteadOfStoppingTheProxy(t *testing.T) {
 	var mu sync.Mutex
 	var received []agentapi.Event
 	var calls atomic.Int32
@@ -285,7 +285,7 @@ func TestUnauthenticatedRequestFieldsAreRedactedInsteadOfStoppingTheRelay(t *tes
 
 	// Anyone can send a request without a capability; its path and authority
 	// are theirs to choose, and a credential-shaped value there must neither
-	// be recorded nor take the relay down.
+	// be recorded nor take the proxy down.
 	buffer.Emit(agentapi.Event{
 		EventID: "event-auth-deny", CreatedAt: time.Now().UTC(), EventType: "request", Protocol: "http",
 		Method: "G\x00ET", Host: "psx_sess_forged_host", Path: "/AKIA0123456789ABCDEF/spool-capability",
@@ -294,7 +294,7 @@ func TestUnauthenticatedRequestFieldsAreRedactedInsteadOfStoppingTheRelay(t *tes
 	waitForAtomic(t, &calls, 1)
 	select {
 	case err := <-state.fatal:
-		t.Fatalf("an unauthenticated request stopped the relay: %v", err)
+		t.Fatalf("an unauthenticated request stopped the proxy: %v", err)
 	default:
 	}
 	mu.Lock()

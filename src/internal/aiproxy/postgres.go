@@ -67,12 +67,9 @@ func (a *protocolAdapters) handlePostgres(ctx context.Context, client net.Conn, 
 	watchDone := make(chan struct{})
 	defer close(watchDone)
 
-	certificate := a.serverCertificate
-	if certificate == nil {
-		certificate, err = a.ca.CertificateForHost("127.0.0.1")
-		if err != nil {
-			return
-		}
+	certificate, err := a.ca.CertificateForHost("127.0.0.1")
+	if err != nil {
+		return
 	}
 	startup, err := readPGStartup(client)
 	if err != nil {

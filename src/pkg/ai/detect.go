@@ -92,9 +92,8 @@ func DetectAIAgentExecutable(command []string) string {
 // ai.json config.
 //
 // Rules:
-//   - sealed: ALWAYS redacted when AI detected + AI mode enabled
-//   - secret: redacted when ai.json maskSecretValues is true
-//   - config: NEVER redacted
+//   - sealed and secret: redacted when AI detected + AI mode enabled
+//   - config: never redacted
 //   - no ai.json or AI mode disabled: no redaction
 //   - an ai.json that exists but cannot be read: sealed and secret redacted
 func ShouldRedact(secretType string) bool {
@@ -103,20 +102,11 @@ func ShouldRedact(secretType string) bool {
 	}
 	cfg := config.LoadAIConfig()
 	if cfg == nil {
-		if _, err := os.Stat(config.AIConfigPath); err == nil {
-			return secretType == "sealed" || secretType == "secret"
+		if _, err := os.Stat(config.AIConfigPath); err != nil {
+			return false
 		}
+	} else if !cfg.Enabled {
 		return false
 	}
-	if !cfg.Enabled {
-		return false
-	}
-	switch secretType {
-	case "sealed":
-		return true
-	case "secret":
-		return cfg.MaskSecretValues
-	default:
-		return false
-	}
+	return secretType == "sealed" || secretType == "secret"
 }

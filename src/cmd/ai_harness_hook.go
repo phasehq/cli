@@ -675,25 +675,23 @@ func registerHarnessLease(harness, sessionID string, expiresAt time.Time) error 
 		return err
 	}
 	return withClaudeLeaseRegistryLock(context.Background(), directory, func() error {
-		return withClaudeLeaseMutationLock(context.Background(), path, func() error {
-			state, err := readClaudeRuntimeState(filepath.Join(directory, claudeRuntimeStateFile))
-			generation := state.Generation
-			if errors.Is(err, os.ErrNotExist) {
-				// A daemon still starting has no state yet; its lock names the
-				// generation whose lease monitor will count this lease.
-				lock, lockErr := readClaudeRuntimeLock(filepath.Join(directory, claudeRuntimeLockFile))
-				if lockErr != nil || lock.Generation == "" || lock.PID <= 0 || !processIsAlive(lock.PID) {
-					return err
-				}
-				generation, err = lock.Generation, nil
-			}
-			if err != nil {
+		state, err := readClaudeRuntimeState(filepath.Join(directory, claudeRuntimeStateFile))
+		generation := state.Generation
+		if errors.Is(err, os.ErrNotExist) {
+			// A daemon still starting has no state yet; its lock names the
+			// generation whose lease monitor will count this lease.
+			lock, lockErr := readClaudeRuntimeLock(filepath.Join(directory, claudeRuntimeLockFile))
+			if lockErr != nil || lock.Generation == "" || lock.PID <= 0 || !processIsAlive(lock.PID) {
 				return err
 			}
-			return writeOwnerOnlyJSON(path, claudeSessionLease{
-				Version: claudeRuntimeStateVersion, Generation: generation,
-				UpdatedAt: time.Now().UTC(), ExpiresAt: expiresAt,
-			})
+			generation, err = lock.Generation, nil
+		}
+		if err != nil {
+			return err
+		}
+		return writeOwnerOnlyJSON(path, claudeSessionLease{
+			Version: claudeRuntimeStateVersion, Generation: generation,
+			UpdatedAt: time.Now().UTC(), ExpiresAt: expiresAt,
 		})
 	})
 }
@@ -1188,19 +1186,17 @@ func holdHarnessCommandLeaseWithID(harness, requiredScope string) (string, func(
 			if initial {
 				generation, ownerPID, ownerCreatedAt = state.Generation, lock.PID, lock.CreatedAt
 			}
-			return withClaudeLeaseMutationLock(context.Background(), path, func() error {
-				if !initial {
-					var current claudeSessionLease
-					if err := readOwnerOnlyJSON(path, &current); err != nil ||
-						current.Generation != generation || current.Purpose != harnessCommandLeasePurpose {
-						return errActiveHookRuntimeUnavailable
-					}
+			if !initial {
+				var current claudeSessionLease
+				if err := readOwnerOnlyJSON(path, &current); err != nil ||
+					current.Generation != generation || current.Purpose != harnessCommandLeasePurpose {
+					return errActiveHookRuntimeUnavailable
 				}
-				return writeOwnerOnlyJSON(path, claudeSessionLease{
-					Version: claudeRuntimeStateVersion, Generation: generation,
-					UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(harnessCommandLeaseTTL),
-					Purpose: harnessCommandLeasePurpose,
-				})
+			}
+			return writeOwnerOnlyJSON(path, claudeSessionLease{
+				Version: claudeRuntimeStateVersion, Generation: generation,
+				UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(harnessCommandLeaseTTL),
+				Purpose: harnessCommandLeasePurpose,
 			})
 		})
 	}
@@ -1215,16 +1211,14 @@ func holdHarnessCommandLeaseWithID(harness, requiredScope string) (string, func(
 			close(done)
 			waitForRenewal()
 			_ = withClaudeLeaseRegistryLock(context.Background(), directory, func() error {
-				return withClaudeLeaseMutationLock(context.Background(), path, func() error {
-					var current claudeSessionLease
-					if err := readOwnerOnlyJSON(path, &current); err != nil {
-						return nil
-					}
-					if current.Generation == generation && current.Purpose == harnessCommandLeasePurpose {
-						_ = os.Remove(path)
-					}
+				var current claudeSessionLease
+				if err := readOwnerOnlyJSON(path, &current); err != nil {
 					return nil
-				})
+				}
+				if current.Generation == generation && current.Purpose == harnessCommandLeasePurpose {
+					_ = os.Remove(path)
+				}
+				return nil
 			})
 		})
 	}

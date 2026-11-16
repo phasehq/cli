@@ -662,13 +662,6 @@ func TestControlConnectionsAreReadFromTheSessionWithoutSecrets(t *testing.T) {
 	if written.Code != http.StatusNotFound {
 		t.Fatalf("a write to the read route was routed: %d", written.Code)
 	}
-	// A relay serves the same reads.
-	remote := httptest.NewRecorder()
-	(&controlHandler{state: state}).serveRoutes(remote, httptest.NewRequest(http.MethodGet, phaseproxy.ControlURL+"/v1/connections", nil), true)
-	if remote.Code != http.StatusOK || !strings.Contains(remote.Body.String(), "connection-example") {
-		t.Fatalf("relay read: status=%d body=%s", remote.Code, remote.Body.String())
-	}
-
 	status := controlGet(t, proxy, "runtime-connections", "/v1/status")
 	var printable remoteapi.StatusResponse
 	if err := json.Unmarshal(status.Body.Bytes(), &printable); err != nil {

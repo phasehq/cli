@@ -34,7 +34,6 @@ type httpProxy struct {
 	dial             func(context.Context, string, string) (net.Conn, error)
 	unboundDial      func(context.Context, string, string) (net.Conn, error)
 	lockdown         bool
-	remote           bool
 	events           *eventBuffer
 	manifest         *manifestHandler
 	control          *controlHandler
@@ -112,7 +111,7 @@ func (p *httpProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if p.control != nil && strings.HasPrefix(req.URL.Path, "/v1/") {
-			p.control.ServeProxyHTTP(w, req, p.remote)
+			p.control.ServeProxyHTTP(w, req)
 			return
 		}
 		writeProxyError(w, &requestFailure{status: http.StatusNotFound, code: "agent_manifest_route_not_found", message: "The Phase Agent proxy route was not found."})
@@ -180,10 +179,6 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		}
 		response, roundTripErr := roundTripper.RoundTrip(upstream)
 		if roundTripErr != nil {
-			if errors.Is(roundTripErr, errUnsafeRemoteDestination) {
-				failure := &requestFailure{status: http.StatusForbidden, code: "unsafe_remote_destination", message: "The remote proxy target is not publicly routable.", decision: "block", reason: "unsafe_remote_destination"}
-				return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
-			}
 			return processedResponse{failure: &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The upstream service is unavailable."}}
 		}
 		// The service refused a request no Connection covers. Its answer is
@@ -410,10 +405,6 @@ func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host
 	}
 	upstream, err := dial(req.Context(), "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
-		if errors.Is(err, errUnsafeRemoteDestination) {
-			writeProxyError(w, &requestFailure{status: http.StatusForbidden, code: "unsafe_remote_destination", message: "The remote proxy target is not publicly routable."})
-			return
-		}
 		writeProxyError(w, &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The CONNECT target is unavailable."})
 		return
 	}

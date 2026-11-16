@@ -18,7 +18,7 @@ import (
 var aiDisableCmd = &cobra.Command{
 	Use:   "disable",
 	Short: "🚫 Disable AI integrations",
-	Long:  "Disable local Agent proxy sessions while retaining the selected proxy mode and default Workflow for a later re-enable.",
+	Long:  "Disable local Agent proxy sessions while retaining the default Workflow for a later re-enable.",
 	RunE:  runAIDisable,
 }
 
@@ -133,9 +133,14 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("Phase AI integrations were removed, but their local installation state could not be cleared: %w", err)
 		}
 	}
+	if directory, err := claudeHookRuntimeDir(); err == nil {
+		if err := errors.Join(sweepAIDirectory(directory, true), removeAIRuntimeLeftovers(directory)); err != nil {
+			return fmt.Errorf("Phase AI was disabled, but ~/.phase/ai could not be cleaned; rerun `phase ai disable`: %w", err)
+		}
+	}
 
 	if wasEnabled {
-		fmt.Println(util.BoldGreen("✅ Phase AI local proxy mode disabled."))
+		fmt.Println(util.BoldGreen("✅ Phase AI disabled."))
 	} else {
 		fmt.Println("AI integrations were already disabled; managed runtime and hook cleanup is complete.")
 	}

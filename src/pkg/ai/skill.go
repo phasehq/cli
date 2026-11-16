@@ -28,7 +28,7 @@ const (
 	AgentRuntimeSkillKind       = "agent-runtime"
 	ApplicationSecretsSkillKind = "application-secrets"
 
-	// AgentSkillName is the Agent runtime skill (proxy, Connections, relay);
+	// AgentSkillName is the Agent runtime skill (proxy and Connections);
 	// SecretsSkillName is the application-secrets skill. Both live next to each
 	// other under a harness's skills directory.
 	AgentSkillName   = "phase-cli-ai-relay"
@@ -209,12 +209,6 @@ func skillTargetsNamed(skillName string) []SkillTarget {
 		return nil
 	}
 	return skillTargetsIn(home, openCodeConfigDirectory(home), skillName)
-}
-
-// SandboxSkillTargets lists the Agent skill paths under a sandbox's home in
-// each harness's default layout, whatever this machine's environment says.
-func SandboxSkillTargets(home string) []SkillTarget {
-	return skillTargetsIn(home, filepath.Join(home, ".config", "opencode"), AgentSkillName)
 }
 
 func skillTargetsIn(home, openCodeRoot, skillName string) []SkillTarget {
@@ -509,12 +503,6 @@ func harnessForVariant(variant skillVariant) string {
 		return HarnessClaudeCode
 	}
 	return ""
-}
-
-// AgentSkillForHarness renders the Agent runtime skill in the variant a
-// harness reads. The relay bootstrap installs it into sandboxes.
-func AgentSkillForHarness(harness string) string {
-	return renderAgentSkill(harness)
 }
 
 func renderAgentSkill(harness string) string {

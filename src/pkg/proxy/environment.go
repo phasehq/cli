@@ -30,7 +30,6 @@ const (
 type EnvironmentOptions struct {
 	Base               []string
 	ProxyURL           string
-	CertificatePath    string
 	CABundlePath       string
 	CABundleComplete   bool
 	ConfigEnv          map[string]string
@@ -240,10 +239,20 @@ func PrepareProcessCABundle(baseBundlePath string, environment []string, credent
 // set as PrepareProcessCABundle, then atomically publishes it at a predictable
 // path beside the installation CA. phase ai run, phase ai exec and the hook daemons therefore
 // expose the same PHASE_AI_CA_BUNDLE path for the full proxy lifetime instead
-// of handing clients an ephemeral /tmp file. The published files contain only
-// public certificates (and, for Java, a public trust store) and intentionally
-// remain available after the proxy exits.
+// of handing clients an ephemeral /tmp file. The published file contains only
+// public certificates and intentionally remains available after the proxy
+// exits.
 func PrepareStableProcessCABundle(baseBundlePath string, environment []string, credentialFamilies []string) (PreparedCABundle, error) {
+	directory := filepath.Dir(baseBundlePath)
+	// Ensure publishes the base bundle under the same lock. Holding it from
+	// read to publish means a proxy that read an older base bundle cannot
+	// overwrite a newer one, which in memory-only mode would drop another
+	// live proxy's CA from the file its children trust.
+	unlock, err := lockCAFile(filepath.Join(directory, "ca.lock"))
+	if err != nil {
+		return PreparedCABundle{}, fmt.Errorf("lock proxy CA: %w", err)
+	}
+	defer unlock()
 	prepared, cleanup, err := PrepareProcessCABundle(baseBundlePath, environment, credentialFamilies)
 	if err != nil {
 		return PreparedCABundle{}, err
@@ -257,7 +266,6 @@ func PrepareStableProcessCABundle(baseBundlePath string, environment []string, c
 	if _, err := readBoundedPublicCertificates(prepared.BundlePath); err != nil {
 		return PreparedCABundle{}, fmt.Errorf("validate prepared Phase AI CA bundle: %w", err)
 	}
-	directory := filepath.Dir(baseBundlePath)
 	stable := PreparedCABundle{
 		BundlePath: filepath.Join(directory, "runtime-ca-bundle.pem"),
 		Complete:   prepared.Complete,
@@ -587,7 +595,7 @@ func planProcessEnvironment(configEnv, agentEnv map[string]string, bindings []En
 // It contains backend configuration/decoys, adapter variables, proxy aliases,
 // CA compatibility variables, and explicit removals. It never copies unrelated
 // inherited values into Set, so it is safe to show through the authenticated
-// manifest or the relay handoff.
+// manifest.
 func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPlan, error) {
 	proxyURL, err := validateProxyEnvironmentOptions(options)
 	if err != nil {
@@ -713,7 +721,7 @@ func ValidShellEnvironmentKey(key string) bool {
 
 func validateProxyEnvironmentOptions(options EnvironmentOptions) (*url.URL, error) {
 	proxyURL, err := url.Parse(options.ProxyURL)
-	if err != nil || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") ||
+	if err != nil || proxyURL.Scheme != "http" ||
 		proxyURL.Host == "" || proxyURL.User == nil || proxyURL.Path != "" ||
 		proxyURL.RawPath != "" || proxyURL.RawQuery != "" || proxyURL.Fragment != "" {
 		return nil, fmt.Errorf("invalid AI proxy URL")
@@ -722,8 +730,8 @@ func validateProxyEnvironmentOptions(options EnvironmentOptions) (*url.URL, erro
 	if !ValidProxyUsername(proxyURL.User.Username()) || !present || capability == "" {
 		return nil, fmt.Errorf("AI proxy URL must contain a runtime capability")
 	}
-	if proxyURL.Scheme == "http" && !isLoopbackHostname(proxyURL.Hostname()) {
-		return nil, fmt.Errorf("plaintext AI proxy URL must use loopback")
+	if !isLoopbackHostname(proxyURL.Hostname()) {
+		return nil, fmt.Errorf("AI proxy URL must use loopback")
 	}
 	if options.CABundlePath == "" {
 		return nil, fmt.Errorf("AI proxy CA bundle path is required")

@@ -85,7 +85,7 @@ func withClaudeHookTestConfig(t *testing.T, enabled bool) {
 	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
 	t.Cleanup(func() { config.AIConfigPath = originalPath })
 	if err := config.SaveAIConfig(&config.AIConfig{
-		Enabled: enabled, ProxyMode: config.AIProxyModeLocal,
+		Enabled:    enabled,
 		HarnessIDs: []string{ai.HarnessClaudeCode},
 	}); err != nil {
 		t.Fatal(err)

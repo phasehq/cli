@@ -12,6 +12,7 @@ import (
 
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
+	"github.com/phasehq/cli/pkg/util"
 )
 
 func TestResolveAIEnableCATrust(t *testing.T) {
@@ -180,88 +181,60 @@ func TestInstallConfiguredAIHarnessAdaptersDoNotNeedCodexForAnotherHarness(t *te
 	}
 }
 
-func TestAIEnableHarnessRestartMessagesRepeatOriginalPrompt(t *testing.T) {
-	tests := []struct {
-		harness string
-		name    string
+func TestFormatAIEnableSummaryEndsWithTheFinalStep(t *testing.T) {
+	agent := &config.UserConfig{PrincipalType: config.PrincipalAgent}
+	cfg := &config.AIConfig{Enabled: true}
+	for _, test := range []struct {
+		harness, open, restart string
 	}{
-		{harness: ai.HarnessClaudeCode, name: "Claude"},
-		{harness: ai.HarnessCursor, name: "Cursor"},
-		{harness: ai.HarnessCodex, name: "Codex"},
-		{harness: ai.HarnessOpenCode, name: "OpenCode"},
-		{harness: ai.HarnessDevin, name: "Devin"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			message := aiEnableHarnessRestartMessage(test.harness)
-			for _, required := range []string{test.name, "start a new", "repeat the original prompt"} {
-				if !strings.Contains(message, required) {
-					t.Fatalf("restart guidance %q is missing %q", message, required)
-				}
+		{ai.HarnessClaudeCode, "open Claude Code (desktop or CLI)", "Restart Claude Code only if it does not pick up Phase."},
+		{ai.HarnessCursor, "open a new Agent chat in Cursor", "Reload the Cursor window only if it does not pick up Phase."},
+		{ai.HarnessCodex, "start a new task in Codex (desktop or CLI)", "Restart Codex only if it does not pick up Phase."},
+		{ai.HarnessOpenCode, "start a new OpenCode session", "Restart OpenCode only if it does not pick up Phase."},
+		{ai.HarnessDevin, "start a new session in local Devin", "Restart Devin only if it does not pick up Phase."},
+		{ai.HarnessCopilot, "start a new Copilot chat in VS Code", "Reload VS Code only if Copilot does not pick up the Phase skill."},
+	} {
+		t.Run(test.harness, func(t *testing.T) {
+			target, _ := ai.SkillTargetByID(test.harness)
+			summary := formatAIEnableSummary(target, cfg, agent, nil, nil)
+			want := "\n" + util.BoldGreen("✅ Phase AI enabled for "+target.Name) + "\n"
+			if test.harness == ai.HarnessCodex {
+				want += "\n" + util.Bold("Before Codex can use Phase:") + "\n" +
+					"   1. Open the Codex CLI, run /hooks, and trust every hook from " + ai.CodexBootstrapPluginName + "@" + ai.CodexBootstrapMarketplaceName + ".\n"
 			}
-			if !strings.Contains(strings.ToLower(message), "restart") || strings.Contains(message, "phase ai enable") {
-				t.Fatalf("unexpected restart guidance: %q", message)
+			want += "\n" + util.Bold("👉 Final step: "+test.open+" and say:") + "\n" +
+				"   \"Set up an AWS connection using Phase and run get caller identity\"\n" +
+				"   " + test.restart + "\n"
+			if summary != want {
+				t.Fatalf("summary:\n%s\nwant:\n%s", summary, want)
 			}
 		})
 	}
-	if message := aiEnableHarnessRestartMessage(ai.HarnessCopilot); message != "" {
-		t.Fatalf("skill-only Copilot unexpectedly received lifecycle restart guidance: %q", message)
-	}
-}
-
-func TestFormatAIEnableSummaryEndsWithNextSteps(t *testing.T) {
-	codex, _ := ai.SkillTargetByID(ai.HarnessCodex)
-	cfg := &config.AIConfig{Enabled: true, MaskSecretValues: true}
-	agent := &config.UserConfig{PrincipalType: config.PrincipalAgent}
-	summary := formatAIEnableSummary(codex, cfg, agent, map[string]string{ai.HarnessCodex: "Codex Phase discovery adapter installed: phase-ai-bootstrap@phase-cli-local"}, nil)
-	if !strings.HasPrefix(summary, "\n") {
-		t.Fatalf("summary must be separated from the install log:\n%s", summary)
-	}
-	for _, required := range []string{
-		"✅ Phase AI enabled for Codex", "secret values masked", "Workflow: scoped by your Agent-token login.",
-		"👉 Before Codex can use Phase:", "1. Open the Codex CLI, run /hooks, and trust every hook from " + ai.CodexBootstrapPluginName + "@" + ai.CodexBootstrapMarketplaceName + ".",
-		"2. " + aiEnableHarnessRestartMessage(ai.HarnessCodex), "ordinary shell commands stay ambient",
-		"Add another harness with `phase ai enable --harness <name>`",
-	} {
-		if !strings.Contains(summary, required) {
-			t.Fatalf("summary missing %q:\n%s", required, summary)
+	for _, removed := range []string{"Local proxy", "secret values", "Workflow: scoped", "Add another harness", "Fully quit"} {
+		claude, _ := ai.SkillTargetByID(ai.HarnessClaudeCode)
+		if summary := formatAIEnableSummary(claude, cfg, agent, nil, nil); strings.Contains(summary, removed) {
+			t.Fatalf("summary still says %q:\n%s", removed, summary)
 		}
-	}
-	if strings.Contains(summary, "⚠️") {
-		t.Fatalf("the selected harness's own hook review must not repeat as a warning:\n%s", summary)
-	}
-	if nextSteps := strings.Index(summary, "👉"); nextSteps < strings.Index(summary, "✅") || strings.Count(summary, "\n\n") < 2 {
-		t.Fatalf("next steps must come last, in their own block:\n%s", summary)
 	}
 
 	claude, _ := ai.SkillTargetByID(ai.HarnessClaudeCode)
 	user := &config.UserConfig{PrincipalType: "user"}
-	summary = formatAIEnableSummary(claude, &config.AIConfig{Enabled: true}, user, map[string]string{ai.HarnessCodex: "refreshed"}, nil)
-	for _, required := range []string{
-		"AI tools can read secret values", "No default Workflow yet", "👉 Before Claude Code can use Phase:",
-		"   " + aiEnableHarnessRestartMessage(ai.HarnessClaudeCode) + "\n", "automatically while the proxy runs",
-		"⚠️  Codex: its Phase hook was refreshed too.",
-	} {
+	summary := formatAIEnableSummary(claude, cfg, user, map[string]string{ai.HarnessCodex: "refreshed"}, nil)
+	for _, required := range []string{"Before Claude Code can use Phase:", "   1. Set a default Workflow with `phase ai enable --workflow <id>`.", "⚠️  Codex: its Phase hook was refreshed too."} {
 		if !strings.Contains(summary, required) {
 			t.Fatalf("Claude summary missing %q:\n%s", required, summary)
 		}
 	}
-	if strings.Contains(summary, "1. ") {
-		t.Fatalf("a single step must not be numbered:\n%s", summary)
+	if !strings.HasSuffix(summary, "Restart Claude Code only if it does not pick up Phase.\n") {
+		t.Fatalf("the final step must be last:\n%s", summary)
 	}
-	summary = formatAIEnableSummary(claude, &config.AIConfig{Enabled: true, DefaultWorkflowID: "wf-123"}, nil, nil, nil)
-	if !strings.Contains(summary, "Default Workflow: wf-123") {
-		t.Fatalf("default Workflow missing:\n%s", summary)
+	if summary := formatAIEnableSummary(claude, &config.AIConfig{Enabled: true, DefaultWorkflowID: "wf-123"}, user, nil, nil); strings.Contains(summary, "Workflow") {
+		t.Fatalf("a configured Workflow needs no step:\n%s", summary)
 	}
-	custom := formatAIEnableSummary(ai.SkillTarget{}, cfg, nil, nil, nil)
-	if !strings.Contains(custom, "✅ Phase AI enabled\n") || !strings.Contains(custom, "phase ai run -- <agent>") || strings.Contains(custom, "Add another harness") {
+	custom := formatAIEnableSummary(ai.SkillTarget{}, cfg, agent, nil, nil)
+	if !strings.Contains(custom, "✅ Phase AI enabled\n") || !strings.Contains(custom, "phase ai run -- <agent>") {
 		t.Fatalf("custom-path summary:\n%s", custom)
 	}
-	copilot, _ := ai.SkillTargetByID(ai.HarnessCopilot)
-	if summary := formatAIEnableSummary(copilot, cfg, nil, nil, nil); !strings.Contains(summary, "phase ai exec -- <command>") {
-		t.Fatalf("Copilot summary must point at phase ai exec:\n%s", summary)
-	}
-	t.Logf("codex summary:%s", formatAIEnableSummary(codex, cfg, agent, nil, nil))
 }
 
 func TestFormatAIEnableSummaryReportsASkippedCodexRefresh(t *testing.T) {

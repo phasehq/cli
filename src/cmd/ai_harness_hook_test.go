@@ -35,7 +35,7 @@ func withHarnessHookConfig(t *testing.T, harness string) {
 	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
 	t.Cleanup(func() { config.AIConfigPath = originalPath })
 	if err := config.SaveAIConfig(&config.AIConfig{
-		Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessID: harness,
+		Enabled: true, HarnessIDs: []string{harness},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestAutomaticHarnessConfigAllowsConcurrentIntegrations(t *testing.T) {
 	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
 	t.Cleanup(func() { config.AIConfigPath = originalPath })
 	if err := config.SaveAIConfig(&config.AIConfig{
-		Enabled: true, ProxyMode: config.AIProxyModeLocal,
+		Enabled:    true,
 		HarnessIDs: []string{ai.HarnessCodex, ai.HarnessCursor},
 	}); err != nil {
 		t.Fatal(err)

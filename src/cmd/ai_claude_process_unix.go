@@ -78,7 +78,41 @@ func tryLockClaudeLeaseFile(path string) (*os.File, bool, error) {
 		}
 		return nil, false, err
 	}
+	// removeHeldLockFile unlinks a lock file while holding it. A process that
+	// opened the old file before the unlink now holds a lock nobody else can
+	// reach, so it must see that the path no longer names its file and retry.
+	if current, err := os.Lstat(path); err != nil || !os.SameFile(info, current) {
+		_ = file.Close()
+		return nil, false, nil
+	}
 	return file, true, nil
+}
+
+// removeHeldLockFile deletes a lock file, and the files it guards, only while
+// holding its lock, so no process can hold a lock on a file that has left the
+// directory. A lock held by someone else is left alone, with its files.
+func removeHeldLockFile(path string, guarded ...string) error {
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	file, acquired, err := tryLockClaudeLeaseFile(path)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && !acquired) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer unlockClaudeLeaseFile(file)
+	var errs []error
+	for _, name := range append(guarded, path) {
+		if info, err := os.Lstat(name); err == nil && !info.Mode().IsRegular() {
+			continue
+		}
+		if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func unlockClaudeLeaseFile(file *os.File) error {

@@ -1,5 +1,5 @@
 // Package remoteapi defines public endpoint and authenticated manifest wire
-// types shared by local-loopback and remote-TLS Phase AI proxy modes.
+// types served by the local Phase AI proxy.
 package remoteapi
 
 import (

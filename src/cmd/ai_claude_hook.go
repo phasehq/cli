@@ -73,6 +73,7 @@ const (
 	claudeSessionLeasePrefix   = "claude-session-"
 	claudeSessionLeaseSuffix   = ".lease.json"
 	claudeLeaseLockSuffix      = ".mutation.lock"
+	claudeLeaseRegistryName    = "claude-session-leases.registry"
 	claudeLifecycleLogFile     = "claude-runtime.log"
 	claudeLifecycleLogMaxBytes = 1 << 20
 )
@@ -472,6 +473,7 @@ func runAIClaudeDaemon(cmd *cobra.Command, args []string) error {
 		return errors.New("Claude runtime ownership is unavailable")
 	}
 	appendClaudeLifecycleEvent(directory, "daemon_started", "")
+	_ = sweepAIDirectory(directory, false)
 	fingerprint, err := claudeHookFingerprint()
 	if err != nil {
 		writeClaudeRuntimeFailure(failurePath, generation, "fingerprint")
@@ -746,7 +748,7 @@ func currentClaudeRuntimeFingerprintValues() ([]string, []string, error) {
 	generation := fmt.Sprintf("%d", stat.ModTime().UnixNano())
 	runtimeValues := []string{host, credential, aiConfig.DefaultWorkflowID, version.Version, generation}
 	scopeValues := []string{
-		host, credential, aiConfig.DefaultWorkflowID, aiConfig.Version, aiConfig.ProxyMode,
+		host, credential, aiConfig.DefaultWorkflowID, aiConfig.Version,
 		strconv.FormatBool(aiConfig.Enabled), generation,
 	}
 	return runtimeValues, scopeValues, nil
@@ -768,25 +770,25 @@ func probeInheritedPhaseRuntime(ctx context.Context) error {
 	if proxyURL == "" {
 		return errors.New("Phase proxy environment is incomplete")
 	}
-	return probePhaseProxy(ctx, proxyURL, false)
+	return probePhaseProxy(ctx, proxyURL)
 }
 
 func probeClaudeRuntimeState(ctx context.Context, state claudeRuntimeState, expectedFingerprint string) error {
 	if err := validateClaudeRuntimeState(state, expectedFingerprint); err != nil {
 		return err
 	}
-	return probePhaseProxy(ctx, state.ProxyURL, true)
+	return probePhaseProxy(ctx, state.ProxyURL)
 }
 
 func loadClaudeRuntimePlan(ctx context.Context, state claudeRuntimeState, expectedFingerprint string) (phaseproxy.ProcessEnvironmentPlan, error) {
 	if err := validateClaudeRuntimeState(state, expectedFingerprint); err != nil {
 		return phaseproxy.ProcessEnvironmentPlan{}, err
 	}
-	return loadPhaseRuntimePlanFromProxy(ctx, state.ProxyURL, true)
+	return loadPhaseRuntimePlanFromProxy(ctx, state.ProxyURL)
 }
 
-func loadPhaseRuntimePlanFromProxy(ctx context.Context, rawProxyURL string, requireLoopback bool) (phaseproxy.ProcessEnvironmentPlan, error) {
-	client, err := phaseProxyHTTPClient(rawProxyURL, requireLoopback)
+func loadPhaseRuntimePlanFromProxy(ctx context.Context, rawProxyURL string) (phaseproxy.ProcessEnvironmentPlan, error) {
+	client, err := phaseProxyHTTPClient(rawProxyURL)
 	if err != nil {
 		return phaseproxy.ProcessEnvironmentPlan{}, err
 	}
@@ -889,8 +891,8 @@ func decodePhaseAgentManifestFailure(response *http.Response) error {
 	return failure
 }
 
-func probePhaseProxy(ctx context.Context, rawProxyURL string, requireLoopback bool) error {
-	client, err := phaseProxyHTTPClient(rawProxyURL, requireLoopback)
+func probePhaseProxy(ctx context.Context, rawProxyURL string) error {
+	client, err := phaseProxyHTTPClient(rawProxyURL)
 	if err != nil {
 		return err
 	}
@@ -922,7 +924,7 @@ func probePhaseProxy(ctx context.Context, rawProxyURL string, requireLoopback bo
 // revoke the backend Agent session and trigger an orderly local daemon stop.
 // It is the Windows equivalent of interrupting the detached Unix daemon.
 func requestClaudeRuntimeShutdown(ctx context.Context, rawProxyURL string) error {
-	client, err := phaseProxyHTTPClient(rawProxyURL, true)
+	client, err := phaseProxyHTTPClient(rawProxyURL)
 	if err != nil {
 		return err
 	}
@@ -946,9 +948,9 @@ func requestClaudeRuntimeShutdown(ctx context.Context, rawProxyURL string) error
 	return nil
 }
 
-func phaseProxyHTTPClient(rawProxyURL string, requireLoopback bool) (*http.Client, error) {
+func phaseProxyHTTPClient(rawProxyURL string) (*http.Client, error) {
 	parsed, err := url.Parse(rawProxyURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User == nil {
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User == nil {
 		return nil, errors.New("Phase proxy URL is invalid")
 	}
 	if parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
@@ -958,7 +960,7 @@ func phaseProxyHTTPClient(rawProxyURL string, requireLoopback bool) (*http.Clien
 	if !phaseproxy.ValidProxyUsername(parsed.User.Username()) || !present || password == "" {
 		return nil, errors.New("Phase proxy authentication is unavailable")
 	}
-	if (requireLoopback || parsed.Scheme == "http") && !isLoopbackProxyHost(parsed.Hostname()) {
+	if !isLoopbackProxyHost(parsed.Hostname()) {
 		return nil, errors.New("managed Phase proxy is not bound to loopback")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -1070,8 +1072,11 @@ func lockClaudeHookSetup(ctx context.Context) (func(), error) {
 	return func() { _ = unlockClaudeLeaseFile(lockFile) }, nil
 }
 
+// withClaudeLeaseRegistryLock serializes every lease read and write. One
+// lock for all leases keeps the directory free of a lock file per session,
+// which would otherwise outlive the lease it protected.
 func withClaudeLeaseRegistryLock(ctx context.Context, directory string, mutate func() error) error {
-	return withClaudeLeaseMutationLock(ctx, filepath.Join(directory, "claude-session-leases.registry"), mutate)
+	return withClaudeLeaseMutationLock(ctx, filepath.Join(directory, claudeLeaseRegistryName), mutate)
 }
 
 func touchClaudeSessionLease(sessionID string) error {
@@ -1083,7 +1088,7 @@ func touchClaudeSessionLease(sessionID string) error {
 	if err != nil {
 		return nil
 	}
-	_ = withClaudeLeaseMutationLock(context.Background(), path, func() error {
+	_ = withClaudeLeaseRegistryLock(context.Background(), directory, func() error {
 		var lease claudeSessionLease
 		if err := readOwnerOnlyJSON(path, &lease); err != nil {
 			return nil
@@ -1112,7 +1117,7 @@ func removeClaudeSessionLease(sessionID string) error {
 	if err != nil {
 		return nil
 	}
-	return withClaudeLeaseMutationLock(context.Background(), path, func() error {
+	return withClaudeLeaseRegistryLock(context.Background(), directory, func() error {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -1185,7 +1190,7 @@ func activeClaudeLeases(directory, generation string, now time.Time) (bool, bool
 			return err
 		}
 		for _, path := range paths {
-			if err := withClaudeLeaseMutationLock(context.Background(), path, func() error {
+			if err := func() error {
 				var lease claudeSessionLease
 				if err := readOwnerOnlyJSON(path, &lease); err != nil {
 					if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -1216,7 +1221,7 @@ func activeClaudeLeases(directory, generation string, now time.Time) (bool, bool
 				}
 				_ = os.Remove(path)
 				return nil
-			}); err != nil {
+			}(); err != nil {
 				return err
 			}
 		}
@@ -1509,16 +1514,11 @@ func removeClaudeLeasesForGeneration(directory, generation string) error {
 			return err
 		}
 		for _, path := range paths {
-			if err := withClaudeLeaseMutationLock(context.Background(), path, func() error {
-				var lease claudeSessionLease
-				if err := readOwnerOnlyJSON(path, &lease); err == nil && lease.Generation == generation {
-					if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-						return err
-					}
+			var lease claudeSessionLease
+			if err := readOwnerOnlyJSON(path, &lease); err == nil && lease.Generation == generation {
+				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
 				}
-				return nil
-			}); err != nil {
-				return err
 			}
 		}
 		return nil

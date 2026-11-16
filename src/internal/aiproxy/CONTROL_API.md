@@ -25,7 +25,6 @@ All IDs, URLs and values in the examples are dummies.
 | Content type | JSON in, JSON out. `Cache-Control: no-store` on every control response. |
 | Query strings | Rejected (400 `invalid_control_query`) except `?wait=` on request creation/polling and `?serviceType=` on context. |
 | Browser safety | A `POST` carrying `Origin`, `Referer` or a `Sec-Fetch-Site` other than `none` is refused with 403 `browser_control_mutation_rejected`. |
-| Remote (relay) mode | Same routes over the relay's TLS proxy (`phase relay start`), except `GET /v1/discover`, `POST /v1/revoke` and `POST /v1/rotate`, which are local-only. `GET /v1/bootstrap` exists only on a relay. |
 | Limits | Request bodies ≤ 128 KiB. IDs match `^[A-Za-z0-9._-]{1,128}$`. `markdown` ≤ 16 KiB. `title` ≤ 120 characters. A Workflow context ≤ 16384 characters. `wait` is 0–300 whole seconds. |
 
 Missing or wrong capability on **any** proxied request:
@@ -729,79 +728,12 @@ X-Phase-Error-Code: agent_manifest_refresh_required
 {"error":{"code":"agent_manifest_refresh_required","message":"The Phase AI session is refreshing.","retryable":true,"details":{}}}
 ```
 
-### GET /v1/bootstrap (relay only)
+Decoys are minted per backend session. A proxy process keeps one proxy
+credential for its lifetime and remembers every decoy generation it handed out,
+so a client started before a session recycle keeps working: requests carrying
+an older decoy are translated to the live credential of the same Connection.
 
-The one-shot sandbox bootstrap. `phase relay start` prints a handoff line that
-fetches it through the relay and evaluates it in the sandbox shell:
-
-```bash
-eval "$(curl -fsS --proxy 'https://phase:psxrt_REDACTED@relay.example.ts.net:9543' http://phase.invalid/v1/bootstrap)"
-```
-
-The response is a POSIX `sh` snippet (`Content-Type: text/x-shellscript`). It
-writes the Phase CA to `~/.phase/ai/phase-ca.pem`, merges it with the sandbox's
-system roots into `~/.phase/ai/ca-bundle.pem` (replacement-root variables such
-as `SSL_CERT_FILE` are only exported when a system store was found), writes
-`~/.phase/ai/env.sh` with the proxy routing, CA variables, decoys and adapter
-endpoints (paths rewritten to the sandbox), installs the `phase-cli` skill for
-every known harness, loads `env.sh` into the calling shell, and appends a
-marker-guarded loader to `~/.profile` (and `~/.bashrc`/`~/.zshrc` when they
-exist). Re-running it is idempotent. **Sensitive**: the snippet repeats the
-proxy credential the caller already holds and the Workflow's decoys; it never
-contains live credential material (checked before it is served; a hit returns
-502 `unsafe_relay_bootstrap`).
-
-```sh
-# Phase AI relay bootstrap (schema 1). Evaluate in the sandbox shell: eval "$(curl ...)"
-phase_ai_home="$HOME/.phase/ai"
-phase_ai_ok=1
-(
-  umask 077
-  mkdir -p "$phase_ai_home" || exit 1
-  cat > "$phase_ai_home/phase-ca.pem" <<'PHASE_AI_CA_EOF'
------BEGIN CERTIFICATE-----
-MIIB...REDACTED...
------END CERTIFICATE-----
-PHASE_AI_CA_EOF
-  ...
-  cat > "$phase_ai_home/env.sh" <<'PHASE_AI_ENV_EOF'
-# Phase AI relay environment (schema 1). Written by the relay bootstrap; do not edit.
-unset AWS_PROFILE AWS_SESSION_TOKEN PHASE_AGENT_TOKEN PHASE_SERVICE_TOKEN
-export AWS_ACCESS_KEY_ID='AKIAPHASEDECOY0000001'
-export AWS_CA_BUNDLE="$HOME/.phase/ai/ca-bundle.pem"
-export AWS_SECRET_ACCESS_KEY='decoy/9f3kQ2vL8pR1tX7wZ4bN6mC0sD5hJ2gF'
-export HTTPS_PROXY='https://phase:psxrt_REDACTED@relay.example.ts.net:9543'
-export HTTP_PROXY='https://phase:psxrt_REDACTED@relay.example.ts.net:9543'
-export NO_PROXY='127.0.0.1,localhost,::1'
-export PGHOST='relay.example.ts.net'
-export PGPASSWORD='pgdecoy_REDACTED'
-export PGPORT='9544'
-export PGSSLMODE='verify-full'
-export PGSSLROOTCERT="$HOME/.phase/ai/ca-bundle.pem"
-export PHASE_AI_CA_BUNDLE="$HOME/.phase/ai/ca-bundle.pem"
-export PHASE_AI_ENABLED='1'
-PHASE_AI_ENV_EOF
-  ...
-) || phase_ai_ok=0
-if [ "$phase_ai_ok" = 1 ]; then
-  . "$phase_ai_home/env.sh"
-  printf '%s\n' 'Phase AI relay environment loaded for aws-prod (aws), analytics (postgres). New login shells load ~/.phase/ai/env.sh automatically.'
-else
-  printf '%s\n' 'Phase AI relay bootstrap failed; nothing was loaded into this shell.' >&2
-fi
-unset phase_ai_home phase_ai_ok
-```
-
-Errors: 404 `control_route_not_found` on a local proxy, 503
-`agent_session_unavailable` while the relay's session is refreshing, 502
-`relay_bootstrap_unavailable` / `unsafe_relay_bootstrap`.
-
-Decoys are minted per backend session. A relay keeps one proxy credential for
-its lifetime and remembers every decoy generation it handed out, so a sandbox
-bootstrapped before a session recycle keeps working: requests carrying an older
-decoy are translated to the live credential of the same Connection.
-
-### GET /v1/discover (local only)
+### GET /v1/discover
 
 The Console discovery payload for this session: Connections with hosts,
 injection action, identifiers, decoys and bindings, never live material. A
@@ -822,7 +754,7 @@ is returned as it is, never retried or delayed.
 { "schemaVersion": 1, "sessionUid": "sess_01HZX9K3M2", "configGeneration": 5, "refreshed": true }
 ```
 
-### POST /v1/rotate (local only)
+### POST /v1/rotate
 
 No body. Rotates the proxy's *backend* session credential with Console. The
 process-local capability does not change.
@@ -831,7 +763,7 @@ process-local capability does not change.
 { "schemaVersion": 1, "sessionUid": "sess_01HZX9K3M2", "expiresAt": "2026-10-17T10:12:30Z", "configGeneration": 5, "rotated": true }
 ```
 
-### POST /v1/revoke (local only)
+### POST /v1/revoke
 
 No body. Revokes the session in Console and stops the proxy; used by
 `phase ai disable` and by a hook replacing an outdated daemon.

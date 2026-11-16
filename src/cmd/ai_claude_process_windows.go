@@ -154,3 +154,25 @@ func openOwnerOnlyFile(path string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(handle), path), nil
 }
+
+// removeHeldLockFile removes the files a lock guards while holding it, but
+// leaves the lock file itself on Windows: it is opened with FILE_SHARE_DELETE,
+// so deleting it while another process holds it could hand a second process
+// the same lock.
+func removeHeldLockFile(path string, guarded ...string) error {
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	file, acquired, err := tryLockClaudeLeaseFile(path)
+	if err != nil || !acquired {
+		return nil
+	}
+	defer unlockClaudeLeaseFile(file)
+	var errs []error
+	for _, name := range guarded {
+		if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}

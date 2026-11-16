@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +22,6 @@ import (
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 var aiProxyEngineFactory = func(cmd *cobra.Command) airuntime.Engine {
@@ -36,23 +34,6 @@ var aiProxyEngineFactory = func(cmd *cobra.Command) airuntime.Engine {
 	engine.Stdout = cmd.OutOrStdout()
 	engine.Stderr = cmd.ErrOrStderr()
 	return engine
-}
-
-var copyToClipboard = func(content string) error {
-	command := exec.Command("pbcopy")
-	command.Stdin = strings.NewReader(content)
-	return command.Run()
-}
-
-var clipboardCopySupported = func() bool {
-	if goruntime.GOOS != "darwin" {
-		return false
-	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return false
-	}
-	_, err := exec.LookPath("pbcopy")
-	return err == nil
 }
 
 var (
@@ -93,8 +74,7 @@ const (
 // executeAIRuntimeCommand is the shared run/exec entry path. The modes
 // deliberately diverge only at their lifecycle boundary: run prepares and
 // supervises an Agent harness, exec runs one raw command. A proxy for a
-// harness the CLI does not launch is the hook daemon's job locally and the
-// relay's remotely.
+// harness the CLI does not launch is the hook daemon's job.
 func executeAIRuntimeCommand(cmd *cobra.Command, childCommand []string, kind aiRuntimeChildKind) error {
 	if kind == aiRuntimeOneOffChild && os.Getenv("PHASE_AI_ENABLED") == "1" {
 		if name := explicitAIExecRuntimeFlag(cmd); name != "" {
@@ -146,6 +126,7 @@ func executeAIRuntimeCommand(cmd *cobra.Command, childCommand []string, kind aiR
 	if err := prepareManualAIRuntime(cmd.Context()); err != nil {
 		return err
 	}
+	sweepAIDirectoryQuietly(cmd.Context(), false)
 	preparedChild := prepareAIRuntimeChild(kind, childCommand)
 	if kind == aiRuntimeOneOffChild {
 		return preserveAIChildExitCode(runtimeInstance.Exec(cmd.Context(), engine, preparedChild))
@@ -197,7 +178,7 @@ func runAIExecInheritedCommand(cmd *cobra.Command, command []string) error {
 	rawProxy := firstEnvironmentValue("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
 	var ownedPlan *phaseproxy.ProcessEnvironmentPlan
 	if selectedAIExecConnection(cmd) != "" {
-		plan, err := loadPhaseRuntimePlanFromProxy(cmd.Context(), rawProxy, false)
+		plan, err := loadPhaseRuntimePlanFromProxy(cmd.Context(), rawProxy)
 		if err != nil {
 			return errors.New("Phase AI inherited environment is unavailable")
 		}
@@ -228,17 +209,7 @@ func runAIExecCommandWithEnvironment(cmd *cobra.Command, command, environment []
 		if err != nil {
 			return err
 		}
-		// A CA path the selection does not change keeps its inherited form: a relay
-		// plans its own CA paths, which a bootstrapped sandbox holds at its own.
-		owned := phaseproxy.ProcessEnvironmentPlan{Set: make(map[string]string, len(ownedPlan.Set))}
-		for key, value := range ownedPlan.Set {
-			if selected, ok := plan.Set[key]; ok && selected == value && phaseproxy.TrustEnvironmentKey(key) {
-				delete(plan.Set, key)
-				continue
-			}
-			owned.Set[key] = value
-		}
-		base, err := scrubAIManagedEnvironment(child.Env, owned)
+		base, err := scrubAIManagedEnvironment(child.Env, *ownedPlan)
 		if err != nil {
 			return err
 		}
@@ -275,7 +246,7 @@ func runAIExecThroughActiveHookRuntime(cmd *cobra.Command, command []string) (bo
 		return false, nil
 	}
 	aiConfig := config.LoadAIConfig()
-	if aiConfig == nil || !aiConfig.Enabled || aiConfig.ProxyMode != config.AIProxyModeLocal {
+	if aiConfig == nil || !aiConfig.Enabled {
 		return false, nil
 	}
 	scopeFingerprint, err := claudeHookScopeFingerprint()
@@ -508,7 +479,7 @@ func loadSelectedConnectionEnvironmentFromProxy(ctx context.Context, id, rawProx
 	if !phaseproxy.ValidProxyUsername("phase." + id) {
 		return phaseproxy.ProcessEnvironmentPlan{}, errors.New("invalid Connection ID")
 	}
-	client, err := phaseProxyHTTPClient(rawProxy, false)
+	client, err := phaseProxyHTTPClient(rawProxy)
 	if err != nil {
 		return phaseproxy.ProcessEnvironmentPlan{}, err
 	}

@@ -20,7 +20,7 @@ import (
 // Anyone who can reach the listener can send a request without a capability.
 // The denial it produces is durable, so its request-derived fields must pass
 // Console's validation however the client shaped them; otherwise the refused
-// batch would block every later one until the spool filled and the relay
+// batch would block every later one until the spool filled and the proxy
 // stopped.
 func TestUnauthenticatedRequestsProduceDenialsConsoleAccepts(t *testing.T) {
 	identifier := regexp.MustCompile(`^[A-Za-z0-9._:/-]+$`)
@@ -111,7 +111,7 @@ func TestUnauthenticatedRequestsProduceDenialsConsoleAccepts(t *testing.T) {
 	}
 	select {
 	case fatal := <-state.fatal:
-		t.Fatalf("unauthenticated requests stopped the relay: %v", fatal)
+		t.Fatalf("unauthenticated requests stopped the proxy: %v", fatal)
 	default:
 	}
 }

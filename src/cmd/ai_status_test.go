@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,22 @@ import (
 	"github.com/phasehq/cli/internal/aiproxy"
 	"github.com/phasehq/cli/pkg/config"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
+	gokeyring "github.com/zalando/go-keyring"
 )
+
+// fixedKeyring answers every keystore call with err, so tests never reach the
+// real system keystore.
+type fixedKeyring struct{ err error }
+
+func (k fixedKeyring) Get(string, string) (string, error) { return "", k.err }
+func (k fixedKeyring) Set(string, string, string) error   { return k.err }
+
+func withAICAKeystore(t *testing.T, err error) {
+	t.Helper()
+	original := aiCAStore
+	aiCAStore = phaseproxy.CAStore{Directory: t.TempDir(), Keyring: fixedKeyring{err: err}}
+	t.Cleanup(func() { aiCAStore = original })
+}
 
 func TestAIStatusCommandIsRegistered(t *testing.T) {
 	command, _, err := aiCmd.Find([]string{"status"})
@@ -22,6 +38,7 @@ func TestAIStatusCommandIsRegistered(t *testing.T) {
 
 func TestRenderAIStatusReportsSetupRuntimeAndCA(t *testing.T) {
 	directory := withClaudeHookRuntimeDirectory(t)
+	withAICAKeystore(t, gokeyring.ErrNotFound)
 	originalAIConfig := config.AIConfigPath
 	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
 	t.Cleanup(func() { config.AIConfigPath = originalAIConfig })
@@ -34,7 +51,7 @@ func TestRenderAIStatusReportsSetupRuntimeAndCA(t *testing.T) {
 		t.Fatalf("disabled status:\n%s", disabled)
 	}
 
-	if err := config.SaveAIConfig(&config.AIConfig{Enabled: true, ProxyMode: config.AIProxyModeLocal, HarnessIDs: []string{"claude-code", "opencode"}, DefaultWorkflowID: "wf-123", SkillInstallPaths: []string{"/home/dev/.claude/skills/phase-cli-ai-relay/SKILL.md"}}); err != nil {
+	if err := config.SaveAIConfig(&config.AIConfig{Enabled: true, HarnessIDs: []string{"claude-code", "opencode"}, DefaultWorkflowID: "wf-123", SkillInstallPaths: []string{"/home/dev/.claude/skills/phase-cli-ai-relay/SKILL.md"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(config.ConfigFilePath, []byte(`{"default-user":"u1","phase-users":[{"host":"https://console.example.test","id":"u1","email":"dev@example.test"}]}`), 0o600); err != nil {
@@ -81,6 +98,11 @@ func TestRenderAIStatusReportsSetupRuntimeAndCA(t *testing.T) {
 	stopped := renderAIStatus(context.Background())
 	if !strings.Contains(stopped, "Proxy:       not running") {
 		t.Fatalf("stopped status:\n%s", stopped)
+	}
+
+	withAICAKeystore(t, errors.New("no secret service"))
+	if memoryOnly := renderAIStatus(context.Background()); !strings.Contains(memoryOnly, "CA:          "+phaseproxy.NoKeystoreNotice+"\n") {
+		t.Fatalf("status must say the CA key is kept in memory only:\n%s", memoryOnly)
 	}
 }
 

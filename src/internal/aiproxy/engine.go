@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -36,8 +35,6 @@ type Endpoints struct {
 	ProxyAddress       string
 	ProxyURL           agentapi.SensitiveString
 	PostgresAddress    string
-	ManifestURL        string
-	Remote             bool
 	ProcessEnvironment phaseproxy.ProcessEnvironmentPlan
 	// Connections is a printable summary of the session's Connections. It
 	// carries no decoy, credential, host, or proxy material.
@@ -59,22 +56,13 @@ type Engine struct {
 	EventFlushInterval    time.Duration
 	EventSpoolDirectory   string
 	EventSpoolMaxBytes    int64
-	Remote                bool
-	AdvertiseHost         string
-	TLSCertificatePath    string
-	TLSPrivateKeyPath     string
 	PostgresListenAddress string
-	RemoteRootCAs         *x509.CertPool
-	RemoteResolver        IPResolver
 	Transport             http.RoundTripper
 	DialContext           func(context.Context, string, string) (net.Conn, error)
 	Stdout                io.Writer
 	Stderr                io.Writer
 	OnStarted             func(Endpoints)
 	UpstreamTLSConfig     *tls.Config
-	// BootstrapSkills are installed by the remote bootstrap snippet served at
-	// GET http://phase.invalid/v1/bootstrap (remote mode only).
-	BootstrapSkills []BootstrapSkill
 
 	runtime *engineRuntime
 }
@@ -83,13 +71,6 @@ type engineRuntime struct {
 	mu         sync.Mutex
 	capability agentapi.SensitiveString
 	decoys     *decoyHistory
-}
-
-// BootstrapSkill is an Agent skill file the relay bootstrap installs into a
-// sandbox, with Path relative to the sandbox user's home directory.
-type BootstrapSkill struct {
-	Path    string
-	Content string
 }
 
 // drainingHandler prevents a new HTTP request from entering the old backend
@@ -146,12 +127,14 @@ func (e *Engine) decoyHistory() *decoyHistory {
 }
 
 func (e *Engine) Ready() error {
-	if e.Remote {
-		_, err := e.validateRemoteConfiguration()
-		return err
-	}
-	if _, err := e.validateRemoteConfiguration(); err != nil {
-		return err
+	if e.PostgresListenAddress != "" {
+		if err := validateExplicitListenPort(e.PostgresListenAddress, "local PostgreSQL proxy listener"); err != nil {
+			return err
+		}
+		host, _, err := net.SplitHostPort(e.PostgresListenAddress)
+		if err != nil || !isLoopbackHost(host) {
+			return errors.New("local PostgreSQL proxy listener must bind to loopback")
+		}
 	}
 	proxyAddress := defaultAddress(e.ListenAddress)
 	if err := validateExplicitListenPort(proxyAddress, "local Phase AI proxy listener"); err != nil {
@@ -217,8 +200,6 @@ func (e *Engine) Capabilities() airuntime.EngineCapabilities {
 	}
 }
 
-func (e *Engine) RequiresAgentToken() bool { return e.Remote }
-
 func (e *Engine) Serve(ctx context.Context, session *airuntime.ProxySession) error {
 	return e.execute(ctx, session, nil)
 }
@@ -234,18 +215,6 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	if err := e.Ready(); err != nil {
 		return err
 	}
-	remoteIdentity, err := e.validateRemoteConfiguration()
-	if err != nil {
-		return err
-	}
-	if e.Remote {
-		if command != nil {
-			return errors.New("remote Phase AI mode runs only under phase relay start, without a child command")
-		}
-		if session == nil || session.Client == nil || session.Client.TokenType() != agentapi.TokenAgent {
-			return errors.New("remote Phase AI mode requires Agent-token login")
-		}
-	}
 	if session == nil || session.Config == nil {
 		return errors.New("Agent proxy session is incomplete")
 	}
@@ -259,25 +228,18 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	defer state.destroy()
 	// One Engine may serve several backend sessions in a row (the hook daemon
-	// and the relay recycle sessions in place). Remember this session's
+	// recycles sessions in place). Remember this session's
 	// Agent-visible material so clients provisioned by an earlier session keep
 	// working after a recycle.
 	state.decoys = e.decoyHistory()
 	state.decoys.remember(session.Config.Connections)
 
-	rawProxyListener, err := net.Listen("tcp", defaultAddress(e.ListenAddress))
+	proxyListener, err := net.Listen("tcp", defaultAddress(e.ListenAddress))
 	if err != nil {
 		return fmt.Errorf("listen for Phase AI HTTP proxy: %w", err)
 	}
-	var proxyListener net.Listener = rawProxyListener
-	if e.Remote {
-		proxyListener = tls.NewListener(rawProxyListener, &tls.Config{
-			Certificates: []tls.Certificate{*remoteIdentity.certificate}, MinVersion: tls.VersionTLS12,
-			NextProtos: []string{"http/1.1"},
-		})
-	}
 	defer proxyListener.Close()
-	if (e.Remote && !listenerIsNonLoopback(proxyListener)) || (!e.Remote && !listenerIsLoopback(proxyListener)) {
+	if !listenerIsLoopback(proxyListener) {
 		return errors.New("Phase AI proxy listener resolved on an unsafe interface")
 	}
 
@@ -293,19 +255,6 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 		dial = dialer.DialContext
 	}
-	unboundTransport := transport
-	unboundDial := dial
-	if e.Remote {
-		base, ok := transport.(*http.Transport)
-		if !ok {
-			return errors.New("remote Phase AI proxy requires a controllable HTTP transport")
-		}
-		guard := newRemoteEgressGuard(e.RemoteResolver)
-		guardedDial := guard.guardedDial(dial)
-		guardedTransport := guardedRemoteHTTPTransport(base, guardedDial)
-		unboundTransport = guardedTransport
-		unboundDial = guardedDial
-	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	events, err := newEventBuffer(state, e.EventFlushInterval, e.EventSpoolDirectory, e.EventSpoolMaxBytes)
@@ -313,28 +262,19 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		return err
 	}
 	defer events.Stop()
-	adapters, err := e.startProtocolAdapters(ctx, state, events, session.CA, dial, remoteIdentity)
+	adapters, err := e.startProtocolAdapters(ctx, state, events, session.CA, dial)
 	if err != nil {
 		return err
 	}
 	defer adapters.Close()
 
 	credential := runtimeCapability.Reveal()
-	proxyScheme := "http"
 	proxyAddress := proxyListener.Addr().String()
 	proxyEndpoint, err := endpointForListener(proxyListener, false, "")
 	if err != nil {
 		return err
 	}
-	if e.Remote {
-		proxyScheme = "https"
-		proxyEndpoint, err = advertisedEndpoint(remoteIdentity.host, proxyListener)
-		if err != nil {
-			return err
-		}
-		proxyAddress = net.JoinHostPort(proxyEndpoint.Host, fmt.Sprintf("%d", proxyEndpoint.Port))
-	}
-	proxyURL := (&url.URL{Scheme: proxyScheme, User: url.UserPassword("phase", credential), Host: proxyAddress}).String()
+	proxyURL := (&url.URL{Scheme: "http", User: url.UserPassword("phase", credential), Host: proxyAddress}).String()
 	baseEnvironment := os.Environ()
 	credentialFamilies := make([]string, 0)
 	for _, connection := range session.Config.Connections {
@@ -349,7 +289,11 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		if writer == nil {
 			writer = os.Stderr
 		}
-		_, _ = fmt.Fprintln(writer, "Phase AI could not build a complete replacement CA bundle. System-store clients require the Phase CA trusted by `phase ai enable --trust-ca`; clients that require SSL_CERT_FILE must inherit a complete public/enterprise CA bundle.")
+		trustHint := "System-store clients require the Phase CA trusted by `phase ai enable --trust-ca`"
+		if session.CAPaths.MemoryOnly {
+			trustHint = "System-store clients cannot trust the Phase CA because its key is kept in memory only"
+		}
+		_, _ = fmt.Fprintln(writer, "Phase AI could not build a complete replacement CA bundle. "+trustHint+"; clients that require SSL_CERT_FILE must inherit a complete public/enterprise CA bundle.")
 	}
 	session.CAPaths.Bundle = preparedCABundle.BundlePath
 	session.CAPaths.BundleComplete = preparedCABundle.Complete
@@ -363,8 +307,8 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	endpoints := Endpoints{
 		ProxyAddress: proxyAddress, ProxyURL: agentapi.SensitiveString(proxyURL),
-		PostgresAddress: adapters.postgresAddress,
-		ManifestURL:     ManifestURL, Remote: e.Remote, ProcessEnvironment: processEnvironment,
+		PostgresAddress:    adapters.postgresAddress,
+		ProcessEnvironment: processEnvironment,
 	}
 	for _, connection := range session.Config.Connections {
 		endpoints.Connections = append(endpoints.Connections, EndpointConnection{
@@ -389,16 +333,9 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		manifest.processEnvironment = processEnvironment
 	}
 	control := &controlHandler{state: state, environments: environments}
-	if e.Remote {
-		control.relayBootstrap = &bootstrapMaterial{
-			proxyURL: proxyURL, caPEM: session.CA.CertificatePEM(), caPaths: session.CAPaths,
-			plan: processEnvironment, skills: e.BootstrapSkills, connections: endpoints.Connections,
-		}
-	}
 	httpHandler := &httpProxy{
-		state: state, ca: session.CA, transport: transport, unboundTransport: unboundTransport,
-		dial: dial, unboundDial: unboundDial, lockdown: e.Lockdown,
-		remote: e.Remote, events: events, manifest: manifest, control: control, lifecycle: ctx,
+		state: state, ca: session.CA, transport: transport,
+		dial: dial, lockdown: e.Lockdown, events: events, manifest: manifest, control: control, lifecycle: ctx,
 	}
 	trackedHandler := &drainingHandler{handler: httpHandler}
 	proxyServer := &http.Server{

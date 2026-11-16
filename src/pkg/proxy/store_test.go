@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	gokeyring "github.com/zalando/go-keyring"
 )
 
 type memoryKeyring struct {
@@ -22,7 +24,7 @@ type memoryKeyring struct {
 func (m *memoryKeyring) Get(service, user string) (string, error) {
 	value, ok := m.values[service+"/"+user]
 	if !ok {
-		return "", errors.New("not found")
+		return "", gokeyring.ErrNotFound
 	}
 	return value, nil
 }
@@ -35,35 +37,166 @@ func (m *memoryKeyring) Set(service, user, value string) error {
 	return nil
 }
 
-func TestCAStoreFallsBackToOwnerOnlyKeyFileWithoutKeyring(t *testing.T) {
+// unusableKeyring is a machine without a system keystore: every call fails
+// with something other than "not found".
+type unusableKeyring struct{}
+
+func (unusableKeyring) Get(string, string) (string, error) {
+	return "", errors.New("org.freedesktop.secrets was not provided by any service")
+}
+
+func (unusableKeyring) Set(string, string, string) error {
+	return errors.New("org.freedesktop.secrets was not provided by any service")
+}
+
+// forgetMemoryCA makes the next Ensure behave like a fresh process.
+func forgetMemoryCA(t *testing.T, directory string) {
+	t.Helper()
+	memoryCAs.Lock()
+	delete(memoryCAs.byDirectory, filepath.Clean(directory))
+	memoryCAs.Unlock()
+}
+
+func assertNoPrivateKeyOnDisk(t *testing.T, directory string) {
+	t.Helper()
+	err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(payload, []byte("PRIVATE KEY")) {
+			t.Fatalf("%s contains a private key", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCAStoreKeepsTheKeyInMemoryWithoutAKeystore(t *testing.T) {
 	directory := t.TempDir()
-	store := CAStore{
-		Directory: directory,
-		Keyring:   &memoryKeyring{values: make(map[string]string), setError: errors.New("headless keyring unavailable")},
-	}
-	first, _, err := store.Ensure()
+	t.Cleanup(func() { forgetMemoryCA(t, directory) })
+	// A key file left by an earlier build is removed, never read.
+	_, _, leftoverKey, err := GenerateCA(time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	privateKeyPath := filepath.Join(directory, "ca-key.pem")
-	info, err := os.Lstat(privateKeyPath)
+	if err := os.WriteFile(filepath.Join(directory, "ca-key.pem"), leftoverKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := CAStore{Directory: directory, Keyring: unusableKeyring{}}
+	if store.KeystoreAvailable() {
+		t.Fatal("a failing keystore was reported as available")
+	}
+	first, paths, err := store.Ensure()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
-		t.Fatalf("fallback private key mode=%v", info.Mode())
+	if !paths.MemoryOnly || paths.Renewed {
+		t.Fatalf("paths = %+v, want memory-only", paths)
 	}
-	payload, err := os.ReadFile(privateKeyPath)
-	if err != nil || !strings.Contains(string(payload), "PRIVATE KEY") {
-		t.Fatalf("fallback private key is invalid: %v", err)
+	if _, err := os.Lstat(filepath.Join(directory, "ca-key.pem")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leftover ca-key.pem was not deleted: %v", err)
 	}
+	assertNoPrivateKeyOnDisk(t, directory)
 	second, _, err := store.Ensure()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.cert.SerialNumber.Cmp(second.cert.SerialNumber) != 0 {
-		t.Fatal("headless fallback did not preserve the per-installation CA")
+	if first != second {
+		t.Fatal("the same process received a different CA from a later Ensure")
 	}
+	// Another process replacing the published files does not change this
+	// process's CA either.
+	if err := os.WriteFile(paths.Certificate, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	third, thirdPaths, err := store.Ensure()
+	if err != nil || third != first {
+		t.Fatalf("CA changed after the published files changed: %v", err)
+	}
+	if published, _ := os.ReadFile(thirdPaths.Certificate); !bytes.Equal(published, first.CertificatePEM()) {
+		t.Fatal("Ensure did not republish this process's certificate")
+	}
+	assertNoPrivateKeyOnDisk(t, directory)
+}
+
+func TestCAStoreMemoryModeKeepsOtherProcessesCertificates(t *testing.T) {
+	directory := t.TempDir()
+	t.Cleanup(func() { forgetMemoryCA(t, directory) })
+	store := CAStore{Directory: directory, Keyring: unusableKeyring{}}
+	first, _, err := store.Ensure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetMemoryCA(t, directory) // a second proxy process starts
+	second, paths, err := store.Ensure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.cert.SerialNumber.Cmp(second.cert.SerialNumber) == 0 {
+		t.Fatal("a second process reused the first process's in-memory CA")
+	}
+	runtimeBundle, err := PrepareStableProcessCABundle(paths.Bundle, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Certificate, paths.Bundle, runtimeBundle.BundlePath} {
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, ca := range map[string]*CA{"first": first, "second": second} {
+			if !bytes.Contains(payload, ca.CertificatePEM()) {
+				t.Fatalf("%s is missing the %s process's certificate", filepath.Base(path), name)
+			}
+		}
+	}
+	certificates, _ := os.ReadFile(paths.Certificate)
+	if !bytes.HasPrefix(certificates, second.CertificatePEM()) {
+		t.Fatal("the publishing process's certificate must come first")
+	}
+	// Only a bounded number of recent certificates is kept.
+	for range maxMemoryCertificates + 2 {
+		forgetMemoryCA(t, directory)
+		if _, _, err := store.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	certificates, _ = os.ReadFile(paths.Certificate)
+	if count := bytes.Count(certificates, []byte("BEGIN CERTIFICATE")); count != maxMemoryCertificates {
+		t.Fatalf("ca.pem holds %d certificates, want %d", count, maxMemoryCertificates)
+	}
+	assertNoPrivateKeyOnDisk(t, directory)
+}
+
+func TestCAStoreMovesToTheKeystoreOnceOneIsAvailable(t *testing.T) {
+	directory := t.TempDir()
+	t.Cleanup(func() { forgetMemoryCA(t, directory) })
+	if _, _, err := (CAStore{Directory: directory, Keyring: unusableKeyring{}}).Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	forgetMemoryCA(t, directory)
+	keyring := &memoryKeyring{values: make(map[string]string)}
+	store := CAStore{Directory: directory, Keyring: keyring}
+	if !store.KeystoreAvailable() {
+		t.Fatal("an empty keystore must count as available")
+	}
+	ca, paths, err := store.Ensure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.MemoryOnly || !strings.Contains(keyring.values[caKeyringService+"/"+caKeyringUser], "PRIVATE KEY") {
+		t.Fatalf("CA was not moved into the keystore: %+v", paths)
+	}
+	if published, _ := os.ReadFile(paths.Certificate); !bytes.Equal(published, ca.CertificatePEM()) {
+		t.Fatal("keystore mode must publish exactly one certificate")
+	}
+	assertNoPrivateKeyOnDisk(t, directory)
 }
 
 func TestCAStorePersistsPrivateMaterialOnlyInKeyring(t *testing.T) {
@@ -209,7 +342,7 @@ func (k *pausingKeyring) Get(service, user string) (string, error) {
 	defer k.mu.Unlock()
 	value, ok := k.values[service+"/"+user]
 	if !ok {
-		return "", errors.New("not found")
+		return "", gokeyring.ErrNotFound
 	}
 	return value, nil
 }
@@ -290,7 +423,6 @@ func TestComposeEnvironmentExcludesDurableTokensAndIncludesCompatibilityVariable
 			"AWS_REGION=old-region",
 		},
 		ProxyURL:         "http://phase:runtime-capability@127.0.0.1:7777",
-		CertificatePath:  "/tmp/phase-ca.pem",
 		CABundlePath:     "/tmp/phase-ca-bundle.pem",
 		CABundleComplete: true,
 		ConfigEnv:        map[string]string{"AWS_REGION": "us-east-1"},
@@ -335,7 +467,7 @@ func TestComposeEnvironmentExcludesDurableTokensAndIncludesCompatibilityVariable
 
 func TestComposeEnvironmentRejectsProtectedOrCollidingAgentKeys(t *testing.T) {
 	base := EnvironmentOptions{
-		ProxyURL: "http://phase:capability@127.0.0.1:7777", CertificatePath: "/ca.pem", CABundlePath: "/bundle.pem",
+		ProxyURL: "http://phase:capability@127.0.0.1:7777", CABundlePath: "/bundle.pem",
 	}
 	base.AgentEnv = map[string]string{"PHASE_SERVICE_TOKEN": "live"}
 	if _, err := composeTestEnvironment(base); err == nil {
@@ -359,8 +491,8 @@ func TestComposeEnvironmentReservedPrecedenceAndPreservesUserJavaOptions(t *test
 			"AWS_REGION=inherited", "NO_PROXY=attacker.example", "no_proxy=attacker.example",
 			"JAVA_TOOL_OPTIONS=-Xmx256m -Djavax.net.ssl.trustStore=/attacker", "GITHUB_TOKEN=ambient-live-token",
 		},
-		ProxyURL:        "http://phase:capability@127.0.0.1:7777",
-		CertificatePath: "/tmp/phase ca.pem", CABundlePath: "/tmp/phase bundle.pem", CABundleComplete: true,
+		ProxyURL:     "http://phase:capability@127.0.0.1:7777",
+		CABundlePath: "/tmp/phase bundle.pem", CABundleComplete: true,
 		ConfigEnv: map[string]string{"AWS_REGION": "configured"}, AgentEnv: map[string]string{"GITHUB_TOKEN": "decoy"},
 		EnvironmentBindings: []EnvironmentBinding{
 			{Name: "AWS_REGION", Action: "set", Source: "connection_config", SourceField: "region"},
@@ -404,7 +536,7 @@ func TestComposeEnvironmentReservedPrecedenceAndPreservesUserJavaOptions(t *test
 func TestComposeEnvironmentPreservesUnrelatedProviderCAConfiguration(t *testing.T) {
 	options := EnvironmentOptions{
 		Base:     []string{"AWS_CA_BUNDLE=/user/aws-ca.pem", "PGSSLROOTCERT=/user/postgres-ca.pem"},
-		ProxyURL: "http://phase:capability@127.0.0.1:7777", CertificatePath: "/ca.pem", CABundlePath: "/phase-bundle.pem",
+		ProxyURL: "http://phase:capability@127.0.0.1:7777", CABundlePath: "/phase-bundle.pem",
 	}
 	environment, err := composeTestEnvironment(options)
 	if err != nil {
@@ -434,8 +566,8 @@ func TestComposeEnvironmentPreservesUnrelatedProviderCAConfiguration(t *testing.
 
 func TestComposeEnvironmentRequiresAuthenticatedProxyAndTLSOffLoopback(t *testing.T) {
 	options := EnvironmentOptions{
-		ProxyURL:        "http://127.0.0.1:7777",
-		CertificatePath: "/ca", CABundlePath: "/bundle",
+		ProxyURL:     "http://127.0.0.1:7777",
+		CABundlePath: "/bundle",
 	}
 	if _, err := composeTestEnvironment(options); err == nil {
 		t.Fatal("expected unauthenticated proxy URL rejection")
@@ -691,7 +823,7 @@ func TestPreparedCABundleWindowsFallbackPreservesEnterpriseTrustConfiguration(t 
 	}
 	environment, err := composeTestEnvironment(EnvironmentOptions{
 		Base: baseEnvironment, ProxyURL: "http://phase:capability@127.0.0.1:9543",
-		CertificatePath: phasePath, CABundlePath: prepared.BundlePath,
+		CABundlePath: prepared.BundlePath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -812,36 +944,6 @@ func TestPrepareStableProcessCABundlePublishesPredictablePublicPath(t *testing.T
 	}
 	if repeated.BundlePath != prepared.BundlePath || string(first) != string(second) {
 		t.Fatal("repeat stable publication changed the public bundle or its path")
-	}
-}
-
-func TestComposeRemoteEnvironmentRequiresHTTPSAndOmitsBackendSessionCredential(t *testing.T) {
-	options := EnvironmentOptions{
-		Base:            []string{"PHASE_SERVICE_TOKEN=durable-token", "PATH=/usr/bin"},
-		ProxyURL:        "https://phase:scoped-capability@remote.phase.test:8443",
-		CertificatePath: "/remote/ca.pem",
-		CABundlePath:    "/remote/ca-bundle.pem",
-	}
-	environment, err := composeTestEnvironment(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(environment, "\n")
-	for _, required := range []string{
-		"HTTPS_PROXY=https://phase:scoped-capability@remote.phase.test:8443",
-		"PATH=/usr/bin",
-	} {
-		if !strings.Contains(joined, required) {
-			t.Fatalf("remote environment missing %q:\n%s", required, joined)
-		}
-	}
-	for _, forbidden := range []string{
-		"durable-token", "PHASE_SERVICE_TOKEN=", "PHASE_AI_SESSION_UID=",
-		"PHASE_AI_SESSION_CREDENTIAL=", "PHASE_AGENT_SESSION_CREDENTIAL=", "PHASE_AI_CONTROL_URL=",
-	} {
-		if strings.Contains(joined, forbidden) {
-			t.Fatalf("remote environment contains %q:\n%s", forbidden, joined)
-		}
 	}
 }
 
