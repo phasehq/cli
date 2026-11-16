@@ -27,9 +27,10 @@ const (
 // control routes an Agent calls on purpose read the list synchronously.
 type presetCache struct {
 	mu         sync.Mutex
-	fetch      func(context.Context) ([]agentapi.Preset, error)
+	fetch      func(context.Context) (*agentapi.RegistryResponse, error)
 	now        func() time.Time
 	presets    []agentapi.Preset
+	services   []agentapi.RegistryService
 	loaded     bool
 	fetchedAt  time.Time
 	attemptAt  time.Time
@@ -37,13 +38,7 @@ type presetCache struct {
 }
 
 func newPresetCache(client *agentapi.Client) *presetCache {
-	return &presetCache{now: time.Now, fetch: func(ctx context.Context) ([]agentapi.Preset, error) {
-		registry, err := client.Registry(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return registry.Presets, nil
-	}}
+	return &presetCache{now: time.Now, fetch: client.Registry}
 }
 
 func (c *presetCache) fresh(now time.Time) bool {
@@ -53,25 +48,32 @@ func (c *presetCache) fresh(now time.Time) bool {
 // list returns the presets, reading them from the Console when the held copy
 // is missing or old. A failed read falls back to the held copy if there is one.
 func (c *presetCache) list(ctx context.Context) ([]agentapi.Preset, error) {
+	presets, _, err := c.registry(ctx)
+	return presets, err
+}
+
+// registry is list with the packaged services the registry lists beside the
+// presets; both are cached together.
+func (c *presetCache) registry(ctx context.Context) ([]agentapi.Preset, []agentapi.RegistryService, error) {
 	c.mu.Lock()
 	if c.fresh(c.now()) {
-		presets := c.presets
+		presets, services := c.presets, c.services
 		c.mu.Unlock()
-		return presets, nil
+		return presets, services, nil
 	}
 	c.mu.Unlock()
-	presets, err := c.fetch(ctx)
+	registry, err := c.fetch(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.attemptAt = c.now()
 	if err != nil {
 		if c.loaded {
-			return c.presets, nil
+			return c.presets, c.services, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	c.presets, c.loaded, c.fetchedAt = presets, true, c.attemptAt
-	return presets, nil
+	c.presets, c.services, c.loaded, c.fetchedAt = registry.Presets, registry.ServiceList(), true, c.attemptAt
+	return c.presets, c.services, nil
 }
 
 // lookup returns the preset a host belongs to from the held copy. It never
@@ -80,9 +82,9 @@ func (c *presetCache) list(ctx context.Context) ([]agentapi.Preset, error) {
 //
 // held is false while no copy has been read yet: the caller then cannot tell
 // a host without a preset from one whose preset it has not seen.
-func (c *presetCache) lookup(host string, port int) (preset *agentapi.Preset, held bool) {
+func (c *presetCache) lookup(host string, port int) (match hostMatch, held bool) {
 	if c == nil {
-		return nil, false
+		return hostMatch{}, false
 	}
 	c.mu.Lock()
 	now := c.now()
@@ -90,9 +92,9 @@ func (c *presetCache) lookup(host string, port int) (preset *agentapi.Preset, he
 		c.refreshing = true
 		go c.refresh()
 	}
-	presets, held := c.presets, c.loaded
+	presets, services, held := c.presets, c.services, c.loaded
 	c.mu.Unlock()
-	return matchPreset(presets, host, port), held
+	return matchRegistry(presets, services, host, port), held
 }
 
 func (c *presetCache) refresh() {
@@ -102,6 +104,33 @@ func (c *presetCache) refresh() {
 	c.mu.Lock()
 	c.refreshing = false
 	c.mu.Unlock()
+}
+
+// hostMatch is what the registry knows about a host no Connection covers: a
+// packaged service that owns it, else a preset, else nothing.
+type hostMatch struct {
+	service *agentapi.RegistryService
+	preset  *agentapi.Preset
+}
+
+// matchRegistry prefers a packaged service over a preset. The aws service is
+// never matched: its suffix rule is too broad to say what a host needs.
+func matchRegistry(presets []agentapi.Preset, services []agentapi.RegistryService, host string, port int) hostMatch {
+	for index := range services {
+		service := &services[index]
+		if service.ServiceType == "aws" || !controlIdentifier.MatchString(service.ServiceType) ||
+			plainTitleText(service.DisplayName) == "" || len(service.CredentialProviders) == 0 ||
+			!controlIdentifier.MatchString(service.CredentialProviders[0]) {
+			continue
+		}
+		for _, rule := range service.Hosts {
+			rule.Port = 0
+			if phaseproxy.MatchHostOnly(rule, host, 443) {
+				return hostMatch{service: service}
+			}
+		}
+	}
+	return hostMatch{preset: matchPreset(presets, host, port)}
 }
 
 // matchPreset finds the preset a host belongs to. The port is not compared:

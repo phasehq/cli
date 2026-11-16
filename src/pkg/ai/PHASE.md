@@ -207,7 +207,7 @@ When a service answers 401 or 403 and no Connection covers its host, or the prox
 curl --fail --silent --show-error http://phase.invalid/v1/hints
 ```
 
-Each hint names the host and carries a `request` that asks for a Connection to it, by preset when the host belongs to one. Send it unchanged, or adjust its `definition` first when the service does not take a bearer token in the `Authorization` header. Only ask when the human's task needs that service through Phase.
+Each hint names the host and carries a `request` that asks for a Connection to it: the ordinary `setup` request for a Phase service (the hint's `service`) when the host belongs to one, otherwise by preset when the host belongs to one. Send it unchanged, or adjust its `definition` first when the service does not take a bearer token in the `Authorization` header. Only ask when the human's task needs that service through Phase.
 
 ## Workflow context
 

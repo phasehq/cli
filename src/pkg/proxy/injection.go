@@ -100,6 +100,9 @@ func ApplyHTTPInjectionPresenting(ctx context.Context, req *http.Request, live, 
 // injection point a request that carries exactly the decoy form is swapped, a
 // request that carries nothing is attached to when the injection allows it,
 // and anything else is a swap miss.
+// maximumValueFormats bounds the alternate forms of one injection.
+const maximumValueFormats = 4
+
 func planHTTPInjection(req *http.Request, injection agentapi.Injection, live, presented agentapi.Connection, claimed map[string]struct{}) (func(), error) {
 	invalid := &InjectionError{Code: InjectionInvalidTemplate}
 	swapMiss := &InjectionError{Code: InjectionSwapMiss}
@@ -155,6 +158,34 @@ func planHTTPInjection(req *http.Request, injection agentapi.Injection, live, pr
 	if err != nil || containsHeaderBreak(replacement) || len(replacement) > maximumInjectionCredentialBytes {
 		return nil, &InjectionError{Code: InjectionUnsafeValue}
 	}
+	// Alternate forms are checked like the primary one, whatever the action,
+	// so a malformed one never goes unnoticed. Index 0 is the primary form.
+	if len(injection.ValueFormats) > maximumValueFormats {
+		return nil, invalid
+	}
+	expectedForms := []string{expected}
+	replacementForms := []string{replacement}
+	for _, format := range injection.ValueFormats {
+		alternateExpected, formatErr := formatCredentialValue(format, presentedValue)
+		if formatErr != nil {
+			return nil, formatErr
+		}
+		alternateReplacement, formatErr := formatCredentialValue(format, liveValue)
+		if formatErr != nil || containsHeaderBreak(alternateReplacement) || len(alternateReplacement) > maximumInjectionCredentialBytes {
+			return nil, &InjectionError{Code: InjectionUnsafeValue}
+		}
+		expectedForms = append(expectedForms, alternateExpected)
+		replacementForms = append(replacementForms, alternateReplacement)
+	}
+	// matchedForm returns the index of the form a presented value is in.
+	matchedForm := func(presentedForm string) int {
+		for index, form := range expectedForms {
+			if presentedForm == form {
+				return index
+			}
+		}
+		return -1
+	}
 
 	switch injection.Action {
 	case "set_header", "replace_header":
@@ -163,26 +194,36 @@ func planHTTPInjection(req *http.Request, injection agentapi.Injection, live, pr
 			return nil, invalid
 		}
 		values := req.Header.Values(injection.Name)
-		swap := len(values) == 1 && values[0] == expected
-		if !swap && !(attach && len(values) == 0) {
+		form := -1
+		if len(values) == 1 {
+			form = matchedForm(values[0])
+		}
+		if form < 0 && !(attach && len(values) == 0) {
 			return nil, swapMiss
 		}
-		return func() { req.Header.Set(injection.Name, replacement) }, nil
+		// A swap is written in the form it was presented in; attaching uses
+		// the primary form.
+		chosen := replacementForms[max(form, 0)]
+		return func() { req.Header.Set(injection.Name, chosen) }, nil
 	case "set_param":
 		if injection.Name == "" || strings.ContainsAny(injection.Name, "&=\x00") || !claim("param:"+injection.Name) {
 			return nil, invalid
 		}
 		query, parseErr := url.ParseQuery(req.URL.RawQuery)
 		values, exists := query[injection.Name]
-		swap := exists && len(values) == 1 && values[0] == expected
+		form := -1
+		if exists && len(values) == 1 {
+			form = matchedForm(values[0])
+		}
 		// A query the proxy cannot fully parse may hide a value for this
 		// parameter, so it never counts as carrying nothing.
-		if !swap && !(attach && !exists && parseErr == nil) {
+		if form < 0 && !(attach && !exists && parseErr == nil) {
 			return nil, swapMiss
 		}
+		chosen := replacementForms[max(form, 0)]
 		return func() {
 			rewritten := req.URL.Query()
-			rewritten.Set(injection.Name, replacement)
+			rewritten.Set(injection.Name, chosen)
 			req.URL.RawQuery = rewritten.Encode()
 		}, nil
 	case "set_path":

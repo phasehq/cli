@@ -287,3 +287,19 @@ func TestOperationMatcherIsReadStrictlyAndLimitedToAWS(t *testing.T) {
 		t.Fatalf("policy encoding = %s err=%v", encoded, err)
 	}
 }
+
+func TestInjectionValueFormatsAreRelayedAndCompared(t *testing.T) {
+	document := `{"injection":{"action":"set_header","name":"Authorization","valueFormat":"Bearer {value}","valueFormats":["token {value}"],"valueFrom":{"source":"credential","field":"token"}}}`
+	var discover DiscoverConnection
+	if err := json.Unmarshal([]byte(document), &discover); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(discover)
+	if err != nil || !strings.Contains(string(encoded), `"valueFormats":["token {value}"]`) {
+		t.Fatalf("discover = %s err=%v", encoded, err)
+	}
+	var connection Connection
+	if err := json.Unmarshal([]byte(document), &connection); err != nil || len(connection.Injection.ValueFormats) != 1 {
+		t.Fatalf("connection = %+v err=%v", connection.Injection, err)
+	}
+}

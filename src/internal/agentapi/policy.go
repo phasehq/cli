@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -373,4 +374,41 @@ func (p Preset) HostRules() []HostRule {
 type RegistryResponse struct {
 	SchemaVersion int      `json:"schemaVersion"`
 	Presets       []Preset `json:"presets"`
+	// Services is the packaged services, an object keyed by service type. It
+	// is read leniently (see ServiceList) so that an entry in a shape this
+	// client does not know never costs it the presets.
+	Services json.RawMessage `json:"services,omitempty"`
+}
+
+// RegistryService is a packaged service as the registry lists it: enough to
+// recognise its hosts and to ask for it with a setup request.
+type RegistryService struct {
+	ServiceType         string     `json:"serviceType"`
+	DisplayName         string     `json:"displayName"`
+	CredentialProviders []string   `json:"credentialProviders"`
+	Hosts               []HostRule `json:"hosts"`
+}
+
+// ServiceList reads the packaged services, ordered by service type. An entry
+// that is not an object, or is filed under another service type than it
+// names, is skipped.
+func (r RegistryResponse) ServiceList() []RegistryService {
+	var entries map[string]json.RawMessage
+	if json.Unmarshal(r.Services, &entries) != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	services := make([]RegistryService, 0, len(keys))
+	for _, key := range keys {
+		var service RegistryService
+		if json.Unmarshal(entries[key], &service) != nil || service.ServiceType != key {
+			continue
+		}
+		services = append(services, service)
+	}
+	return services
 }

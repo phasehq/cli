@@ -105,6 +105,7 @@ type Hint struct {
 	ConnectionID   string          `json:"connectionId,omitempty"`
 	ConnectionName string          `json:"connectionName,omitempty"`
 	Preset         string          `json:"preset,omitempty"`
+	Service        string          `json:"service,omitempty"`
 	Request        json.RawMessage `json:"request,omitempty"`
 	Count          int             `json:"count"`
 	FirstAt        time.Time       `json:"firstAt"`

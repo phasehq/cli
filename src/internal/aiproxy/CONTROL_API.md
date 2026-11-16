@@ -387,7 +387,12 @@ never holds a path.
 | `connection_needed` | `upstream_rejected_unbound_host` | a service answered 401 or 403 to a plain-HTTP request on a host no Connection covers; its answer was passed on untouched |
 | `connection_needed` | `unbound_preset_host` | the Agent tunnelled to a host no Connection covers that belongs to a preset. The proxy cannot see the answers inside such a tunnel, so this is how an HTTPS 401 or 403 is addressed |
 
-For `connection_needed` the `request` is built when the hints are read: by
+For `connection_needed` the `request` is built when the hints are read. When the
+host belongs to a packaged service in the Console's registry (`services`, read
+with the presets and cached with them; `aws` is never matched), the hint carries
+`service` and the ordinary packaged setup request (`kind: "setup"`,
+`serviceType`, the service's first `credentialProvider`, `credentialName`,
+`markdown`), with no definition and no preset. Otherwise it is built by
 preset ID when the host belongs to a preset, otherwise an
 `agent_connection.create` whose definition has the host filled in and a bearer
 token attached in the `Authorization` header (it exports no variable, so an

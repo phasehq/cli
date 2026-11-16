@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	"github.com/phasehq/cli/internal/remoteapi"
 )
 
 const (
@@ -204,5 +205,101 @@ func TestAWSOperationAllowCoversOnlyThatAction(t *testing.T) {
 	request, _ := json.Marshal(result.failure.details["request"])
 	if !strings.Contains(string(request), `"allow":{"operation":"ec2:DeleteVolume"}`) || !strings.Contains(string(request), `"operation":"ec2:DeleteVolume"`) {
 		t.Fatalf("ask request = %s", request)
+	}
+}
+
+const registryWithServices = `{"schemaVersion":1,"capabilities":{},"services":{` +
+	`"gitlab":{"serviceType":"gitlab","displayName":"GitLab","credentialProviders":["gitlab"],"hosts":[{"match":"exact","value":"gitlab.com","port":443,"path":"/api/*"}]},` +
+	`"aws":{"serviceType":"aws","displayName":"AWS","credentialProviders":["aws"],"hosts":[{"match":"suffix","value":".amazonaws.com"}]},` +
+	`"vercel":{"serviceType":"vercel","displayName":"Vercel","credentialProviders":["vercel"],"hosts":[]},` +
+	`"broken":"not an object"},"presets":[` +
+	`{"id":"datadog","name":"Datadog","hostsEditable":true,"hosts":[{"match":"suffix","value":".datadoghq.com"}]}]}`
+
+func TestHintsNameAPackagedServiceForItsHosts(t *testing.T) {
+	console := newPresetConsole(t)
+	console.body = registryWithServices
+	state, proxy := console.proxy(t, false)
+	state.noteConnectionNeeded("upstream_rejected_unbound_host", "gitlab.com", 443, http.StatusUnauthorized)
+	state.noteConnectionNeeded("upstream_rejected_unbound_host", "s3.eu-west-1.amazonaws.com", 443, http.StatusForbidden)
+	state.noteConnectionNeeded("upstream_rejected_unbound_host", "app.datadoghq.com", 443, http.StatusForbidden)
+	state.noteConnectionNeeded("upstream_rejected_unbound_host", "api.internal.example.test", 443, http.StatusForbidden)
+	state.hints.noteUnboundHost("gitlab.com", 443)
+
+	var hints remoteapi.HintsResponse
+	listed := controlGet(t, proxy, "runtime-presets", "/v1/hints")
+	if err := json.Unmarshal(listed.Body.Bytes(), &hints); err != nil || len(hints.Hints) != 4 {
+		t.Fatalf("hints: %s err=%v", listed.Body.String(), err)
+	}
+	byHost := map[string]remoteapi.Hint{}
+	for _, hint := range hints.Hints {
+		byHost[hint.Host] = hint
+	}
+	want := `{"credentialName":"GitLab for this Workflow","credentialProvider":"gitlab","kind":"setup","markdown":"Calls to gitlab.com need a GitLab Connection.","serviceType":"gitlab","title":"Connect GitLab"}`
+	if got := byHost["gitlab.com"]; got.Service != "gitlab" || got.Preset != "" || !sameJSON(t, got.Request, []byte(want)) {
+		t.Fatalf("service hint = %+v request=%s", got, got.Request)
+	}
+	if got := byHost["app.datadoghq.com"]; got.Preset != "datadog" || got.Service != "" || !strings.Contains(string(got.Request), `"preset":"datadog"`) {
+		t.Fatalf("preset hint = %+v", got)
+	}
+	// AWS hosts are not hinted by service, and an unknown host gets the
+	// custom definition.
+	for _, host := range []string{"s3.eu-west-1.amazonaws.com", "api.internal.example.test"} {
+		got := byHost[host]
+		if got.Service != "" || got.Preset != "" || !strings.Contains(string(got.Request), `"definition"`) {
+			t.Fatalf("%s hint = %+v", host, got)
+		}
+	}
+	// The request is one the proxy's own request route accepts.
+	requests := newRequestConsole(t)
+	_, requestProxy := requests.state(t, "runtime-requests")
+	if recorder := postControlRequest(requestProxy, "runtime-requests", string(byHost["gitlab.com"].Request)); recorder.Code != http.StatusCreated {
+		t.Fatalf("the service request was refused: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestLockdownAnswerNamesAPackagedServiceAndNeverWaitsForTheRegistry(t *testing.T) {
+	console := newPresetConsole(t)
+	console.body = registryWithServices
+	state, proxy := console.proxy(t, true)
+	blocked := func() map[string]any {
+		request, _ := http.NewRequest(http.MethodGet, "http://gitlab.com/api/v4/user", nil)
+		result := processThrough(proxy, request)
+		if result.failure == nil || result.failure.code != "unbound_host_blocked" {
+			t.Fatalf("lockdown answer = %+v", result.failure)
+		}
+		return result.failure.details
+	}
+	if details := blocked(); details["request"] != nil {
+		t.Fatalf("a cold answer guessed a request: %v", details)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, held := state.presets.lookup("gitlab.com", 443); held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the registry was never read in the background")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	details := blocked()
+	request, _ := json.Marshal(details["request"])
+	if details["service"] != "gitlab" || details["preset"] != nil || !strings.Contains(string(request), `"serviceType":"gitlab"`) ||
+		!strings.Contains(string(request), `"credentialProvider":"gitlab"`) {
+		t.Fatalf("service lockdown answer = %v", details)
+	}
+}
+
+// With the registry unreachable the hints fall back to the custom definition.
+func TestHintsFallBackSafelyWhenTheRegistryIsUnreachable(t *testing.T) {
+	console := newPresetConsole(t)
+	console.fail.Store(true)
+	state, proxy := console.proxy(t, false)
+	state.noteConnectionNeeded("upstream_rejected_unbound_host", "gitlab.com", 443, http.StatusUnauthorized)
+	listed := controlGet(t, proxy, "runtime-presets", "/v1/hints")
+	var hints remoteapi.HintsResponse
+	if err := json.Unmarshal(listed.Body.Bytes(), &hints); err != nil || listed.Code != http.StatusOK || len(hints.Hints) != 1 ||
+		hints.Hints[0].Service != "" || !strings.Contains(string(hints.Hints[0].Request), `"definition"`) {
+		t.Fatalf("hints: %d %s err=%v", listed.Code, listed.Body.String(), err)
 	}
 }

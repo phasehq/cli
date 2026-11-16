@@ -213,3 +213,92 @@ func TestPackagedHTTPServicePolicyUsesOperationClassesThenMethodAndTheGuard(t *t
 		t.Fatalf("guard = %+v err=%v", blocked, err)
 	}
 }
+
+// valueFormatsConnection is a header service whose primary form is Bearer and
+// which also accepts the "token" scheme.
+func valueFormatsConnection(t *testing.T, decoy, live string, alternates ...string) agentapi.Connection {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"serviceType": "github", "protocol": "http",
+		"injection": map[string]any{
+			"action": "set_header", "name": "Authorization", "valueFormat": "Bearer {value}", "valueFormats": alternates, "whenAbsent": "attach",
+			"valueFrom": map[string]any{"source": "credential", "field": "token"},
+		},
+		"identifiers": map[string]string{}, "decoyMaterial": map[string]string{"token": decoy},
+		"agentEnv": map[string]string{}, "secretMaterial": map[string]string{"token": live},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connection agentapi.Connection
+	if err := json.Unmarshal(payload, &connection); err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+func TestAlternateValueFormatsSwapInTheFormPresented(t *testing.T) {
+	const decoy, live = "ghp_decoyvalue0123456789abcdef", "ghp_livevalue0123456789abcdefgh"
+	connection := valueFormatsConnection(t, decoy, live, "token {value}")
+	apply := func(live, presented agentapi.Connection, authorization string) (string, error) {
+		request := policyRequest(t, http.MethodGet, "https://api.github.com/user")
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+		_, err := ApplyHTTPInjectionPresenting(context.Background(), request, live, presented)
+		return request.Header.Get("Authorization"), err
+	}
+	if got, err := apply(connection, connection, "Bearer "+decoy); err != nil || got != "Bearer "+live {
+		t.Fatalf("primary: %q %v", got, err)
+	}
+	if got, err := apply(connection, connection, "token "+decoy); err != nil || got != "token "+live {
+		t.Fatalf("alternate: %q %v", got, err)
+	}
+	if got, err := apply(connection, connection, ""); err != nil || got != "Bearer "+live {
+		t.Fatalf("attach must use the primary form: %q %v", got, err)
+	}
+	if got, err := apply(connection, connection, "Basic "+decoy); injectionCode(err) != InjectionSwapMiss || strings.Contains(got, live) {
+		t.Fatalf("a third form: %q %v", got, err)
+	}
+	if got, err := apply(connection, connection, "token someone-else"); injectionCode(err) != InjectionSwapMiss || strings.Contains(got, live) {
+		t.Fatalf("another value in the alternate form: %q %v", got, err)
+	}
+	// An earlier generation's decoy, presented in the alternate form.
+	older := valueFormatsConnection(t, "ghp_olderdecoy0123456789abcdefgh", live, "token {value}")
+	if got, err := apply(connection, older, "token ghp_olderdecoy0123456789abcdefgh"); err != nil || got != "token "+live {
+		t.Fatalf("older generation: %q %v", got, err)
+	}
+}
+
+func TestMalformedAlternateValueFormatInvalidatesTheInjection(t *testing.T) {
+	for name, alternates := range map[string][]string{
+		"no placeholder":   {"token"},
+		"two placeholders": {"{value}{value}"},
+		"too many":         {"a {value}", "b {value}", "c {value}", "d {value}", "e {value}"},
+		"one bad of two":   {"token {value}", "nothing"},
+	} {
+		connection := valueFormatsConnection(t, "ghp_decoyvalue0123456789abcdef", "ghp_livevalue0123456789abcdefgh", alternates...)
+		request := policyRequest(t, http.MethodGet, "https://api.github.com/user")
+		request.Header.Set("Authorization", "Bearer ghp_decoyvalue0123456789abcdef")
+		if _, err := ApplyHTTPInjection(context.Background(), request, connection); injectionCode(err) != InjectionInvalidTemplate {
+			t.Errorf("%s: err=%v", name, err)
+		}
+		if request.Header.Get("Authorization") != "Bearer ghp_decoyvalue0123456789abcdef" {
+			t.Errorf("%s: the request was rewritten", name)
+		}
+	}
+}
+
+func TestAlternateValueFormatsApplyToQueryParameters(t *testing.T) {
+	payload := `{"serviceType":"x","protocol":"http","injection":{"action":"set_param","name":"k","valueFormat":"{value}","valueFormats":["tok-{value}"],"valueFrom":{"source":"credential","field":"token"}},"identifiers":{},"decoyMaterial":{"token":"dd0123456789"},"agentEnv":{},"secretMaterial":{"token":"ll0123456789"}}`
+	var connection agentapi.Connection
+	if err := json.Unmarshal([]byte(payload), &connection); err != nil {
+		t.Fatal(err)
+	}
+	for target, want := range map[string]string{"https://x.test/?k=dd0123456789": "ll0123456789", "https://x.test/?k=tok-dd0123456789": "tok-ll0123456789"} {
+		request := policyRequest(t, http.MethodGet, target)
+		if _, err := ApplyHTTPInjection(context.Background(), request, connection); err != nil || request.URL.Query().Get("k") != want {
+			t.Errorf("%s: %v %q", target, err, request.URL.RawQuery)
+		}
+	}
+}

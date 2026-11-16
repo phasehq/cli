@@ -512,9 +512,14 @@ const (
 )
 
 type Injection struct {
-	Action          string    `json:"action"`
-	Name            string    `json:"name,omitempty"`
-	ValueFormat     string    `json:"valueFormat,omitempty"`
+	Action      string `json:"action"`
+	Name        string `json:"name,omitempty"`
+	ValueFormat string `json:"valueFormat,omitempty"`
+	// ValueFormats are further forms a request may present the decoy in for
+	// set_header, replace_header and set_param (at most 4, each with exactly
+	// one {value}). A swap keeps the form it was presented in; attaching uses
+	// ValueFormat.
+	ValueFormats    []string  `json:"valueFormats,omitempty"`
 	ValueFrom       ValueFrom `json:"valueFrom"`
 	ServiceFrom     string    `json:"serviceFrom,omitempty"`
 	RegionFrom      string    `json:"regionFrom,omitempty"`

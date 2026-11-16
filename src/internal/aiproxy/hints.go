@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,7 +129,7 @@ func (s *runtimeState) noteConnectionNeeded(reason, host string, port, statusCod
 // send as it is. Hosts a Connection covers by now are left out.
 func (h *controlHandler) hints(w http.ResponseWriter, req *http.Request) {
 	presetContext, cancel := context.WithTimeout(req.Context(), presetFetchTimeout)
-	presets, _ := h.state.presets.list(presetContext)
+	presets, services, _ := h.state.presets.registry(presetContext)
 	cancel()
 	response := remoteapi.HintsResponse{SchemaVersion: agentapi.SchemaVersion, Kind: "phase.ai.hints", Hints: []remoteapi.Hint{}}
 	for _, hint := range h.state.hints.snapshot() {
@@ -142,25 +143,24 @@ func (h *controlHandler) hints(w http.ResponseWriter, req *http.Request) {
 			if bound, err := h.state.hasBoundHost(hint.host, hint.port); err != nil || bound {
 				continue
 			}
-			preset := matchPreset(presets, hint.host, hint.port)
-			if preset != nil {
-				entry.Preset = preset.ID
-			}
-			entry.Request = connectionRequest(hint.host, hint.port, preset)
+			match := matchRegistry(presets, services, hint.host, hint.port)
+			entry.Preset, entry.Service = match.names()
+			entry.Request = match.request(hint.host, hint.port)
 		}
 		response.Hints = append(response.Hints, entry)
 	}
 	for _, unbound := range h.state.hints.unboundHosts() {
-		preset := matchPreset(presets, unbound.host, unbound.port)
-		if preset == nil || hintsName(response.Hints, unbound.host) {
+		match := matchRegistry(presets, services, unbound.host, unbound.port)
+		if (match.preset == nil && match.service == nil) || hintsName(response.Hints, unbound.host) {
 			continue
 		}
 		if bound, err := h.state.hasBoundHost(unbound.host, unbound.port); err != nil || bound {
 			continue
 		}
+		presetID, serviceType := match.names()
 		response.Hints = append(response.Hints, remoteapi.Hint{
-			Kind: hintConnectionNeeded, Reason: hintReasonPresetHost, Host: unbound.host, Preset: preset.ID,
-			Request: connectionRequest(unbound.host, unbound.port, preset), Count: 1,
+			Kind: hintConnectionNeeded, Reason: hintReasonPresetHost, Host: unbound.host, Preset: presetID, Service: serviceType,
+			Request: match.request(unbound.host, unbound.port), Count: 1,
 			FirstAt: unbound.at.UTC(), LatestAt: unbound.at.UTC(),
 		})
 	}
@@ -179,6 +179,42 @@ func hintsName(hints []remoteapi.Hint, host string) bool {
 		}
 	}
 	return false
+}
+
+// names returns the preset ID or the service type the host matched.
+func (m hostMatch) names() (presetID, serviceType string) {
+	switch {
+	case m.service != nil:
+		return "", m.service.ServiceType
+	case m.preset != nil:
+		return m.preset.ID, ""
+	}
+	return "", ""
+}
+
+// request is the ready-to-send body for the match: the ordinary packaged
+// setup request for a service, otherwise the preset or custom request.
+func (m hostMatch) request(host string, port int) json.RawMessage {
+	if m.service != nil {
+		return serviceSetupRequest(*m.service, host)
+	}
+	return connectionRequest(host, port, m.preset)
+}
+
+// serviceSetupRequest asks for a packaged service by its type; the member
+// picks or adds the integration credential in the Console.
+func serviceSetupRequest(service agentapi.RegistryService, host string) json.RawMessage {
+	name := plainTitleText(service.DisplayName)
+	credentialName := name + " for this Workflow"
+	if runes := []rune(credentialName); len(runes) > 64 {
+		credentialName = strings.TrimSpace(string(runes[:64]))
+	}
+	return mustRequestBody(map[string]any{
+		"kind": "setup", "title": requestTitle("Connect " + name),
+		"serviceType": service.ServiceType, "credentialProvider": service.CredentialProviders[0],
+		"credentialName": credentialName,
+		"markdown":       "Calls to " + plainTitleText(host) + " need a " + name + " Connection.",
+	})
 }
 
 // connectionRequest is a complete body for POST /v1/requests that asks for a
@@ -230,14 +266,16 @@ func connectionRequest(host string, port int, preset *agentapi.Preset) json.RawM
 // mislead; GET /v1/hints always has it.
 func (s *runtimeState) connectionNeededDetails(host string, port int) map[string]any {
 	details := map[string]any{"host": host, "hints": phaseproxy.ControlURL + "/v1/hints"}
-	preset, held := s.presets.lookup(host, port)
+	match, held := s.presets.lookup(host, port)
 	if !held {
 		return details
 	}
-	if preset != nil {
-		details["preset"] = preset.ID
+	if presetID, serviceType := match.names(); presetID != "" {
+		details["preset"] = presetID
+	} else if serviceType != "" {
+		details["service"] = serviceType
 	}
-	details["request"] = connectionRequest(host, port, preset)
+	details["request"] = match.request(host, port)
 	return details
 }
 
