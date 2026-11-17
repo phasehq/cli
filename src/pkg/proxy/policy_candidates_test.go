@@ -36,7 +36,7 @@ func awsCall(t *testing.T, method, target, service, contentType, body string, he
 
 func awsPolicyConnection(t *testing.T, policy string) agentapi.Connection {
 	t.Helper()
-	connection := agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}}
+	connection := withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}})
 	if policy != "" {
 		connection.Policy = testPolicy(t, policy)
 	}
@@ -288,7 +288,7 @@ func TestClassOverridesAlsoCoverARespelledPath(t *testing.T) {
 }
 
 func TestSecretGuardPathRulesMatchARespelledPath(t *testing.T) {
-	github := agentapi.Connection{ServiceType: "github", Protocol: "http"}
+	github := withProviderRules(t, agentapi.Connection{ServiceType: "github", Protocol: "http"})
 	for _, spelled := range []string{
 		"/app/installations/42/access_tokens", "/app/installations/42/access_tokens/", "/APP/Installations/42/Access_Tokens",
 		"/app/installations/42/access_tokens;x", "//app/installations/42/access_tokens", "/app/./installations/42/access_tokens",
@@ -427,7 +427,7 @@ func TestS3FamilySubresourcesGrantsAndSharingAreAdmin(t *testing.T) {
 		"lambda:AddPermission", "lambda:CreateFunctionUrlConfig", "lambda:UpdateFunctionUrlConfig",
 	} {
 		service, action, _ := strings.Cut(operation, ":")
-		if class := classifyAWSAction(service, action); class != agentapi.ClassAdmin {
+		if class := classifyAWSAction(testAWSClasses(t), service, action); class != agentapi.ClassAdmin {
 			t.Errorf("%s = %s, want admin", operation, class)
 		}
 	}
@@ -454,6 +454,7 @@ func TestS3FamilySubresourcesGrantsAndSharingAreAdmin(t *testing.T) {
 			t.Errorf("%s %s = %v, want %s", test.method, test.path, classes, test.class)
 		}
 	}
+	awsClasses := testAWSClasses(t)
 	for _, operation := range awsClasses.RESTOperations {
 		if _, exact := awsClasses.Exact[operation.Service+":"+operation.Action]; !exact {
 			t.Errorf("REST operation %s:%s has no exact class", operation.Service, operation.Action)
@@ -565,7 +566,7 @@ func TestAWSActionNamesAreClassifiedInAnyLetterCase(t *testing.T) {
 		"example:somethingNeverSeenBefor": "update",
 	} {
 		service, action, _ := strings.Cut(operation, ":")
-		if got := classifyAWSAction(service, action); got != want {
+		if got := classifyAWSAction(testAWSClasses(t), service, action); got != want {
 			t.Errorf("%s = %s, want %s", operation, got, want)
 		}
 	}

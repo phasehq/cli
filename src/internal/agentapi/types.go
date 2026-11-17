@@ -495,6 +495,7 @@ const (
 	FeatureWhenAbsent     = string(sdkagents.FeatureWhenAbsent)
 	FeatureSealedMaterial = string(sdkagents.FeatureSealedMaterial)
 	FeatureAccessPolicy   = string(sdkagents.FeatureAccessPolicy)
+	FeatureProviderRules  = string(sdkagents.FeatureProviderRules)
 )
 
 type ClientCapabilities struct {
@@ -621,6 +622,13 @@ type Connection struct {
 	Policy           *AccessPolicy    `json:"policy,omitempty"`
 	OperationClasses OperationClasses `json:"operationClasses,omitzero"`
 	GrantExpiresAt   *time.Time       `json:"grantExpiresAt,omitempty"`
+	// CredentialEnvironment, SecretGuard and ActionClasses are the provider's
+	// rules from the Console's manifest (see provider_rules.go). The guard and
+	// the classes are applied in place on refresh, like the policy; the
+	// credential environment names are exported to the Agent's processes.
+	CredentialEnvironment []string       `json:"credentialEnvironment,omitempty"`
+	SecretGuard           *SecretGuard   `json:"secretGuard,omitempty"`
+	ActionClasses         *ActionClasses `json:"actionClasses,omitempty"`
 
 	// materialFailure is set when the client withheld this Connection's value.
 	materialFailure string
@@ -650,7 +658,7 @@ func (c Connection) EffectiveInjections() []Injection {
 }
 
 // PrimaryInjectionAction names the Connection's first injection for events
-// and credential-family detection.
+// and for the trust variables of the clients its protocol handling covers.
 func (c Connection) PrimaryInjectionAction() string {
 	return c.EffectiveInjections()[0].Action
 }

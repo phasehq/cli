@@ -92,7 +92,7 @@ func awsPolicyConnection(policy map[string]any) map[string]any {
 	if policy != nil {
 		connection["policy"] = policy
 	}
-	return connection
+	return withProviderRules(connection)
 }
 
 // signedAWSRequest is a request as an AWS client under Phase sends it: signed

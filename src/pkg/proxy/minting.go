@@ -25,8 +25,9 @@ import (
 // stops belong to the class credential_minting. Response scrubbing in
 // scrub.go is its backstop for AWS Connections.
 //
-// Rules are data, keyed by the Connection's serviceType. To cover another
-// service, add an entry to credentialMintingRules:
+// Rules are data from the Console's manifest and arrive with each Connection
+// as its secretGuard (agentapi.SecretGuard). A Connection without one has no
+// guard rules, except an AWS Connection, which is never used without them:
 //   - Operations (AWS): SigV4 scope service -> operation names. Every operation
 //     selector the request carries is checked: X-Amz-Target, the Action query
 //     parameter, a Smithy RPC v2 path and the Action field of a form-encoded
@@ -34,7 +35,8 @@ import (
 //     selector they honour, so a request is refused when any of them names a
 //     blocked operation. A query-protocol service acts on a form body whatever
 //     Content-Type the request claims, so there the body is always read, and a
-//     body that names no operation at all cannot be inspected.
+//     body that names no operation at all cannot be inspected. Which services
+//     speak the query protocol comes from the Connection's actionClasses.
 //   - Paths (any HTTP API): method plus path pattern, matched with path.Match,
 //     and optionally a query parameter the request must carry. The path is
 //     compared as loosePathMatch reads it, so a respelling does not get past.
@@ -50,59 +52,6 @@ const (
 	// are the largest legitimate payload and stay well under this bound.
 	maximumMintingInspectionBytes = int64(256 << 10)
 )
-
-type MintingPathRule struct {
-	Method    string
-	Pattern   string
-	Query     string
-	Operation string
-	// Services limits an AWS rule to requests signed for one of these
-	// services, so an S3 object key that happens to share the path is not
-	// blocked. An unknown service still matches, failing closed.
-	Services []string
-	// HostLabel further limits a rule to hosts that carry this DNS label,
-	// for a service whose signing name is shared with unrelated APIs.
-	HostLabel string
-}
-
-type MintingRules struct {
-	Operations map[string][]string
-	Paths      []MintingPathRule
-}
-
-var credentialMintingRules = map[string]MintingRules{
-	"aws": {
-		Operations: map[string][]string{
-			"sts":                 {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity", "AssumeRoot", "GetFederationToken", "GetSessionToken", "GetWebIdentityToken"},
-			"iam":                 {"CreateAccessKey", "CreateLoginProfile", "UpdateLoginProfile", "CreateServiceSpecificCredential", "ResetServiceSpecificCredential", "UploadSSHPublicKey", "UploadSigningCertificate"},
-			"ecr":                 {"GetAuthorizationToken"},
-			"ecr-public":          {"GetAuthorizationToken"},
-			"redshift":            {"GetClusterCredentials", "GetClusterCredentialsWithIAM"},
-			"redshift-serverless": {"GetCredentials"},
-			"cognito-identity":    {"GetCredentialsForIdentity", "GetOpenIdToken", "GetOpenIdTokenForDeveloperIdentity"},
-			"ec2":                 {"CreateKeyPair"},
-			"elasticmapreduce":    {"GetClusterSessionCredentials"},
-			"lightsail":           {"GetInstanceAccessDetails", "CreateKeyPair", "DownloadDefaultKeyPair", "CreateBucketAccessKey"},
-		},
-		Paths: []MintingPathRule{
-			{Method: http.MethodPost, Pattern: "/v1/authorization-token", Operation: "codeartifact:GetAuthorizationToken", Services: []string{"codeartifact"}},
-			{Method: http.MethodGet, Pattern: "/*", Query: "session", Operation: "s3express:CreateSession", Services: []string{"s3express"}},
-			// The IoT control plane is signed as iot or, by older clients, as
-			// execute-api, which API Gateway also uses: hence the host label.
-			{Method: http.MethodPost, Pattern: "/keys-and-certificate", Operation: "iot:CreateKeysAndCertificate", Services: []string{"iot", "execute-api"}, HostLabel: "iot"},
-			{Method: http.MethodPost, Pattern: "/apikeys", Operation: "apigateway:CreateApiKey", Services: []string{"apigateway"}},
-			{Method: http.MethodPost, Pattern: "/clitoken/*", Operation: "airflow:CreateCliToken", Services: []string{"airflow"}},
-			{Method: http.MethodPost, Pattern: "/webtoken/*", Operation: "airflow:CreateWebLoginToken", Services: []string{"airflow"}},
-			{Method: http.MethodPost, Pattern: "/workspaces/*/apikeys", Operation: "grafana:CreateWorkspaceApiKey", Services: []string{"grafana"}},
-			{Method: http.MethodPost, Pattern: "/virtualclusters/*/endpoints/*/credentials", Operation: "emr-containers:GetManagedEndpointSessionCredentials", Services: []string{"emr-containers"}},
-		},
-	},
-	"github": {
-		Paths: []MintingPathRule{
-			{Method: http.MethodPost, Pattern: "/app/installations/*/access_tokens", Operation: "GitHub App installation access token"},
-		},
-	},
-}
 
 // CredentialMintingBlock names the refused operation, for the error returned
 // to the client and the audit event. It never contains request material.
@@ -129,8 +78,13 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 	if req == nil || req.URL == nil {
 		return nil, nil
 	}
-	rules, ok := credentialMintingRules[strings.ToLower(strings.TrimSpace(connection.ServiceType))]
-	if !ok {
+	rules := connection.SecretGuard
+	if rules == nil || rules.Unsupported() {
+		// An AWS Connection never goes without its guard; a missing one must
+		// not read as "nothing to block".
+		if rules != nil || connection.AWSRulesRequired() {
+			return nil, ErrMintingInspectionUnavailable
+		}
 		return nil, nil
 	}
 	for _, rule := range rules.Paths {
@@ -160,7 +114,11 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 	if !guarded {
 		return nil, nil
 	}
-	operations, err := awsOperations(req, service, true)
+	classes := connection.ActionClasses
+	if classes == nil || classes.Unsupported() {
+		return nil, ErrMintingInspectionUnavailable
+	}
+	operations, err := awsOperations(req, service, true, classes)
 	if err != nil {
 		return nil, err
 	}
@@ -213,12 +171,12 @@ func awsScopeService(req *http.Request) string {
 // the one the service will act on. guarded says the caller is the secret
 // guard on a service it has rules for, which reads a body of any type that is
 // not JSON.
-func awsOperations(req *http.Request, service string, guarded bool) ([]string, error) {
+func awsOperations(req *http.Request, service string, guarded bool, classes *agentapi.ActionClasses) ([]string, error) {
 	operations, err := awsHeaderAndQueryOperations(req)
 	if err != nil {
 		return nil, err
 	}
-	if awsBodyReadAsForm(req, service, guarded) {
+	if awsBodyReadAsForm(req, service, guarded, classes) {
 		fromBody, err := awsFormBodyOperations(req)
 		if err != nil {
 			return nil, err
@@ -228,7 +186,7 @@ func awsOperations(req *http.Request, service string, guarded bool) ([]string, e
 	// A call to a query-protocol service always names its action. A body with
 	// no selector beside it hides the action from the proxy (an encoding it
 	// does not read, for one), so the call cannot be judged.
-	if len(operations) == 0 && awsRequestHasBody(req) && awsQueryProtocolCall(req, service) {
+	if len(operations) == 0 && awsRequestHasBody(req) && awsQueryProtocolCall(req, service, classes) {
 		return nil, ErrMintingInspectionUnavailable
 	}
 	return operations, nil
@@ -308,14 +266,14 @@ func awsRequestHasBody(req *http.Request) bool {
 // S3 upload is never buffered. The secret guard, and a request whose service
 // the proxy cannot name, read every body that is not JSON: a missing or odd
 // Content-Type must not hide an Action.
-func awsBodyReadAsForm(req *http.Request, service string, guarded bool) bool {
+func awsBodyReadAsForm(req *http.Request, service string, guarded bool, classes *agentapi.ActionClasses) bool {
 	if !awsRequestHasBody(req) {
 		return false
 	}
 	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
 	protocolBody := strings.HasPrefix(mediaType, "application/x-amz-json-") || mediaType == "application/cbor"
-	if awsQueryProtocolCall(req, service) {
-		return !(protocolBody && containsString(awsClasses.DualProtocolServices, service))
+	if awsQueryProtocolCall(req, service, classes) {
+		return !(protocolBody && containsString(classes.DualProtocolServices, service))
 	}
 	if guarded || service == "" {
 		return !protocolBody && mediaType != "application/json"

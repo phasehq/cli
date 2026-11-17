@@ -213,6 +213,9 @@ func parseBindings(connections []agentapi.Connection) ([]*binding, error) {
 		if err := validateConnectionAuthorization(connection.Authorization); err != nil {
 			return nil, fmt.Errorf("Agent binding %s: %w", connection.ConnectionID, err)
 		}
+		if err := agentapi.ValidateCredentialEnvironment(connection.CredentialEnvironment); err != nil {
+			return nil, fmt.Errorf("Agent binding %s: %w", connection.ConnectionID, err)
+		}
 		bindings = append(bindings, &binding{connection: connection})
 	}
 	return bindings, nil
@@ -241,8 +244,14 @@ func (b *binding) authorizationDecision(now time.Time) connectionAuthorizationDe
 			message: "This Workflow's access to the Connection has expired. To ask a member to renew it, send the JSON in details.request unchanged to POST " + requestsURL + ".",
 		}
 	}
-	// A policy this client cannot read is never enforced in part.
-	if failure := b.connection.AccessPolicyFailure(); failure != "" {
+	// A policy this client cannot read is never enforced in part, and an AWS
+	// Connection is never used without its secret guard and call classes.
+	if failure := b.connection.AccessPolicyFailure(); failure == agentapi.ProviderRulesMissing {
+		return connectionAuthorizationDecision{
+			code: codeProviderRulesMissing, reason: failure, status: http.StatusForbidden,
+			message: "The Phase Console did not send the AWS rules for this Connection (its secret guard and call classes), so Phase does not use it. Update the Phase Console.",
+		}
+	} else if failure != "" {
 		return connectionAuthorizationDecision{
 			code: codeAccessPolicyUnsupported, reason: failure, status: http.StatusForbidden,
 			message: "This Phase CLI cannot enforce the access policy on the Connection. Update the Phase CLI.",
@@ -654,8 +663,8 @@ type configChange struct {
 // serving it.
 //
 // A grant's access policy, its temporary allows, a definition's operation
-// classes, the grant's time limit and the list of expired Connections are
-// deliberately not compared: none of them is visible to the Agent's
+// classes, the provider's secret guard and call classes, the grant's time
+// limit and the list of expired Connections are deliberately not compared: none of them is visible to the Agent's
 // processes, the proxy alone enforces them, so they always apply in place.
 func classifyConfigChange(oldBindings, newBindings []*binding, oldConfigEnv, newConfigEnv map[string]string) configChange {
 	if !equalStringMap(oldConfigEnv, newConfigEnv) {
@@ -682,7 +691,8 @@ func classifyConfigChange(oldBindings, newBindings []*binding, oldConfigEnv, new
 			left.Protocol != right.Protocol || left.ServiceType != right.ServiceType || left.CredentialProvider != right.CredentialProvider || !reflect.DeepEqual(left.ConfigEnv, right.ConfigEnv) ||
 			!equalStringMap(left.Identifiers, right.Identifiers) || !equalStringMap(left.DecoyMaterial, right.DecoyMaterial) ||
 			!equalStringMap(left.AgentEnv.Clone(), right.AgentEnv.Clone()) ||
-			!reflect.DeepEqual(left.EnvironmentBindings, right.EnvironmentBindings) {
+			!reflect.DeepEqual(left.EnvironmentBindings, right.EnvironmentBindings) ||
+			!equalNames(left.CredentialEnvironment, right.CredentialEnvironment) {
 			return configChange{reprovision: true}
 		}
 		if !reflect.DeepEqual(left.Hosts, right.Hosts) || !reflect.DeepEqual(left.ConnectionConfig, right.ConnectionConfig) ||
@@ -711,7 +721,21 @@ func classifyConfigChange(oldBindings, newBindings []*binding, oldConfigEnv, new
 // variable to the Agent's process environment.
 func exportsNothing(connection agentapi.Connection) bool {
 	return connection.ServiceType == agentapi.CustomHTTPServiceType && connection.Protocol == "http" &&
-		len(connection.ConfigEnv) == 0 && len(connection.AgentEnv.Clone()) == 0 && len(connection.EnvironmentBindings) == 0
+		len(connection.ConfigEnv) == 0 && len(connection.AgentEnv.Clone()) == 0 && len(connection.EnvironmentBindings) == 0 &&
+		len(connection.CredentialEnvironment) == 0
+}
+
+// equalNames compares two credential environment lists as sets of names: the
+// exported list is sorted and de-duplicated, so order means nothing.
+func equalNames(left, right []string) bool {
+	set := func(names []string) map[string]struct{} {
+		result := make(map[string]struct{}, len(names))
+		for _, name := range names {
+			result[name] = struct{}{}
+		}
+		return result
+	}
+	return reflect.DeepEqual(set(left), set(right))
 }
 
 // equalInjections treats an absent list and an empty one alike, since both

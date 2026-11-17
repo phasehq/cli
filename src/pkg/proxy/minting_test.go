@@ -13,8 +13,8 @@ import (
 )
 
 func mintingAWSConnection(config map[string]any) agentapi.Connection {
-	return agentapi.Connection{ServiceType: "aws", Protocol: "http", ConnectionConfig: config,
-		Injection: agentapi.Injection{Action: "aws_sigv4"}}
+	return withProviderRules(nil, agentapi.Connection{ServiceType: "aws", Protocol: "http", ConnectionConfig: config,
+		Injection: agentapi.Injection{Action: "aws_sigv4"}})
 }
 
 func signedQueryRequest(t *testing.T, host, body string) *http.Request {
@@ -97,7 +97,7 @@ func TestCredentialMintingResolvesTargetHeaderQueryAndPathRules(t *testing.T) {
 		t.Fatalf("codeartifact path: blocked=%#v err=%v", blocked, err)
 	}
 
-	github := agentapi.Connection{ServiceType: "github", Protocol: "http"}
+	github := withProviderRules(t, agentapi.Connection{ServiceType: "github", Protocol: "http"})
 	installation, _ := http.NewRequest(http.MethodPost, "https://api.github.com/app/installations/42/access_tokens", nil)
 	if blocked, err := CredentialMintingBlocked(installation, github); err != nil || blocked == nil || !strings.Contains(blocked.Operation, "installation access token") {
 		t.Fatalf("github installation token: blocked=%#v err=%v", blocked, err)
@@ -106,7 +106,7 @@ func TestCredentialMintingResolvesTargetHeaderQueryAndPathRules(t *testing.T) {
 	if blocked, err := CredentialMintingBlocked(issue, github); err != nil || blocked != nil {
 		t.Fatalf("github issue: blocked=%#v err=%v", blocked, err)
 	}
-	postgres := agentapi.Connection{ServiceType: "postgres", Protocol: "postgres"}
+	postgres := withProviderRules(t, agentapi.Connection{ServiceType: "postgres", Protocol: "postgres"})
 	if blocked, err := CredentialMintingBlocked(installation, postgres); err != nil || blocked != nil {
 		t.Fatalf("unguarded service: blocked=%#v err=%v", blocked, err)
 	}

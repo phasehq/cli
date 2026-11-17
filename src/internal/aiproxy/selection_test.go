@@ -77,7 +77,7 @@ func TestConcurrentSelectedAWSConnectionsNeverShareRouting(t *testing.T) {
 		c.Injection = agentapi.Injection{Action: "aws_sigv4", ServiceFrom: "config", RegionFrom: "config", ValueFrom: agentapi.ValueFrom{Source: "credential", Fields: map[string]string{"accessKeyId": "access_key_id", "secretAccessKey": "secret_access_key"}}}
 		data, _ := json.Marshal(map[string]string{"access_key_id": liveKey, "secret_access_key": "live-" + id})
 		_ = json.Unmarshal(data, &c.SecretMaterial)
-		connections[i] = c
+		connections[i] = withConnectionRules(c)
 	}
 	state := selectionState(t, connections...)
 	proxy := &httpProxy{state: state, transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

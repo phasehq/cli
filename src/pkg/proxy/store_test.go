@@ -14,6 +14,8 @@ import (
 	"time"
 
 	gokeyring "github.com/zalando/go-keyring"
+
+	"github.com/phasehq/cli/internal/agentapi/providerrulestest"
 )
 
 type memoryKeyring struct {
@@ -549,11 +551,15 @@ func TestComposeEnvironmentPreservesUnrelatedProviderCAConfiguration(t *testing.
 		}
 	}
 
+	// An AWS Connection: its decoys, its credential variables, and the trust
+	// variable of the clients whose SigV4 traffic Phase re-signs.
 	options.AgentEnv = map[string]string{"AWS_ACCESS_KEY_ID": "decoy", "AWS_SECRET_ACCESS_KEY": "decoy-secret"}
 	options.EnvironmentBindings = []EnvironmentBinding{
 		{Name: "AWS_ACCESS_KEY_ID", Action: "set", Source: "identifier", SourceField: "access_key_id"},
 		{Name: "AWS_SECRET_ACCESS_KEY", Action: "set", Source: "decoy", SourceField: "secret_access_key"},
 	}
+	options.CredentialEnvironment = providerrulestest.CredentialEnvironment("aws")
+	options.ScopedTrustKeys = ScopedTrustEnvironmentKeys("aws_sigv4")
 	environment, err = composeTestEnvironment(options)
 	if err != nil {
 		t.Fatal(err)
@@ -592,7 +598,8 @@ func TestCompileProcessEnvironmentUsesExplicitCleanupAndSanitizesNoProxy(t *test
 			"AWS_ACCESS_KEY_ID": "agent-id", "AWS_SECRET_ACCESS_KEY": "decoy",
 			"AWS_SESSION_TOKEN": "decoy-session-token",
 		},
-		CredentialFamilies: []string{"aws"},
+		CredentialEnvironment: providerrulestest.CredentialEnvironment("aws"),
+		ScopedTrustKeys:       ScopedTrustEnvironmentKeys("aws_sigv4"),
 		EnvironmentBindings: []EnvironmentBinding{
 			{Name: "AWS_ACCESS_KEY_ID", Action: "set", Source: "identifier", SourceField: "access_key_id"},
 			{Name: "AWS_SECRET_ACCESS_KEY", Action: "set", Source: "decoy", SourceField: "secret_access_key"},
@@ -658,7 +665,8 @@ func TestApplyProcessEnvironmentKeepsInheritedNamesThatAreNotShellIdentifiers(t 
 func TestCompileProcessEnvironmentRejectsBindingAndAdapterCollisions(t *testing.T) {
 	base := EnvironmentOptions{
 		ProxyURL: "http://phase:capability@127.0.0.1:9543", CABundlePath: "/bundle.pem",
-		AgentEnv: map[string]string{"PGPASSWORD": "decoy"}, CredentialFamilies: []string{"postgres"},
+		AgentEnv: map[string]string{"PGPASSWORD": "decoy"}, CredentialEnvironment: providerrulestest.CredentialEnvironment("postgres"),
+		ScopedTrustKeys:     ScopedTrustEnvironmentKeys("pg_handshake"),
 		EnvironmentBindings: []EnvironmentBinding{{Name: "PGPASSWORD", Action: "set", Source: "decoy", SourceField: "password"}},
 	}
 	base.AdapterEnv = map[string]string{"PGPASSWORD": "different"}
@@ -690,6 +698,7 @@ func TestModernEnvironmentContractRejectsSetUnsetCollisions(t *testing.T) {
 		map[string]string{"CUSTOM_CONTEXT": "configured"},
 		map[string]string{},
 		[]EnvironmentBinding{{Name: "CUSTOM_CONTEXT", Action: "unset", Source: "runtime", SourceField: "activation"}},
+		nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "both set and unset") {
 		t.Fatalf("provider set/unset collision error = %v", err)
@@ -708,6 +717,7 @@ func TestModernEnvironmentContractRejectsSetUnsetCollisions(t *testing.T) {
 
 	_, err = PlanResolvedProcessEnvironment(
 		map[string]string{"AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/admin"}, nil, []EnvironmentBinding{},
+		providerrulestest.CredentialEnvironment("aws"),
 	)
 	if err == nil || !strings.Contains(err.Error(), "credential environment key") {
 		t.Fatalf("credential-shaped configEnv error = %v", err)
@@ -786,7 +796,7 @@ func TestMergeCustomCABundlePreservesPublicRootsAndRejectsPrivateKeys(t *testing
 	} else {
 		cleanup()
 	}
-	if _, _, err := mergeTestCABundle(phasePath, []string{"AWS_CA_BUNDLE=/missing/active.pem"}, []string{"aws"}); err == nil {
+	if _, _, err := mergeTestCABundle(phasePath, []string{"AWS_CA_BUNDLE=/missing/active.pem"}, ScopedTrustEnvironmentKeys("aws_sigv4")); err == nil {
 		t.Fatal("active AWS custom CA failure was silently discarded")
 	}
 }
@@ -955,7 +965,7 @@ func composeTestEnvironment(options EnvironmentOptions) ([]string, error) {
 	return ApplyProcessEnvironment(options.Base, plan)
 }
 
-func mergeTestCABundle(baseBundlePath string, environment []string, credentialFamilies []string) (string, func(), error) {
-	prepared, cleanup, err := PrepareProcessCABundle(baseBundlePath, environment, credentialFamilies)
+func mergeTestCABundle(baseBundlePath string, environment []string, scopedTrustKeys []string) (string, func(), error) {
+	prepared, cleanup, err := PrepareProcessCABundle(baseBundlePath, environment, scopedTrustKeys)
 	return prepared.BundlePath, cleanup, err
 }

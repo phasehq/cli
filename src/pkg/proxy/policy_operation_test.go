@@ -81,7 +81,7 @@ func TestOperationClassesApplyToAnyHTTPConnectionButNotAWS(t *testing.T) {
 			t.Errorf("%s: other POST = %+v err=%v, want create by method", serviceType, byMethod, err)
 		}
 	}
-	aws := agentapi.Connection{ServiceType: "aws", Protocol: "http", OperationClasses: classes, Injection: agentapi.Injection{Action: "aws_sigv4"}}
+	aws := withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", OperationClasses: classes, Injection: agentapi.Injection{Action: "aws_sigv4"}})
 	calls, err := ClassifyCall(policyRequest(t, http.MethodPost, "https://api.example.test/graphql"), aws)
 	if err != nil || len(calls) != 1 || calls[0].Class != agentapi.ClassCreate {
 		t.Fatalf("an AWS Connection used operationClasses: %+v err=%v", calls, err)
@@ -118,7 +118,7 @@ func packagedConnection(t *testing.T, serviceType, headerName, valueFormat, oper
 	if err := json.Unmarshal(payload, &connection); err != nil {
 		t.Fatal(err)
 	}
-	return connection
+	return withProviderRules(t, connection)
 }
 
 // A packaged service with a single injection that attaches when absent needs

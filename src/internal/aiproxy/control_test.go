@@ -859,7 +859,7 @@ func controlAccessSessionPayload(credential string, generation int) map[string]a
 		"schemaVersion": 1, "sessionUid": "session-123", "sessionCredential": credential,
 		"expiresAt": time.Now().Add(2 * time.Hour).UTC(), "maxExpiresAt": time.Now().Add(3 * time.Hour).UTC(),
 		"configGeneration": generation, "configEnv": map[string]string{},
-		"connections": []any{map[string]any{
+		"connections": []any{withProviderRules(map[string]any{
 			"grantId": "grant-pg", "connectionId": "connection-pg", "connectionName": "console-dev-pg", "credentialId": "credential-pg",
 			"credentialName": "Postgres production", "credentialProvider": "postgres", "credentialRevision": "credential-v1", "materialGeneration": "material-v1",
 			"serviceType": "postgres", "protocol": "postgres",
@@ -867,7 +867,7 @@ func controlAccessSessionPayload(credential string, generation int) map[string]a
 			"injection": map[string]any{"action": "pg_handshake"}, "identifiers": map[string]string{"username": "db-user"},
 			"decoyMaterial": map[string]string{"password": "pg-decoy"}, "agentEnv": map[string]string{},
 			"secretMaterial": map[string]string{"username": "db-user", "password": "pg-live"}, "authorization": authorization,
-		}},
+		})},
 	}
 }
 

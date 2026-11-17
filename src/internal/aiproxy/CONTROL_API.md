@@ -558,9 +558,11 @@ HTTP Connection whose hosts, definition, injections or `allowPlainHttp` changed
 is reshaped in the running session, and a removed one is dropped from it:
 `retry`. An approved `agent_connection.create` is handled the same way: the
 proxy re-pulls its configuration, and a new custom Connection that exports
-nothing (no agent env, no environment bindings, no config env) is served by the
+nothing (no agent env, no environment bindings, no config env, no credential
+environment names) is served by the
 running session, `retry`. Only a change to what the Agent process was given (an
-identifier, a decoy, an exported variable, any other new grant, or a host that
+identifier, a decoy, an exported variable, a Connection's
+`credentialEnvironment`, any other new grant, or a host that
 an inherited `NO_PROXY` entry covers) answers `restart_required`. Packaged services still
 recycle on any change to their hosts, configuration or injection. A removed
 Connection's variable stays in processes that already run; it names a decoy
@@ -570,8 +572,9 @@ An approved `access_change` also makes the proxy re-pull its configuration. A
 temporary allow and a later expiry are enforced by the proxy alone and never
 reach the Agent's environment, so they apply to the running session: `retry`,
 and the refused call goes through when repeated. The same holds for every
-change to a policy, to `operationClasses`, to `grantExpiresAt` and to the list
-of expired Connections, whoever made it: they apply at the next refresh, never
+change to a policy, to `operationClasses`, to a Connection's `secretGuard` or
+`actionClasses`, to `grantExpiresAt` and to the list of expired Connections,
+whoever made it: they apply at the next refresh, never
 recycle the session, and are not compared by the manifest or by discover.
 Only a renewal that creates a new grant for a Connection that exports
 something answers `restart_required`. An approved `context_update` changes
@@ -705,12 +708,18 @@ Agents never print or persist it.
       "NODE_EXTRA_CA_CERTS": "/Users/dev/.phase/ai/runtime-ca-bundle.pem",
       "AWS_ACCESS_KEY_ID": "AKIAPHASEDECOY0000001",
       "AWS_SECRET_ACCESS_KEY": "decoy/9f3kQ2vL8pR1tX7wZ4bN6mC0sD5hJ2gF",
-      "AWS_REGION": "eu-central-1"
+      "AWS_REGION": "eu-central-1",
+      "PHASE_AI_RESERVED_ENV": "AWS_ACCESS_KEY_ID,AWS_CONFIG_FILE,AWS_PROFILE,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,…"
     },
     "unset": ["AWS_PROFILE", "AWS_SESSION_TOKEN", "PHASE_SERVICE_TOKEN", "PHASE_AGENT_TOKEN"]
   }
 }
 ```
+
+`PHASE_AI_RESERVED_ENV` lists, comma-separated, the `credentialEnvironment`
+names of the Connections the environment covers (here, that one). `phase run`
+runs as its own process, so it reads the names it must not let an app secret
+replace from there, beside Phase's own variables.
 
 Errors: 400 `invalid_connection_id`, 404 `connection_unavailable`, 503 while the
 session is unavailable.
@@ -831,8 +840,9 @@ this Workflow's grant) is evaluated for every request to an HTTP Connection befo
 its credential is swapped in or attached. A policy that only allows (the
 default) is not evaluated at all, and the Connection behaves as without one.
 
-1. The call is classified. For the `aws` service by action name
-   (`pkg/proxy/aws_classes.go`: a read verb is `read`; a write in IAM,
+1. The call is classified. For the `aws` service by action name, with the
+   tables the Console sends as the Connection's `actionClasses` (scheme
+   `aws_actions`, applied by `pkg/proxy/aws_classes.go`: a read verb is `read`; a write in IAM,
    Organizations, an account service, or to a policy, permission or ACL is
    `admin`, as are the listed calls that share a resource or open it to
    others, such as `ec2:ModifySnapshotAttribute` or
@@ -895,7 +905,13 @@ refused with `agent_access_policy_uninspectable`. A policy this CLI cannot read
 in full (an unknown version, effect, class or rule member) is never enforced in
 part: the Connection is `unavailable` with `stateReason`
 `access_policy_unsupported` and its calls answer 403
-`agent_access_policy_unsupported`.
+`agent_access_policy_unsupported`. The same holds for a `secretGuard` this CLI
+cannot read, and for `actionClasses` in a scheme or version it does not know
+on an `aws` Connection (whose secret guard reads them too) or under a policy
+that can stop calls. An AWS Connection (the `aws` service, or one signed with
+SigV4) that arrives without its `secretGuard` or `actionClasses` is never
+used: it is `unavailable` with `stateReason` `provider_rules_missing`, and its
+calls answer 403 `agent_provider_rules_missing` (the Console must be updated).
 
 The answer when the policy stops a call is 403, at once; the proxy never holds
 a call open waiting for approval:
@@ -959,8 +975,9 @@ the same request as `JSON: {…}`; `GET /v1/hints` lists it too.
 Calls that mint a new credential or assume another identity (AWS STS
 `AssumeRole*`, `GetSessionToken`, `GetFederationToken`, IAM `CreateAccessKey`,
 ECR `GetAuthorizationToken`, a GitHub App installation token and the rest of
-the table in `pkg/proxy/minting.go`) are blocked on every Connection, with or
-without a policy. No rule, temporary allow or Connection setting turns the
+the Connection's `secretGuard`, which the Console sends from the service's
+manifest; `pkg/proxy/minting.go` applies it) are blocked on every Connection,
+with or without a policy. No rule, temporary allow or Connection setting turns the
 guard off. The answer is 403 `agent_access_policy_blocked` with
 `"class": "credential_minting"` and `"rule": "secret_guard"`
 (`PhaseCredentialMintingBlocked` in the AWS envelope); a request the proxy

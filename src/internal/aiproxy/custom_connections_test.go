@@ -365,7 +365,7 @@ func TestEngineAdvertisesListInjectionFeatures(t *testing.T) {
 	if want := []string{"set_header", "replace_header", "remove_header", "set_param", "set_path", "replace_path_regex", "aws_sigv4", "pg_handshake", "basic_auth"}; !reflect.DeepEqual(capabilities.InjectionActions, want) {
 		t.Fatalf("injection actions = %v", capabilities.InjectionActions)
 	}
-	if want := []string{"injection_list", "when_absent", "sealed_material", "access_policy"}; !reflect.DeepEqual(capabilities.Features, want) {
+	if want := []string{"injection_list", "when_absent", "sealed_material", "access_policy", "provider_rules"}; !reflect.DeepEqual(capabilities.Features, want) {
 		t.Fatalf("features = %v", capabilities.Features)
 	}
 	if !reflect.DeepEqual(capabilities.Protocols, []string{"http", "postgres"}) {

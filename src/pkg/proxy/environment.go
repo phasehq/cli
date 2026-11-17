@@ -28,14 +28,21 @@ const (
 )
 
 type EnvironmentOptions struct {
-	Base               []string
-	ProxyURL           string
-	CABundlePath       string
-	CABundleComplete   bool
-	ConfigEnv          map[string]string
-	AgentEnv           map[string]string
-	AdapterEnv         map[string]string
-	CredentialFamilies []string
+	Base             []string
+	ProxyURL         string
+	CABundlePath     string
+	CABundleComplete bool
+	ConfigEnv        map[string]string
+	AgentEnv         map[string]string
+	AdapterEnv       map[string]string
+	// CredentialEnvironment is the union of the session's Connections'
+	// credentialEnvironment: the variables their providers' own tools read
+	// credentials from. configEnv may not supply them, and they are exported
+	// as ReservedEnvironmentKey for phase run.
+	CredentialEnvironment []string
+	// ScopedTrustKeys are the provider-scoped trust variables to point at the
+	// Phase bundle (see ScopedTrustEnvironmentKeys).
+	ScopedTrustKeys []string
 	// EnvironmentBindings is the authoritative, resolved provider binding
 	// metadata supplied by the v1 Console contract.
 	EnvironmentBindings []EnvironmentBinding
@@ -93,6 +100,7 @@ var protectedEnvironmentKeys = map[string]struct{}{
 	"PHASE_AI_SESSION_UID":             {},
 	"PHASE_AI_SESSION_CREDENTIAL":      {},
 	"PHASE_AI_CONTROL_URL":             {},
+	ReservedEnvironmentKey:             {},
 	"HTTP_PROXY":                       {},
 	"HTTPS_PROXY":                      {},
 	"ALL_PROXY":                        {},
@@ -112,69 +120,14 @@ var protectedEnvironmentKeys = map[string]struct{}{
 	"JAVA_TOOL_OPTIONS":                {},
 }
 
-// credentialEnvironmentKeys bounds credential-bearing values that configEnv
-// may never supply. Unlike earlier implementations, inherited provider values
-// are removed only when that provider family is actually injected.
-var credentialEnvironmentKeys = map[string]struct{}{
-	"PHASE_SERVICE_TOKEN": {},
-	"PHASE_AGENT_TOKEN":   {},
+// ReservedEnvironmentKey lists, comma-separated, the credential variables of
+// the session's providers. phase run runs as its own process without the
+// session, and reads the names it must not let an app secret replace here.
+const ReservedEnvironmentKey = "PHASE_AI_RESERVED_ENV"
 
-	"AWS_ACCESS_KEY_ID":                      {},
-	"AWS_SECRET_ACCESS_KEY":                  {},
-	"AWS_SESSION_TOKEN":                      {},
-	"AWS_SECURITY_TOKEN":                     {},
-	"AWS_PROFILE":                            {},
-	"AWS_DEFAULT_PROFILE":                    {},
-	"AWS_ROLE_ARN":                           {},
-	"AWS_ROLE_SESSION_NAME":                  {},
-	"AWS_SHARED_CREDENTIALS_FILE":            {},
-	"AWS_CONFIG_FILE":                        {},
-	"AWS_WEB_IDENTITY_TOKEN_FILE":            {},
-	"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": {},
-	"AWS_CONTAINER_CREDENTIALS_FULL_URI":     {},
-	"AWS_CONTAINER_AUTHORIZATION_TOKEN":      {},
-	"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": {},
-	"AWS_CREDENTIAL_EXPIRATION":              {},
-
-	"GITHUB_TOKEN":            {},
-	"GH_TOKEN":                {},
-	"GH_ENTERPRISE_TOKEN":     {},
-	"GITHUB_ENTERPRISE_TOKEN": {},
-
-	"PGPASSWORD":     {},
-	"PGPASSFILE":     {},
-	"PGSERVICE":      {},
-	"PGSERVICEFILE":  {},
-	"DATABASE_URL":   {},
-	"POSTGRES_URL":   {},
-	"POSTGRESQL_URL": {},
-}
-
-var providerCredentialEnvironmentKeys = map[string][]string{
-	"aws": {
-		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN",
-		"AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ROLE_ARN", "AWS_ROLE_SESSION_NAME",
-		"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-		"AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
-		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "AWS_CREDENTIAL_EXPIRATION",
-	},
-	"github": {
-		"GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-	},
-	"postgres": {
-		"PGPASSWORD", "PGPASSFILE", "PGSERVICE", "PGSERVICEFILE", "DATABASE_URL", "POSTGRES_URL", "POSTGRESQL_URL",
-	},
-}
-
-// legacyCredentialActivatorKeys are the actual secret-bearing decoy variables
-// which prove that an older server injected a provider family. Identifiers,
-// regions, usernames, and service type alone must not erase ambient user
-// credentials.
-var legacyCredentialActivatorKeys = map[string][]string{
-	"aws":      {"AWS_SECRET_ACCESS_KEY"},
-	"github":   {"GITHUB_TOKEN"},
-	"postgres": {"PGPASSWORD"},
-}
+// phaseCredentialEnvironmentKeys are Phase's own credential variables. Every
+// provider's come with its Connections (CredentialEnvironment).
+var phaseCredentialEnvironmentKeys = []string{"PHASE_SERVICE_TOKEN", "PHASE_AGENT_TOKEN"}
 
 var alwaysUnsetEnvironmentKeys = []string{"PHASE_SERVICE_TOKEN", "PHASE_AGENT_TOKEN"}
 
@@ -200,12 +153,13 @@ func RuntimeControlEnvironmentKey(key string) bool {
 
 // ReservedRunEnvironmentKey reports whether a variable name belongs to a Phase
 // AI session: proxy routing, trust settings, the Phase runtime and token
-// variables, and every credential variable of a provider the proxy injects.
+// variables, and every credential variable of a provider the session's
+// Connections cover (sessionReserved, read from ReservedEnvironmentKey).
 // phase run inside a session never lets an app secret replace one of them, or
 // a secret could take the place of a decoy or route traffic around the proxy.
 // Names are compared case-insensitively, as proxy and CA variables are read in
 // either case.
-func ReservedRunEnvironmentKey(key string) bool {
+func ReservedRunEnvironmentKey(key string, sessionReserved []string) bool {
 	key = strings.ToUpper(strings.TrimSpace(key))
 	if strings.HasPrefix(key, "PHASE_AI_") || strings.HasPrefix(key, "PHASE_AGENT_") {
 		return true
@@ -213,15 +167,18 @@ func ReservedRunEnvironmentKey(key string) bool {
 	if _, ok := protectedEnvironmentKeys[key]; ok {
 		return true
 	}
-	if _, ok := credentialEnvironmentKeys[key]; ok {
-		return true
-	}
-	for _, keys := range providerCredentialEnvironmentKeys {
-		if containsEnvironmentKey(keys, key) {
-			return true
+	return containsEnvironmentKey(phaseCredentialEnvironmentKeys, key) || containsEnvironmentKey(sessionReserved, key)
+}
+
+// SplitReservedEnvironment reads the value of ReservedEnvironmentKey.
+func SplitReservedEnvironment(value string) []string {
+	var names []string
+	for _, name := range strings.Split(value, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
 		}
 	}
-	return false
+	return names
 }
 
 // TrustEnvironmentKey reports whether key points clients at CA material.
@@ -231,18 +188,16 @@ func TrustEnvironmentKey(key string) bool {
 	return ok || key == "PHASE_AI_CA_BUNDLE" || key == "JAVA_TOOL_OPTIONS"
 }
 
-// CredentialFamiliesForConnection maps a connection to the bounded family of
-// ambient credentials which can compete with its injected decoys.
-func CredentialFamiliesForConnection(serviceType, injectionAction string) []string {
-	service := strings.ToLower(strings.TrimSpace(serviceType))
-	action := strings.ToLower(strings.TrimSpace(injectionAction))
-	switch {
-	case action == "aws_sigv4" || service == "aws":
-		return []string{"aws"}
-	case service == "github":
-		return []string{"github"}
-	case action == "pg_handshake" || service == "postgres" || service == "postgresql":
-		return []string{"postgres"}
+// ScopedTrustEnvironmentKeys names the provider-scoped trust variables of the
+// clients whose traffic the Connection's own protocol handling covers: the AWS
+// SDKs for a SigV4 Connection, libpq for the PostgreSQL adapter. They describe
+// client tools, not providers, so they stay in the CLI.
+func ScopedTrustEnvironmentKeys(injectionAction string) []string {
+	switch strings.ToLower(strings.TrimSpace(injectionAction)) {
+	case "aws_sigv4":
+		return []string{"AWS_CA_BUNDLE"}
+	case "pg_handshake":
+		return []string{"PGSSLROOTCERT"}
 	default:
 		return nil
 	}
@@ -257,8 +212,8 @@ type caBundleSource struct {
 // PrepareProcessCABundle merges every available system and inherited public
 // CA bundle with Phase's CA. Sources are never edited, duplicate certificates
 // are removed, and a source containing private-key material is rejected.
-func PrepareProcessCABundle(baseBundlePath string, environment []string, credentialFamilies []string) (PreparedCABundle, func(), error) {
-	return prepareProcessCABundle(baseBundlePath, environment, credentialFamilies, runtime.GOOS, nil)
+func PrepareProcessCABundle(baseBundlePath string, environment []string, scopedTrustKeys []string) (PreparedCABundle, func(), error) {
+	return prepareProcessCABundle(baseBundlePath, environment, scopedTrustKeys, runtime.GOOS, nil)
 }
 
 // PrepareStableProcessCABundle prepares the same certificate-only merged root
@@ -268,7 +223,7 @@ func PrepareProcessCABundle(baseBundlePath string, environment []string, credent
 // of handing clients an ephemeral /tmp file. The published file contains only
 // public certificates and intentionally remains available after the proxy
 // exits.
-func PrepareStableProcessCABundle(baseBundlePath string, environment []string, credentialFamilies []string) (PreparedCABundle, error) {
+func PrepareStableProcessCABundle(baseBundlePath string, environment []string, scopedTrustKeys []string) (PreparedCABundle, error) {
 	directory := filepath.Dir(baseBundlePath)
 	// Ensure publishes the base bundle under the same lock. Holding it from
 	// read to publish means a proxy that read an older base bundle cannot
@@ -279,7 +234,7 @@ func PrepareStableProcessCABundle(baseBundlePath string, environment []string, c
 		return PreparedCABundle{}, fmt.Errorf("lock proxy CA: %w", err)
 	}
 	defer unlock()
-	prepared, cleanup, err := PrepareProcessCABundle(baseBundlePath, environment, credentialFamilies)
+	prepared, cleanup, err := PrepareProcessCABundle(baseBundlePath, environment, scopedTrustKeys)
 	if err != nil {
 		return PreparedCABundle{}, err
 	}
@@ -322,7 +277,7 @@ func writeStableTrustFile(destination string, payload []byte, goos string) error
 	return writeFileAtomic0600(destination, payload)
 }
 
-func prepareProcessCABundle(baseBundlePath string, environment []string, credentialFamilies []string, goos string, systemPaths []string) (PreparedCABundle, func(), error) {
+func prepareProcessCABundle(baseBundlePath string, environment []string, scopedTrustKeys []string, goos string, systemPaths []string) (PreparedCABundle, func(), error) {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
@@ -340,8 +295,7 @@ func prepareProcessCABundle(baseBundlePath string, environment []string, credent
 		if _, relevant := customCABundleEnvironmentKeys[upper]; !relevant {
 			continue
 		}
-		if (upper == "AWS_CA_BUNDLE" && !containsFamily(credentialFamilies, "aws")) ||
-			(upper == "PGSSLROOTCERT" && !containsFamily(credentialFamilies, "postgres")) {
+		if (upper == "AWS_CA_BUNDLE" || upper == "PGSSLROOTCERT") && !containsEnvironmentKey(scopedTrustKeys, upper) {
 			continue
 		}
 		value = strings.TrimSpace(value)
@@ -534,16 +488,16 @@ func systemCABundlePaths(goos string, environment []string) []string {
 // cleanup without adding CLI-local proxy or CA bindings. It is used for the
 // authenticated discovery manifest; run and serve use CompileProcessEnvironment
 // for their complete launch environment.
-func PlanResolvedProcessEnvironment(configEnv, agentEnv map[string]string, bindings []EnvironmentBinding) (ProcessEnvironmentPlan, error) {
-	return planProcessEnvironment(configEnv, agentEnv, bindings)
+func PlanResolvedProcessEnvironment(configEnv, agentEnv map[string]string, bindings []EnvironmentBinding, credentialEnvironment []string) (ProcessEnvironmentPlan, error) {
+	return planProcessEnvironment(configEnv, agentEnv, bindings, credentialEnvironment)
 }
 
-func planProcessEnvironment(configEnv, agentEnv map[string]string, bindings []EnvironmentBinding) (ProcessEnvironmentPlan, error) {
+func planProcessEnvironment(configEnv, agentEnv map[string]string, bindings []EnvironmentBinding, credentialEnvironment []string) (ProcessEnvironmentPlan, error) {
 	set := make(map[string]string)
-	if err := mergeRuntimeEnvironment(set, configEnv, "configEnv"); err != nil {
+	if err := mergeRuntimeEnvironment(set, configEnv, "configEnv", credentialEnvironment); err != nil {
 		return ProcessEnvironmentPlan{}, err
 	}
-	if err := mergeRuntimeEnvironment(set, agentEnv, "agentEnv"); err != nil {
+	if err := mergeRuntimeEnvironment(set, agentEnv, "agentEnv", credentialEnvironment); err != nil {
 		return ProcessEnvironmentPlan{}, err
 	}
 
@@ -627,11 +581,11 @@ func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPl
 	if err != nil {
 		return ProcessEnvironmentPlan{}, err
 	}
-	providerFamilies := inferCredentialFamilies(options.AgentEnv, options.CredentialFamilies)
 	plan, err := planProcessEnvironment(
 		options.ConfigEnv,
 		options.AgentEnv,
 		options.EnvironmentBindings,
+		options.CredentialEnvironment,
 	)
 	if err != nil {
 		return ProcessEnvironmentPlan{}, err
@@ -649,6 +603,8 @@ func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPl
 		"http_proxy":          proxy,
 		"https_proxy":         proxy,
 		"NODE_EXTRA_CA_CERTS": options.CABundlePath,
+		// Always set, so a value inherited from an outer session never stands.
+		ReservedEnvironmentKey: reservedEnvironmentValue(options.CredentialEnvironment),
 	}
 	noProxy := sanitizedNoProxy(options.Base, options.ProxyRequiredHosts)
 	controls["NO_PROXY"] = noProxy
@@ -665,11 +621,10 @@ func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPl
 	// request. Unlike global replacement roots, these variables are safe to
 	// point at a Phase-only bundle because the corresponding traffic is bound
 	// to the Phase proxy.
-	if containsFamily(providerFamilies, "aws") {
-		controls["AWS_CA_BUNDLE"] = options.CABundlePath
-	}
-	if containsFamily(providerFamilies, "postgres") {
-		controls["PGSSLROOTCERT"] = options.CABundlePath
+	for _, key := range options.ScopedTrustKeys {
+		if upper := strings.ToUpper(key); upper == "AWS_CA_BUNDLE" || upper == "PGSSLROOTCERT" {
+			controls[upper] = options.CABundlePath
+		}
 	}
 	for key, value := range controls {
 		if err := mergeOwnedEnvironment(plan.Set, key, value, "Phase runtime"); err != nil {
@@ -1005,45 +960,26 @@ func normalizeNoProxyHost(value string) string {
 	return value
 }
 
-func inferCredentialFamilies(agentEnv map[string]string, explicit []string) []string {
-	set := make(map[string]struct{})
-	for _, family := range explicit {
-		family = strings.ToLower(strings.TrimSpace(family))
-		if _, known := providerCredentialEnvironmentKeys[family]; known {
-			set[family] = struct{}{}
-		}
-	}
-	for key, value := range agentEnv {
-		if value == "" {
+// reservedEnvironmentValue is the sorted, de-duplicated list of credential
+// variable names for ReservedEnvironmentKey.
+func reservedEnvironmentValue(names []string) string {
+	seen := make(map[string]struct{}, len(names))
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		upper := strings.ToUpper(strings.TrimSpace(name))
+		if _, duplicate := seen[upper]; duplicate || !ValidShellEnvironmentKey(upper) {
 			continue
 		}
-		upper := strings.ToUpper(key)
-		for family, keys := range legacyCredentialActivatorKeys {
-			if containsEnvironmentKey(keys, upper) {
-				set[family] = struct{}{}
-			}
-		}
-	}
-	result := make([]string, 0, len(set))
-	for family := range set {
-		result = append(result, family)
+		seen[upper] = struct{}{}
+		result = append(result, upper)
 	}
 	sort.Strings(result)
-	return result
+	return strings.Join(result, ",")
 }
 
 func containsEnvironmentKey(keys []string, target string) bool {
 	for _, key := range keys {
 		if strings.EqualFold(key, target) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsFamily(families []string, target string) bool {
-	for _, family := range families {
-		if strings.EqualFold(strings.TrimSpace(family), target) {
 			return true
 		}
 	}
@@ -1082,7 +1018,7 @@ func isLoopbackHostname(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func mergeRuntimeEnvironment(destination, source map[string]string, label string) error {
+func mergeRuntimeEnvironment(destination, source map[string]string, label string, credentialEnvironment []string) error {
 	for key, value := range source {
 		if !ValidShellEnvironmentKey(key) {
 			return fmt.Errorf("%s contains an invalid environment key", label)
@@ -1092,7 +1028,7 @@ func mergeRuntimeEnvironment(destination, source map[string]string, label string
 			return fmt.Errorf("%s cannot override protected environment key %s", label, key)
 		}
 		if label == "configEnv" {
-			if _, credential := credentialEnvironmentKeys[upper]; credential {
+			if containsEnvironmentKey(phaseCredentialEnvironmentKeys, upper) || containsEnvironmentKey(credentialEnvironment, upper) {
 				return fmt.Errorf("configEnv cannot provide credential environment key %s", key)
 			}
 		}

@@ -250,16 +250,17 @@ func (s *ProxySession) CompileProcessEnvironment(proxyURL string, base []string,
 		return proxy.ProcessEnvironmentPlan{}, err
 	}
 	return proxy.CompileProcessEnvironment(proxy.EnvironmentOptions{
-		Base:                base,
-		ProxyURL:            proxyURL,
-		CABundlePath:        s.CAPaths.Bundle,
-		CABundleComplete:    s.CAPaths.BundleComplete,
-		ConfigEnv:           inputs.configEnv,
-		AgentEnv:            inputs.agentEnv,
-		AdapterEnv:          adapterEnv,
-		CredentialFamilies:  inputs.credentialFamilies,
-		EnvironmentBindings: inputs.environmentBindings,
-		ProxyRequiredHosts:  inputs.proxyRequiredHosts,
+		Base:                  base,
+		ProxyURL:              proxyURL,
+		CABundlePath:          s.CAPaths.Bundle,
+		CABundleComplete:      s.CAPaths.BundleComplete,
+		ConfigEnv:             inputs.configEnv,
+		AgentEnv:              inputs.agentEnv,
+		AdapterEnv:            adapterEnv,
+		CredentialEnvironment: inputs.credentialEnvironment,
+		ScopedTrustKeys:       inputs.scopedTrustKeys,
+		EnvironmentBindings:   inputs.environmentBindings,
+		ProxyRequiredHosts:    inputs.proxyRequiredHosts,
 	})
 }
 
@@ -275,15 +276,20 @@ func (s *ProxySession) ProviderProcessEnvironment() (proxy.ProcessEnvironmentPla
 		inputs.configEnv,
 		inputs.agentEnv,
 		inputs.environmentBindings,
+		inputs.credentialEnvironment,
 	)
 }
 
 type processEnvironmentInputs struct {
-	configEnv           map[string]string
-	agentEnv            map[string]string
-	credentialFamilies  []string
-	environmentBindings []proxy.EnvironmentBinding
-	proxyRequiredHosts  []string
+	configEnv map[string]string
+	agentEnv  map[string]string
+	// credentialEnvironment is the union of every Connection's
+	// credentialEnvironment, including a Connection that is not the default
+	// identity of its service: its provider's variables are still the session's.
+	credentialEnvironment []string
+	scopedTrustKeys       []string
+	environmentBindings   []proxy.EnvironmentBinding
+	proxyRequiredHosts    []string
 }
 
 func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
@@ -303,12 +309,16 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 		identityCount[defaultIdentity(connection)]++
 	}
 	contested := contestedCustomEnvironmentNames(s.Config.Connections)
-	credentialFamilies := make([]string, 0)
+	credentialEnvironment := make([]string, 0)
+	scopedTrustKeys := make([]string, 0)
 	environmentBindings := make([]proxy.EnvironmentBinding, 0)
 	proxyRequiredHosts := make([]string, 0)
 	for _, connection := range s.Config.Connections {
-		families := proxy.CredentialFamiliesForConnection(connection.ServiceType, connection.PrimaryInjectionAction())
-		credentialFamilies = append(credentialFamilies, families...)
+		if err := agentapi.ValidateCredentialEnvironment(connection.CredentialEnvironment); err != nil {
+			return processEnvironmentInputs{}, fmt.Errorf("Agent connection %s: %w", connection.ConnectionID, err)
+		}
+		credentialEnvironment = append(credentialEnvironment, connection.CredentialEnvironment...)
+		scopedTrustKeys = append(scopedTrustKeys, proxy.ScopedTrustEnvironmentKeys(connection.PrimaryInjectionAction())...)
 		for _, host := range connection.Hosts {
 			proxyRequiredHosts = append(proxyRequiredHosts, host.Value)
 		}
@@ -362,7 +372,7 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 		}
 	}
 	return processEnvironmentInputs{
-		configEnv: configEnv, agentEnv: agentEnv, credentialFamilies: credentialFamilies,
+		configEnv: configEnv, agentEnv: agentEnv, credentialEnvironment: credentialEnvironment, scopedTrustKeys: scopedTrustKeys,
 		environmentBindings: environmentBindings, proxyRequiredHosts: proxyRequiredHosts,
 	}, nil
 }

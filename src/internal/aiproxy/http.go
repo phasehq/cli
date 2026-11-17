@@ -1017,7 +1017,7 @@ func proxyFailurePayload(failure *requestFailure) (string, []byte) {
 			}
 		case codeAccessPolicyAsk:
 			code = "PhaseAccessPolicyAsk"
-		case codeAccessPolicyUninspectable, codeAccessPolicyUnsupported:
+		case codeAccessPolicyUninspectable, codeAccessPolicyUnsupported, codeProviderRulesMissing:
 			code = "PhaseAccessPolicyBlocked"
 		case codeAccessExpired:
 			code = "PhaseAccessExpired"

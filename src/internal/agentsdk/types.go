@@ -475,6 +475,9 @@ const (
 	// FeatureAccessPolicy: the client enforces a Connection's access policy
 	// (allow, ask, block) and its time limit before it uses the credential.
 	FeatureAccessPolicy ClientFeature = "access_policy"
+	// FeatureProviderRules: the client takes a Connection's credential
+	// environment, secret guard and call classes from the session payload.
+	FeatureProviderRules ClientFeature = "provider_rules"
 )
 
 type ClientCapabilities struct {
@@ -603,6 +606,12 @@ type RuntimeConnection struct {
 	Policy           *AccessPolicy        `json:"policy,omitempty"`
 	OperationClasses []OperationClassRule `json:"operationClasses,omitempty"`
 	GrantExpiresAt   *time.Time           `json:"grantExpiresAt,omitempty"`
+	// CredentialEnvironment, SecretGuard and ActionClasses are the provider's
+	// rules from the Console's manifest. The guard and the classes are carried
+	// as sent; the runtime decodes and enforces them.
+	CredentialEnvironment []string        `json:"credentialEnvironment,omitempty"`
+	SecretGuard           json.RawMessage `json:"secretGuard,omitempty"`
+	ActionClasses         json.RawMessage `json:"actionClasses,omitempty"`
 }
 
 // ValidateEnvironmentBindings verifies this runtime connection's binding

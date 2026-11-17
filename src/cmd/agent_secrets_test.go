@@ -16,8 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phasehq/cli/internal/agentapi/providerrulestest"
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	gokeyring "github.com/zalando/go-keyring"
@@ -746,6 +748,7 @@ func TestAgentRunInjectsAndKeepsSessionVariables(t *testing.T) {
 	}
 
 	t.Setenv("PHASE_AI_ENABLED", "1")
+	t.Setenv(phaseproxy.ReservedEnvironmentKey, strings.Join(providerrulestest.CredentialEnvironment("aws"), ","))
 	stdout, stderr, err = runPhaseCommand(t, "", "run", "--app-id", "app-orders", "--", command)
 	if err != nil {
 		t.Fatalf("run inside a session: %v %s", err, stderr)
@@ -774,6 +777,8 @@ func TestSkipReservedSessionVariablesOnlyInsideASession(t *testing.T) {
 		t.Fatalf("outside a session skipped %v", skipped)
 	}
 	t.Setenv("PHASE_AI_ENABLED", "1")
+	// As a session with an AWS and a GitHub Connection exports it.
+	t.Setenv(phaseproxy.ReservedEnvironmentKey, strings.Join(providerrulestest.CredentialEnvironment("aws", "github"), ","))
 	inside := secrets()
 	skipped := skipReservedSessionVariables(inside)
 	want := []string{"GITHUB_TOKEN", "HTTPS_PROXY", "PHASE_AGENT_TOKEN", "SSL_CERT_FILE", "https_proxy"}

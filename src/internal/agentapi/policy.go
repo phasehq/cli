@@ -226,11 +226,14 @@ type ExpiredConnection struct {
 	ExpiredAt      time.Time `json:"expiredAt"`
 }
 
-// AccessPolicyFailure names why the Connection's policy cannot be enforced,
-// or is empty when it can.
+// AccessPolicyFailure names why the Connection's policy or provider rules
+// cannot be enforced, or is empty when they can.
 func (c Connection) AccessPolicyFailure() string {
 	if c.Policy.Unsupported() || c.OperationClasses.Unsupported() {
 		return AccessPolicyUnsupported
+	}
+	if failure := c.providerRulesFailure(); failure != "" {
+		return failure
 	}
 	// A rule by AWS action can only be matched on an AWS Connection. On any
 	// other it could never apply, so the Connection is not used rather than

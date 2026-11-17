@@ -291,7 +291,7 @@ func TestExactPathGlobMatchesOnlyTheRequestPath(t *testing.T) {
 }
 
 func TestClassifyCallFailsClosedOnAnAWSRequestItCannotRead(t *testing.T) {
-	aws := agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}}
+	aws := withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}})
 	huge, _ := http.NewRequest(http.MethodPost, "https://ec2.eu-central-1.amazonaws.com/", strings.NewReader("Action=TerminateInstances"))
 	huge.Header.Set("Content-Type", "text/plain")
 	huge.ContentLength = maximumMintingInspectionBytes + 1

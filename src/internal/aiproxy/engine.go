@@ -196,7 +196,7 @@ func (e *Engine) Capabilities() airuntime.EngineCapabilities {
 		},
 		// sealed_material is what this engine can do with the right login; the
 		// runtime advertises it only when the client holds an Agent token.
-		Features: []string{agentapi.FeatureInjectionList, agentapi.FeatureWhenAbsent, agentapi.FeatureSealedMaterial, agentapi.FeatureAccessPolicy},
+		Features: []string{agentapi.FeatureInjectionList, agentapi.FeatureWhenAbsent, agentapi.FeatureSealedMaterial, agentapi.FeatureAccessPolicy, agentapi.FeatureProviderRules},
 	}
 }
 
@@ -276,11 +276,11 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	proxyURL := (&url.URL{Scheme: "http", User: url.UserPassword("phase", credential), Host: proxyAddress}).String()
 	baseEnvironment := os.Environ()
-	credentialFamilies := make([]string, 0)
+	scopedTrustKeys := make([]string, 0)
 	for _, connection := range session.Config.Connections {
-		credentialFamilies = append(credentialFamilies, phaseproxy.CredentialFamiliesForConnection(connection.ServiceType, connection.PrimaryInjectionAction())...)
+		scopedTrustKeys = append(scopedTrustKeys, phaseproxy.ScopedTrustEnvironmentKeys(connection.PrimaryInjectionAction())...)
 	}
-	preparedCABundle, prepareErr := phaseproxy.PrepareStableProcessCABundle(session.CAPaths.Bundle, baseEnvironment, credentialFamilies)
+	preparedCABundle, prepareErr := phaseproxy.PrepareStableProcessCABundle(session.CAPaths.Bundle, baseEnvironment, scopedTrustKeys)
 	if prepareErr != nil {
 		return prepareErr
 	}

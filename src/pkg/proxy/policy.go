@@ -66,13 +66,19 @@ func ClassifyCall(req *http.Request, connection agentapi.Connection) ([]Classifi
 	}
 	upgrade := isUpgradeRequest(req)
 	if strings.EqualFold(connection.ServiceType, "aws") {
-		calls, err := classifyAWSCall(req)
+		// The classes come with the Connection; without them nothing can be
+		// classified, and the call is refused rather than judged by method.
+		classes := connection.ActionClasses
+		if classes == nil || classes.Unsupported() {
+			return nil, ErrCallUninspectable
+		}
+		calls, err := classifyAWSCall(req, classes)
 		if err != nil {
 			return nil, err
 		}
 		service := awsScopeService(req)
 		for _, method := range overriddenMethods(req) {
-			further := awsRESTCall(req, method, service)
+			further := awsRESTCall(req, method, service, classes)
 			further.Method = method
 			calls = appendCall(calls, further)
 		}

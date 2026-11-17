@@ -116,7 +116,7 @@ func TestAWSActionsAreSortedIntoClasses(t *testing.T) {
 	}
 	for operation, want := range tests {
 		service, action, _ := strings.Cut(operation, ":")
-		if got := classifyAWSAction(service, action); got != want {
+		if got := classifyAWSAction(testAWSClasses(t), service, action); got != want {
 			t.Errorf("%s = %s, want %s", operation, got, want)
 		}
 	}
@@ -126,6 +126,7 @@ func TestAWSActionsAreSortedIntoClasses(t *testing.T) {
 // exact entry is spelled service:Action, and no verb sits in two lists.
 func TestAWSClassTableIsWellFormed(t *testing.T) {
 	userClass := map[string]bool{"read": true, "create": true, "update": true, "delete": true, "admin": true}
+	awsClasses := testAWSClasses(t)
 	for operation, class := range awsClasses.Exact {
 		service, action, found := strings.Cut(operation, ":")
 		if !found || service == "" || action == "" || service != strings.ToLower(service) || !userClass[class] {
@@ -151,7 +152,7 @@ func TestAWSClassTableIsWellFormed(t *testing.T) {
 	}
 	// A minting action is the secret guard's and must not be reclassified as
 	// something a policy could allow.
-	for service, operations := range credentialMintingRules["aws"].Operations {
+	for service, operations := range testSecretGuard(t, "aws").Operations {
 		for _, operation := range operations {
 			if _, exact := awsClasses.Exact[service+":"+operation]; exact {
 				t.Errorf("%s:%s is a credential-minting action and has an exact class", service, operation)
@@ -162,7 +163,7 @@ func TestAWSClassTableIsWellFormed(t *testing.T) {
 
 func classesOf(t *testing.T, req *http.Request) ([]string, []string) {
 	t.Helper()
-	calls, err := ClassifyCall(req, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}})
+	calls, err := ClassifyCall(req, withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}}))
 	if err != nil {
 		t.Fatalf("classify: %v", err)
 	}

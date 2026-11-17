@@ -21,6 +21,7 @@ const (
 	codeAccessPolicyUninspectable = "agent_access_policy_uninspectable"
 	codeAccessPolicyUnsupported   = "agent_access_policy_unsupported"
 	codeAccessExpired             = "agent_access_expired"
+	codeProviderRulesMissing      = "agent_provider_rules_missing"
 
 	// An event's reason is the answer's code. A call the proxy could not
 	// inspect for credential minting keeps the reason it always had.

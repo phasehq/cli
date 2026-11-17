@@ -146,16 +146,18 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 // skipReservedSessionVariables removes, inside a Phase AI session, every
 // secret whose name the session owns: proxy routing, trust settings, Phase
-// runtime variables and provider credential variables. Injecting one would
+// runtime variables and the credential variables of the session's providers,
+// which the session exports in PHASE_AI_RESERVED_ENV. Injecting one would
 // replace a decoy with a live value or route traffic around the proxy. It
 // returns the names it removed, sorted; outside a session it removes nothing.
 func skipReservedSessionVariables(secrets map[string]string) []string {
 	if os.Getenv("PHASE_AI_ENABLED") != "1" {
 		return nil
 	}
+	reserved := phaseproxy.SplitReservedEnvironment(os.Getenv(phaseproxy.ReservedEnvironmentKey))
 	var skipped []string
 	for name := range secrets {
-		if phaseproxy.ReservedRunEnvironmentKey(name) {
+		if phaseproxy.ReservedRunEnvironmentKey(name, reserved) {
 			skipped = append(skipped, name)
 			delete(secrets, name)
 		}

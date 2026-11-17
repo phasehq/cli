@@ -423,6 +423,36 @@ func TestCanonicalOpenFixtureCompilesProviderProcessEnvironment(t *testing.T) {
 	}
 }
 
+// The launch environment exports the session's provider credential names for
+// phase run, and the AWS SDKs' trust variable for the SigV4 Connection.
+func TestCanonicalOpenFixtureExportsReservedNamesAndScopedTrust(t *testing.T) {
+	payload, err := os.ReadFile("../agentapi/testdata/open_session_response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response agentapi.OpenSessionResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	session := &ProxySession{Config: &response, CAPaths: proxy.CAPaths{Bundle: "/phase/runtime-ca-bundle.pem"}}
+	plan, err := session.CompileProcessEnvironment("http://phase:capability@127.0.0.1:9543", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved := proxy.SplitReservedEnvironment(plan.Set[proxy.ReservedEnvironmentKey])
+	if len(reserved) != len(response.Connections[0].CredentialEnvironment) || !containsEnvironment(reserved, "AWS_SECRET_ACCESS_KEY") ||
+		!containsEnvironment(reserved, "AWS_CONFIG_FILE") {
+		t.Fatalf("%s = %q", proxy.ReservedEnvironmentKey, plan.Set[proxy.ReservedEnvironmentKey])
+	}
+	if plan.Set["AWS_CA_BUNDLE"] != "/phase/runtime-ca-bundle.pem" || plan.Set["PGSSLROOTCERT"] != "" {
+		t.Fatalf("scoped trust = AWS_CA_BUNDLE %q PGSSLROOTCERT %q", plan.Set["AWS_CA_BUNDLE"], plan.Set["PGSSLROOTCERT"])
+	}
+	response.Connections[0].CredentialEnvironment = []string{"aws_lower_case"}
+	if _, err := session.CompileProcessEnvironment("http://phase:capability@127.0.0.1:9543", nil, nil); err == nil {
+		t.Fatal("an invalid credentialEnvironment name was exported")
+	}
+}
+
 func TestProxySessionRejectsLiveMaterialInAgentVisibleEnvironment(t *testing.T) {
 	const live = "live-upstream-credential-value"
 	newSession := func(t *testing.T) *ProxySession {

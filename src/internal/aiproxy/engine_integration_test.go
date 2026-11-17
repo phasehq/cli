@@ -276,6 +276,7 @@ func decodeTestSession(t *testing.T, value map[string]any) *agentapi.OpenSession
 	if connections, ok := value["connections"].([]any); ok {
 		for _, raw := range connections {
 			if connection, ok := raw.(map[string]any); ok {
+				withProviderRules(connection)
 				service, _ := connection["serviceType"].(string)
 				if _, present := connection["credentialProvider"]; !present {
 					connection["credentialProvider"] = service

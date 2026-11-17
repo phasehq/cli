@@ -268,6 +268,7 @@ func TestOperationMatcherIsReadStrictlyAndLimitedToAWS(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"connectionId":"c","serviceType":"aws","protocol":"http","policy":`+document+`}`), &aws); err != nil {
 		t.Fatal(err)
 	}
+	decodeProviderRules(t, &aws)
 	if aws.Policy.Unsupported() || len(aws.Policy.Rules) != 1 || aws.Policy.Rules[0].Operation != "ec2:TerminateInstances" ||
 		len(aws.Policy.TemporaryAllows) != 1 || aws.Policy.TemporaryAllows[0].Operation != "s3:DeleteBucket" || aws.AccessPolicyFailure() != "" {
 		t.Fatalf("aws policy = %+v failure=%q", aws.Policy, aws.AccessPolicyFailure())
