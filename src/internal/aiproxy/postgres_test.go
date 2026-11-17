@@ -513,3 +513,7 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 		}
 	}
 }
+
+func writePGParameter(writer io.Writer, key, value string) error {
+	return writePGMessage(writer, 'S', []byte(key+"\x00"+value+"\x00"))
+}

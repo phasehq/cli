@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -49,32 +48,5 @@ func TestCodexWindowsHookCommandsAvoidALeadingQuotedPath(t *testing.T) {
 	command := codexPluginCommand(`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, true, "ai", "__codex-event", "guard")
 	if strings.HasPrefix(command, `"`) || command != "C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __codex-event guard" {
 		t.Fatalf("Codex commandWindows = %q", command)
-	}
-}
-
-func TestDevinRecognizesEveryWindowsSpellingOfTheHelper(t *testing.T) {
-	withShortPathName(t, func(string) (string, error) { return "", errors.New("8.3 names are disabled") })
-	helper := `C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`
-	group := func(command string) json.RawMessage {
-		payload, err := json.Marshal(devinHookGroup{Matcher: "exec", Hooks: []devinHookHandler{{Type: "command", Command: command, Timeout: 45}}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return payload
-	}
-	hooks := map[string][]json.RawMessage{"PreToolUse": {
-		group(`"C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe" "ai" "__devin-event" "guard"`),
-		group("C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __devin-event guard"),
-		group("node C:/Users/dev/hooks/audit.js"),
-	}}
-	removePhaseDevinGroups(hooks, windowsExecutableForms(helper)...)
-	if len(hooks["PreToolUse"]) != 1 || !strings.Contains(string(hooks["PreToolUse"][0]), "audit.js") {
-		t.Fatalf("Phase groups from earlier and current builds must both be removed, and only them: %s", hooks["PreToolUse"])
-	}
-	quotedHelper := `C:\Users\O'Brien Smith\.phase\ai\bin\phase-hook-v1.exe`
-	hooks = map[string][]json.RawMessage{"PreToolUse": {group(WindowsShellCommand([]string{quotedHelper, "ai", "__devin-event", "guard"}))}}
-	removePhaseDevinGroups(hooks, windowsExecutableForms(quotedHelper)...)
-	if len(hooks["PreToolUse"]) != 0 {
-		t.Fatalf("the PowerShell fallback spelling was not recognized: %s", hooks["PreToolUse"])
 	}
 }

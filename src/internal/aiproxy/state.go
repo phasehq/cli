@@ -604,10 +604,6 @@ func (b *binding) stateReason(now time.Time) string {
 	}
 }
 
-func requiresEnvironmentReprovision(oldBindings, newBindings []*binding, oldConfigEnv, newConfigEnv map[string]string) bool {
-	return classifyConfigChange(oldBindings, newBindings, oldConfigEnv, newConfigEnv).reprovision
-}
-
 // configChange says how a refreshed configuration relates to the running one.
 type configChange struct {
 	// reprovision: the session must be recycled, because what the Agent

@@ -24,7 +24,6 @@ var harnessDisplayNames = map[string]string{
 	"cursor":      "Cursor",
 	"codex":       "Codex",
 	"opencode":    "OpenCode",
-	"devin":       "Devin",
 }
 
 var plainHarnessName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)

@@ -251,9 +251,6 @@ func writePGAuth(writer io.Writer, code uint32, data []byte) error {
 	copy(payload[4:], data)
 	return writePGMessage(writer, 'R', payload)
 }
-func writePGParameter(writer io.Writer, key, value string) error {
-	return writePGMessage(writer, 'S', []byte(key+"\x00"+value+"\x00"))
-}
 func writePGError(writer io.Writer, message string) error {
 	return writePGErrorCode(writer, "42501", message)
 }

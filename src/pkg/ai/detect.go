@@ -76,8 +76,6 @@ func DetectAIAgentExecutable(command []string) string {
 			return "codex"
 		case "opencode":
 			return "opencode"
-		case "devin":
-			return "devin"
 		case "goose":
 			return "goose"
 		case "amp":

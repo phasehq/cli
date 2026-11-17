@@ -148,7 +148,6 @@ const (
 	HarnessCursor     = "cursor"
 	HarnessCopilot    = "copilot"
 	HarnessCodex      = "codex"
-	HarnessDevin      = "devin"
 	HarnessOpenCode   = "opencode"
 )
 
@@ -165,10 +164,6 @@ func versionHeaderFor(value string) string {
 
 func SkillContent() string {
 	return renderOwnedSkill("", AgentRuntimeSkillKind, skillContent)
-}
-
-func SecretsSkillContent() string {
-	return renderOwnedSkill("", ApplicationSecretsSkillKind, secretsSkillContent)
 }
 
 func claudeCodeSkill() string {
@@ -217,17 +212,12 @@ func skillTargetsIn(home, openCodeRoot, skillName string) []SkillTarget {
 		{ID: HarnessCursor, Name: "Cursor", Path: filepath.Join(home, ".cursor", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
 		{ID: HarnessCopilot, Name: "VS Code Copilot", Path: filepath.Join(home, ".copilot", "skills", skillName, "SKILL.md"), Note: "global"},
 		{ID: HarnessCodex, Name: "Codex", Path: filepath.Join(home, ".agents", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
-		{ID: HarnessDevin, Name: "Devin", Path: filepath.Join(home, ".agents", "skills", skillName, "SKILL.md"), Note: "global + automatic proxy (preview)"},
 		{ID: HarnessOpenCode, Name: "OpenCode", Path: filepath.Join(openCodeRoot, "skills", skillName, "SKILL.md"), Note: "global + automatic proxy"},
 	}
 }
 
 func SkillTargetByPath(path string) (SkillTarget, bool) {
 	return skillTargetByPath(SkillTargets(), path)
-}
-
-func SecretsSkillTargetByPath(path string) (SkillTarget, bool) {
-	return skillTargetByPath(SecretsSkillTargets(), path)
 }
 
 func skillTargetByPath(targets []SkillTarget, path string) (SkillTarget, bool) {
@@ -760,11 +750,6 @@ func UninstallSkills(extraPaths ...string) ([]string, error) {
 		}
 	}
 	return removed, errors.Join(cleanupErrors...)
-}
-
-func isUnmodifiedPhaseSkill(content string) bool {
-	_, owned := recognizedAgentSkill(content)
-	return owned
 }
 
 func validSkillVersionValue(value string) bool {

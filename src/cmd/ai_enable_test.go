@@ -191,7 +191,6 @@ func TestFormatAIEnableSummaryEndsWithTheFinalStep(t *testing.T) {
 		{ai.HarnessCursor, "open a new Agent chat in Cursor", "Reload the Cursor window only if it does not pick up Phase."},
 		{ai.HarnessCodex, "start a new task in Codex (desktop or CLI)", "Restart Codex only if it does not pick up Phase."},
 		{ai.HarnessOpenCode, "start a new OpenCode session", "Restart OpenCode only if it does not pick up Phase."},
-		{ai.HarnessDevin, "start a new session in local Devin", "Restart Devin only if it does not pick up Phase."},
 		{ai.HarnessCopilot, "start a new Copilot chat in VS Code", "Reload VS Code only if Copilot does not pick up the Phase skill."},
 	} {
 		t.Run(test.harness, func(t *testing.T) {

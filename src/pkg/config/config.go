@@ -172,17 +172,6 @@ func AddUser(user UserConfig) error {
 	return SaveConfig(config)
 }
 
-func GetDefaultUserOrg() (string, error) {
-	user, err := GetDefaultUser()
-	if err != nil {
-		return "", err
-	}
-	if user.OrganizationName != nil && *user.OrganizationName != "" {
-		return *user.OrganizationName, nil
-	}
-	return "", fmt.Errorf("no organization name found for default user")
-}
-
 func SetDefaultUser(accountID string) error {
 	config, err := LoadConfig()
 	if err != nil {

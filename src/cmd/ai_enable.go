@@ -30,7 +30,7 @@ var aiEnableCmd = &cobra.Command{
 
 func init() {
 	aiEnableCmd.Flags().String("path", "", "Install skill doc to a specific path")
-	aiEnableCmd.Flags().String("harness", "", "Agent harness for automatic integration (claude-code, cursor, codex, devin, opencode, or copilot)")
+	aiEnableCmd.Flags().String("harness", "", "Agent harness for automatic integration (claude-code, cursor, codex, opencode, or copilot)")
 	aiEnableCmd.Flags().String("workflow", "", "Default Agent Workflow ID (User auth)")
 	aiEnableCmd.Flags().Bool("trust-ca", false, "Trust the Phase AI CA for the current user without prompting (use --trust-ca=false to decline)")
 	aiCmd.AddCommand(aiEnableCmd)
@@ -370,8 +370,6 @@ func aiEnableHarnessLaunch(target ai.SkillTarget) (open, restart string) {
 		return "start a new task in Codex (desktop or CLI)", "Restart Codex only if it does not pick up Phase."
 	case ai.HarnessOpenCode:
 		return "start a new OpenCode session", "Restart OpenCode only if it does not pick up Phase."
-	case ai.HarnessDevin:
-		return "start a new session in local Devin", "Restart Devin only if it does not pick up Phase."
 	case ai.HarnessCopilot:
 		return "start a new Copilot chat in VS Code", "Reload VS Code only if Copilot does not pick up the Phase skill."
 	default:
@@ -490,16 +488,6 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, cfg *config.AIConfi
 			}
 			cfg.OpenCodePlugins = paths
 			installed[harness] = "OpenCode Phase plugin installed to: " + strings.Join(paths, ", ")
-		case ai.HarnessDevin:
-			path, err := ai.DefaultDevinConfigPath()
-			if err != nil {
-				return nil, nil, err
-			}
-			installation, err := ai.InstallDevinHooks(path, hookExecutable)
-			if err != nil {
-				return nil, nil, fmt.Errorf("install Devin Phase discovery adapter: %w", err)
-			}
-			installed[harness] = "Devin Phase discovery adapter installed in: " + installation.ConfigPath
 		case ai.HarnessCopilot:
 			// Copilot consumes only the Agent Skill; it has no automatic helper.
 		default:

@@ -55,7 +55,6 @@ func TestDetectAIAgentCommandPrefersChildExecutable(t *testing.T) {
 		want    string
 	}{
 		{[]string{"/usr/local/bin/claude", "--print"}, "claude-code"},
-		{[]string{"/usr/local/bin/devin"}, "devin"},
 		{[]string{`C:\\Tools\\codex.exe`}, "codex"},
 		{[]string{"cursor-agent"}, "cursor"},
 		{[]string{"opencode"}, "opencode"},

@@ -110,16 +110,6 @@ type cursorToolOutput struct {
 	UpdatedInput harnessToolInput `json:"updated_input,omitempty"`
 }
 
-type devinHookOutput struct {
-	Decision           string `json:"decision,omitempty"`
-	Reason             string `json:"reason,omitempty"`
-	HookSpecificOutput *struct {
-		HookEventName     string           `json:"hookEventName"`
-		AdditionalContext string           `json:"additionalContext,omitempty"`
-		UpdatedInput      harnessToolInput `json:"updatedInput,omitempty"`
-	} `json:"hookSpecificOutput,omitempty"`
-}
-
 var aiCodexHookCmd = &cobra.Command{
 	Use:          "__codex-hook",
 	Hidden:       true,
@@ -181,22 +171,6 @@ var aiOpenCodeSessionCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE:          runAIOpenCodeSession,
-}
-
-var aiDevinHookCmd = &cobra.Command{
-	Use:          "__devin-hook",
-	Hidden:       true,
-	Args:         cobra.NoArgs,
-	SilenceUsage: true,
-	RunE:         runAIDevinHook,
-}
-
-var aiDevinEventCmd = &cobra.Command{
-	Use:          "__devin-event [guard|heartbeat|context|session-end]",
-	Hidden:       true,
-	Args:         cobra.ExactArgs(1),
-	SilenceUsage: true,
-	RunE:         runAIDevinEvent,
 }
 
 func readHarnessHookInput(reader io.Reader) (harnessHookInput, error) {
@@ -467,136 +441,6 @@ func denyCursorShellWithReason(cmd *cobra.Command, reason string) error {
 	})
 }
 
-func runAIDevinHook(cmd *cobra.Command, _ []string) error {
-	input, err := readHarnessHookInput(cmd.InOrStdin())
-	if err != nil || strings.TrimSpace(input.SessionID) == "" {
-		return emitDevinBootstrapFailure(cmd)
-	}
-	if disabled, err := automaticHarnessDisabled(ai.HarnessDevin); disabled || err != nil {
-		if err != nil {
-			return emitDevinBootstrapFailure(cmd)
-		}
-		return nil
-	}
-	if err := refreshConfiguredAISkill(); err != nil {
-		return emitDevinBootstrapFailure(cmd)
-	}
-	return emitDevinContext(cmd, "SessionStart")
-}
-
-func runAIDevinEvent(cmd *cobra.Command, args []string) error {
-	input, err := readHarnessHookInput(cmd.InOrStdin())
-	action := args[0]
-	original := ""
-	if action == "guard" {
-		if err != nil || !strings.EqualFold(strings.TrimSpace(input.ToolName), "exec") {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		original, err = input.ToolInput.command()
-		if err != nil || strings.TrimSpace(original) == "" {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		if shellCommandUsesPowerShellWeb(original) {
-			return denyDevin(cmd, harnessPowerShellWebMessage())
-		}
-		if shellCommandMixesPhase(original) {
-			return denyDevin(cmd, harnessMixedCommandMessage())
-		}
-		if !shellCommandRequiresPhase(original) {
-			return nil
-		}
-		if len(original) > maxHarnessCommandBytes {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-	}
-	if err != nil || strings.TrimSpace(input.SessionID) == "" {
-		if action == "guard" {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		return nil
-	}
-	if disabled, configErr := automaticHarnessDisabled(ai.HarnessDevin); disabled || configErr != nil {
-		if action == "guard" && configErr != nil {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		return nil
-	}
-	leaseID := harnessLeaseID(ai.HarnessDevin, input.SessionID)
-	switch action {
-	case "guard":
-		if os.Getenv("PHASE_AI_ENABLED") == "1" {
-			if probeInheritedPhaseRuntime(cmd.Context()) != nil {
-				return denyDevin(cmd, harnessFailureMessage("Devin"))
-			}
-			return nil
-		}
-		if err := ensureHarnessRuntimeReady(cmd.Context()); err != nil {
-			if errors.Is(err, errClaudeRuntimeRefreshing) {
-				return denyDevin(cmd, harnessRefreshMessage("Devin"))
-			}
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		if err := registerHarnessLease(ai.HarnessDevin, input.SessionID, time.Time{}); err != nil {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		wrapped, err := buildHarnessWrapperCommand(ai.HarnessDevin, leaseID, original)
-		if err != nil {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		updatedInput, err := input.ToolInput.withCommand(wrapped)
-		if err != nil {
-			return denyDevin(cmd, harnessFailureMessage("Devin"))
-		}
-		output := devinHookOutput{}
-		output.HookSpecificOutput = &struct {
-			HookEventName     string           `json:"hookEventName"`
-			AdditionalContext string           `json:"additionalContext,omitempty"`
-			UpdatedInput      harnessToolInput `json:"updatedInput,omitempty"`
-		}{HookEventName: "PreToolUse", UpdatedInput: updatedInput}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(output)
-	case "heartbeat":
-		// Runtime startup is deliberately lazy. Prompt submission must never
-		// stall unrelated work; the first managed command owns the ensure path.
-		_ = touchClaudeSessionLease(leaseID)
-		return emitDevinContext(cmd, "UserPromptSubmit")
-	case "context":
-		_ = touchClaudeSessionLease(leaseID)
-		return emitDevinContext(cmd, "PostCompaction")
-	case "session-end":
-		return removeClaudeSessionLease(leaseID)
-	default:
-		return errors.New("unsupported Devin lifecycle event")
-	}
-}
-
-func emitDevinContext(cmd *cobra.Command, event string) error {
-	output := devinHookOutput{}
-	output.HookSpecificOutput = &struct {
-		HookEventName     string           `json:"hookEventName"`
-		AdditionalContext string           `json:"additionalContext,omitempty"`
-		UpdatedInput      harnessToolInput `json:"updatedInput,omitempty"`
-	}{HookEventName: event, AdditionalContext: phaseAIHarnessContext}
-	return json.NewEncoder(cmd.OutOrStdout()).Encode(output)
-}
-
-func emitDevinBootstrapFailure(cmd *cobra.Command) error {
-	return emitDevinUnavailableContext(cmd, "SessionStart")
-}
-
-func emitDevinUnavailableContext(cmd *cobra.Command, event string) error {
-	output := devinHookOutput{}
-	output.HookSpecificOutput = &struct {
-		HookEventName     string           `json:"hookEventName"`
-		AdditionalContext string           `json:"additionalContext,omitempty"`
-		UpdatedInput      harnessToolInput `json:"updatedInput,omitempty"`
-	}{HookEventName: event, AdditionalContext: harnessUnavailableContext("Devin")}
-	return json.NewEncoder(cmd.OutOrStdout()).Encode(output)
-}
-
-func denyDevin(cmd *cobra.Command, reason string) error {
-	return json.NewEncoder(cmd.OutOrStdout()).Encode(devinHookOutput{Decision: "block", Reason: reason})
-}
-
 func automaticHarnessDisabled(harness string) (bool, error) {
 	cfg := config.LoadAIConfig()
 	if cfg == nil {
@@ -713,7 +557,7 @@ func buildHarnessWrapperCommand(harness, leaseID, original string) (string, erro
 // harnessWrapperCommandLine quotes the wrapper for the shell the harness runs
 // it in. On Windows, Codex uses PowerShell, which needs the call operator to
 // run a quoted executable path; Cursor uses its default terminal profile, and
-// OpenCode $SHELL or else PowerShell. Devin gets the form its hooks use.
+// OpenCode $SHELL or else PowerShell.
 func harnessWrapperCommandLine(goos, harness string, arguments []string) string {
 	if goos == "windows" {
 		switch {
@@ -1079,7 +923,7 @@ func runAIHarnessExec(cmd *cobra.Command, _ []string) error {
 	harness, _ := cmd.Flags().GetString("harness")
 	encodedLease, _ := cmd.Flags().GetString("lease")
 	encodedCommand, _ := cmd.Flags().GetString("command")
-	if harness != ai.HarnessClaudeCode && harness != ai.HarnessCodex && harness != ai.HarnessCursor && harness != ai.HarnessDevin && harness != ai.HarnessOpenCode {
+	if harness != ai.HarnessClaudeCode && harness != ai.HarnessCodex && harness != ai.HarnessCursor && harness != ai.HarnessOpenCode {
 		return errors.New("unsupported Phase AI harness")
 	}
 	leaseBytes, err := base64.RawURLEncoding.DecodeString(encodedLease)
@@ -1396,7 +1240,6 @@ func init() {
 	aiCmd.AddCommand(
 		aiCodexHookCmd, aiCodexEventCmd,
 		aiCursorHookCmd, aiCursorEventCmd,
-		aiDevinHookCmd, aiDevinEventCmd,
 		aiHarnessExecCmd, aiOpenCodeCommandCmd, aiOpenCodeSessionCmd,
 	)
 }

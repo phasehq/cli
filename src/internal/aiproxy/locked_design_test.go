@@ -79,10 +79,10 @@ func TestEnvironmentBindingMetadataChangeRequiresReprovision(t *testing.T) {
 	changed := base
 	changed.EnvironmentBindings = append([]agentapi.EnvironmentBinding(nil), base.EnvironmentBindings...)
 	changed.EnvironmentBindings[0].Name = "GH_TOKEN"
-	if !requiresEnvironmentReprovision([]*binding{{connection: base}}, []*binding{{connection: changed}}, nil, nil) {
+	if !classifyConfigChange([]*binding{{connection: base}}, []*binding{{connection: changed}}, nil, nil).reprovision {
 		t.Fatal("changed environment binding metadata did not require process reprovision")
 	}
-	if requiresEnvironmentReprovision([]*binding{{connection: base}}, []*binding{{connection: base}}, nil, nil) {
+	if classifyConfigChange([]*binding{{connection: base}}, []*binding{{connection: base}}, nil, nil).reprovision {
 		t.Fatal("identical environment binding metadata required reprovision")
 	}
 
@@ -102,7 +102,7 @@ func TestEnvironmentBindingMetadataChangeRequiresReprovision(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			candidate := clone()
 			mutate(&candidate)
-			if !requiresEnvironmentReprovision([]*binding{{connection: base}}, []*binding{{connection: candidate}}, nil, nil) {
+			if !classifyConfigChange([]*binding{{connection: base}}, []*binding{{connection: candidate}}, nil, nil).reprovision {
 				t.Fatalf("changed %s did not require process reprovision", name)
 			}
 		})

@@ -84,15 +84,6 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	if configPath, err := ai.DefaultDevinConfigPath(); err == nil && cfg != nil && cfg.HarnessConfigured(ai.HarnessDevin) {
-		if _, statErr := os.Stat(configPath); statErr == nil {
-			if err := ai.UninstallDevinHooks(configPath); err != nil {
-				cleanupErrors = append(cleanupErrors, fmt.Errorf("remove Devin Phase hooks: %w", err))
-			} else {
-				fmt.Printf("   Removed Devin Phase hooks from: %s\n", configPath)
-			}
-		}
-	}
 	if pluginPath, err := ai.DefaultClaudeBootstrapPluginPath(); err == nil {
 		_, statErr := os.Stat(filepath.Join(pluginPath, ".claude-plugin", "plugin.json"))
 		if err := ai.UninstallClaudeBootstrapPlugin(pluginPath); err != nil {

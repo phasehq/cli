@@ -130,7 +130,7 @@ phase run --env production 'python manage.py runserver'
 
 ## AI Agent proxy
 
-Phase AI gives coding agents (Claude Code, Cursor, Codex, OpenCode, Devin, VS Code Copilot) workflow-scoped access to third-party services (HTTP APIs, AWS, PostgreSQL) without ever handing them a live credential. The agent's process receives decoys; a local proxy on `127.0.0.1:9543` (PostgreSQL adapter on `9544`) swaps them for the real credential on the way out, enforces the Connections approved in the Phase Console, and blocks calls that would mint new credentials.
+Phase AI gives coding agents (Claude Code, Cursor, Codex, OpenCode, VS Code Copilot) workflow-scoped access to third-party services (HTTP APIs, AWS, PostgreSQL) without ever handing them a live credential. The agent's process receives decoys; a local proxy on `127.0.0.1:9543` (PostgreSQL adapter on `9544`) swaps them for the real credential on the way out, enforces the Connections approved in the Phase Console, and blocks calls that would mint new credentials.
 
 ```bash
 phase ai enable --harness claude-code   # install the hook/plugin and skills for one harness; repeat for others
@@ -139,7 +139,7 @@ phase ai disable
 ```
 
 - **Claude Code and OpenCode** get the Phase environment automatically: provider CLIs just work while the proxy runs, and fall back to failing on the decoy (never to ambient credentials) when it is down.
-- **Cursor, Codex and Devin** run Phase-managed commands explicitly with `phase ai exec -- <command>` (`--connection <id>` picks one of several identities for a service); `phase ai run -- <agent>` launches a harness inside the environment.
+- **Cursor and Codex** run Phase-managed commands explicitly with `phase ai exec -- <command>` (`--connection <id>` picks one of several identities for a service); `phase ai run -- <agent>` launches a harness inside the environment.
 - Two skills are installed per harness: `phase-cli-ai-relay` (the proxy, Connections and requests) and `phase-cli-app-secrets` (Phase app secrets). Agents reach the proxy's control API at `http://phase.invalid` and can request new Connections, which a human approves in the Console.
 
 `phase ai enable` creates a per-installation CA (valid 90 days, renewed automatically) and offers to trust it for the current user; it never changes system-wide trust or requires sudo. Command-line tools and SDKs trust the CA through the proxy environment either way; the user trust store matters for browsers and for Go programs on macOS and Windows. On Linux the offer needs NSS certutil (`libnss3-tools` on Debian/Ubuntu, `nss-tools` on Fedora/RHEL/Alpine, `nss` on Arch, `mozilla-nss-tools` on openSUSE) and is skipped with a hint when it is missing. On a machine with no system keystore the CA key is kept in memory only: each proxy start creates a new CA, and `phase ai enable` creates none and offers no trust.

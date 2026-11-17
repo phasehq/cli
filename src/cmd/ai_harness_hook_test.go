@@ -177,11 +177,6 @@ func TestAutomaticHarnessGuardsLeaveOrdinaryCommandsAloneWithUnhealthyInheritedR
 			input: `{"session_id":"cursor-session","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"git status && gh pr create --fill"},"tool_use_id":"tool-two"}`,
 			run:   func(command *cobra.Command) error { return runAICursorEvent(command, []string{"guard"}) },
 		},
-		{
-			name: "devin", harness: ai.HarnessDevin,
-			input: `{"session_id":"devin-session","hook_event_name":"PreToolUse","tool_name":"exec","tool_input":{"command":"git status && gh pr create --fill"},"tool_use_id":"tool-three"}`,
-			run:   func(command *cobra.Command) error { return runAIDevinEvent(command, []string{"guard"}) },
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -211,9 +206,6 @@ func TestAutomaticHarnessGuardsLeaveLargeOrdinaryCommandsAlone(t *testing.T) {
 		}},
 		{name: "cursor", harness: ai.HarnessCursor, toolName: "Shell", run: func(command *cobra.Command) error {
 			return runAICursorEvent(command, []string{"guard"})
-		}},
-		{name: "devin", harness: ai.HarnessDevin, toolName: "exec", run: func(command *cobra.Command) error {
-			return runAIDevinEvent(command, []string{"guard"})
 		}},
 	}
 	for _, test := range tests {
@@ -246,11 +238,6 @@ func TestAutomaticHarnessGuardsRejectMixedManagedAndOrdinaryCommands(t *testing.
 			input: `{"session_id":"cursor-session","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"gh pr create --fill && curl http://phase.invalid/v1/status"},"tool_use_id":"tool-two"}`,
 			run:   func(command *cobra.Command) error { return runAICursorEvent(command, []string{"guard"}) },
 		},
-		{
-			name: "devin", harness: ai.HarnessDevin,
-			input: `{"session_id":"devin-session","hook_event_name":"PreToolUse","tool_name":"exec","tool_input":{"command":"gh pr create --fill && curl http://phase.invalid/v1/status"},"tool_use_id":"tool-three"}`,
-			run:   func(command *cobra.Command) error { return runAIDevinEvent(command, []string{"guard"}) },
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -280,11 +267,6 @@ func TestWrappedHarnessGuardsLeaveManifestFetchToExactlyOnceWrapperBoundary(t *t
 			name: "cursor", harness: ai.HarnessCursor, sessionID: "cursor-session",
 			input: `{"session_id":"cursor-session","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"curl http://phase.invalid/v1/status"},"tool_use_id":"tool-two"}`,
 			run:   func(command *cobra.Command) error { return runAICursorEvent(command, []string{"guard"}) },
-		},
-		{
-			name: "devin", harness: ai.HarnessDevin, sessionID: "devin-session",
-			input: `{"session_id":"devin-session","hook_event_name":"PreToolUse","tool_name":"exec","tool_input":{"command":"curl http://phase.invalid/v1/status"},"tool_use_id":"tool-three"}`,
-			run:   func(command *cobra.Command) error { return runAIDevinEvent(command, []string{"guard"}) },
 		},
 	}
 	for _, test := range tests {
@@ -384,10 +366,6 @@ func TestWrappedHarnessSessionStartsAreLazyAndDoNotTouchRuntime(t *testing.T) {
 			name: "cursor", harness: ai.HarnessCursor, sessionID: "cursor-session",
 			run: func(command *cobra.Command) error { return runAICursorHook(command, nil) },
 		},
-		{
-			name: "devin", harness: ai.HarnessDevin, sessionID: "devin-session",
-			run: func(command *cobra.Command) error { return runAIDevinHook(command, nil) },
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -480,72 +458,6 @@ func TestEnsureHarnessRuntimeReadyColdFallbackFailsClosed(t *testing.T) {
 	err := ensureHarnessRuntimeReady(context.Background())
 	if !errors.Is(err, expected) || ensureCalls.Load() != 1 {
 		t.Fatalf("cold fallback error=%v full ensure calls=%d", err, ensureCalls.Load())
-	}
-}
-
-func TestDevinHeartbeatTouchesExistingLeaseWithoutRuntimeProbe(t *testing.T) {
-	withHarnessHookConfig(t, ai.HarnessDevin)
-	directory := withClaudeHookRuntimeDirectory(t)
-	t.Setenv("PHASE_AI_ENABLED", "")
-	now := time.Now().UTC()
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), StartedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	leasePath, err := claudeSessionLeasePath(directory, harnessLeaseID(ai.HarnessDevin, "devin-session"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	originalUpdatedAt := now.Add(-time.Minute)
-	if err := writeOwnerOnlyJSON(leasePath, claudeSessionLease{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", UpdatedAt: originalUpdatedAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	originalEnsure := claudeHookEnsureRuntime
-	var ensureCalls atomic.Int32
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
-		ensureCalls.Add(1)
-		return phaseproxy.ProcessEnvironmentPlan{}, errors.New("heartbeat must not start the runtime")
-	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
-
-	command, _ := newHarnessHookCommand(`{"session_id":"devin-session","hook_event_name":"UserPromptSubmit"}`)
-	if err := runAIDevinEvent(command, []string{"heartbeat"}); err != nil {
-		t.Fatal(err)
-	}
-	if ensureCalls.Load() != 0 {
-		t.Fatalf("heartbeat started or probed the managed runtime %d times", ensureCalls.Load())
-	}
-	var lease claudeSessionLease
-	if err := readOwnerOnlyJSON(leasePath, &lease); err != nil || lease.Generation != "generation-one" || !lease.UpdatedAt.After(originalUpdatedAt) {
-		t.Fatalf("heartbeat lease was not renewed for the active generation: %#v, %v", lease, err)
-	}
-}
-
-func TestDevinHeartbeatFailureDoesNotBlockOrdinaryWork(t *testing.T) {
-	withHarnessHookConfig(t, ai.HarnessDevin)
-	withClaudeHookRuntimeDirectory(t)
-	t.Setenv("PHASE_AI_ENABLED", "")
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
-		return phaseproxy.ProcessEnvironmentPlan{}, errors.New("runtime unavailable")
-	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
-
-	command, output := newHarnessHookCommand(`{"session_id":"devin-session","hook_event_name":"UserPromptSubmit"}`)
-	if err := runAIDevinEvent(command, []string{"heartbeat"}); err != nil {
-		t.Fatal(err)
-	}
-	var result devinHookOutput
-	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Decision == "block" || result.HookSpecificOutput == nil ||
-		result.HookSpecificOutput.HookEventName != "UserPromptSubmit" ||
-		!strings.Contains(result.HookSpecificOutput.AdditionalContext, "Plain shell and provider commands") {
-		t.Fatalf("runtime failure blocked Devin prompt: %#v", result)
 	}
 }
 
@@ -673,17 +585,6 @@ func TestHarnessGuardsRejectPowerShellWebCallsToPhase(t *testing.T) {
 			t.Fatalf("Cursor guard output = %s", output.String())
 		}
 	})
-	t.Run("devin", func(t *testing.T) {
-		withHarnessHookConfig(t, ai.HarnessDevin)
-		command, output := newHarnessHookCommand(`{"session_id":"devin-session","hook_event_name":"PreToolUse","tool_name":"exec",
-			"tool_input":{"command":"` + call + `"},"tool_use_id":"devin-tool"}`)
-		if err := runAIDevinEvent(command, []string{"guard"}); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(output.String(), "do not use the Phase AI proxy") || strings.Contains(output.String(), "__harness-exec") {
-			t.Fatalf("Devin guard output = %s", output.String())
-		}
-	})
 	t.Run("opencode", func(t *testing.T) {
 		withHarnessHookConfig(t, ai.HarnessOpenCode)
 		if response := runOpenCodeCommandForTest(t, call); !response.Managed || response.Error != harnessPowerShellWebMessage() {
@@ -740,32 +641,6 @@ func TestCursorGuardCreatesBoundedFallbackLease(t *testing.T) {
 	}
 	if lease.ExpiresAt.IsZero() || time.Until(lease.ExpiresAt) > cursorFallbackLeaseTTL+time.Minute {
 		t.Fatalf("unexpected fallback lease expiry: %s", lease.ExpiresAt)
-	}
-}
-
-func TestDevinGuardUsesUpdatedInputWithoutRuntimeMaterial(t *testing.T) {
-	withHarnessHookConfig(t, ai.HarnessDevin)
-	prepareHarnessHookRuntime(t)
-	t.Setenv("PHASE_AI_ENABLED", "")
-	command, output := newHarnessHookCommand(`{
-        "session_id":"devin-session","hook_event_name":"PreToolUse","tool_name":"exec",
-		"tool_input":{"command":"curl http://phase.invalid/v1/status","sandbox_permissions":"require_escalated",
-		"justification":"Allow the authenticated local Phase proxy","prefix_rule":["aws","sts"],
-		"working_directory":"/workspace/phase"},"tool_use_id":"devin-tool"
-    }`)
-	if err := runAIDevinEvent(command, []string{"guard"}); err != nil {
-		t.Fatal(err)
-	}
-	var result devinHookOutput
-	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.HookSpecificOutput == nil || !strings.Contains(harnessUpdatedCommand(t, result.HookSpecificOutput.UpdatedInput), "__harness-exec") {
-		t.Fatalf("unexpected Devin guard output: %#v", result)
-	}
-	assertHarnessToolInputMetadataPreserved(t, result.HookSpecificOutput.UpdatedInput)
-	if strings.Contains(output.String(), "decoy-never-print") {
-		t.Fatalf("Devin hook exposed runtime material: %s", output.String())
 	}
 }
 
@@ -1275,7 +1150,6 @@ func TestHarnessHookCommandsStayHidden(t *testing.T) {
 	for _, command := range []*cobra.Command{
 		aiCodexHookCmd, aiCodexEventCmd,
 		aiCursorHookCmd, aiCursorEventCmd,
-		aiDevinHookCmd, aiDevinEventCmd,
 		aiHarnessExecCmd, aiOpenCodeCommandCmd, aiOpenCodeSessionCmd,
 	} {
 		if !command.Hidden {
@@ -1340,7 +1214,7 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 		t.Fatalf("typographic quote not doubled: %s", got)
 	}
 	t.Setenv("SHELL", "")
-	for _, harness := range []string{ai.HarnessDevin, ai.HarnessOpenCode} {
+	for _, harness := range []string{ai.HarnessOpenCode} {
 		if got := harnessWrapperCommandLine("windows", harness, arguments); !strings.HasPrefix(got, "& 'C:\\Users") {
 			t.Fatalf("%s falls back to the PowerShell form for a path that needs quoting: %s", harness, got)
 		}
@@ -1350,7 +1224,7 @@ func TestHarnessWrapperCommandLineMatchesTheHarnessShell(t *testing.T) {
 		t.Fatalf("OpenCode under Git Bash falls back to the cmd form: %s", got)
 	}
 	plain := []string{`C:\Users\dev\.phase\ai\bin\phase-hook-v1.exe`, "ai", "__harness-exec", "--lease", "Y29kZXg6YQ"}
-	for _, harness := range []string{ai.HarnessDevin, ai.HarnessOpenCode} {
+	for _, harness := range []string{ai.HarnessOpenCode} {
 		if got, want := harnessWrapperCommandLine("windows", harness, plain), "C:/Users/dev/.phase/ai/bin/phase-hook-v1.exe ai __harness-exec --lease Y29kZXg6YQ"; got != want {
 			t.Fatalf("%s on Windows:\n got %s\nwant %s", harness, got, want)
 		}

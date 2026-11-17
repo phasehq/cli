@@ -17,7 +17,7 @@ func TestSkillTargetsHaveStableUniqueHarnessIDs(t *testing.T) {
 			t.Fatalf("target %q did not resolve by ID: %#v, %v", target.ID, resolved, ok)
 		}
 	}
-	for _, required := range []string{HarnessClaudeCode, HarnessCursor, HarnessCodex, HarnessDevin, HarnessOpenCode} {
+	for _, required := range []string{HarnessClaudeCode, HarnessCursor, HarnessCodex, HarnessOpenCode} {
 		if !seen[required] {
 			t.Fatalf("missing harness target %q", required)
 		}

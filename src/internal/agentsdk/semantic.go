@@ -18,20 +18,6 @@ func semanticMapValue(values map[string]string, canonical string) (string, bool,
 	return aliasValue, aliased, false
 }
 
-func canonicalSemanticKey(value string, canonicalNames []string) (string, bool) {
-	matched := ""
-	for _, canonical := range canonicalNames {
-		if value != canonical && value != lowerCamelSemanticName(canonical) {
-			continue
-		}
-		if matched != "" {
-			return "", false
-		}
-		matched = canonical
-	}
-	return matched, matched != ""
-}
-
 func lowerCamelSemanticName(value string) string {
 	if !strings.Contains(value, "_") {
 		return value

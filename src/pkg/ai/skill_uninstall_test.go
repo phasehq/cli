@@ -57,7 +57,7 @@ func TestUninstallSkillsDeduplicatesSharedPathAndRemovesEmptyParent(t *testing.T
 		t.Fatal(err)
 	}
 
-	// Codex and Devin already share this canonical target; explicit duplicates
+	// Codex already share this canonical target; explicit duplicates
 	// must still produce one cleanup operation and one result.
 	removed, err := UninstallSkills(target.Path, target.Path)
 	if err != nil {

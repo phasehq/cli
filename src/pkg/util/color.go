@@ -1,8 +1,6 @@
 package util
 
 import (
-	"fmt"
-	"os"
 	"syscall"
 
 	"golang.org/x/term"
@@ -39,11 +37,7 @@ func wrap(code, text string, isTTY bool) string {
 
 func Bold(text string) string        { return wrap(ansiBold, text, stdoutIsTTY()) }
 func BoldGreen(text string) string    { return wrap(ansiBoldGreen, text, stdoutIsTTY()) }
-func BoldCyan(text string) string     { return wrap(ansiBoldCyan, text, stdoutIsTTY()) }
-func BoldMagenta(text string) string  { return wrap(ansiBoldMagenta, text, stdoutIsTTY()) }
 func BoldYellow(text string) string   { return wrap(ansiBoldYellow, text, stdoutIsTTY()) }
-func BoldRed(text string) string      { return wrap(ansiBoldRed, text, stdoutIsTTY()) }
-func BoldWhite(text string) string    { return wrap(ansiBoldWhite, text, stdoutIsTTY()) }
 
 // --- stderr helpers ---
 
@@ -53,7 +47,6 @@ func BoldCyanErr(text string) string    { return wrap(ansiBoldCyan, text, stderr
 func BoldMagentaErr(text string) string { return wrap(ansiBoldMagenta, text, stderrIsTTY()) }
 func BoldYellowErr(text string) string  { return wrap(ansiBoldYellow, text, stderrIsTTY()) }
 func BoldRedErr(text string) string     { return wrap(ansiBoldRed, text, stderrIsTTY()) }
-func BoldWhiteErr(text string) string   { return wrap(ansiBoldWhite, text, stderrIsTTY()) }
 
 // AnsiCodes returns the raw ANSI prefix/reset for use in tree rendering, etc.
 // Returns empty strings when stdout is not a TTY.
@@ -62,9 +55,4 @@ func AnsiCodes() (bold, cyan, green, magenta, reset string) {
 		return "", "", "", "", ""
 	}
 	return ansiBold, "\033[36m", "\033[32m", "\033[35m", ansiReset
-}
-
-// Fprintf convenience: prints a formatted line to stderr with optional color.
-func FprintStderr(format string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, format, a...)
 }
