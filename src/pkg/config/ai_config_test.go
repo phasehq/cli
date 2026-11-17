@@ -17,14 +17,21 @@ func overrideAIConfigPath(t *testing.T, path string) {
 	t.Cleanup(func() { AIConfigPath = original })
 }
 
-func TestLoadAIConfigIgnoresVersionOneAndUnknownKeys(t *testing.T) {
+func TestLoadAIConfigReadsReleasedFileAndIgnoresUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ai.json")
 	overrideAIConfigPath(t, path)
 	if err := os.WriteFile(path, []byte(`{"version":"1","maskSecretValues":false}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if cfg := LoadAIConfig(); cfg != nil {
-		t.Fatalf("a version 1 file was read: %+v", cfg)
+	released := LoadAIConfig()
+	if released == nil || !released.Enabled || len(released.ConfiguredHarnessIDs()) != 0 || len(released.ConfiguredSkillInstallPaths()) != 0 || released.HarnessEnabled("claude-code") {
+		t.Fatalf("a released file did not read as enabled with no harnesses: %+v", released)
+	}
+	if err := RecordOpenCodePlugin("/tmp/plugin.js"); err != nil {
+		t.Fatalf("a released file blocked setup: %v", err)
+	}
+	if upgraded := LoadAIConfig(); upgraded == nil || upgraded.Version != AIConfigVersion || !upgraded.Enabled {
+		t.Fatalf("a released file was not saved in the current shape: %+v", upgraded)
 	}
 	payload := `{"version":"3","enabled":true,"proxyMode":"local","maskSecretValues":true,"harnessId":"codex","skillInstallPath":"/old/SKILL.md","harnessIds":["cursor"]}`
 	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {

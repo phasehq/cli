@@ -68,6 +68,10 @@ func init() {
 	// `phase auth --mode aws-iam` / `--mode azure` that don't go through
 	// NewPhase(). The SDK caches its HTTP client on first use, so this must
 	// happen before any request is made.
+	// The root hook runs for every command, including subcommands that define
+	// their own hook, because hooks are traversed.
+	cobra.EnableTraverseRunHooks = true
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) { noticeStaleSkill(cmd) }
 	config.ConfigureSSLVerification()
 	phase.ConfigureUserAgent()
 

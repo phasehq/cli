@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/phasehq/cli/pkg/ai"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	gokeyring "github.com/zalando/go-keyring"
 )
@@ -18,6 +19,9 @@ func TestMain(m *testing.M) {
 	}
 	hookRuntimeDir = func() (string, error) { return directory, nil }
 	aiCAStore = phaseproxy.CAStore{Directory: directory, Keyring: fixedKeyring{err: gokeyring.ErrNotFound}}
+	// The stale-skill notice reads the home directory's skill paths; only its
+	// own tests, which set a temporary HOME, may run it.
+	staleSkillCheck = func() []ai.StaleSkill { return nil }
 	code := m.Run()
 	_ = os.RemoveAll(directory)
 	os.Exit(code)

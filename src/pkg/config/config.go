@@ -195,6 +195,9 @@ var AIConfigPath = filepath.Join(homeDir(), ".phase", "ai.json")
 
 const AIConfigVersion = "3"
 
+// releasedAIConfigVersion is what CLI v2.3.3 and earlier wrote.
+const releasedAIConfigVersion = "1"
+
 type AIConfig struct {
 	Version           string   `json:"version"`
 	Enabled           bool     `json:"enabled"`
@@ -221,6 +224,12 @@ func LoadAIConfig() *AIConfig {
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
+	}
+	if raw.Version == releasedAIConfigVersion {
+		// The released CLI wrote only a version and a masking choice, and the
+		// file's presence meant AI mode was on. It installed a skill and no
+		// harness integration, so it reads as enabled with no harnesses.
+		return &AIConfig{Version: AIConfigVersion, Enabled: true}
 	}
 	if raw.Version != AIConfigVersion || raw.Enabled == nil {
 		return nil
