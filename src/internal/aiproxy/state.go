@@ -65,6 +65,9 @@ type runtimeState struct {
 	// the Console last listed them. They carry nothing the Agent's processes
 	// were given, so they change in place.
 	expired []agentapi.ExpiredConnection
+	// apps are the Workflow's app Connections, as the Console last listed
+	// them. The proxy only reports them; nothing is routed for them.
+	apps []agentapi.AppConnection
 	// presets and hints are session-local memory: the Console's preset list,
 	// and recent dead ends with what to ask for to get past them.
 	presets *presetCache
@@ -106,6 +109,7 @@ func newRuntimeStateWithCapability(session *airuntime.ProxySession, runtimeCapab
 		changed:           make(chan struct{}),
 		refreshRequests:   make(chan struct{}, 1),
 		expired:           append([]agentapi.ExpiredConnection(nil), session.Config.ExpiredConnections...),
+		apps:              append([]agentapi.AppConnection(nil), session.Config.AppConnections...),
 		presets:           newPresetCache(session.Client),
 		hints:             &hintLog{},
 		client:            session.Client,
@@ -522,6 +526,7 @@ func (s *runtimeState) replaceConfig(config *agentapi.SessionConfig) error {
 	oldBindings := s.bindings
 	s.bindings = bindings
 	s.expired = append([]agentapi.ExpiredConnection(nil), config.ExpiredConnections...)
+	s.apps = append([]agentapi.AppConnection(nil), config.AppConnections...)
 	s.expiresAt = config.ExpiresAt
 	s.generation = config.ConfigGeneration
 	s.configEnv = cloneStringMap(config.ConfigEnv)
@@ -573,7 +578,29 @@ func (s *runtimeState) statusConnections(now time.Time) []remoteapi.StatusConnec
 			GrantExpiresAt:     candidate.connection.GrantExpiresAt,
 		})
 	}
+	for _, app := range s.apps {
+		state, reason := appConnectionState(app, now)
+		connections = append(connections, remoteapi.StatusConnection{
+			ConnectionID: app.ConnectionID, Name: app.ConnectionName, ServiceType: agentapi.PhaseAppServiceType,
+			State: state, StateReason: reason, GrantExpiresAt: app.GrantExpiresAt, AppScope: appScope(app),
+		})
+	}
 	return connections
+}
+
+// appConnectionState is active until the grant's time limit passes. The
+// Console decides every secrets call itself, so nothing else can make an app
+// Connection unavailable here.
+func appConnectionState(app agentapi.AppConnection, now time.Time) (string, string) {
+	if app.GrantExpiresAt != nil && !app.GrantExpiresAt.After(now) {
+		return "expired", agentapi.AccessExpired
+	}
+	return "active", ""
+}
+
+func appScope(app agentapi.AppConnection) remoteapi.AppScope {
+	reference := app.App
+	return remoteapi.AppScope{App: &reference, Environments: app.Environments, Access: app.Access}
 }
 
 // printableState is the state of a Connection in this proxy: ready, expired

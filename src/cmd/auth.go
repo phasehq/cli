@@ -207,7 +207,7 @@ func runAgentTokenAuth(cmd *cobra.Command, host, authToken string) error {
 		cmd.OutOrStdout(),
 		"%s\n",
 		util.BoldGreen(fmt.Sprintf(
-			"✅ AI Agent authentication successful: %s / %s (%s). This login can use only phase ai commands.",
+			"✅ AI Agent authentication successful: %s / %s (%s). This login can use phase ai, and phase secrets, phase run, phase apps list and phase init for the apps its Workflow has access to.",
 			agentDisplayName(userConfig),
 			agentWorkflowDisplay(userConfig),
 			organizationDisplayName(userConfig),

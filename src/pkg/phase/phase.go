@@ -2,6 +2,7 @@ package phase
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,17 +19,16 @@ import (
 	"github.com/phasehq/golang-sdk/v2/phase/network"
 )
 
-// Create new Phase client. Return host and token
+// errAgentLoginCommand is what a command that only personal and service
+// tokens can use says to an Agent login.
+var errAgentLoginCommand = errors.New("This command is not available to an Agent login. An Agent can use phase ai, phase secrets, phase run, phase apps list and phase init.")
+
+// Create new Phase client. Return host and token. The SDK client serves
+// personal and service tokens only; an Agent login goes through NewBackend.
 func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 	if init {
-		if envToken := os.Getenv("PHASE_SERVICE_TOKEN"); strings.HasPrefix(envToken, "pss_agent:") {
-			return nil, fmt.Errorf("the active login is an Agent token and can only be used with phase ai commands")
-		}
-		if os.Getenv("PHASE_SERVICE_TOKEN") == "" {
-			if user, err := config.GetDefaultUser(); err == nil && user != nil &&
-				user.IsAgentPrincipal() {
-				return nil, fmt.Errorf("the active login is an Agent token and can only be used with phase ai commands")
-			}
+		if ActiveLoginIsAgent() {
+			return nil, errAgentLoginCommand
 		}
 		creds, err := keyring.GetCredentials()
 		if err != nil {
@@ -47,7 +47,7 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 		}
 	}
 	if strings.HasPrefix(pss, "pss_agent:") {
-		return nil, fmt.Errorf("Agent tokens are scoped to phase ai commands and cannot access ordinary secrets APIs")
+		return nil, errAgentLoginCommand
 	}
 
 	// Root initialization configures this once for CLI commands. Keep this call
@@ -157,8 +157,17 @@ func PhaseGetContext(userData *misc.AppKeyResponse, appName, envName, appID stri
 // extra request is needed. The network is consulted only when no cache is
 // available, and never in offline mode. If nothing resolves, falls back to the
 // supplied selectors, with the app ID standing in for a missing app name.
-func ResolveNames(p *sdk.Phase, appName, envName, appID string) (string, string) {
-	return resolveNames(p, appName, envName, appID, getCacheDir())
+//
+// An Agent login resolves from the listing its backend already holds.
+func ResolveNames(backend SecretsBackend, appName, envName, appID string) (string, string) {
+	switch b := backend.(type) {
+	case *AgentBackend:
+		return b.resolveNames(appName, envName, appID)
+	case *sdk.Phase:
+		return resolveNames(b, appName, envName, appID, getCacheDir())
+	default:
+		return fallbackNames(appName, envName, appID)
+	}
 }
 
 func resolveNames(p *sdk.Phase, appName, envName, appID, cacheDir string) (string, string) {

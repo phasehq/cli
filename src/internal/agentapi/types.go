@@ -630,6 +630,15 @@ type Connection struct {
 // Connection. Packaged services keep their own service types.
 const CustomHTTPServiceType = sdkagents.CustomHTTPServiceType
 
+// PhaseAppServiceType is the service type of an app Connection.
+const PhaseAppServiceType = sdkagents.PhaseAppServiceType
+
+type AppConnection = sdkagents.AppConnection
+type AppAccessResponse = sdkagents.AppAccessResponse
+type AppRef = sdkagents.AppRef
+type AppEnvironment = sdkagents.AppEnvironment
+type AppAccess = sdkagents.AppAccess
+
 // EffectiveInjections returns what the proxy applies to a request: the list
 // when the payload carries one, otherwise the single packaged-service
 // injection.
@@ -664,6 +673,9 @@ type SessionConfig struct {
 	// ExpiredConnections are this Workflow's grants whose time limit passed
 	// recently; the proxy lists them so the Agent knows what to ask to renew.
 	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
+	// AppConnections are the app Connections the Workflow can use. The proxy
+	// only lists them: secrets calls go to the Console with the Agent token.
+	AppConnections []AppConnection `json:"appConnections,omitempty"`
 }
 
 type OpenSessionResponse struct {
@@ -716,6 +728,7 @@ type DiscoverResponse struct {
 	ConfigEnv          map[string]string    `json:"configEnv"`
 	Connections        []DiscoverConnection `json:"connections"`
 	ExpiredConnections []ExpiredConnection  `json:"expiredConnections,omitempty"`
+	AppConnections     []AppConnection      `json:"appConnections,omitempty"`
 }
 
 type ContextResponse struct {

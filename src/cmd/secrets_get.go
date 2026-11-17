@@ -46,7 +46,7 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
 		return err
 	}

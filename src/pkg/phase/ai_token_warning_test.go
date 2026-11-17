@@ -58,8 +58,8 @@ func TestNewPhaseWarnsAIToolsAboutBroadTokensOnStderrOnce(t *testing.T) {
 	for _, test := range []struct {
 		name, key, value, token, harness, holder string
 	}{
-		{"personal", "CLAUDECODE", "1", testToken("pss_user:"), "Claude Code", "a personal access token, which carries your full Phase access"},
-		{"service account", "AGENT", "goose", testToken("pss_service:"), "goose", "a service account token, which carries the service account's full Phase access"},
+		{"personal", "CLAUDECODE", "1", testToken("pss_user:"), "Claude Code", "your personal access token"},
+		{"service account", "AGENT", "goose", testToken("pss_service:"), "goose", "a service account token"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			isolateHarness(t, test.key, test.value)
@@ -74,7 +74,7 @@ func TestNewPhaseWarnsAIToolsAboutBroadTokensOnStderrOnce(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("the warning reached stdout: %q", stdout)
 			}
-			want := "⚠️  Phase: " + test.harness + " is running this command with " + test.holder + ". AI tools should use an Agent token instead (`phase auth --mode token`), which works with `phase ai` commands only.\n"
+			want := "Phase: tip: " + test.harness + " is using " + test.holder + ". An Agent token gives AI tools narrower access: phase auth --mode token.\n"
 			if stderr != want {
 				t.Fatalf("stderr = %q, want exactly one line %q", stderr, want)
 			}

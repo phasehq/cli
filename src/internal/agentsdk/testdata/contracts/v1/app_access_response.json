@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "apps": [
+    {
+      "connectionId": "c0a80101-0000-4000-8000-0000000000c1",
+      "connectionName": "orders-service secrets (Development, Staging)",
+      "grantId": "c0a80101-0000-4000-8000-0000000000d1",
+      "app": {"id": "c0a80101-0000-4000-8000-0000000000e1", "name": "orders-service"},
+      "environments": [
+        {"id": "c0a80101-0000-4000-8000-0000000000f1", "name": "Development", "envType": "dev"},
+        {"id": "c0a80101-0000-4000-8000-0000000000f2", "name": "Staging", "envType": "staging"}
+      ],
+      "access": {
+        "read": {"effect": "allow"},
+        "create": {"effect": "allow", "until": "2026-11-17T12:00:00Z"},
+        "update": {"effect": "ask"},
+        "delete": {"effect": "block"}
+      },
+      "grantExpiresAt": null
+    }
+  ],
+  "expired": [
+    {
+      "connectionId": "c0a80101-0000-4000-8000-0000000000c2",
+      "connectionName": "billing secrets (Production)",
+      "app": {"id": "c0a80101-0000-4000-8000-0000000000e2", "name": "billing"},
+      "expiredAt": "2026-11-16T09:00:00Z"
+    }
+  ]
+}

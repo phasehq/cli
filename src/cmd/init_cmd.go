@@ -32,12 +32,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	envFlag, _ := cmd.Flags().GetString("env")
 	monorepoFlag, _ := cmd.Flags().GetBool("monorepo")
 
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
 		return err
 	}
 
-	data, err := phase.Init(p)
+	data, err := phase.UserData(p)
 	if err != nil {
 		return err
 	}

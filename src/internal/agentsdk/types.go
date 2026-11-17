@@ -507,6 +507,9 @@ type OpenSessionResponse struct {
 	// ExpiredConnections are grants of this Workflow whose time limit passed
 	// recently, so the client can say what may be renewed.
 	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
+	// AppConnections are the app Connections the Workflow can use, listed
+	// for the Agent only: the proxy never routes or injects anything for them.
+	AppConnections []AppConnection `json:"appConnections,omitempty"`
 }
 
 // AgentKey carries the server's wrapped share of the Agent's key exchange
@@ -557,8 +560,9 @@ type RefreshConfigResponse struct {
 	ConfigEnv        StringMap           `json:"configEnv"`
 	Connections      []RuntimeConnection `json:"connections"`
 	AgentKey         *AgentKey           `json:"agentKey,omitempty"`
-	// ExpiredConnections: see OpenSessionResponse.
+	// ExpiredConnections and AppConnections: see OpenSessionResponse.
 	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
+	AppConnections     []AppConnection     `json:"appConnections,omitempty"`
 }
 
 // RuntimeConnection is one granted Connection of a session. A packaged service
@@ -853,8 +857,9 @@ type DiscoverResponse struct {
 	ConfigGeneration uint64               `json:"configGeneration"`
 	ConfigEnv        StringMap            `json:"configEnv"`
 	Connections      []DiscoverConnection `json:"connections"`
-	// ExpiredConnections: see OpenSessionResponse.
+	// ExpiredConnections and AppConnections: see OpenSessionResponse.
 	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
+	AppConnections     []AppConnection     `json:"appConnections,omitempty"`
 }
 
 type DiscoverConnection struct {

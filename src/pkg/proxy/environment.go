@@ -198,6 +198,32 @@ func RuntimeControlEnvironmentKey(key string) bool {
 	return TrustEnvironmentKey(key)
 }
 
+// ReservedRunEnvironmentKey reports whether a variable name belongs to a Phase
+// AI session: proxy routing, trust settings, the Phase runtime and token
+// variables, and every credential variable of a provider the proxy injects.
+// phase run inside a session never lets an app secret replace one of them, or
+// a secret could take the place of a decoy or route traffic around the proxy.
+// Names are compared case-insensitively, as proxy and CA variables are read in
+// either case.
+func ReservedRunEnvironmentKey(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if strings.HasPrefix(key, "PHASE_AI_") || strings.HasPrefix(key, "PHASE_AGENT_") {
+		return true
+	}
+	if _, ok := protectedEnvironmentKeys[key]; ok {
+		return true
+	}
+	if _, ok := credentialEnvironmentKeys[key]; ok {
+		return true
+	}
+	for _, keys := range providerCredentialEnvironmentKeys {
+		if containsEnvironmentKey(keys, key) {
+			return true
+		}
+	}
+	return false
+}
+
 // TrustEnvironmentKey reports whether key points clients at CA material.
 func TrustEnvironmentKey(key string) bool {
 	key = strings.ToUpper(strings.TrimSpace(key))

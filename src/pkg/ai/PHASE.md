@@ -126,7 +126,7 @@ curl --fail --silent --show-error http://phase.invalid/v1/connections
 curl --fail --silent --show-error http://phase.invalid/v1/connections/<connection-id>
 ```
 
-Each entry has `id`, `name`, `serviceType`, and `state` (`ready`, `expired`, or `unavailable`, with a `stateReason` that says why). An `http` Connection also has its full `definition`, `valueRevision`, and `keyVersion`. An entry may also carry the `policy` on this Workflow's access and `grantExpiresAt`; both are explained in the next sections.
+Each entry has `id`, `name`, `serviceType`, and `state` (`ready`, `expired`, or `unavailable`, with a `stateReason` that says why). An `http` Connection also has its full `definition`, `valueRevision`, and `keyVersion`. An entry may also carry the `policy` on this Workflow's access and `grantExpiresAt`; both are explained in the next sections. An app Connection (`serviceType` `phase_app`, `state` `active` or `expired`) gives access to an app's secrets through `phase secrets` and `phase run`, not through the proxy; the `phase-cli-app-secrets` skill explains it and the requests that ask for it.
 
 You never change a Connection yourself, and you can never supply a secret value. Ask for the change as an `action` on a request; a member reviews it in the Console and enters any secret there. The `kind` must match the action:
 
@@ -233,7 +233,7 @@ curl --fail --silent --show-error 'http://phase.invalid/v1/requests/request-456?
 
 Keep using the same request while it is pending. A denied response may include `resolutionNote`; surface it to the user. Resume pending work with `GET http://phase.invalid/v1/requests`. Cancel only when the user explicitly asks, using an empty JSON object at `POST http://phase.invalid/v1/requests/{requestId}/cancel`.
 
-An approved `setup` returns `credentialId`, `connectionId`, `grantId`, and normally `runtimeAction: "restart_required"`. The lifecycle helper can recycle its proxy runtime; retry the explicit `phase ai exec` operation as a new tool call. With `phase ai run`, ask the human to relaunch it. The exception is a new custom Connection that exports no environment variable: the running session serves it at once and the approved `setup` returns `retry`.
+An approved `setup` returns `credentialId`, `connectionId`, `grantId`, and normally `runtimeAction: "restart_required"`. The lifecycle helper can recycle its proxy runtime; retry the explicit `phase ai exec` operation as a new tool call. With `phase ai run`, ask the human to relaunch it. The exceptions are a new custom Connection that exports no environment variable, which the running session serves at once, and access to an app's secrets (`agent_connection.app_access`): both approved `setup` requests return `retry`.
 
 An approved `credential_update` hot-swaps live material and revision when the Agent-visible plan is unchanged and returns `runtimeAction: "retry"`. If identifiers, decoys, routes, or process environment changed, it returns `restart_required`. Do not re-inject environment values yourself; the refresh endpoint is only for the custom Connections described above.
 

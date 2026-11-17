@@ -40,7 +40,7 @@ func TestBroadTokenWarningSkipsCommandsThatDoNotUseTheLogin(t *testing.T) {
 				t.Fatal(executeErr)
 			}
 			written, _ := os.ReadFile(stderrPath)
-			if strings.Contains(string(written)+errOut.String()+out.String(), "Agent token instead") {
+			if strings.Contains(string(written)+errOut.String()+out.String(), "An Agent token gives") {
 				t.Fatalf("phase %s warned about the login it does not use", strings.Join(args, " "))
 			}
 		})

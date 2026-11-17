@@ -11,7 +11,8 @@ import (
 	"github.com/phasehq/cli/internal/remoteapi"
 )
 
-// connectionDetails projects the session's Connections for an Agent to read.
+// connectionDetails projects the session's Connections for an Agent to read,
+// app Connections included.
 // It is served from the configuration the proxy already holds, so it costs no
 // Console call. An empty id returns every Connection. A Connection whose
 // time-limited access has ended is listed as expired with the request that
@@ -46,6 +47,21 @@ func (s *runtimeState) connectionDetails(now time.Time, id string) []remoteapi.C
 		}
 		details = append(details, detail)
 	}
+	for _, app := range s.apps {
+		if (id != "" && app.ConnectionID != id) || !controlIdentifier.MatchString(app.ConnectionID) {
+			continue
+		}
+		state, reason := appConnectionState(app, now)
+		detail := remoteapi.ConnectionDetail{
+			ID: app.ConnectionID, Name: app.ConnectionName, ServiceType: agentapi.PhaseAppServiceType,
+			State: state, StateReason: reason, GrantExpiresAt: app.GrantExpiresAt, AppScope: appScope(app),
+		}
+		if state == "expired" {
+			detail.ExpiredAt = app.GrantExpiresAt
+			detail.Request = renewRequest(app.ConnectionID, app.ConnectionName)
+		}
+		details = append(details, detail)
+	}
 	for _, expired := range s.expired {
 		if (id != "" && expired.ConnectionID != id) || !controlIdentifier.MatchString(expired.ConnectionID) {
 			continue
@@ -54,6 +70,9 @@ func (s *runtimeState) connectionDetails(now time.Time, id string) []remoteapi.C
 		renewed := false
 		for _, candidate := range s.bindings {
 			renewed = renewed || candidate.connection.ConnectionID == expired.ConnectionID
+		}
+		for _, app := range s.apps {
+			renewed = renewed || app.ConnectionID == expired.ConnectionID
 		}
 		if renewed {
 			continue

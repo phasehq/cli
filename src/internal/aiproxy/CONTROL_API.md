@@ -9,8 +9,8 @@ the authentication. Everything below is implemented in
 answers), `bootstrap.go` (manifest) and `selection.go` (per-Connection
 environment). Wire
 types live in
-`internal/agentapi/types.go`, `internal/remoteapi/types.go` and the Go SDK
-(`phase/agents/types.go`).
+`internal/agentapi/types.go`, `internal/remoteapi/types.go` and the in-tree
+Agent client (`internal/agentsdk/types.go`, `internal/agentsdk/app_access.go`).
 
 All IDs, URLs and values in the examples are dummies.
 
@@ -225,6 +225,22 @@ for `POST /v1/requests` that asks a member to renew it, sent unchanged. That
 covers both a Connection whose time ran out since the last refresh and those
 Console lists as expired in the last 30 days (`expiredConnections` in the
 session payload); the latter have no other members.
+
+An app Connection gives access to an app's secrets: `serviceType`
+`phase_app`, `state` `active` (or `expired`, as above), and `app`,
+`environments` and `access`, the effect (`allow`, `ask` or `block`, with
+`until` on a temporary allow) of each class of secrets call (`read`, `create`,
+`update`, `delete`). It comes from `appConnections` in the session payload and
+is listed only: `phase secrets` and `phase run` call the Console's secrets API
+with the Agent token, never through the proxy. `/v1/status` lists it the same
+way.
+
+```json
+{ "id": "c0a80101-0000-4000-8000-0000000000c1", "name": "orders-service secrets (Development, Staging)", "serviceType": "phase_app", "state": "active",
+  "app": { "id": "c0a80101-0000-4000-8000-0000000000e1", "name": "orders-service" },
+  "environments": [{ "id": "c0a80101-0000-4000-8000-0000000000f1", "name": "Development", "envType": "dev" }],
+  "access": { "read": { "effect": "allow" }, "create": { "effect": "allow", "until": "2026-11-17T12:00:00Z" }, "update": { "effect": "ask" }, "delete": { "effect": "block" } } }
+```
 
 `definition`, `valueRevision` and `keyVersion` exist only for `serviceType`
 `http`. `state` uses the same values as status. When a custom Connection's
@@ -483,7 +499,8 @@ in Console and enters any secret there.
 | `agent_connection.secret_update` | `credential_update` | ask a member to enter a new secret; carries no value |
 | `agent_connection.remove` | `connection_removal` | ask to remove this Workflow's grant of a Connection |
 | `agent_connection.create` with `preset` | `setup` | request a new Connection from a preset: `preset` (an ID from `GET /v1/presets`) in place of `definition`; `hosts` only for a preset whose hosts are editable |
-| `agent_grant.allow` | `access_change` | ask to allow, for a limited time, a call the access policy asks about: `connectionId`, `allow` (exactly one of `class`, `match` or `operation`), optional `blockedCall` |
+| `agent_connection.app_access` | `setup` | request access to an app's secrets: `appId` or `appName`, `environments` (1 to 20 names or IDs), `access` (`read` or `read_write`) |
+| `agent_grant.allow` | `access_change` | ask to allow, for a limited time, a call the access policy asks about: `connectionId`, `allow` (exactly one of `class`, `classes`, `match` or `operation`), optional `blockedCall` |
 | `agent_grant.renew` | `access_change` | ask to renew time-limited access: `connectionId` |
 | `agent_workflow.context_update` | `context_update` | ask to replace the Workflow's saved context: `markdown`, the complete new text |
 
@@ -491,11 +508,14 @@ Rules enforced by the proxy for a request with an `action`: the type is one of
 those above, `version` is `1`, `kind` is the one listed for the type, and the
 action carries no secret value (no `value` member on the action itself, and in
 `definition.fields` a `value` only on a field of kind `identifier`; a
-`definition` that is not an object is refused). Three types have one more local
+`definition` that is not an object is refused). Four types have one more local
 check each: a `preset` is an ID and stands in place of `definition`, never
-beside it; `allow` has exactly one of `class`, `match` or `operation` (an AWS
-action such as `ec2:TerminateInstances`), and its class is never
-`credential_minting`; `markdown` of a context update is text of at most
+beside it; `allow` has exactly one of `class`, `classes` (a list of different classes,
+as an app Connection's refusal asks for), `match` or `operation` (an AWS
+action such as `ec2:TerminateInstances`), and no class is ever
+`credential_minting`; an app access request names one app (`appId` or
+`appName`), 1 to 20 different environments and `access` `read` or
+`read_write`; `markdown` of a context update is text of at most
 16384 characters. Everything else inside `action` is forwarded to Console
 untouched, including members this CLI does not know, and Console validates it. `title` (≤ 120 characters, plain text) and `markdown` are
 optional beside an action; a missing `markdown` is forwarded as `""`.

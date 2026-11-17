@@ -281,6 +281,14 @@ func (c *Client) do(ctx context.Context, method, endpoint string, requestBody, r
 // part of the Console contract (for example, request creation distinguishes a
 // newly created 201 response from a deduplicated/cooldown 200 response).
 func (c *Client) doWithStatus(ctx context.Context, method, endpoint string, requestBody, responseBody any, sessionCredential SensitiveString) (int, error) {
+	return c.doRequest(ctx, method, endpoint, requestBody, responseBody, sessionCredential, decodeAPIError)
+}
+
+// doRequest is the one hardened transport every Console call goes through:
+// no redirects, the response cap and bounded errors. decodeError turns a non-2xx
+// body into an error that never carries the body itself.
+func (c *Client) doRequest(ctx context.Context, method, endpoint string, requestBody, responseBody any, sessionCredential SensitiveString,
+	decodeError func(int, []byte, http.Header) error) (int, error) {
 	var body io.Reader
 	var requestPayload []byte
 	if requestBody != nil {
@@ -323,7 +331,7 @@ func (c *Client) doWithStatus(ctx context.Context, method, endpoint string, requ
 		return resp.StatusCode, errors.New("Agent response exceeds the 4 MiB limit")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resp.StatusCode, decodeAPIError(resp.StatusCode, responsePayload, resp.Header)
+		return resp.StatusCode, decodeError(resp.StatusCode, responsePayload, resp.Header)
 	}
 	if responseBody == nil || len(bytes.TrimSpace(responsePayload)) == 0 {
 		return resp.StatusCode, nil

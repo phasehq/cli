@@ -44,7 +44,7 @@ func init() {
 }
 
 // listSecrets fetches and displays secrets. Used by list, create, update, and delete commands.
-func listSecrets(p *sdk.Phase, envName, appName, appID, tags, path string, show, dynamic, lease bool, leaseTTL *int) error {
+func listSecrets(p phase.SecretsBackend, envName, appName, appID, tags, path string, show, dynamic, lease bool, leaseTTL *int) error {
 	opts := sdk.GetOptions{
 		EnvName:  envName,
 		AppName:  appName,
@@ -82,7 +82,7 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	writeSecretsListGuidance(os.Stdout, os.Stderr, show, ai.IsAIAgent())
+	writeSecretsListGuidance(os.Stdout, os.Stderr, show, ai.IsAIAgent() || ai.AgentLogin())
 	return nil
 }
 

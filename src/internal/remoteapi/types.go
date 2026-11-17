@@ -48,6 +48,16 @@ type StatusConnection struct {
 	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
 	// GrantExpiresAt is when time-limited access to the Connection ends.
 	GrantExpiresAt *time.Time `json:"grantExpiresAt,omitempty"`
+	AppScope
+}
+
+// AppScope describes an app Connection (serviceType phase_app): the app, the
+// environments it covers and what this Workflow may do in them now. Secrets
+// calls go to the Console with the Agent token, never through the proxy.
+type AppScope struct {
+	App          *agentapi.AppRef          `json:"app,omitempty"`
+	Environments []agentapi.AppEnvironment `json:"environments,omitempty"`
+	Access       agentapi.AppAccess        `json:"access,omitempty"`
 }
 
 type StatusResponse struct {
@@ -82,6 +92,7 @@ type ConnectionDetail struct {
 	GrantExpiresAt *time.Time      `json:"grantExpiresAt,omitempty"`
 	ExpiredAt      *time.Time      `json:"expiredAt,omitempty"`
 	Request        json.RawMessage `json:"request,omitempty"`
+	AppScope
 }
 
 // PresetsResponse lists the provider presets a Connection can be asked for by

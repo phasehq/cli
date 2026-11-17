@@ -37,12 +37,12 @@ type envListEntry struct {
 }
 
 func runAppsList(cmd *cobra.Command, args []string) error {
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
 		return err
 	}
 
-	data, err := phase.Init(p)
+	data, err := phase.UserData(p)
 	if err != nil {
 		return err
 	}

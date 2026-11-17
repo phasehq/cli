@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/config"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
@@ -111,6 +112,9 @@ func renderAIStatus(ctx context.Context) string {
 				if connection.State != "" {
 					line += ": " + connection.State
 				}
+				if scope := appScopeSummary(connection.AppScope); scope != "" {
+					line += "; " + scope
+				}
 				if index == 0 {
 					out.WriteString("Connections: " + line + "\n")
 				} else {
@@ -151,6 +155,44 @@ func renderAIStatus(ctx context.Context) string {
 		}
 	}
 	return out.String()
+}
+
+// appScopeSummary describes an app Connection in one line: the app, its
+// environments and what each class of secrets call does now, for example
+// "orders-service (Development, Staging): read, create until 12:00Z allowed;
+// update, delete ask".
+func appScopeSummary(scope remoteapi.AppScope) string {
+	if scope.App == nil {
+		return ""
+	}
+	names := make([]string, 0, len(scope.Environments))
+	for _, environment := range scope.Environments {
+		names = append(names, environment.Name)
+	}
+	summary := scope.App.Name + " (" + strings.Join(names, ", ") + ")"
+	byEffect := map[string][]string{}
+	for _, class := range []string{agentapi.ClassRead, agentapi.ClassCreate, agentapi.ClassUpdate, agentapi.ClassDelete} {
+		for key, access := range scope.Access {
+			if string(key) != class {
+				continue
+			}
+			name := class
+			if access.Until != nil {
+				name += " until " + access.Until.UTC().Format("2006-01-02 15:04Z")
+			}
+			byEffect[string(access.Effect)] = append(byEffect[string(access.Effect)], name)
+		}
+	}
+	var effects []string
+	for _, effect := range [][2]string{{agentapi.PolicyAllow, "allowed"}, {agentapi.PolicyAsk, "ask"}, {agentapi.PolicyBlock, "blocked"}} {
+		if classes := byEffect[effect[0]]; len(classes) > 0 {
+			effects = append(effects, strings.Join(classes, ", ")+" "+effect[1])
+		}
+	}
+	if len(effects) > 0 {
+		summary += ": " + strings.Join(effects, "; ")
+	}
+	return summary
 }
 
 func aiStatusConnections(ctx context.Context, rawProxyURL string) []remoteapi.StatusConnection {

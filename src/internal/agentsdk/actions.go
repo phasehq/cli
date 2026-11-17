@@ -20,6 +20,9 @@ const (
 	ActionConnectionUpdate       RequestActionType = "agent_connection.update"
 	ActionConnectionSecretUpdate RequestActionType = "agent_connection.secret_update"
 	ActionConnectionRemove       RequestActionType = "agent_connection.remove"
+	// ActionConnectionAppAccess asks for access to an app's secrets in some
+	// of its environments, through an app Connection.
+	ActionConnectionAppAccess RequestActionType = "agent_connection.app_access"
 	// ActionGrantAllow asks to allow, for a limited time, a call the access
 	// policy asks about. ActionGrantRenew asks to renew time-limited access.
 	ActionGrantAllow RequestActionType = "agent_grant.allow"
@@ -36,6 +39,9 @@ const (
 	// context may hold.
 	MaxWorkflowContextLength = 16384
 	maxPresetIDLength        = 64
+	// maxAppAccessEnvironments is the most environments one app access
+	// request may name.
+	maxAppAccessEnvironments = 20
 )
 
 // requestActionKinds is the action registry: every action type this client
@@ -46,6 +52,7 @@ var requestActionKinds = map[RequestActionType]RequestKind{
 	ActionConnectionUpdate:       RequestConnectionUpdate,
 	ActionConnectionSecretUpdate: RequestCredentialUpdate,
 	ActionConnectionRemove:       RequestConnectionRemoval,
+	ActionConnectionAppAccess:    RequestSetup,
 	ActionGrantAllow:             RequestAccessChange,
 	ActionGrantRenew:             RequestAccessChange,
 	ActionWorkflowContextUpdate:  RequestContextUpdate,
@@ -106,8 +113,10 @@ func ValidateRequestAction(kind RequestKind, action json.RawMessage) error {
 }
 
 // validateActionMembers holds the per-type checks: a preset stands in place
-// of a definition, an allow names exactly one class, match or operation and never the
-// secret guard's class, and a Workflow context is text within the size cap.
+// of a definition, an app access request names one app, its environments and
+// an access level, an allow names exactly one of a class, a list of classes, a
+// match or an operation and never the secret guard's class, and a Workflow
+// context is text within the size cap.
 func validateActionMembers(actionType RequestActionType, members map[string]json.RawMessage) error {
 	switch actionType {
 	case ActionConnectionCreate:
@@ -122,16 +131,19 @@ func validateActionMembers(actionType RequestActionType, members map[string]json
 		if _, both := members["definition"]; both {
 			return fmt.Errorf("agents: send a preset or a definition, not both")
 		}
+	case ActionConnectionAppAccess:
+		return validateAppAccessMembers(members)
 	case ActionGrantAllow:
 		var allow map[string]json.RawMessage
 		if err := json.Unmarshal(members["allow"], &allow); err != nil || allow == nil {
-			return fmt.Errorf("agents: allow must be an object with a class, a match or an operation")
+			return fmt.Errorf("agents: allow must be an object with a class, classes, a match or an operation")
 		}
 		rawClass, hasClass := allow["class"]
+		rawClasses, hasClasses := allow["classes"]
 		_, hasMatch := allow["match"]
 		rawOperation, hasOperation := allow["operation"]
-		if countTrue(hasClass, hasMatch, hasOperation) != 1 {
-			return fmt.Errorf("agents: allow must have exactly one of class, match or operation")
+		if countTrue(hasClass, hasClasses, hasMatch, hasOperation) != 1 {
+			return fmt.Errorf("agents: allow must have exactly one of class, classes, match or operation")
 		}
 		if hasOperation {
 			var operation string
@@ -139,11 +151,20 @@ func validateActionMembers(actionType RequestActionType, members map[string]json
 				return fmt.Errorf("agents: allow.operation must be an AWS action such as ec2:TerminateInstances")
 			}
 		}
+		var classes []string
 		if hasClass {
 			var class string
 			if err := json.Unmarshal(rawClass, &class); err != nil || class == "" {
 				return fmt.Errorf("agents: allow.class must name a class")
 			}
+			classes = []string{class}
+		}
+		if hasClasses {
+			if err := json.Unmarshal(rawClasses, &classes); err != nil || len(classes) == 0 || !distinctNonEmpty(classes) {
+				return fmt.Errorf("agents: allow.classes must name one or more different classes")
+			}
+		}
+		for _, class := range classes {
 			if OperationClass(class) == ClassCredentialMinting {
 				return fmt.Errorf("agents: calls that mint credentials are always blocked and cannot be requested")
 			}
@@ -159,6 +180,55 @@ func validateActionMembers(actionType RequestActionType, members map[string]json
 		}
 	}
 	return nil
+}
+
+// validateAppAccessMembers checks the shape of an app access request: one
+// app by ID or by name, the environments by name or ID, and the access level.
+// Whether the app and environments exist is the Console's to say.
+func validateAppAccessMembers(members map[string]json.RawMessage) error {
+	var appID, appName string
+	_, hasID := members["appId"]
+	_, hasName := members["appName"]
+	if hasID {
+		if err := json.Unmarshal(members["appId"], &appID); err != nil || strings.TrimSpace(appID) == "" {
+			return fmt.Errorf("agents: appId must be an app ID")
+		}
+	}
+	if hasName {
+		if err := json.Unmarshal(members["appName"], &appName); err != nil || strings.TrimSpace(appName) == "" {
+			return fmt.Errorf("agents: appName must be an app name")
+		}
+	}
+	if hasID == hasName {
+		return fmt.Errorf("agents: name the app with exactly one of appId or appName")
+	}
+	var environments []string
+	if err := json.Unmarshal(members["environments"], &environments); err != nil || len(environments) == 0 ||
+		len(environments) > maxAppAccessEnvironments || !distinctNonEmpty(environments) {
+		return fmt.Errorf("agents: environments must name 1 to %d different environments", maxAppAccessEnvironments)
+	}
+	var access string
+	if err := json.Unmarshal(members["access"], &access); err != nil || (access != "read" && access != "read_write") {
+		return fmt.Errorf("agents: access must be read or read_write")
+	}
+	return nil
+}
+
+// distinctNonEmpty reports whether every value is non-blank and none repeats,
+// ignoring case.
+func distinctNonEmpty(values []string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key == "" {
+			return false
+		}
+		if _, repeated := seen[key]; repeated {
+			return false
+		}
+		seen[key] = struct{}{}
+	}
+	return true
 }
 
 func countTrue(values ...bool) int {

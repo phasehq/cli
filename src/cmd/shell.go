@@ -31,6 +31,9 @@ func init() {
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
+	if phase.ActiveLoginIsAgent() {
+		return phase.ErrAgentShell
+	}
 	if ai.IsAIAgent() {
 		return fmt.Errorf("phase shell is not available in AI mode — it would give unrestricted access to injected secrets. Use 'phase run <command>' instead")
 	}

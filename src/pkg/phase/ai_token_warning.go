@@ -28,7 +28,7 @@ var harnessDisplayNames = map[string]string{
 
 var plainHarnessName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
 
-// warnAIToolBroadToken prints one line, once per process, when an AI harness
+// warnAIToolBroadToken prints one tip, once per process, when an AI harness
 // runs a command with a token that carries a member's or service account's
 // full access. It is called only where an authenticated command resolves its
 // stored or PHASE_SERVICE_TOKEN credential, so auth, help, version,
@@ -37,9 +37,9 @@ func warnAIToolBroadToken(token string) {
 	var holder string
 	switch {
 	case strings.HasPrefix(token, "pss_user:"):
-		holder = "a personal access token, which carries your full Phase access"
+		holder = "your personal access token"
 	case strings.HasPrefix(token, "pss_service:"):
-		holder = "a service account token, which carries the service account's full Phase access"
+		holder = "a service account token"
 	default:
 		return
 	}
@@ -56,7 +56,7 @@ func warnAIToolBroadToken(token string) {
 			name = "An AI tool"
 		}
 		_, _ = fmt.Fprintf(aiTokenWarningOutput(),
-			"⚠️  Phase: %s is running this command with %s. AI tools should use an Agent token instead (`phase auth --mode token`), which works with `phase ai` commands only.\n",
+			"Phase: tip: %s is using %s. An Agent token gives AI tools narrower access: phase auth --mode token.\n",
 			name, holder)
 	})
 }

@@ -4,9 +4,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/phasehq/cli/pkg/config"
 )
+
+// agentLogin is set when this process acts with an Agent token. An Agent is
+// the AI tool by definition, so its output is masked whether or not a harness
+// was detected.
+var agentLogin atomic.Bool
+
+// SetAgentLogin records whether this process acts with an Agent token.
+func SetAgentLogin(active bool) { agentLogin.Store(active) }
+
+// AgentLogin reports whether this process acts with an Agent token.
+func AgentLogin() bool { return agentLogin.Load() }
 
 // IsAIAgent returns true if the CLI is being invoked by a known AI coding agent.
 // WARNING: This is not a realiable way to detect if an AI is calling the CLI. Certain AI agents like VSCode don't seem to be wrapping. Inside threats could easily bypass this by stripping execution env var configs.
@@ -94,7 +106,11 @@ func DetectAIAgentExecutable(command []string) string {
 //   - config: never redacted
 //   - no ai.json or AI mode disabled: no redaction
 //   - an ai.json that exists but cannot be read: sealed and secret redacted
+//   - an Agent login: sealed and secret always redacted
 func ShouldRedact(secretType string) bool {
+	if AgentLogin() {
+		return secretType == "sealed" || secretType == "secret"
+	}
 	if !IsAIAgent() {
 		return false
 	}
