@@ -19,7 +19,7 @@ Every call is checked by the Phase Console. When it refuses one, the command pri
 
 ```json
 {"kind": "setup", "title": "Read secrets in <app> (<environment>)", "action": {"type": "agent_connection.app_access", "version": 1, "appId": "<app-id>", "environments": ["<environment>"], "access": "read"}}
-{"kind": "access_change", "title": "Create, update and delete secrets", "action": {"type": "agent_grant.allow", "version": 1, "connectionId": "<connection-id>", "allow": {"classes": ["create", "update", "delete"]}}}
+{"kind": "access_change", "title": "Allow create secrets on <connection name>", "action": {"type": "agent_grant.allow", "version": 1, "connectionId": "<connection-id>", "allow": {"classes": ["create"]}}}
 {"kind": "access_change", "title": "Renew access to <connection name>", "action": {"type": "agent_grant.renew", "version": 1, "connectionId": "<connection-id>"}}
 ```
 
