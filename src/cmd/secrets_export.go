@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/phasehq/cli/pkg/ai"
@@ -29,24 +28,6 @@ func init() {
 	secretsExportCmd.Flags().String("generate-leases", "true", "Generate leases for dynamic secrets")
 	secretsExportCmd.Flags().Int("lease-ttl", 0, "Lease TTL in seconds")
 	secretsCmd.AddCommand(secretsExportCmd)
-}
-
-// secretLocation names a secret by its path and key.
-type secretLocation struct{ path, key string }
-
-// secretReference is the golang-sdk's pattern for a reference
-// (referencing.go, secretRefRegex), which the SDK does not export.
-var secretReference = regexp.MustCompile(`\$\{([^}]+)\}`)
-
-// referencingConfigValues reports, for each secret in an unresolved listing,
-// whether it is a config value holding a reference.
-func referencingConfigValues(raw []sdk.SecretResult) map[secretLocation]bool {
-	holds := make(map[secretLocation]bool, len(raw))
-	for _, secret := range raw {
-		location := secretLocation{secret.Path, secret.Key}
-		holds[location] = holds[location] || secretReference.MatchString(secret.Value)
-	}
-	return holds
 }
 
 func runSecretsExport(cmd *cobra.Command, args []string) error {
@@ -93,28 +74,11 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// A config value is never masked, but for an Agent one that holds a
-	// reference would print the secret it resolves to, so those are masked.
-	var referencing map[secretLocation]bool
-	if ai.AgentLogin() {
-		rawOpts := opts
-		rawOpts.Raw = true
-		rawSecrets, err := p.Get(rawOpts)
-		if err != nil {
-			return err
-		}
-		referencing = referencingConfigValues(rawSecrets)
-	}
-	maskedReference := false
+	// An Agent login exports real values, to be written to a file or piped to
+	// a program. Other logins are masked by each secret's own type.
 	exportValue := func(secret sdk.SecretResult) string {
-		if ai.ShouldRedact(secret.Type) {
+		if !ai.AgentLogin() && ai.ShouldRedact(secret.Type) {
 			return "[REDACTED]"
-		}
-		if referencing != nil {
-			if holds, known := referencing[secretLocation{secret.Path, secret.Key}]; holds || !known {
-				maskedReference = true
-				return "[REDACTED]"
-			}
 		}
 		return secret.Value
 	}
@@ -155,9 +119,6 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		for _, secret := range allSecrets {
 			secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: exportValue(secret)})
 		}
-	}
-	if maskedReference {
-		fmt.Fprintln(os.Stderr, "Config values that reference other secrets are shown as [REDACTED] to an Agent, as they would reveal the referenced secret.")
 	}
 
 	// An export that produces nothing is otherwise silent; say why on stderr so

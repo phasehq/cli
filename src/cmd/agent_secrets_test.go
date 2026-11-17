@@ -375,14 +375,13 @@ func TestAgentSecretsListGetAndExport(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &exported); err != nil {
 		t.Fatalf("export json = %s (%v)", stdout, err)
 	}
-	// A config value holding a reference would print what it resolves to.
-	if exported["CONFIG_KEY"] != agentConfigValue || exported["REF_KEY"] != "[REDACTED]" ||
-		exported["API_KEY"] != "[REDACTED]" || exported["SIGNING_KEY"] != "[REDACTED]" || len(exported) != 4 {
+	// An export is for a file or a pipe: real values, whatever the type.
+	if exported["CONFIG_KEY"] != agentConfigValue || exported["REF_KEY"] == "[REDACTED]" ||
+		exported["API_KEY"] != agentSecretValue || exported["SIGNING_KEY"] != agentSealedValue || len(exported) != 4 {
 		t.Fatalf("export = %v", exported)
 	}
 	exportCalls := secretsCalls(console.takeCalls())
-	if len(exportCalls) != 2 || exportCalls[0].query.Has("raw") || exportCalls[0].query.Get("path") != "/" ||
-		exportCalls[1].query.Get("raw") != "true" || exportCalls[1].query.Get("path") != "/" ||
+	if len(exportCalls) != 1 || exportCalls[0].query.Has("raw") || exportCalls[0].query.Get("path") != "/" ||
 		exportCalls[0].query.Has("dynamic") || exportCalls[0].query.Has("lease") {
 		t.Fatalf("export calls = %+v", exportCalls)
 	}
@@ -424,39 +423,51 @@ func TestAgentSecretsListGetAndExport(t *testing.T) {
 	}
 }
 
-// Export masks each secret by its own type, and for an Agent any config value
-// whose unresolved form holds a reference.
-func TestAgentExportMasksBySecretAndReference(t *testing.T) {
+// An Agent login exports real values in every format: secret, sealed and a
+// config value holding a reference, with one secrets call and nothing extra on
+// stderr. get and list stay masked.
+func TestAgentExportWritesRealValuesAndGetListStayMasked(t *testing.T) {
 	console := newFakeAgentConsole(t)
 	isolateAgentCommand(t, console.server.URL)
 	console.environments["app-orders/development"] = []consoleSecret{
-		{ID: "s-1", Key: "DUP", Value: agentSecretValue, Path: "/", Type: "secret"},
-		{ID: "s-2", Key: "DUP", Value: "dup-config", Path: "/b", Type: "config"},
+		{ID: "s-1", Key: "API_KEY", Value: agentSecretValue, Path: "/", Type: "secret"},
+		{ID: "s-2", Key: "SIGNING_KEY", Value: agentSealedValue, Path: "/", Type: "sealed"},
 		{ID: "s-3", Key: "DSN", Value: "${API_KEY}", Path: "/", Type: "config"},
-		{ID: "s-4", Key: "ODD", Value: agentSealedValue, Path: "/", Type: "Secret"},
-		{ID: "s-5", Key: "PLAIN", Value: agentConfigValue, Path: "/", Type: "config"},
+		{ID: "s-4", Key: "PLAIN", Value: agentConfigValue, Path: "/", Type: "config"},
+	}
+	for _, format := range []string{"dotenv", "json"} {
+		console.takeCalls()
+		stdout, stderr, err := runPhaseCommand(t, "", "secrets", "export", "--app-id", "app-orders", "--format", format)
+		if err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		if stderr != "" || strings.Contains(stdout, "[REDACTED]") {
+			t.Fatalf("%s: stdout=%q stderr=%q", format, stdout, stderr)
+		}
+		for _, want := range []string{agentSecretValue, agentSealedValue, agentConfigValue} {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("%s export lacks %q:\n%s", format, want, stdout)
+			}
+		}
+		if !strings.Contains(stdout, "resolved-reference") {
+			t.Fatalf("%s export lacks the resolved reference value:\n%s", format, stdout)
+		}
+		if calls := secretsCalls(console.takeCalls()); len(calls) != 1 {
+			t.Fatalf("%s: %d secrets calls", format, len(calls))
+		}
 	}
 	for _, args := range [][]string{
-		{"secrets", "export", "--app-id", "app-orders", "--path", "", "--format", "kv"},
-		{"secrets", "export", "DUP", "DSN", "ODD", "PLAIN", "--app-id", "app-orders", "--path", "", "--format", "kv"},
+		{"secrets", "list", "--app-id", "app-orders", "--show"},
+		{"secrets", "get", "API_KEY", "SIGNING_KEY", "PLAIN", "--app-id", "app-orders"},
 	} {
-		stdout, stderr, err := runPhaseCommand(t, "", args...)
+		stdout, _, err := runPhaseCommand(t, "", args...)
 		if err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
 		if strings.Contains(stdout, agentSecretValue) || strings.Contains(stdout, agentSealedValue) ||
-			strings.Contains(stdout, "resolved-reference") || !strings.Contains(stdout, "DSN=[REDACTED]") ||
-			!strings.Contains(stdout, "PLAIN="+agentConfigValue) {
+			!strings.Contains(stdout, "[REDACTED]") || !strings.Contains(stdout, agentConfigValue) {
 			t.Fatalf("%v printed:\n%s", args, stdout)
 		}
-		if strings.Count(stderr, "reference other secrets") != 1 {
-			t.Fatalf("%v stderr = %q", args, stderr)
-		}
-	}
-	// Nothing masked for a reference, nothing said.
-	console.environments["app-orders/development"] = []consoleSecret{{ID: "s-5", Key: "PLAIN", Value: agentConfigValue, Path: "/", Type: "config"}}
-	if _, stderr, err := runPhaseCommand(t, "", "secrets", "export", "--app-id", "app-orders"); err != nil || strings.Contains(stderr, "reference") {
-		t.Fatalf("plain export: %q %v", stderr, err)
 	}
 }
 
@@ -752,7 +763,6 @@ func TestAgentOutputIsMaskedWithAndWithoutAHarness(t *testing.T) {
 			for _, args := range [][]string{
 				{"secrets", "list", "--app-id", "app-orders", "--show"},
 				{"secrets", "get", "API_KEY", "SIGNING_KEY", "CONFIG_KEY", "--app-id", "app-orders"},
-				{"secrets", "export", "--app-id", "app-orders"},
 			} {
 				stdout, stderr, err := runPhaseCommand(t, "", args...)
 				if err != nil {
@@ -865,8 +875,7 @@ func TestAgentLoginFromTheKeyringWritesNothingToDisk(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, stderr)
 		}
 	}
-	// Export reads the listing twice: resolved, and unresolved to find references.
-	if len(secretsCalls(console.takeCalls())) != 5 {
+	if len(secretsCalls(console.takeCalls())) != 4 {
 		t.Fatal("the stored Agent login did not reach the secrets API")
 	}
 	if after := listFiles(t, filepath.Dir(config.PhaseSecretsDir)); strings.Join(after, "\n") != strings.Join(before, "\n") {

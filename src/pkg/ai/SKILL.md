@@ -17,7 +17,7 @@ Phase can give this session two kinds of access:
 
 ## Masked values
 
-Values Phase shows masked (`[REDACTED]`, decoy credentials, `PHASE_REDACTED_CREDENTIAL`) are hidden on purpose. Never try to recover, decode, re-encode, or work around them, and never print, log, or copy a value that `phase run` or the proxy hands to a command. If the task truly needs the value, tell the human.
+Values Phase shows masked (`[REDACTED]`, decoy credentials, `PHASE_REDACTED_CREDENTIAL`) are hidden on purpose. Never try to recover, decode, re-encode, or work around them, and never print, log, or copy a value that `phase run` or the proxy hands to a command. `phase secrets get` and `list` show secret and sealed values masked; `phase secrets export` writes real values for a file or a pipe to a program, and its output must never be printed into the conversation, logged, or copied elsewhere. If the task truly needs the value, tell the human.
 
 Never ask the human to paste a secret or credential into chat, a command, a file, or a request.
 
