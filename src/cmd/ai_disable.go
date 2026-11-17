@@ -127,7 +127,7 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if directory, err := hookRuntimeDir(); err == nil {
-		if err := errors.Join(sweepAIDirectory(directory), removeAIRuntimeLeftovers(directory)); err != nil {
+		if err := errors.Join(sweepAIDirectory(directory, true), removeAIRuntimeLeftovers(directory)); err != nil {
 			return fmt.Errorf("Phase AI was disabled, but ~/.phase/ai could not be cleaned; rerun `phase ai disable`: %w", err)
 		}
 	}

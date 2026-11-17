@@ -122,6 +122,72 @@ func TestProviderRulesThisClientCannotReadAreNeverEnforcedInPart(t *testing.T) {
 	}
 }
 
+// Rules that are read in full but cannot work make the Connection unusable
+// too, judged by their shape alone: an empty guard, an AWS guard without
+// operations, AWS classes without verbs or protocol lists, or a list with an
+// empty entry.
+func TestProviderRulesThatCannotWorkFailClosed(t *testing.T) {
+	mutated := func(change func(rules map[string]any)) string {
+		var rules map[string]any
+		if err := json.Unmarshal(providerrulestest.Raw("aws"), &rules); err != nil {
+			t.Fatal(err)
+		}
+		change(rules)
+		encoded, err := json.Marshal(rules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	classes := func(rules map[string]any) map[string]any { return rules["actionClasses"].(map[string]any) }
+	guard := func(rules map[string]any) map[string]any { return rules["secretGuard"].(map[string]any) }
+	cases := map[string]string{
+		"empty guard":               mutated(func(r map[string]any) { r["secretGuard"] = map[string]any{} }),
+		"guard without operations":  mutated(func(r map[string]any) { delete(guard(r), "operations") }),
+		"no query protocol list":    mutated(func(r map[string]any) { delete(classes(r), "queryProtocolServices") }),
+		"empty query protocol list": mutated(func(r map[string]any) { classes(r)["queryProtocolServices"] = []string{} }),
+		"no JSON target list":       mutated(func(r map[string]any) { delete(classes(r), "jsonTargetServices") }),
+		"no read verbs":             mutated(func(r map[string]any) { delete(classes(r), "readVerbs") }),
+		"no create verbs":           mutated(func(r map[string]any) { classes(r)["createVerbs"] = []string{} }),
+		"no delete verbs":           mutated(func(r map[string]any) { delete(classes(r), "deleteVerbs") }),
+		"empty verb":                mutated(func(r map[string]any) { classes(r)["readVerbs"] = []string{"Get", ""} }),
+		"empty admin suffix":        mutated(func(r map[string]any) { classes(r)["adminSuffixes"] = []string{" "} }),
+	}
+	requests := map[string]func() *http.Request{
+		"form AssumeRole": func() *http.Request {
+			return awsCall(t, "POST", "https://sts.us-east-1.amazonaws.com/", "sts", "application/x-www-form-urlencoded", "Action=AssumeRole", nil)
+		},
+		"form AssumeRole as JSON": func() *http.Request {
+			return awsCall(t, "POST", "https://sts.us-east-1.amazonaws.com/", "sts", "application/x-amz-json-1.1", "Action=AssumeRole&Version=2011-06-15", nil)
+		},
+	}
+	for name, rules := range cases {
+		connection := decodedConnection(t, `{"serviceType":"aws","protocol":"http","injection":{"action":"aws_sigv4"}}`)
+		if err := json.Unmarshal([]byte(rules), &connection); err != nil {
+			t.Fatalf("%s: a session would fail to decode: %v", name, err)
+		}
+		if failure := connection.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+			t.Errorf("%s: failure = %q", name, failure)
+		}
+		for requestName, request := range requests {
+			if blocked, err := CredentialMintingBlocked(request(), connection); blocked == nil && err == nil {
+				t.Errorf("%s: the guard let %s through", name, requestName)
+			}
+		}
+	}
+	empty := decodedConnection(t, `{"serviceType":"github","protocol":"http","secretGuard":{}}`)
+	if failure := empty.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+		t.Errorf("empty guard on another service: failure = %q", failure)
+	}
+	if blocked, err := CredentialMintingBlocked(policyRequest(t, "POST", "https://api.github.com/x"), empty); blocked != nil || !errors.Is(err, ErrMintingInspectionUnavailable) {
+		t.Errorf("empty guard on another service: blocked=%v err=%v", blocked, err)
+	}
+	emptyService := decodedConnection(t, `{"serviceType":"github","protocol":"http","secretGuard":{"paths":[{"method":"POST","pattern":"/x","operation":"x","services":[""]}]}}`)
+	if failure := emptyService.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+		t.Errorf("empty service in a guard path: failure = %q", failure)
+	}
+}
+
 // The credential variables come from the session's Connections: configEnv
 // may not supply them, phase run reserves them through PHASE_AI_RESERVED_ENV,
 // and that variable is itself Phase's.
@@ -135,7 +201,9 @@ func TestCredentialEnvironmentComesFromTheSessionsConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	reserved := plan.Set[ReservedEnvironmentKey]
-	if reserved != "CUSTOM_TOKEN_VAR,DATABASE_URL,GH_ENTERPRISE_TOKEN,GH_TOKEN,GITHUB_ENTERPRISE_TOKEN,GITHUB_TOKEN,PGPASSFILE,PGPASSWORD,PGSERVICE,PGSERVICEFILE,POSTGRESQL_URL,POSTGRES_URL" {
+	// The providers' names, and every name the session itself sets or unsets.
+	if reserved != "CUSTOM_TOKEN_VAR,DATABASE_URL,GH_ENTERPRISE_TOKEN,GH_TOKEN,GITHUB_ENTERPRISE_TOKEN,GITHUB_TOKEN,HTTPS_PROXY,HTTP_PROXY,NODE_EXTRA_CA_CERTS,NO_PROXY,"+
+		"PGPASSFILE,PGPASSWORD,PGSERVICE,PGSERVICEFILE,PHASE_AGENT_TOKEN,PHASE_AI_CA_BUNDLE,PHASE_AI_ENABLED,PHASE_AI_RESERVED_ENV,PHASE_SERVICE_TOKEN,POSTGRESQL_URL,POSTGRES_URL" {
 		t.Fatalf("%s = %q", ReservedEnvironmentKey, reserved)
 	}
 	names := SplitReservedEnvironment(reserved)
@@ -171,7 +239,8 @@ func TestCredentialEnvironmentComesFromTheSessionsConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsEnvironmentKey(environment, ReservedEnvironmentKey+"=") {
+	if !containsEnvironmentKey(environment, ReservedEnvironmentKey+"="+plan.Set[ReservedEnvironmentKey]) ||
+		strings.Contains(plan.Set[ReservedEnvironmentKey], "GITHUB_TOKEN") {
 		t.Fatalf("inherited reserved list survived: %v", environment)
 	}
 }

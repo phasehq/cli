@@ -307,7 +307,7 @@ func runAIRuntimeDaemon(cmd *cobra.Command, args []string) error {
 		return errors.New("Phase AI runtime ownership is unavailable")
 	}
 	appendLifecycleEvent(directory, "daemon_started", "")
-	_ = sweepAIDirectory(directory)
+	_ = sweepAIDirectory(directory, false)
 	fingerprint, err := hookFingerprint()
 	if err != nil {
 		writeHookRuntimeFailure(failurePath, generation, "fingerprint")

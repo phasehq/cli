@@ -48,9 +48,8 @@ func TestAgentUserDataMergesConnectionsOfOneApp(t *testing.T) {
 	if len(data.Apps) != 2 || len(data.Apps[0].EnvironmentKeys) != 2 || data.Apps[0].EnvironmentKeys[1].Environment.EnvType != "PROD" {
 		t.Fatalf("user data = %+v", data.Apps)
 	}
-	// Selection follows the SDK: the shortest app name containing --app, the
-	// first environment containing --env.
-	if app, env := ResolveNames(backend, "ORDERS", "prod", ""); app != "orders" || env != "Production" {
+	// Names match exactly, ignoring case.
+	if app, env := ResolveNames(backend, "ORDERS", "production", ""); app != "orders" || env != "Production" {
 		t.Fatalf("resolved %q / %q", app, env)
 	}
 	if app, env := ResolveNames(backend, "", "Staging", "app-unknown"); app != "app-unknown" || env != "Staging" {
@@ -68,6 +67,34 @@ func TestAgentUserDataMergesConnectionsOfOneApp(t *testing.T) {
 	}
 	if _, err := backend.target("", "", "", "read"); err == nil || err.Error() != "no application context provided" {
 		t.Fatalf("no app: %v", err)
+	}
+}
+
+// A name that is only part of a granted app's or environment's name never
+// selects it: a delete for --app api must not land on payments-api.
+func TestAgentTargetMatchesNamesExactly(t *testing.T) {
+	backend := agentBackendForTest(t, `{"schemaVersion":1,"apps":[`+
+		`{"connectionId":"c1","connectionName":"one","grantId":"g1","app":{"id":"app-1","name":"payments-api"},"environments":[{"id":"e1","name":"Preprod","envType":"staging"}],"access":{},"grantExpiresAt":null}`+
+		`],"expired":[`+
+		`{"connectionId":"c2","connectionName":"two","grantId":"g2","app":{"id":"app-9","name":"billing-old"},"expiredAt":"2026-01-01T00:00:00Z"}`+
+		`]}`)
+	_, err := backend.target("api", "Preprod", "", "read_write")
+	var refusal *AgentRefusal
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, `apps it can use: "payments-api"`) {
+		t.Fatalf("--app api: %v", err)
+	}
+	if _, err := backend.target("billing", "", "", "read"); !errors.As(err, &refusal) {
+		t.Fatalf("--app billing took the expired billing-old grant: %v", err)
+	}
+	if target, err := backend.target("BILLING-OLD", "", "", "read"); err != nil || target.appID != "app-9" {
+		t.Fatalf("expired grant by exact name: %+v %v", target, err)
+	}
+	target, err := backend.target("Payments-API", "prod", "", "read_write")
+	if err != nil || target.appID != "app-1" || target.env != "prod" || target.envLabel != "prod" {
+		t.Fatalf("--env prod with only Preprod granted: %+v %v", target, err)
+	}
+	if target, err := backend.target("payments-api", "PREPROD", "", "read"); err != nil || target.env != "Preprod" {
+		t.Fatalf("--env PREPROD: %+v %v", target, err)
 	}
 }
 

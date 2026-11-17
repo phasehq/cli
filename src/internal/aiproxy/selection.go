@@ -187,7 +187,14 @@ func sessionConfigHasConnection(config *agentapi.SessionConfig, id string) bool 
 // only current sets are left behind, which is what removing a Connection does.
 func processEnvironmentHolds(current, next phaseproxy.ProcessEnvironmentPlan) bool {
 	for name, value := range next.Set {
-		if existing, set := current.Set[name]; !set || existing != value {
+		existing, set := current.Set[name]
+		if set && name == phaseproxy.ReservedEnvironmentKey {
+			if !phaseproxy.ReservedNamesHold(existing, value) {
+				return false
+			}
+			continue
+		}
+		if !set || existing != value {
 			return false
 		}
 	}

@@ -195,7 +195,10 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	if err := config.SaveAIConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save AI config: %w", err)
 	}
-	sweepAIDirectoryQuietly(cmd.Context())
+	// The adapters now run the helper in bin/, so the earlier top-level copy
+	// can go. An adapter that was skipped may still run that copy, so it stays
+	// until every adapter has been rewritten.
+	sweepAIDirectoryQuietly(cmd.Context(), len(skipped) == 0)
 	if detail := installations[selectedTarget.ID]; detail != "" {
 		fmt.Printf("🪝 %s\n", detail)
 	}

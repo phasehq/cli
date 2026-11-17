@@ -141,8 +141,6 @@ func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
 		write(former, `{}`),
 		write(former+leaseLockSuffix, ""),
 		write("claude-runtime.lock", `{}`),
-		write("phase-hook-v1", "binary"),
-		write("phase-hook-v1.metadata.json", `{"owner":"phase-cli"}`),
 	}
 	if runtime.GOOS == "windows" {
 		removed = slices.DeleteFunc(removed, func(path string) bool { return strings.HasSuffix(path, ".lock") })
@@ -157,7 +155,14 @@ func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
 	age(emptySpool)
 	removed = append(removed, emptySpool)
 
+	// Only enable and disable remove the earlier top-level helper.
+	formerHelper := "phase-hook-v1"
+	if runtime.GOOS == "windows" {
+		formerHelper += ".exe"
+	}
+	formerHook := []string{write(formerHelper, "binary"), write(formerHelper+".metadata.json", `{"owner":"phase-cli"}`)}
 	kept := []string{
+		formerHook[0], formerHook[1],
 		livePath,
 		write("notes.txt", "not Phase's"),
 		write("runtime-"+sweepLiveGeneration+".error.json", `{}`),
@@ -184,7 +189,7 @@ func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
 		kept = append(kept, filepath.Join(directory, "java-truststore.p12"), outside)
 	}
 
-	if err := sweepAIDirectory(directory); err != nil {
+	if err := sweepAIDirectory(directory, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range removed {
@@ -199,6 +204,69 @@ func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
 	}
 	if payload, _ := os.ReadFile(outside); string(payload) != "keep" {
 		t.Error("sweep followed a symlink")
+	}
+}
+
+// The earlier top-level helper goes only when enable or disable asks, and only
+// when its metadata says Phase owns it.
+func TestSweepRemovesTheFormerTopLevelHelperOnlyWhenAskedAndOwned(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
+	name := "phase-hook-v1"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	helper, metadata := filepath.Join(directory, name), filepath.Join(directory, name+".metadata.json")
+	write := func(owner string) {
+		t.Helper()
+		if err := os.WriteFile(helper, []byte("binary"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(metadata, []byte(`{"owner":"`+owner+`"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exists := func(path string) bool { _, err := os.Lstat(path); return err == nil }
+
+	write("someone-else")
+	if err := sweepAIDirectory(directory, true); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(helper) || !exists(metadata) {
+		t.Fatal("a helper Phase does not own was removed")
+	}
+	write("phase-cli")
+	if err := sweepAIDirectory(directory, false); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(helper) || !exists(metadata) {
+		t.Fatal("a sweep enable or disable did not ask for removed the helper")
+	}
+	if err := sweepAIDirectory(directory, true); err != nil {
+		t.Fatal(err)
+	}
+	if exists(helper) || exists(metadata) {
+		t.Fatal("enable or disable kept the helper Phase owns")
+	}
+}
+
+// A daemon of an earlier build that cannot be stopped keeps its state file,
+// so it can still be found, and the failure is reported.
+func TestSweepKeepsTheStateOfAnEarlierDaemonItCouldNotStop(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
+	statePath := filepath.Join(directory, formerRuntimeState)
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: sweepLiveGeneration, RuntimeFingerprint: "former",
+		PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: "http://phase:capability@127.0.0.1:1",
+	}
+	if err := writeOwnerOnlyJSON(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	err := sweepAIDirectory(directory, false)
+	if err == nil || !strings.Contains(err.Error(), "earlier build") {
+		t.Fatalf("sweep = %v", err)
+	}
+	if _, err := os.Lstat(statePath); err != nil {
+		t.Fatalf("the state file of a daemon still running was removed: %v", err)
 	}
 }
 

@@ -84,6 +84,10 @@ func (g SecretGuard) MarshalJSON() ([]byte, error) {
 func (g *SecretGuard) Unsupported() bool { return g != nil && g.unsupported }
 
 func validateSecretGuard(operations map[string][]string, paths []SecretGuardPath) error {
+	// A guard with nothing in it would read as "nothing to block".
+	if len(operations) == 0 && len(paths) == 0 {
+		return fmt.Errorf("secret guard has no rules")
+	}
 	for service, names := range operations {
 		if service == "" || len(names) == 0 {
 			return fmt.Errorf("secret guard operations need a service and names")
@@ -95,7 +99,7 @@ func validateSecretGuard(operations map[string][]string, paths []SecretGuardPath
 		}
 	}
 	for _, rule := range paths {
-		if !strings.HasPrefix(rule.Pattern, "/") || rule.Operation == "" || rule.Method != strings.ToUpper(rule.Method) {
+		if !strings.HasPrefix(rule.Pattern, "/") || rule.Operation == "" || rule.Method != strings.ToUpper(rule.Method) || hasEmpty(rule.Services) {
 			return fmt.Errorf("secret guard path rule is incomplete")
 		}
 	}
@@ -192,12 +196,45 @@ func validateActionClasses(classes *ActionClasses) error {
 			}
 		}
 	}
+	for _, list := range [][]string{
+		classes.ReadVerbs, classes.CreateVerbs, classes.DeleteVerbs, classes.AdminServices, classes.AdminSuffixes,
+		classes.QueryProtocolServices, classes.DualProtocolServices, classes.JSONTargetServices, classes.MixedServices,
+	} {
+		if hasEmpty(list) {
+			return fmt.Errorf("action class list has an empty entry")
+		}
+	}
 	for _, operation := range classes.RESTOperations {
 		if operation.Service == "" || operation.Method == "" || !strings.HasPrefix(operation.Pattern, "/") || operation.Action == "" {
 			return fmt.Errorf("incomplete REST operation")
 		}
 	}
 	return nil
+}
+
+// hasEmpty reports whether a list has an empty entry, which would match
+// everything where entries are compared as prefixes or suffixes.
+func hasEmpty(list []string) bool {
+	for _, entry := range list {
+		if strings.TrimSpace(entry) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// AWSRulesIncomplete reports whether an AWS Connection's rules, though read in
+// full, lack what its guard and classifier need to work: guarded operations,
+// the verbs that sort calls, and which services speak which protocol (without
+// those, a form body sent under another content type is never read). Only the
+// shape is checked; the Console owns and tests the content.
+func (c Connection) AWSRulesIncomplete() bool {
+	if !c.AWSRulesRequired() || c.SecretGuard == nil || c.ActionClasses == nil {
+		return false
+	}
+	classes := c.ActionClasses
+	return len(c.SecretGuard.Operations) == 0 || len(classes.ReadVerbs) == 0 || len(classes.CreateVerbs) == 0 ||
+		len(classes.DeleteVerbs) == 0 || len(classes.QueryProtocolServices) == 0 || len(classes.JSONTargetServices) == 0
 }
 
 // AWSRulesRequired reports whether the Connection's calls are AWS calls: the
@@ -227,6 +264,9 @@ func (c Connection) providerRulesFailure() string {
 	}
 	if aws && (c.SecretGuard == nil || c.ActionClasses == nil) {
 		return ProviderRulesMissing
+	}
+	if c.AWSRulesIncomplete() {
+		return AccessPolicyUnsupported
 	}
 	return ""
 }

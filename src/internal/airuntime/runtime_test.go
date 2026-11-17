@@ -439,10 +439,16 @@ func TestCanonicalOpenFixtureExportsReservedNamesAndScopedTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reserved := proxy.SplitReservedEnvironment(plan.Set[proxy.ReservedEnvironmentKey])
-	if len(reserved) != len(response.Connections[0].CredentialEnvironment) || !containsEnvironment(reserved, "AWS_SECRET_ACCESS_KEY") ||
-		!containsEnvironment(reserved, "AWS_CONFIG_FILE") {
-		t.Fatalf("%s = %q", proxy.ReservedEnvironmentKey, plan.Set[proxy.ReservedEnvironmentKey])
+	value := plan.Set[proxy.ReservedEnvironmentKey]
+	reserved := proxy.SplitReservedEnvironment(value)
+	for _, name := range append(append([]string{}, response.Connections[0].CredentialEnvironment...), "AWS_CA_BUNDLE", "HTTPS_PROXY", "NO_PROXY") {
+		if !containsEnvironment(reserved, name) {
+			t.Fatalf("%s lacks %s: %q", proxy.ReservedEnvironmentKey, name, value)
+		}
+	}
+	// It stays far below what an environment variable can carry.
+	if len(value) > 2048 {
+		t.Fatalf("%s is %d bytes", proxy.ReservedEnvironmentKey, len(value))
 	}
 	if plan.Set["AWS_CA_BUNDLE"] != "/phase/runtime-ca-bundle.pem" || plan.Set["PGSSLROOTCERT"] != "" {
 		t.Fatalf("scoped trust = AWS_CA_BUNDLE %q PGSSLROOTCERT %q", plan.Set["AWS_CA_BUNDLE"], plan.Set["PGSSLROOTCERT"])

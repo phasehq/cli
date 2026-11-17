@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -969,6 +970,61 @@ func mergeTestCABundle(baseBundlePath string, environment []string, scopedTrustK
 	return prepared.BundlePath, cleanup, err
 }
 
+// The reserved names cover everything the session sets or unsets for its
+// processes, not only credential variables: a decoy exported under another
+// name, configEnv, an unset binding and the adapter's variables. phase run
+// inside the session never replaces one, nor PHASE_HOST or PHASE_VERIFY_SSL.
+func TestReservedNamesCoverEverythingTheSessionSets(t *testing.T) {
+	plan, err := CompileProcessEnvironment(EnvironmentOptions{
+		ProxyURL: "http://phase:capability@127.0.0.1:9543", CABundlePath: "/bundle.pem", CABundleComplete: true,
+		ConfigEnv:  map[string]string{"SERVICE_REGION": "eu"},
+		AgentEnv:   map[string]string{"DEPLOY_KEY": "decoy-value"},
+		AdapterEnv: map[string]string{"PGHOST": "127.0.0.1", "PGPORT": "6543", "PGSSLMODE": "require", "PGPASSWORD": "decoy"},
+		EnvironmentBindings: []EnvironmentBinding{
+			{Name: "DEPLOY_KEY", Action: "set", Source: "decoy", SourceField: "token"},
+			{Name: "SERVICE_REGION", Action: "set", Source: "connection_config", SourceField: "region"},
+			{Name: "OLD_DEPLOY_KEY", Action: "unset", Source: "runtime", SourceField: "token"},
+		},
+		ScopedTrustKeys: []string{"PGSSLROOTCERT"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := plan.Set[ReservedEnvironmentKey]
+	names := SplitReservedEnvironment(value)
+	if !sort.StringsAreSorted(names) {
+		t.Fatalf("not sorted: %q", value)
+	}
+	for index := 1; index < len(names); index++ {
+		if names[index] == names[index-1] {
+			t.Fatalf("duplicated %s: %q", names[index], value)
+		}
+	}
+	for key := range plan.Set {
+		if !containsEnvironmentKey(names, key) {
+			t.Errorf("%s is set but not reserved", key)
+		}
+	}
+	for _, key := range plan.Unset {
+		if !containsEnvironmentKey(names, key) {
+			t.Errorf("%s is unset but not reserved", key)
+		}
+	}
+	for _, key := range []string{"DEPLOY_KEY", "SERVICE_REGION", "OLD_DEPLOY_KEY", "PGHOST", "PGPORT", "PGSSLMODE", "SSL_CERT_FILE", "http_proxy"} {
+		if !ReservedRunEnvironmentKey(key, names) {
+			t.Errorf("%s is not reserved for phase run", key)
+		}
+	}
+	for _, key := range []string{"PHASE_HOST", "phase_verify_ssl"} {
+		if !ReservedRunEnvironmentKey(key, nil) {
+			t.Errorf("%s is not reserved inside a session", key)
+		}
+	}
+	if ReservedRunEnvironmentKey("APP_SETTING", names) {
+		t.Error("a name the session does not use is reserved")
+	}
+}
+
 // Every child environment that enables Phase AI names the variables phase run
 // must keep, even when the session has no provider credential variables.
 func TestCompiledEnvironmentAlwaysCarriesReservedNames(t *testing.T) {
@@ -983,7 +1039,8 @@ func TestCompiledEnvironmentAlwaysCarriesReservedNames(t *testing.T) {
 		if plan.Set["PHASE_AI_ENABLED"] != "1" || !present || !PlanCarriesReservedNames(plan) {
 			t.Fatalf("%s: plan does not carry %s", name, ReservedEnvironmentKey)
 		}
-		if name == "aws" && reserved != "AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY" {
+		if name == "aws" && reserved != "AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,HTTPS_PROXY,HTTP_PROXY,NODE_EXTRA_CA_CERTS,NO_PROXY,"+
+			"PHASE_AGENT_TOKEN,PHASE_AI_CA_BUNDLE,PHASE_AI_ENABLED,PHASE_AI_RESERVED_ENV,PHASE_SERVICE_TOKEN" {
 			t.Fatalf("reserved = %q", reserved)
 		}
 	}

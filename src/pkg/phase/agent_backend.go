@@ -111,12 +111,13 @@ func (b *AgentBackend) UserData() (*misc.AppKeyResponse, error) {
 	return data, nil
 }
 
-// target resolves the selectors the way the SDK does (an app by exact ID or
-// the shortest name containing --app, the first environment whose name
-// contains --env), but against what the Workflow can use. An app ID or an
-// environment that is not listed is still sent, so the Console's refusal and
-// its ready-to-send request is what the Agent sees. Only an app named by a
-// name nothing matches cannot be sent, as the API takes app IDs; that refusal
+// target resolves the selectors against what the Workflow can use: an app by
+// exact ID, or app and environment names matched exactly, ignoring case. A
+// substring match is never used, as it can land a write or delete on another
+// app or environment the Agent happens to hold. An app ID or an environment
+// that is not listed is still sent, so the Console's refusal and its
+// ready-to-send request is what the Agent sees. Only an app named by a name
+// nothing matches cannot be sent, as the API takes app IDs; that refusal
 // carries a request by app name instead.
 func (b *AgentBackend) target(appName, envName, appID, access string) (agentTarget, error) {
 	if envName == "" {
@@ -137,10 +138,8 @@ func (b *AgentBackend) target(appName, envName, appID, access string) (agentTarg
 			if candidate.ID == appID {
 				app = candidate
 			}
-		case nameMatches(candidate.Name, appName):
-			if app == nil || len(candidate.Name) < len(app.Name) {
-				app = candidate
-			}
+		case app == nil && nameMatches(candidate.Name, appName):
+			app = candidate
 		}
 	}
 	if app == nil {
@@ -154,15 +153,15 @@ func (b *AgentBackend) target(appName, envName, appID, access string) (agentTarg
 		}
 		return agentTarget{}, &AgentRefusal{&agentapi.AppSecretsError{
 			Code: "agent_grant_missing",
-			Message: fmt.Sprintf("No app matching %q is available to this Agent's Workflow. The request below asks for the app by name, "+
+			Message: fmt.Sprintf("No app named %q is available to this Agent's Workflow (%s). The request below asks for the app by name, "+
 				"which must be the app's exact name; the Console answers when the request is filed and may still refuse it, "+
-				"for example when there is no such app or the app does not use server-side encryption.", appName),
+				"for example when there is no such app or the app does not use server-side encryption.", appName, availableApps(data)),
 			Request: appAccessRequest(appName, envName, access),
 		}}
 	}
 	target := agentTarget{appID: app.ID, env: envName, appLabel: app.Name, envLabel: envName}
 	for _, key := range app.EnvironmentKeys {
-		if strings.Contains(strings.ToLower(key.Environment.Name), strings.ToLower(envName)) {
+		if nameMatches(key.Environment.Name, envName) {
 			target.env, target.envLabel = key.Environment.Name, key.Environment.Name
 			break
 		}
@@ -170,23 +169,31 @@ func (b *AgentBackend) target(appName, envName, appID, access string) (agentTarg
 	return target, nil
 }
 
+// nameMatches is an exact name match that ignores case.
 func nameMatches(name, wanted string) bool {
-	return strings.Contains(strings.ToLower(name), strings.ToLower(wanted))
+	return strings.EqualFold(name, wanted)
+}
+
+// availableApps names the apps this Agent can use, for a local refusal.
+func availableApps(data *misc.AppKeyResponse) string {
+	if len(data.Apps) == 0 {
+		return "it can use no apps yet"
+	}
+	names := make([]string, 0, len(data.Apps))
+	for _, app := range data.Apps {
+		names = append(names, fmt.Sprintf("%q", app.Name))
+	}
+	return "apps it can use: " + strings.Join(names, ", ")
 }
 
 // expiredApp finds an expired grant by app name, matched as granted apps are.
 func (b *AgentBackend) expiredApp(appName string) (agentapi.ExpiredAppConnection, bool) {
-	var found *agentapi.ExpiredAppConnection
-	for index := range b.expired {
-		candidate := &b.expired[index]
-		if nameMatches(candidate.App.Name, appName) && (found == nil || len(candidate.App.Name) < len(found.App.Name)) {
-			found = candidate
+	for _, candidate := range b.expired {
+		if nameMatches(candidate.App.Name, appName) {
+			return candidate, true
 		}
 	}
-	if found == nil {
-		return agentapi.ExpiredAppConnection{}, false
-	}
-	return *found, true
+	return agentapi.ExpiredAppConnection{}, false
 }
 
 // ExpiredApps describes, for apps list, each app whose access has ended, with

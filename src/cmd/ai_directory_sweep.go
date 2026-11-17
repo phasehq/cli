@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -38,7 +40,8 @@ import (
 //	ai/.phase-runtime-*, .phase-ca-*             atomic writers                    temporary files                                 by the writer; leftovers by sweep
 //
 // Names earlier builds wrote are in formerAINames and formerAIPatterns, the
-// one place that knows about them. Obsolete CA files (ca-key.pem, a plaintext
+// one place that knows about them, except the top-level phase-hook-v1 helper
+// (removeFormerTopLevelHook), which only enable and disable remove. Obsolete CA files (ca-key.pem, a plaintext
 // key, and the Java trust stores) are removed by phaseproxy.SweepCAFiles under
 // the CA lock.
 
@@ -50,8 +53,7 @@ const (
 )
 
 // formerAINames are files earlier builds wrote directly in ~/.phase/ai: the
-// runtime files before they lost their claude- prefix, and the shared helper
-// from before it moved into bin/.
+// runtime files before they lost their claude- prefix.
 var formerAINames = []string{
 	formerRuntimeState,
 	"claude-runtime.lock",
@@ -62,10 +64,6 @@ var formerAINames = []string{
 	"claude-runtime.log" + leaseLockSuffix,
 	"claude-session-leases.registry",
 	"claude-session-leases.registry" + leaseLockSuffix,
-	"phase-hook-v1",
-	"phase-hook-v1.metadata.json",
-	"phase-hook-v1.exe",
-	"phase-hook-v1.exe.metadata.json",
 }
 
 // formerAIPatterns are per-session and per-generation files of earlier builds,
@@ -87,8 +85,10 @@ var (
 // event-spool), never follows symlinks, and is safe beside live sessions:
 // leases are judged under the lease registry lock, CA files under the CA lock,
 // lock files are removed only while held, and spool folders only when empty
-// and idle.
-func sweepAIDirectory(directory string) error {
+// and idle. formerHook also removes the top-level helper of earlier builds
+// (removeFormerTopLevelHook); only enable and disable pass it, since a harness
+// adapter that enable has not rewritten may still run that file.
+func sweepAIDirectory(directory string, formerHook bool) error {
 	info, err := os.Lstat(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -107,8 +107,12 @@ func sweepAIDirectory(directory string) error {
 	if _, _, err := activeSessionLeases(directory, live, time.Now()); err != nil {
 		errs = append(errs, err)
 	}
+	// A daemon of an earlier build that could not be stopped keeps its state
+	// file: it still holds the proxy port, and that file is how it is found.
+	formerRunning := false
 	if err := stopFormerRuntime(directory); err != nil {
 		errs = append(errs, err)
+		formerRunning = true
 	}
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -123,6 +127,9 @@ func sweepAIDirectory(directory string) error {
 		}
 		switch {
 		case formerAIName(name):
+			if formerRunning && name == formerRuntimeState {
+				continue
+			}
 			if strings.HasSuffix(name, ".lock") {
 				errs = append(errs, removeHeldLockFile(path))
 			} else {
@@ -139,7 +146,39 @@ func sweepAIDirectory(directory string) error {
 		}
 	}
 	errs = append(errs, sweepEventSpool(filepath.Join(directory, eventSpoolDirectory), now))
+	if formerHook {
+		errs = append(errs, removeFormerTopLevelHook(directory))
+	}
 	return errors.Join(errs...)
+}
+
+// removeFormerTopLevelHook removes the shared helper earlier builds installed
+// directly in ~/.phase/ai, only when its metadata says Phase owns it.
+func removeFormerTopLevelHook(directory string) error {
+	name := "phase-hook-v1"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	executable := filepath.Join(directory, name)
+	metadataPath := executable + ".metadata.json"
+	info, err := os.Lstat(metadataPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	payload, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return nil
+	}
+	var metadata struct {
+		Owner string `json:"owner"`
+	}
+	if json.Unmarshal(payload, &metadata) != nil || metadata.Owner != "phase-cli" {
+		return nil
+	}
+	if info, err := os.Lstat(executable); err == nil && !info.Mode().IsRegular() {
+		return nil
+	}
+	return errors.Join(removeIfExists(executable), removeIfExists(metadataPath))
 }
 
 func formerAIName(name string) bool {
@@ -231,7 +270,7 @@ func removeAIRuntimeLeftovers(directory string) error {
 
 // sweepAIDirectoryQuietly runs the sweep where a failure must not stop the
 // command that triggered it.
-func sweepAIDirectoryQuietly(ctx context.Context) {
+func sweepAIDirectoryQuietly(ctx context.Context, formerHook bool) {
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
@@ -239,5 +278,5 @@ func sweepAIDirectoryQuietly(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	_ = sweepAIDirectory(directory)
+	_ = sweepAIDirectory(directory, formerHook)
 }

@@ -126,7 +126,7 @@ func executeAIRuntimeCommand(cmd *cobra.Command, childCommand []string, kind aiR
 	if err := prepareManualAIRuntime(cmd.Context()); err != nil {
 		return err
 	}
-	sweepAIDirectoryQuietly(cmd.Context())
+	sweepAIDirectoryQuietly(cmd.Context(), false)
 	preparedChild := prepareAIRuntimeChild(kind, childCommand)
 	if kind == aiRuntimeOneOffChild {
 		return preserveAIChildExitCode(runtimeInstance.Exec(cmd.Context(), engine, preparedChild))

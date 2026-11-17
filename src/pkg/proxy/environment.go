@@ -114,14 +114,19 @@ var protectedEnvironmentKeys = map[string]struct{}{
 	"JAVA_TOOL_OPTIONS":                {},
 }
 
-// ReservedEnvironmentKey lists, comma-separated, the credential variables of
-// the session's providers. phase run runs as its own process without the
-// session, and reads the names it must not let an app secret replace here.
+// ReservedEnvironmentKey lists, comma-separated, every variable the session
+// sets or removes for its processes and the credential variables of the
+// session's providers. phase run runs as its own process without the session,
+// and reads the names it must not let an app secret replace here.
 const ReservedEnvironmentKey = "PHASE_AI_RESERVED_ENV"
 
 // phaseCredentialEnvironmentKeys are Phase's own credential variables. Every
 // provider's come with its Connections (CredentialEnvironment).
 var phaseCredentialEnvironmentKeys = []string{"PHASE_SERVICE_TOKEN", "PHASE_AGENT_TOKEN"}
+
+// phaseSessionConnectionKeys point the CLI at a Console; inside a session an
+// app secret must not send phase itself elsewhere.
+var phaseSessionConnectionKeys = []string{"PHASE_HOST", "PHASE_VERIFY_SSL"}
 
 var alwaysUnsetEnvironmentKeys = []string{"PHASE_SERVICE_TOKEN", "PHASE_AGENT_TOKEN"}
 
@@ -161,7 +166,21 @@ func ReservedRunEnvironmentKey(key string, sessionReserved []string) bool {
 	if _, ok := protectedEnvironmentKeys[key]; ok {
 		return true
 	}
-	return containsEnvironmentKey(phaseCredentialEnvironmentKeys, key) || containsEnvironmentKey(sessionReserved, key)
+	return containsEnvironmentKey(phaseCredentialEnvironmentKeys, key) || containsEnvironmentKey(phaseSessionConnectionKeys, key) ||
+		containsEnvironmentKey(sessionReserved, key)
+}
+
+// ReservedNamesHold reports whether a process started with current already
+// reserves every name next does, so a refresh that only drops names (a removed
+// Connection) does not need the session restarted.
+func ReservedNamesHold(current, next string) bool {
+	held := SplitReservedEnvironment(current)
+	for _, name := range SplitReservedEnvironment(next) {
+		if !containsEnvironmentKey(held, name) {
+			return false
+		}
+	}
+	return true
 }
 
 // PlanCarriesReservedNames reports whether a plan that enables Phase AI also
@@ -607,8 +626,9 @@ func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPl
 		"http_proxy":          proxy,
 		"https_proxy":         proxy,
 		"NODE_EXTRA_CA_CERTS": options.CABundlePath,
-		// Always set, so a value inherited from an outer session never stands.
-		ReservedEnvironmentKey: reservedEnvironmentValue(options.CredentialEnvironment),
+		// Always set, so a value inherited from an outer session never stands;
+		// its value is filled in once the plan is complete.
+		ReservedEnvironmentKey: "",
 	}
 	noProxy := sanitizedNoProxy(options.Base, options.ProxyRequiredHosts)
 	controls["NO_PROXY"] = noProxy
@@ -643,6 +663,18 @@ func CompileProcessEnvironment(options EnvironmentOptions) (ProcessEnvironmentPl
 	plan.Unset, err = normalizeAndValidateUnsets(plan.Unset, plan.Set, explicitEnvironmentUnsets(options.EnvironmentBindings))
 	if err != nil {
 		return ProcessEnvironmentPlan{}, err
+	}
+	// phase run must not replace anything the session sets or removes, not
+	// only the providers' credential variables: a decoy under another name or
+	// an adapter's PGHOST is the session's too.
+	reserved := append([]string(nil), options.CredentialEnvironment...)
+	for key := range plan.Set {
+		reserved = append(reserved, key)
+	}
+	reserved = append(reserved, plan.Unset...)
+	plan.Set[ReservedEnvironmentKey] = reservedEnvironmentValue(reserved)
+	if err := validateEnvironmentValue(plan.Set[ReservedEnvironmentKey]); err != nil {
+		return ProcessEnvironmentPlan{}, fmt.Errorf("environment key %s: %w", ReservedEnvironmentKey, err)
 	}
 	return plan, nil
 }
@@ -964,8 +996,8 @@ func normalizeNoProxyHost(value string) string {
 	return value
 }
 
-// reservedEnvironmentValue is the sorted, de-duplicated list of credential
-// variable names for ReservedEnvironmentKey.
+// reservedEnvironmentValue is the sorted, de-duplicated list of variable
+// names for ReservedEnvironmentKey.
 func reservedEnvironmentValue(names []string) string {
 	seen := make(map[string]struct{}, len(names))
 	result := make([]string, 0, len(names))

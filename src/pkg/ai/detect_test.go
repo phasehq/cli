@@ -109,3 +109,20 @@ func TestShouldRedactHidesSecretAndSealedWhenAIModeIsEnabled(t *testing.T) {
 		t.Fatal("redacted while AI mode is disabled")
 	}
 }
+
+// For an Agent login only type config is shown; a type this build does not
+// know, or a secret type in other case, is masked.
+func TestShouldRedactForAnAgentShowsOnlyConfig(t *testing.T) {
+	SetAgentLogin(true)
+	t.Cleanup(func() { SetAgentLogin(false) })
+	for _, shown := range []string{"config", " Config ", "CONFIG"} {
+		if ShouldRedact(shown) {
+			t.Errorf("type %q was masked", shown)
+		}
+	}
+	for _, masked := range []string{"secret", "sealed", "SECRET", "Sealed", "", "static", "certificate", "configs"} {
+		if !ShouldRedact(masked) {
+			t.Errorf("type %q was shown to an Agent", masked)
+		}
+	}
+}

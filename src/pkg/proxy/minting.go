@@ -88,6 +88,9 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 		}
 		return nil, nil
 	}
+	if connection.AWSRulesIncomplete() {
+		return nil, ErrMintingInspectionUnavailable
+	}
 	for _, rule := range rules.Paths {
 		if rule.Method != "" && !strings.EqualFold(rule.Method, req.Method) {
 			continue

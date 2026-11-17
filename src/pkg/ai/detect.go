@@ -106,10 +106,11 @@ func DetectAIAgentExecutable(command []string) string {
 //   - config: never redacted
 //   - no ai.json or AI mode disabled: no redaction
 //   - an ai.json that exists but cannot be read: sealed and secret redacted
-//   - an Agent login: sealed and secret always redacted
+//   - an Agent login: everything but type config always redacted, so a type
+//     this build does not know is never shown
 func ShouldRedact(secretType string) bool {
 	if AgentLogin() {
-		return secretType == "sealed" || secretType == "secret"
+		return !strings.EqualFold(strings.TrimSpace(secretType), "config")
 	}
 	if !IsAIAgent() {
 		return false

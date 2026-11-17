@@ -69,7 +69,7 @@ func ClassifyCall(req *http.Request, connection agentapi.Connection) ([]Classifi
 		// The classes come with the Connection; without them nothing can be
 		// classified, and the call is refused rather than judged by method.
 		classes := connection.ActionClasses
-		if classes == nil || classes.Unsupported() {
+		if classes == nil || classes.Unsupported() || connection.AWSRulesIncomplete() {
 			return nil, ErrCallUninspectable
 		}
 		calls, err := classifyAWSCall(req, classes)
