@@ -1163,6 +1163,9 @@ type RequestResolution struct {
 	CredentialRevision string `json:"credentialRevision,omitempty"`
 	ConnectionID       string `json:"connectionId,omitempty"`
 	GrantID            string `json:"grantId,omitempty"`
+	// FollowOnRequestID is the pending request for the part of this one its
+	// approver could not decide.
+	FollowOnRequestID string `json:"followOnRequestId,omitempty"`
 }
 
 type ListRequestsResponse struct {

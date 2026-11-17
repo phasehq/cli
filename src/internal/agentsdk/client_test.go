@@ -97,7 +97,7 @@ func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 			if r.URL.RawQuery != "" {
 				t.Errorf("poll request unexpectedly sent query parameters: %q", r.URL.RawQuery)
 			}
-			_, _ = w.Write([]byte(`{"id":"request-123","kind":"credential_update","grantId":"grant-aws","connectionId":"connection-aws","credentialId":"credential-aws","credentialProvider":"aws","credentialName":"Production AWS","status":"approved","cooldown":true,"resolutionNote":"AWS credential updated.","requestExpiresAt":"2026-07-19T08:00:00Z","runtimeAction":"retry"}`))
+			_, _ = w.Write([]byte(`{"id":"request-123","kind":"credential_update","grantId":"grant-aws","connectionId":"connection-aws","credentialId":"credential-aws","credentialProvider":"aws","credentialName":"Production AWS","status":"approved","cooldown":true,"resolutionNote":"AWS credential updated.","requestExpiresAt":"2026-07-19T08:00:00Z","runtimeAction":"retry","resolution":{"grantId":"grant-aws","followOnRequestId":"request-456"}}`))
 		case "POST /v1/agents/sessions/session-123/events/":
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{"schemaVersion":1,"sessionUid":"session-123","accepted":1,"duplicates":0,"batchId":"batch-01J00000000000000000000000"}`))
@@ -137,6 +137,9 @@ func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 	polled, err := client.PollRequest(ctx, session, "request-123")
 	if err != nil || polled.Status != RequestApproved || !polled.Cooldown || polled.ResolutionNote != "AWS credential updated." {
 		t.Fatalf("PollRequest = %+v, %v", polled, err)
+	}
+	if polled.Resolution == nil || polled.Resolution.FollowOnRequestID != "request-456" {
+		t.Fatalf("PollRequest resolution = %+v", polled.Resolution)
 	}
 	shipped, err := client.ShipEvents(ctx, session, events)
 	if err != nil || shipped.Accepted != 1 || shipped.Duplicates != 0 {

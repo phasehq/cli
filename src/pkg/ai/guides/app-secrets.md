@@ -23,7 +23,7 @@ Every call is checked by the Phase Console. When it refuses one, the command pri
 {"kind": "access_change", "title": "Renew access to <connection name>", "action": {"type": "agent_grant.renew", "version": 1, "connectionId": "<connection-id>"}}
 ```
 
-`access` is `read` or `read_write`; the app may be named by `appName` instead of `appId`. Ask only for what the task needs. Only server-side encrypted apps can be used by an Agent. An approved app access request returns `retry`: run the command again.
+`access` is `read` or `read_write`; the app may be named by `appName` instead of `appId`. Ask only for what the task needs. Only server-side encrypted apps can be used by an Agent. An approved app access request returns `retry`: run the command again. An approver may grant fewer environments than asked: `phase apps list` shows what was granted. When `resolution.followOnRequestId` is set, the rest is still waiting in that request for another approver: poll it, do not ask again.
 
 Inside a Phase AI session, `phase run` does not inject a secret whose name the session reserves (proxy, CA and Phase variables, and provider credential variables such as `AWS_SECRET_ACCESS_KEY`); it names the ones it skipped on stderr.
 
