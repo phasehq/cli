@@ -41,6 +41,7 @@ Commands:
   ai disable                        🚫 Disable AI integrations
   ai status                         📡 Show Phase AI setup and proxy health
   ai skill                          📄 Print the Phase AI skill document
+  ai guide                          📖 Print a Phase AI guide for Agents
   ai run                            🚀 Launch an AI Agent behind the Phase AI credential proxy
   ai exec                           ⚡ Execute one command behind a transient Phase AI credential proxy
   console                           🖥️ Open the Phase Console in your browser
@@ -133,14 +134,14 @@ phase run --env production 'python manage.py runserver'
 Phase AI gives coding agents (Claude Code, Cursor, Codex, OpenCode, VS Code Copilot) workflow-scoped access to third-party services (HTTP APIs, AWS, PostgreSQL) without ever handing them a live credential. The agent's process receives decoys; a local proxy on `127.0.0.1:9543` (PostgreSQL adapter on `9544`) swaps them for the real credential on the way out, enforces the Connections approved in the Phase Console, and blocks calls that would mint new credentials.
 
 ```bash
-phase ai enable --harness claude-code   # install the hook/plugin and skills for one harness; repeat for others
+phase ai enable --harness claude-code   # install the hook/plugin and skill for one harness; repeat for others
 phase ai status                          # setup, proxy health, Connections, CA expiry
 phase ai disable
 ```
 
 - **Claude Code and OpenCode** get the Phase environment automatically: provider CLIs just work while the proxy runs, and fall back to failing on the decoy (never to ambient credentials) when it is down.
 - **Cursor and Codex** run Phase-managed commands explicitly with `phase ai exec -- <command>` (`--connection <id>` picks one of several identities for a service); `phase ai run -- <agent>` launches a harness inside the environment.
-- Two skills are installed per harness: `phase-cli-ai-relay` (the proxy, Connections and requests) and `phase-cli-app-secrets` (Phase app secrets). Agents reach the proxy's control API at `http://phase.invalid` and can request new Connections, which a human approves in the Console.
+- One short skill, `phase-cli`, is installed per harness for both Connections and Phase app secrets; it replaces the application-secrets skill earlier releases installed under the same name. Agents read the detail on demand with `phase ai guide [topic]`, reach the proxy's control API at `http://phase.invalid`, and can request new Connections, which a human approves in the Console.
 
 `phase ai enable` creates a per-installation CA (valid 90 days, renewed automatically) and offers to trust it for the current user; it never changes system-wide trust or requires sudo. Command-line tools and SDKs trust the CA through the proxy environment either way; the user trust store matters for browsers and for Go programs on macOS and Windows. On Linux the offer needs NSS certutil (`libnss3-tools` on Debian/Ubuntu, `nss-tools` on Fedora/RHEL/Alpine, `nss` on Arch, `mozilla-nss-tools` on openSUSE) and is skipped with a hint when it is missing. On a machine with no system keystore the CA key is kept in memory only: each proxy start creates a new CA, and `phase ai enable` creates none and offers no trust.
 

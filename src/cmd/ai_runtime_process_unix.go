@@ -16,7 +16,7 @@ func configureDetachedProcess(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
-func stopClaudeProcessGracefully(_ context.Context, process *os.Process, _ claudeRuntimeState) error {
+func stopRuntimeProcessGracefully(_ context.Context, process *os.Process, _ hookRuntimeState) error {
 	return process.Signal(os.Interrupt)
 }
 
@@ -42,21 +42,21 @@ func processIsZombie(pid int) bool {
 	return end >= 0 && end+2 < len(stat) && (stat[end+2] == 'Z' || stat[end+2] == 'X')
 }
 
-func openClaudeEnvironmentFile(path string) (*os.File, error) {
+func openRuntimeEnvironmentFile(path string) (*os.File, error) {
 	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return nil, errors.New("Claude environment file must be a regular non-symlink file")
+		return nil, errors.New("Phase AI environment file must be a regular non-symlink file")
 	}
 	file := os.NewFile(uintptr(fd), path)
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, errors.New("Claude environment file must be a regular non-symlink file")
+		return nil, errors.New("Phase AI environment file must be a regular non-symlink file")
 	}
 	return file, nil
 }
 
-func tryLockClaudeLeaseFile(path string) (*os.File, bool, error) {
+func tryLockLeaseFile(path string) (*os.File, bool, error) {
 	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, false, err
@@ -65,7 +65,7 @@ func tryLockClaudeLeaseFile(path string) (*os.File, bool, error) {
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, false, errors.New("Claude session lease lock must be a regular non-symlink file")
+		return nil, false, errors.New("Phase AI session lease lock must be a regular non-symlink file")
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
@@ -95,14 +95,14 @@ func removeHeldLockFile(path string, guarded ...string) error {
 	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
 		return nil
 	}
-	file, acquired, err := tryLockClaudeLeaseFile(path)
+	file, acquired, err := tryLockLeaseFile(path)
 	if errors.Is(err, os.ErrNotExist) || (err == nil && !acquired) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer unlockClaudeLeaseFile(file)
+	defer unlockLeaseFile(file)
 	var errs []error
 	for _, name := range append(guarded, path) {
 		if info, err := os.Lstat(name); err == nil && !info.Mode().IsRegular() {
@@ -115,7 +115,7 @@ func removeHeldLockFile(path string, guarded ...string) error {
 	return errors.Join(errs...)
 }
 
-func unlockClaudeLeaseFile(file *os.File) error {
+func unlockLeaseFile(file *os.File) error {
 	if file == nil {
 		return nil
 	}

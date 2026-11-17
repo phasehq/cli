@@ -152,7 +152,7 @@ func (c *Client) CreateRequest(ctx context.Context, request CreateRequestRequest
 }
 
 // CreateRequestWithStatus preserves the Console's success status for the
-// proxy control relay: 201 means a request was created, while 200 can mean a
+// proxy control forwarding: 201 means a request was created, while 200 can mean a
 // deduplicated request or denial cooldown response.
 func (c *Client) CreateRequestWithStatus(ctx context.Context, request CreateRequestRequest, credential SensitiveString) (*RequestResponse, int, error) {
 	if request.SchemaVersion == 0 {
@@ -179,9 +179,10 @@ func (c *Client) CreateRequestWithStatus(ctx context.Context, request CreateRequ
 		}
 		return requestResponseFromSDK(response), statusCode, nil
 	}
-	// Legacy Service authentication and compatibility clients that have not
-	// opened a session retain the hardened internal transport. Normal phase ai
-	// runtimes bind their session during OpenSession and use the shared SDK.
+	// Without an open session the request goes over the internal transport.
+	// A runtime always opens its session first (and Service tokens are refused
+	// before that), so only tests that drive a fake Console without a session
+	// reach this path.
 	var response RequestResponse
 	statusCode, err := c.doWithStatus(ctx, http.MethodPost, c.endpoint("requests"), request, &response, credential)
 	if err != nil {
@@ -256,7 +257,7 @@ func mapSDKError(err error) error {
 	}
 	// SDK construction/validation/transport errors never include response
 	// bodies. Still redact credential-shaped strings before they cross the
-	// proxy relay error boundary.
+	// proxy forwarding error boundary.
 	return errors.New(safeErrorText(strings.TrimSpace(err.Error()), 512))
 }
 

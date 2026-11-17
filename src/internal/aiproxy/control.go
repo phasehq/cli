@@ -146,7 +146,7 @@ func (h *controlHandler) capabilities(w http.ResponseWriter, req *http.Request) 
 	credential := h.state.currentBackendCredential()
 	response, err := h.state.client.Capabilities(req.Context(), h.state.sessionUID, credential)
 	if err != nil {
-		h.writeRelay(w, nil, err)
+		h.writeForward(w, nil, err)
 		return
 	}
 	if response == nil || response.SessionUID != h.state.sessionUID || response.Validate() != nil {
@@ -158,11 +158,11 @@ func (h *controlHandler) capabilities(w http.ResponseWriter, req *http.Request) 
 		writeControlError(w, http.StatusBadGateway, "unsafe_agent_capabilities_response", "The Phase control plane returned unsafe Agent capabilities.", false)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 }
 
 func (h *controlHandler) status(w http.ResponseWriter) {
-	h.writeRelay(w, remoteapi.StatusResponse{
+	h.writeForward(w, remoteapi.StatusResponse{
 		SchemaVersion: agentapi.SchemaVersion,
 		Kind:          "phase.ai.status",
 		SafeToPrint:   true,
@@ -179,7 +179,7 @@ func (h *controlHandler) context(w http.ResponseWriter, req *http.Request) {
 	}
 	response, err := h.state.client.ContextForService(req.Context(), h.state.sessionUID, h.state.currentBackendCredential(), serviceType)
 	if err != nil {
-		h.writeRelay(w, nil, err)
+		h.writeForward(w, nil, err)
 		return
 	}
 	if response == nil || response.SchemaVersion != agentapi.SchemaVersion || response.SessionUID != h.state.sessionUID ||
@@ -189,7 +189,7 @@ func (h *controlHandler) context(w http.ResponseWriter, req *http.Request) {
 		writeControlError(w, http.StatusBadGateway, "unsafe_agent_context_response", "The Phase control plane returned unsafe Agent context.", false)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 }
 
 func controlContextServiceType(req *http.Request) (string, error) {
@@ -211,7 +211,7 @@ func (h *controlHandler) discover(w http.ResponseWriter, req *http.Request) {
 	credential := h.state.currentBackendCredential()
 	response, err := h.state.client.Discover(req.Context(), h.state.sessionUID, credential)
 	if err != nil {
-		h.writeRelay(w, nil, err)
+		h.writeForward(w, nil, err)
 		return
 	}
 	if response == nil || response.SchemaVersion != agentapi.SchemaVersion || response.SessionUID != h.state.sessionUID ||
@@ -220,7 +220,7 @@ func (h *controlHandler) discover(w http.ResponseWriter, req *http.Request) {
 		writeControlError(w, http.StatusBadGateway, "unsafe_agent_discover_response", "The Phase control plane returned unsafe Agent discovery data.", false)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 }
 
 func (h *controlHandler) refresh(w http.ResponseWriter, req *http.Request) {
@@ -231,10 +231,10 @@ func (h *controlHandler) refresh(w http.ResponseWriter, req *http.Request) {
 	config, err := h.state.refreshConfig(req.Context())
 	if err != nil {
 		h.handleConfigRefreshFailure(err)
-		h.writeRelay(w, nil, err)
+		h.writeForward(w, nil, err)
 		return
 	}
-	h.writeRelay(w, agentapi.RefreshResponse{
+	h.writeForward(w, agentapi.RefreshResponse{
 		SchemaVersion: agentapi.SchemaVersion, SessionUID: h.state.sessionUID,
 		ConfigGeneration: config.ConfigGeneration, Refreshed: true,
 	}, nil)
@@ -277,7 +277,7 @@ func (h *controlHandler) createRequest(w http.ResponseWriter, req *http.Request)
 		writeControlError(w, http.StatusBadGateway, "approved_request_refresh_failed", "The request was approved, but the Phase proxy could not safely apply the updated Connection configuration or credential. Do not retry the connection until Phase status reports it as ready.", true)
 		return
 	}
-	h.writeRelayStatus(w, response, statusCode, err)
+	h.writeForwardStatus(w, response, statusCode, err)
 	h.applyRequestRuntimeAction(response, err)
 }
 
@@ -379,7 +379,7 @@ func (h *controlHandler) pollRequest(w http.ResponseWriter, req *http.Request, r
 		writeControlError(w, http.StatusBadGateway, "approved_request_refresh_failed", "The request was approved, but the Phase proxy could not safely apply the updated Connection configuration or credential. Do not retry the connection until Phase status reports it as ready.", true)
 		return
 	}
-	h.writeRelay(w, response, err)
+	h.writeForward(w, response, err)
 	h.applyRequestRuntimeAction(response, err)
 }
 
@@ -585,8 +585,8 @@ func sessionConfigHasTarget(config *agentapi.SessionConfig, grantID, connectionI
 // provider environment, so the current engine cannot be mutated safely. A
 // hook-owned supervisor drains that engine and opens a fresh backend session
 // in the same daemon; foreground run/serve retain their restart-required error.
-func (h *controlHandler) applyRequestRuntimeAction(response *agentapi.RequestResponse, relayErr error) {
-	if relayErr != nil || response == nil ||
+func (h *controlHandler) applyRequestRuntimeAction(response *agentapi.RequestResponse, forwardErr error) {
+	if forwardErr != nil || response == nil ||
 		response.RuntimeAction != agentapi.RequestRuntimeActionRestartRequired {
 		return
 	}
@@ -699,10 +699,10 @@ func (h *controlHandler) revoke(w http.ResponseWriter, req *http.Request) {
 	}
 	response, err := h.state.client.RevokeSession(req.Context(), h.state.sessionUID, h.state.currentBackendCredential())
 	if err != nil {
-		h.writeRelay(w, nil, err)
+		h.writeForward(w, nil, err)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 	h.state.markRevoked()
 	go func() {
 		time.Sleep(10 * time.Millisecond)
@@ -717,13 +717,13 @@ func (h *controlHandler) rotate(w http.ResponseWriter, req *http.Request) {
 	}
 	response, err := h.state.client.RotateSessionCredential(req.Context(), h.state.sessionUID, h.state.currentBackendCredential())
 	if err != nil {
-		h.writeRelay(w, nil, err)
+		h.writeForward(w, nil, err)
 		return
 	}
 	// Backend session credential #1 is proxy-only. Rotation updates the proxy's
 	// credential without changing or revealing the process-local capability.
 	h.state.setBackendCredential(response.SessionCredential)
-	h.writeRelay(w, map[string]any{
+	h.writeForward(w, map[string]any{
 		"schemaVersion":    response.SchemaVersion,
 		"sessionUid":       response.SessionUID,
 		"expiresAt":        response.ExpiresAt,
@@ -784,18 +784,18 @@ func decodeOptionalEmptyJSONObject(reader io.Reader) error {
 	return nil
 }
 
-func (h *controlHandler) writeRelay(w http.ResponseWriter, response any, err error) {
-	h.writeRelayStatus(w, response, http.StatusOK, err)
+func (h *controlHandler) writeForward(w http.ResponseWriter, response any, err error) {
+	h.writeForwardStatus(w, response, http.StatusOK, err)
 }
 
-func (h *controlHandler) writeRelayStatus(w http.ResponseWriter, response any, statusCode int, err error) {
+func (h *controlHandler) writeForwardStatus(w http.ResponseWriter, response any, statusCode int, err error) {
 	if err != nil {
 		var apiErr *agentapi.Error
 		if errors.As(err, &apiErr) {
 			writeControlError(w, apiErr.StatusCode, apiErr.Code, apiErr.Message, apiErr.Retryable)
 			return
 		}
-		writeControlError(w, http.StatusBadGateway, "agent_control_relay_failed", "The Phase control plane could not complete the request.", true)
+		writeControlError(w, http.StatusBadGateway, "agent_control_forward_failed", "The Phase control plane could not complete the request.", true)
 		return
 	}
 	if statusCode < 200 || statusCode >= 300 {
@@ -847,7 +847,7 @@ func (h *controlHandler) listRequests(w http.ResponseWriter, req *http.Request) 
 			item.PollURL = phaseproxy.ControlURL + "/v1/requests/" + item.ID
 		}
 	}
-	h.writeRelay(w, response, err)
+	h.writeForward(w, response, err)
 }
 
 func (h *controlHandler) cancelRequest(w http.ResponseWriter, req *http.Request, id string) {
@@ -863,6 +863,6 @@ func (h *controlHandler) cancelRequest(w http.ResponseWriter, req *http.Request,
 		}
 		response, err = h.finishRequestWithin(req, response, nil, false)
 	}
-	h.writeRelay(w, response, err)
+	h.writeForward(w, response, err)
 	h.applyRequestRuntimeAction(response, err)
 }

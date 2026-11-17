@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/spf13/cobra"
@@ -25,9 +27,9 @@ func init() {
 }
 
 type appListEntry struct {
-	ID           string             `json:"id"`
-	Name         string             `json:"name"`
-	Environments []envListEntry     `json:"environments"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Environments []envListEntry `json:"environments"`
 }
 
 type envListEntry struct {
@@ -47,7 +49,23 @@ func runAppsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// An Agent also hears about access that has ended and how to renew it.
+	var expired []string
+	if agent, ok := p.(*phase.AgentBackend); ok {
+		if expired, err = agent.ExpiredApps(); err != nil {
+			return err
+		}
+		if len(data.Apps) == 0 && len(expired) == 0 {
+			return errors.New(phase.NoAppAccessMessage)
+		}
+		for _, description := range expired {
+			fmt.Fprintln(os.Stderr, description)
+		}
+	}
 	if len(data.Apps) == 0 {
+		if len(expired) > 0 {
+			return nil
+		}
 		return fmt.Errorf("no applications found")
 	}
 

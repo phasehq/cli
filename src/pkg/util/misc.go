@@ -77,7 +77,6 @@ func GetDefaultShell() []string {
 	return nil
 }
 
-
 func ParseBoolFlag(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "false", "no", "0":

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -51,10 +52,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if err := requireReservedSessionNames(); err != nil {
+		return err
+	}
+
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
 	p, err := phase.NewBackend()
 	if err != nil {
+		return err
+	}
+	if err := refuseAgentDynamicSecretFlags(cmd, p); err != nil {
 		return err
 	}
 	// An Agent is the AI tool whether or not a harness was detected.
@@ -144,6 +152,20 @@ func runRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// requireReservedSessionNames refuses to run inside a Phase AI session that did
+// not export its reserved names: without them phase run cannot tell which
+// app secrets would replace a decoy, so it injects nothing rather than all.
+func requireReservedSessionNames() error {
+	if os.Getenv("PHASE_AI_ENABLED") != "1" {
+		return nil
+	}
+	if _, present := os.LookupEnv(phaseproxy.ReservedEnvironmentKey); !present {
+		return errors.New("The Phase AI session did not provide its reserved names (" + phaseproxy.ReservedEnvironmentKey +
+			"), so phase run cannot keep app secrets from replacing its credentials; restart the harness session, or update Phase.")
+	}
+	return nil
+}
+
 // skipReservedSessionVariables removes, inside a Phase AI session, every
 // secret whose name the session owns: proxy routing, trust settings, Phase
 // runtime variables and the credential variables of the session's providers,
@@ -164,4 +186,18 @@ func skipReservedSessionVariables(secrets map[string]string) []string {
 	}
 	sort.Strings(skipped)
 	return skipped
+}
+
+// refuseAgentDynamicSecretFlags refuses a dynamic-secret flag an Agent login
+// set explicitly; the commands' own defaults stay silent.
+func refuseAgentDynamicSecretFlags(cmd *cobra.Command, backend phase.SecretsBackend) error {
+	if _, agent := backend.(*phase.AgentBackend); !agent {
+		return nil
+	}
+	for _, name := range []string{"generate-leases", "lease-ttl"} {
+		if cmd.Flags().Changed(name) {
+			return phase.ErrAgentDynamicSecrets
+		}
+	}
+	return nil
 }

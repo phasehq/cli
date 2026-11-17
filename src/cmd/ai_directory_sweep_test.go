@@ -21,15 +21,15 @@ const sweepLiveGeneration = "0123456789abcdef0123456789abcdef"
 func writeLiveSweepRuntime(t *testing.T, directory string) {
 	t.Helper()
 	now := time.Now().UTC()
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: sweepLiveGeneration, RuntimeFingerprint: "binding-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: sweepLiveGeneration, RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: now, ProxyURL: "http://phase:capability@127.0.0.1:9543",
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: sweepLiveGeneration, PID: os.Getpid(), CreatedAt: now,
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: sweepLiveGeneration, PID: os.Getpid(), CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -56,23 +56,23 @@ func directoryNames(t *testing.T, directory string) []string {
 }
 
 func TestManySessionsLeaveTheAIDirectoryAtItsBaseline(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	writeLiveSweepRuntime(t, directory)
 	cycle := func(index int) {
 		sessionID := fmt.Sprintf("session-%d", index)
 		if err := registerHarnessLease(ai.HarnessCursor, sessionID, time.Now().UTC().Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		touchClaudeSessionLease(harnessLeaseID(ai.HarnessCursor, sessionID))
+		touchSessionLease(harnessLeaseID(ai.HarnessCursor, sessionID))
 		release, err := holdHarnessCommandLease(ai.HarnessCodex)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if active, err := hasActiveClaudeSessionLease(directory, sweepLiveGeneration, time.Now()); err != nil || !active {
+		if active, err := hasActiveSessionLease(directory, sweepLiveGeneration, time.Now()); err != nil || !active {
 			t.Fatalf("live session not counted: %v %v", active, err)
 		}
 		release()
-		if err := removeClaudeSessionLease(harnessLeaseID(ai.HarnessCursor, sessionID)); err != nil {
+		if err := removeSessionLease(harnessLeaseID(ai.HarnessCursor, sessionID)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -85,14 +85,14 @@ func TestManySessionsLeaveTheAIDirectoryAtItsBaseline(t *testing.T) {
 		t.Fatalf("sessions left files behind:\nbaseline %v\nafter    %v", baseline, after)
 	}
 	for _, name := range baseline {
-		if strings.HasPrefix(name, claudeSessionLeasePrefix) && name != claudeLeaseRegistryName+claudeLeaseLockSuffix {
+		if strings.HasPrefix(name, sessionLeasePrefix) && name != leaseRegistryName+leaseLockSuffix {
 			t.Fatalf("per-session file %s outlived its session", name)
 		}
 	}
 }
 
 func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	writeLiveSweepRuntime(t, directory)
 	write := func(name, content string) string {
 		t.Helper()
@@ -117,31 +117,35 @@ func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
 	if err := registerHarnessLease(ai.HarnessCursor, "live-session", time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	livePath, _ := claudeSessionLeasePath(directory, harnessLeaseID(ai.HarnessCursor, "live-session"))
-	stalePath, _ := claudeSessionLeasePath(directory, harnessLeaseID(ai.HarnessCursor, "ended-session"))
-	if err := writeOwnerOnlyJSON(stalePath, claudeSessionLease{
-		Version: claudeRuntimeStateVersion, Generation: "fedcba9876543210fedcba9876543210", UpdatedAt: time.Now().UTC(),
+	livePath, _ := sessionLeasePath(directory, harnessLeaseID(ai.HarnessCursor, "live-session"))
+	stalePath, _ := sessionLeasePath(directory, harnessLeaseID(ai.HarnessCursor, "ended-session"))
+	if err := writeOwnerOnlyJSON(stalePath, sessionLease{
+		Version: hookRuntimeStateVersion, Generation: "fedcba9876543210fedcba9876543210", UpdatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
+	former := "claude-session-" + strings.Repeat("ab", 16) + ".lease.json"
 	removed := []string{
 		stalePath,
-		stalePath + claudeLeaseLockSuffix,
-		livePath + claudeLeaseLockSuffix,
 		write("ca-key.pem", "-----BEGIN EC PRIVATE KEY-----\n"),
 		write(".phase-ca-123", "partial"),
 		write("java-truststore.p12", "p12"),
 		write("runtime-java-truststore.p12", "p12"),
 		write("phase-ca.pem", "certificate"),
+		write("runtime-fedcba9876543210fedcba9876543210.error.json", `{}`),
+		// Names earlier builds wrote.
 		write("claude-runtime-fedcba9876543210fedcba9876543210.error.json", `{}`),
+		write("claude-runtime.json", `{}`),
+		write("claude-runtime.log", "{}\n"),
+		write("claude-session-leases.registry", ""),
+		write(former, `{}`),
+		write(former+leaseLockSuffix, ""),
+		write("claude-runtime.lock", `{}`),
 		write("phase-hook-v1", "binary"),
 		write("phase-hook-v1.metadata.json", `{"owner":"phase-cli"}`),
 	}
-	write(filepath.Base(stalePath)+claudeLeaseLockSuffix, "")
-	write(filepath.Base(livePath)+claudeLeaseLockSuffix, "")
 	if runtime.GOOS == "windows" {
-		removed = slices.DeleteFunc(removed, func(path string) bool { return strings.HasSuffix(path, claudeLeaseLockSuffix) })
-		removed = slices.DeleteFunc(removed, func(path string) bool { return strings.HasSuffix(path, "phase-hook-v1") })
+		removed = slices.DeleteFunc(removed, func(path string) bool { return strings.HasSuffix(path, ".lock") })
 	}
 	staleTemporary := write(".phase-runtime-old", "partial")
 	age(staleTemporary)
@@ -156,7 +160,7 @@ func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
 	kept := []string{
 		livePath,
 		write("notes.txt", "not Phase's"),
-		write("claude-runtime-"+sweepLiveGeneration+".error.json", `{}`),
+		write("runtime-"+sweepLiveGeneration+".error.json", `{}`),
 		write(".phase-runtime-fresh", "in progress"),
 		write(filepath.Join(eventSpoolDirectory, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "event.json"), `{}`),
 	}
@@ -180,7 +184,7 @@ func TestSweepRemovesLeftoversAndKeepsLiveAndUnknownFiles(t *testing.T) {
 		kept = append(kept, filepath.Join(directory, "java-truststore.p12"), outside)
 	}
 
-	if err := sweepAIDirectory(directory, true); err != nil {
+	if err := sweepAIDirectory(directory); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range removed {
@@ -202,24 +206,24 @@ func TestSweepLeavesALockFileSomeoneHolds(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("lock files stay in place on Windows")
 	}
-	directory := withClaudeHookRuntimeDirectory(t)
-	logPath := filepath.Join(directory, claudeLifecycleLogFile)
+	directory := withHookRuntimeDirectory(t)
+	logPath := filepath.Join(directory, lifecycleLogFile)
 	if err := os.WriteFile(logPath, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	held, acquired, err := tryLockClaudeLeaseFile(logPath + claudeLeaseLockSuffix)
+	held, acquired, err := tryLockLeaseFile(logPath + leaseLockSuffix)
 	if err != nil || !acquired {
 		t.Fatalf("lock: %v %v", acquired, err)
 	}
 	if err := removeAIRuntimeLeftovers(directory); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{logPath, logPath + claudeLeaseLockSuffix} {
+	for _, path := range []string{logPath, logPath + leaseLockSuffix} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("a held lock's files were removed: %s", path)
 		}
 	}
-	_ = unlockClaudeLeaseFile(held)
+	_ = unlockLeaseFile(held)
 	if err := removeAIRuntimeLeftovers(directory); err != nil {
 		t.Fatal(err)
 	}

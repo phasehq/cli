@@ -42,7 +42,7 @@ Content-Type: application/json
 
 | Caller | Routes | When |
 |---|---|---|
-| The Agent, following the `phase-cli` skill | `GET /v1/capabilities`, `GET /v1/status` | When the human asks for Phase, or to find out whether Phase can manage a service. In transparent mode the per-prompt status line already names the ready Connections, so this is mostly for service discovery. |
+| The Agent, following the `phase-cli` skill and its guides | `GET /v1/capabilities`, `GET /v1/status` | When the human asks for Phase, or to find out whether Phase can manage a service. In transparent mode the per-prompt status line already names the ready Connections, so this is mostly for service discovery. |
 | The Agent | `GET /v1/context?serviceType=…` | Before using a service through Phase: provider-specific instructions and limitations, rendered by Console. |
 | The Agent | `POST /v1/requests`, `GET /v1/requests/{id}?wait=300`, `GET /v1/requests`, `POST /v1/requests/{id}/cancel` | No suitable Connection exists (`setup`), the provider rejected the credential (`credential_update`), or the Agent requests a change with an `action`: to a custom HTTP Connection, to this Workflow's access (allow a call the policy asks about, renew time-limited access), or to the Workflow's saved context. The Agent prints `approvalUrl` for the human, then long-polls. |
 | The Agent | `GET /v1/connections`, `GET /v1/connections/{id}` | To read what its Connections are, and to get the current definition of a custom HTTP Connection before requesting a change. Served from the session the proxy already holds. |
@@ -72,8 +72,8 @@ also sets `X-Phase-Error-Code`. Proxied failures that belong to a Connection add
 }
 ```
 
-Console-side failures are relayed with Console's status, code and message;
-unreachable Console becomes 502 `agent_control_relay_failed` with
+Console-side failures are forwarded with Console's status, code and message;
+unreachable Console becomes 502 `agent_control_forward_failed` with
 `retryable: true`.
 
 ## 4. Endpoints
@@ -268,7 +268,7 @@ is not part of this session.
 
 ### GET /v1/capabilities
 
-Versioned catalog of every service this Phase instance can manage, relayed from
+Versioned catalog of every service this Phase instance can manage, forwarded from
 Console, plus the IDs of Connections that already exist in this Workflow. The
 matchers are descriptive metadata (which executables and URI schemes a service
 usually involves); they never grant anything.
@@ -331,7 +331,7 @@ parameter; omit it for the general context.
 
 When the Workflow has saved context, Console appends a "Workflow notes"
 section to the general context, between the markers
-`<<<BEGIN WORKFLOW NOTES>>>` and `<<<END WORKFLOW NOTES>>>`. The proxy relays
+`<<<BEGIN WORKFLOW NOTES>>>` and `<<<END WORKFLOW NOTES>>>`. The proxy forwards
 the text as it is. The notes are written by members; they are background for
 the Agent, not instructions from Phase.
 
@@ -343,7 +343,7 @@ Console answers for a different service than asked.
 The provider presets a Connection can be asked for by ID, read from Console's
 Agent registry (`GET /v1/agents/registry/`, `presets`) and kept in memory for
 five minutes per session. If Console cannot be reached the list last read is
-served; with none, Console's error is relayed.
+served; with none, Console's error is forwarded.
 
 ```json
 {
@@ -356,7 +356,7 @@ served; with none, Console's error is relayed.
 }
 ```
 
-`hosts` is relayed as Console lists it. GitHub, GitLab, Cloudflare, Vercel,
+`hosts` is forwarded as Console lists it. GitHub, GitLab, Cloudflare, Vercel,
 Render, Railway and Supabase are not presets: they are ordinary Phase services
 asked for by service type (a `setup` request with `serviceType`, found in
 `GET /v1/capabilities`), with no custom definition. To use a preset, send
@@ -545,7 +545,7 @@ Absent, the organisation's default applies; the requests the proxy builds leave
 it out. The proxy refuses only what can never be valid (zero, negative, not a
 whole number, or on a kind that does not end in access); Console owns the
 bounds and answers `invalid_duration` with the maximum in the message. The
-member who approves may change the duration. Other Console codes relayed as
+member who approves may change the duration. Other Console codes forwarded as
 they are: `invalid_access_allow`, `access_policy_blocks_allow` (a block rule
 covers the allow, so approval could not help), `secret_guard_blocks_call`,
 `access_policy_not_supported`, `connection_not_renewable`,
@@ -767,7 +767,7 @@ an older decoy are translated to the live credential of the same Connection.
 The Console discovery payload for this session: Connections with hosts,
 injection action, identifiers, decoys and bindings, never live material. A
 diagnostic view of what the proxy is configured to do. `policy`,
-`operationClasses`, `grantExpiresAt` and `expiredConnections` are relayed as
+`operationClasses`, `grantExpiresAt` and `expiredConnections` are forwarded as
 Console sent them and are not checked against the proxy's configuration.
 
 ### POST /v1/refresh

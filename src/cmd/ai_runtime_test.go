@@ -68,8 +68,8 @@ func TestAIRuntimeRejectsRandomPortAllocation(t *testing.T) {
 	}
 }
 
-func TestManualAIRuntimeRejectsActiveClaudeHookLease(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+func TestManualAIRuntimeRejectsActiveHookLease(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
 	state := writeHealthyManualHandoffState(t, directory)
 	if err := registerHarnessLease(ai.HarnessClaudeCode, "active-claude-session", time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestManualAIRuntimeRejectsActiveClaudeHookLease(t *testing.T) {
 	stopCalls := 0
 	err := prepareManualAIRuntimeWithStop(
 		context.Background(),
-		func(context.Context, string, claudeRuntimeState) error {
+		func(context.Context, string, hookRuntimeState) error {
 			stopCalls++
 			return nil
 		},
@@ -92,18 +92,18 @@ func TestManualAIRuntimeRejectsActiveClaudeHookLease(t *testing.T) {
 	if stopCalls != 0 {
 		t.Fatalf("active Claude runtime was stopped %d times", stopCalls)
 	}
-	if _, err := os.Stat(filepath.Join(directory, claudeRuntimeStateFile)); err != nil {
+	if _, err := os.Stat(filepath.Join(directory, hookRuntimeStateFile)); err != nil {
 		t.Fatalf("active runtime state was changed: %v (state=%#v)", err, state)
 	}
 }
 
-func TestManualAIRuntimeStopsAuthenticatedIdleClaudeHookRuntime(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+func TestManualAIRuntimeStopsAuthenticatedIdleHookRuntime(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
 	wantState := writeHealthyManualHandoffState(t, directory)
 	stopCalls := 0
 	err := prepareManualAIRuntimeWithStop(
 		context.Background(),
-		func(_ context.Context, gotDirectory string, gotState claudeRuntimeState) error {
+		func(_ context.Context, gotDirectory string, gotState hookRuntimeState) error {
 			stopCalls++
 			if gotDirectory != directory || gotState.Generation != wantState.Generation || gotState.ProxyURL != wantState.ProxyURL {
 				t.Fatalf("idle runtime handoff = directory %q state %#v", gotDirectory, gotState)
@@ -124,18 +124,18 @@ func TestManualAIRuntimeStopsAuthenticatedIdleClaudeHookRuntime(t *testing.T) {
 }
 
 func TestManualAIRuntimeCleansDeadGenerationWithoutSignallingPID(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "dead-generation", PID: -1,
+	directory := withHookRuntimeDirectory(t)
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "dead-generation", PID: -1,
 		RuntimeFingerprint: "binding", ProxyURL: "http://phase:capability@127.0.0.1:9543",
 	}
-	statePath := filepath.Join(directory, claudeRuntimeStateFile)
-	lockPath := filepath.Join(directory, claudeRuntimeLockFile)
+	statePath := filepath.Join(directory, hookRuntimeStateFile)
+	lockPath := filepath.Join(directory, hookRuntimeLockFile)
 	if err := writeOwnerOnlyJSON(statePath, state); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOwnerOnlyJSON(lockPath, claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: time.Now().UTC(),
+	if err := writeOwnerOnlyJSON(lockPath, hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestManualAIRuntimeCleansDeadGenerationWithoutSignallingPID(t *testing.T) {
 	stopStateCalls, startupCleanupCalls := 0, 0
 	err := prepareManualAIRuntimeWithStop(
 		context.Background(),
-		func(context.Context, string, claudeRuntimeState) error {
+		func(context.Context, string, hookRuntimeState) error {
 			stopStateCalls++
 			return nil
 		},
@@ -165,7 +165,7 @@ func TestManualAIRuntimeCleansDeadGenerationWithoutSignallingPID(t *testing.T) {
 			t.Fatalf("stale artifact %q remains: %v", path, err)
 		}
 	}
-	leasePath, err := claudeSessionLeasePath(directory, "dead-session")
+	leasePath, err := sessionLeasePath(directory, "dead-session")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,14 +175,14 @@ func TestManualAIRuntimeCleansDeadGenerationWithoutSignallingPID(t *testing.T) {
 }
 
 func TestManualAIRuntimeFailsClosedOnUnreadableOwnedState(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
-	if err := os.WriteFile(filepath.Join(directory, claudeRuntimeStateFile), []byte("{"), 0o600); err != nil {
+	directory := withHookRuntimeDirectory(t)
+	if err := os.WriteFile(filepath.Join(directory, hookRuntimeStateFile), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stopCalls := 0
 	err := prepareManualAIRuntimeWithStop(
 		context.Background(),
-		func(context.Context, string, claudeRuntimeState) error { stopCalls++; return nil },
+		func(context.Context, string, hookRuntimeState) error { stopCalls++; return nil },
 		func(context.Context) error { stopCalls++; return nil },
 	)
 	if err == nil || !strings.Contains(err.Error(), "inspect hook-managed") {
@@ -193,7 +193,7 @@ func TestManualAIRuntimeFailsClosedOnUnreadableOwnedState(t *testing.T) {
 	}
 }
 
-func writeHealthyManualHandoffState(t *testing.T, directory string) claudeRuntimeState {
+func writeHealthyManualHandoffState(t *testing.T, directory string) hookRuntimeState {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -205,11 +205,11 @@ func writeHealthyManualHandoffState(t *testing.T, directory string) claudeRuntim
 		t.Fatal(err)
 	}
 	parsed.User = url.UserPassword("phase", "runtime-capability")
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "healthy-generation", PID: os.Getpid(),
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "healthy-generation", PID: os.Getpid(),
 		RuntimeFingerprint: "binding", StartedAt: time.Now().UTC(), ProxyURL: parsed.String(),
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
 	return state
@@ -345,13 +345,13 @@ func TestAIExecAttachesToAuthenticatedActiveHookRuntime(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("child environment assertion uses a POSIX shell")
 	}
-	directory := withClaudeHookRuntimeDirectory(t)
-	withClaudeHookTestConfig(t, true)
+	directory := withHookRuntimeDirectory(t)
+	withHookTestConfig(t, true)
 	t.Setenv("PHASE_AI_ENABLED", "")
 	t.Setenv("AWS_ACCESS_KEY_ID", "ambient")
-	originalScopeFingerprint := claudeHookScopeFingerprint
-	claudeHookScopeFingerprint = func() (string, error) { return "scope-one", nil }
-	t.Cleanup(func() { claudeHookScopeFingerprint = originalScopeFingerprint })
+	originalScopeFingerprint := hookScopeFingerprint
+	hookScopeFingerprint = func() (string, error) { return "scope-one", nil }
+	t.Cleanup(func() { hookScopeFingerprint = originalScopeFingerprint })
 
 	var runtimeProxyURL, selectedProxyURL string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -361,7 +361,7 @@ func TestAIExecAttachesToAuthenticatedActiveHookRuntime(t *testing.T) {
 			_ = json.NewEncoder(writer).Encode(map[string]any{
 				"schemaVersion": 1, "sessionUid": "session-one",
 				"processEnvironment": phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
-					"PHASE_AI_ENABLED": "1", "HTTP_PROXY": runtimeProxyURL, "http_proxy": runtimeProxyURL,
+					"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTP_PROXY": runtimeProxyURL, "http_proxy": runtimeProxyURL,
 					"HTTPS_PROXY": runtimeProxyURL, "https_proxy": runtimeProxyURL,
 					"AWS_ACCESS_KEY_ID": "managed-default",
 					"PGPASSWORD":        "managed-postgres-must-be-removed",
@@ -371,7 +371,7 @@ func TestAIExecAttachesToAuthenticatedActiveHookRuntime(t *testing.T) {
 			_ = json.NewEncoder(writer).Encode(map[string]any{
 				"schemaVersion": 1, "connectionId": "aws-two", "configGeneration": 1,
 				"processEnvironment": phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
-					"PHASE_AI_ENABLED": "1", "HTTP_PROXY": selectedProxyURL, "http_proxy": selectedProxyURL,
+					"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTP_PROXY": selectedProxyURL, "http_proxy": selectedProxyURL,
 					"HTTPS_PROXY": selectedProxyURL, "https_proxy": selectedProxyURL,
 					"AWS_ACCESS_KEY_ID": "managed-selected",
 				}},
@@ -391,15 +391,15 @@ func TestAIExecAttachesToAuthenticatedActiveHookRuntime(t *testing.T) {
 	selectedProxyURL = parsed.String()
 
 	now := time.Now().UTC()
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "scope-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "scope-one",
 		PID: os.Getpid(), StartedAt: now, ProxyURL: runtimeProxyURL,
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: now,
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -422,28 +422,28 @@ func TestAIExecAttachesToAuthenticatedActiveHookRuntime(t *testing.T) {
 	if !handled {
 		t.Fatal("active authenticated hook runtime was not reused")
 	}
-	active, err := hasActiveClaudeSessionLease(directory, state.Generation, time.Now().UTC())
+	active, err := hasActiveSessionLease(directory, state.Generation, time.Now().UTC())
 	if err != nil || !active {
 		t.Fatalf("original harness lease was not preserved: active=%v err=%v", active, err)
 	}
 }
 
 func TestAIExecDoesNotAttachToOutOfScopeHookRuntime(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
-	withClaudeHookTestConfig(t, true)
-	originalScopeFingerprint := claudeHookScopeFingerprint
-	claudeHookScopeFingerprint = func() (string, error) { return "scope-one", nil }
-	t.Cleanup(func() { claudeHookScopeFingerprint = originalScopeFingerprint })
+	directory := withHookRuntimeDirectory(t)
+	withHookTestConfig(t, true)
+	originalScopeFingerprint := hookScopeFingerprint
+	hookScopeFingerprint = func() (string, error) { return "scope-one", nil }
+	t.Cleanup(func() { hookScopeFingerprint = originalScopeFingerprint })
 	now := time.Now().UTC()
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "old-scope",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "old-scope",
 		PID: os.Getpid(), StartedAt: now, ProxyURL: "http://phase:capability@127.0.0.1:9543",
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: now,
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -579,8 +579,9 @@ func TestRefreshConfiguredAISkillPreservesUnrecognizedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := refreshConfiguredAISkill(); err == nil {
-		t.Fatal("refresh accepted an unrecognized skill")
+	// A skill someone edited is left alone without failing the hook.
+	if err := refreshConfiguredAISkill(); err != nil {
+		t.Fatal(err)
 	}
 	installed, err := os.ReadFile(skillPath)
 	if err != nil {
@@ -599,7 +600,7 @@ func TestRefreshConfiguredAISkillUpdatesEveryConfiguredTarget(t *testing.T) {
 	first := filepath.Join(t.TempDir(), "first", "SKILL.md")
 	second := filepath.Join(t.TempDir(), "second", "SKILL.md")
 	for _, path := range []string{first, second} {
-		if err := ai.InstallSkillTo(path); err != nil {
+		if _, err := ai.InstallSkill(path, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -618,7 +619,7 @@ func TestRefreshConfiguredAISkillUpdatesEveryConfiguredTarget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(installed), "<!-- phase-cli-skill-owner: phase-cli; kind: agent-runtime;") {
+		if !strings.Contains(string(installed), "<!-- phase-cli-skill-owner: phase-cli; kind: phase-cli;") {
 			t.Fatalf("configured Phase AI skill was not refreshed at %s", path)
 		}
 	}
@@ -637,7 +638,7 @@ func TestAgentLocalAccountIDIsStableAndDoesNotContainLookup(t *testing.T) {
 }
 
 func TestSetupStopsHookRuntimeDespiteStaleSessionLeases(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	state := writeHealthyManualHandoffState(t, directory)
 	// A session that ended without SessionEnd leaves an unbounded lease behind.
 	if err := registerHarnessLease(ai.HarnessClaudeCode, "quit-without-session-end", time.Time{}); err != nil {
@@ -646,7 +647,7 @@ func TestSetupStopsHookRuntimeDespiteStaleSessionLeases(t *testing.T) {
 	stopCalls := 0
 	stopped, err := prepareHookRuntime(
 		context.Background(),
-		func(_ context.Context, gotDirectory string, gotState claudeRuntimeState) error {
+		func(_ context.Context, gotDirectory string, gotState hookRuntimeState) error {
 			stopCalls++
 			if gotDirectory != directory || gotState.Generation != state.Generation {
 				t.Fatalf("setup stop handoff = directory %q state %#v", gotDirectory, gotState)
@@ -665,15 +666,15 @@ func TestSetupStopsHookRuntimeDespiteStaleSessionLeases(t *testing.T) {
 }
 
 func TestSetupRefusesWhileWrappedCommandIsInFlight(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	state := writeHealthyManualHandoffState(t, directory)
-	path, err := claudeSessionLeasePath(directory, harnessLeaseID(ai.HarnessCodex, "command:in-flight"))
+	path, err := sessionLeasePath(directory, harnessLeaseID(ai.HarnessCodex, "command:in-flight"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := writeOwnerOnlyJSON(path, claudeSessionLease{
-		Version: claudeRuntimeStateVersion, Generation: state.Generation, UpdatedAt: now,
+	if err := writeOwnerOnlyJSON(path, sessionLease{
+		Version: hookRuntimeStateVersion, Generation: state.Generation, UpdatedAt: now,
 		ExpiresAt: now.Add(harnessCommandLeaseTTL), Purpose: harnessCommandLeasePurpose,
 	}); err != nil {
 		t.Fatal(err)
@@ -681,7 +682,7 @@ func TestSetupRefusesWhileWrappedCommandIsInFlight(t *testing.T) {
 	stopCalls := 0
 	stopped, err := prepareHookRuntime(
 		context.Background(),
-		func(context.Context, string, claudeRuntimeState) error {
+		func(context.Context, string, hookRuntimeState) error {
 			stopCalls++
 			return nil
 		},

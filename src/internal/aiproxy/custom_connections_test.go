@@ -704,7 +704,7 @@ func TestControlConnectionsRefuseADefinitionCarryingProxyOnlyMaterial(t *testing
 	}
 }
 
-func TestDiscoverRelaysInjectionListsAndRequiresThemToMatch(t *testing.T) {
+func TestDiscoverForwardsInjectionListsAndRequiresThemToMatch(t *testing.T) {
 	discoverConnection := func() map[string]any {
 		connection := customConnectionPayload(customDecoyToken, customLiveToken)
 		delete(connection, "secretMaterial")

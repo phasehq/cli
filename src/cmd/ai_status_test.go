@@ -37,7 +37,7 @@ func TestAIStatusCommandIsRegistered(t *testing.T) {
 }
 
 func TestRenderAIStatusReportsSetupRuntimeAndCA(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	withAICAKeystore(t, gokeyring.ErrNotFound)
 	originalAIConfig := config.AIConfigPath
 	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
@@ -51,21 +51,21 @@ func TestRenderAIStatusReportsSetupRuntimeAndCA(t *testing.T) {
 		t.Fatalf("disabled status:\n%s", disabled)
 	}
 
-	if err := config.SaveAIConfig(&config.AIConfig{Enabled: true, HarnessIDs: []string{"claude-code", "opencode"}, DefaultWorkflowID: "wf-123", SkillInstallPaths: []string{"/home/dev/.claude/skills/phase-cli-ai-relay/SKILL.md"}}); err != nil {
+	if err := config.SaveAIConfig(&config.AIConfig{Enabled: true, HarnessIDs: []string{"claude-code", "opencode"}, DefaultWorkflowID: "wf-123", SkillInstallPaths: []string{"/home/dev/.claude/skills/phase-cli/SKILL.md"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(config.ConfigFilePath, []byte(`{"default-user":"u1","phase-users":[{"host":"https://console.example.test","id":"u1","email":"dev@example.test"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: time.Now().UTC().Add(-90 * time.Minute), ProxyURL: "http://phase:capability@127.0.0.1:1",
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
 	connections := []aiproxy.EndpointConnection{{ConnectionID: "aws-1", Name: "aws-prod", ServiceType: "aws", Protocol: "http"}, {ConnectionID: "pg-1", ServiceType: "postgres", Protocol: "postgres"}}
-	if err := writeClaudeEnvironment(directory, os.Getpid(), "generation-one", state.StartedAt, testClaudeEnvironmentPlan(), connections, true); err != nil {
+	if err := writeRuntimeEnvironment(directory, os.Getpid(), "generation-one", state.StartedAt, testRuntimeEnvironmentPlan(), connections, true); err != nil {
 		t.Fatal(err)
 	}
 	_, certPEM, _, err := phaseproxy.GenerateCA(60 * 24 * time.Hour)
@@ -79,8 +79,8 @@ func TestRenderAIStatusReportsSetupRuntimeAndCA(t *testing.T) {
 	for _, required := range []string{
 		"Phase AI:    enabled, local proxy", "Harnesses:   claude-code, opencode", "Login:       dev@example.test @ https://console.example.test",
 		"Workflow:    wf-123", "Proxy:       running (pid", "up 1h30m", "Connections: aws-prod (aws)", "             pg-1 (postgres)",
-		"Environment: " + claudeEnvironmentPath(directory) + " (proxy routing active)", "CA:          " + filepath.Join(directory, "ca.pem") + ", expires " + time.Now().UTC().Add(60*24*time.Hour).Format("2006-01-02"),
-		"Skills:      /home/dev/.claude/skills/phase-cli-ai-relay/SKILL.md",
+		"Environment: " + runtimeEnvironmentPath(directory) + " (proxy routing active)", "CA:          " + filepath.Join(directory, "ca.pem") + ", expires " + time.Now().UTC().Add(60*24*time.Hour).Format("2006-01-02"),
+		"Skills:      /home/dev/.claude/skills/phase-cli/SKILL.md",
 	} {
 		if !strings.Contains(status, required) {
 			t.Fatalf("status missing %q:\n%s", required, status)
@@ -92,7 +92,7 @@ func TestRenderAIStatusReportsSetupRuntimeAndCA(t *testing.T) {
 		}
 	}
 
-	if err := os.Remove(filepath.Join(directory, claudeRuntimeStateFile)); err != nil {
+	if err := os.Remove(filepath.Join(directory, hookRuntimeStateFile)); err != nil {
 		t.Fatal(err)
 	}
 	stopped := renderAIStatus(context.Background())

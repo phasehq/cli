@@ -22,7 +22,7 @@ func isolateAISetup(t *testing.T) (string, string) {
 	for _, marker := range []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE", "AGENT"} {
 		t.Setenv(marker, "")
 	}
-	withClaudeHookRuntimeDirectory(t)
+	withHookRuntimeDirectory(t)
 	originalAIConfig := config.AIConfigPath
 	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
 	t.Cleanup(func() { config.AIConfigPath = originalAIConfig })
@@ -88,56 +88,6 @@ func TestOpenCodePluginIsRefreshedAndRemovedWhereItWasInstalled(t *testing.T) {
 	}
 	if cfg := config.LoadAIConfig(); cfg == nil || len(cfg.OpenCodePlugins) != 0 {
 		t.Fatalf("disable kept the recorded OpenCode plugin paths: %+v", cfg)
-	}
-}
-
-func TestOpenCodePluginOfAnEarlierBuildIsFoundBesideItsSkill(t *testing.T) {
-	home, source := isolateAISetup(t)
-	customRoot := filepath.Join(t.TempDir(), "opencode")
-	customPlugin := filepath.Join(customRoot, "plugins", ai.OpenCodePluginName+".js")
-	defaultPlugin, err := ai.DefaultOpenCodePluginPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// An earlier build, run with OPENCODE_CONFIG_DIR, recorded the skill but
-	// not the plugin beside it.
-	installEarlierBuild := func() []byte {
-		t.Helper()
-		if err := config.SaveAIConfig(&config.AIConfig{
-			Enabled: true, HarnessIDs: []string{ai.HarnessOpenCode},
-			SkillInstallPaths: []string{filepath.Join(customRoot, "skills", ai.AgentSkillName, "SKILL.md")},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := ai.InstallOpenCodePlugin(customPlugin, filepath.Join(home, "old-phase"), filepath.Join(home, "env.json")); err != nil {
-			t.Fatal(err)
-		}
-		payload, err := os.ReadFile(customPlugin)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return payload
-	}
-
-	stale := installEarlierBuild()
-	cfg := config.LoadAIConfig()
-	cfg.AddHarnessInstallation(ai.HarnessCursor, "")
-	if _, _, err := installConfiguredAIHarnessAdapters(context.Background(), cfg, ai.HarnessCursor, source); err != nil {
-		t.Fatal(err)
-	}
-	if payload, err := os.ReadFile(customPlugin); err != nil || string(payload) == string(stale) {
-		t.Fatalf("refresh did not rewrite the OpenCode plugin beside the recorded skill: %v", err)
-	}
-	if _, err := os.Stat(defaultPlugin); !os.IsNotExist(err) {
-		t.Fatalf("refresh installed a second OpenCode plugin at %s: %v", defaultPlugin, err)
-	}
-
-	installEarlierBuild()
-	if err := runAIDisableForTest(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(customPlugin); !os.IsNotExist(err) {
-		t.Fatalf("disable left the OpenCode plugin beside the recorded skill: %v", err)
 	}
 }
 

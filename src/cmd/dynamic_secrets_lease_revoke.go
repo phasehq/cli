@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/phasehq/golang-sdk/v2/phase/network"
 	"github.com/phasehq/cli/pkg/phase"
+	"github.com/phasehq/golang-sdk/v2/phase/network"
 	"github.com/spf13/cobra"
 )
 

@@ -11,17 +11,17 @@ import (
 	"time"
 )
 
-// claudeRefreshNoticeWindow bounds how long after a session recycle the hook
+// refreshNoticeWindow bounds how long after a session recycle the hook
 // keeps telling the Agent that its proxy session was refreshed.
-const claudeRefreshNoticeWindow = 3 * time.Minute
+const refreshNoticeWindow = 3 * time.Minute
 
-// lastClaudeSessionRefresh reads the tail of the lifecycle log and returns when
+// lastSessionRefresh reads the tail of the lifecycle log and returns when
 // the running daemon last reopened its session and why: "environment_changed"
 // when the Workflow's Connections or credentials changed in the Console,
 // "hard_expiry" for a scheduled renewal. A zero time means no recycle within
 // the window, a daemon restart since, or an unreadable log.
-func lastClaudeSessionRefresh(directory string, now time.Time, window time.Duration) (time.Time, string) {
-	file, err := os.Open(filepath.Join(directory, claudeLifecycleLogFile))
+func lastSessionRefresh(directory string, now time.Time, window time.Duration) (time.Time, string) {
+	file, err := os.Open(filepath.Join(directory, lifecycleLogFile))
 	if err != nil {
 		return time.Time{}, ""
 	}
@@ -41,7 +41,7 @@ func lastClaudeSessionRefresh(directory string, now time.Time, window time.Durat
 	}
 	lines := bytes.Split(payload, []byte("\n"))
 	for index := len(lines) - 1; index >= 0; index-- {
-		var record claudeLifecycleRecord
+		var record lifecycleRecord
 		if json.Unmarshal(bytes.TrimSpace(lines[index]), &record) != nil {
 			continue
 		}
@@ -55,7 +55,7 @@ func lastClaudeSessionRefresh(directory string, now time.Time, window time.Durat
 			// The recycle that this ready ends, past any retries it took.
 			reason := ""
 			for back := index - 1; back >= 0; back-- {
-				var previous claudeLifecycleRecord
+				var previous lifecycleRecord
 				if json.Unmarshal(bytes.TrimSpace(lines[back]), &previous) != nil ||
 					previous.Event == "session_retry" || previous.Event == "daemon_rejected" {
 					continue
@@ -71,8 +71,8 @@ func lastClaudeSessionRefresh(directory string, now time.Time, window time.Durat
 	return time.Time{}, ""
 }
 
-// claudeSessionRefreshNotice phrases a recent recycle for the Agent.
-func claudeSessionRefreshNotice(refreshedAt time.Time, reason string) string {
+// sessionRefreshNotice phrases a recent recycle for the Agent.
+func sessionRefreshNotice(refreshedAt time.Time, reason string) string {
 	if refreshedAt.IsZero() {
 		return ""
 	}
@@ -83,15 +83,15 @@ func claudeSessionRefreshNotice(refreshedAt time.Time, reason string) string {
 	return " The proxy session was renewed at " + when + "; processes started earlier keep working."
 }
 
-var errClaudeRuntimeAuthenticationRequired = errors.New("Phase AI authentication is invalid or no longer active")
+var errRuntimeAuthenticationRequired = errors.New("Phase AI authentication is invalid or no longer active")
 
-type claudeLifecycleRecord struct {
+type lifecycleRecord struct {
 	Time   time.Time `json:"time"`
 	Event  string    `json:"event"`
 	Reason string    `json:"reason,omitempty"`
 }
 
-func validClaudeLifecycleRecord(event, reason string) bool {
+func validLifecycleRecord(event, reason string) bool {
 	switch event {
 	case "daemon_started", "session_ready":
 		return reason == "" || reason == "initial" || reason == "recycled"
@@ -110,15 +110,15 @@ func validClaudeLifecycleRecord(event, reason string) bool {
 	}
 }
 
-// appendClaudeLifecycleEvent writes only allowlisted, non-sensitive lifecycle
+// appendLifecycleEvent writes only allowlisted, non-sensitive lifecycle
 // codes. It deliberately never accepts an error string, identifier, path,
 // fingerprint, session value, or proxy URL. Diagnostics are best effort and
 // cannot block the credential boundary from starting or stopping.
-func appendClaudeLifecycleEvent(directory, event, reason string) {
-	if !validClaudeLifecycleRecord(event, reason) {
+func appendLifecycleEvent(directory, event, reason string) {
+	if !validLifecycleRecord(event, reason) {
 		return
 	}
-	payload, err := json.Marshal(claudeLifecycleRecord{
+	payload, err := json.Marshal(lifecycleRecord{
 		Time: time.Now().UTC(), Event: event, Reason: reason,
 	})
 	if err != nil {
@@ -127,13 +127,13 @@ func appendClaudeLifecycleEvent(directory, event, reason string) {
 	payload = append(payload, '\n')
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	path := filepath.Join(directory, claudeLifecycleLogFile)
-	_ = withClaudeLeaseMutationLock(ctx, path, func() error {
+	path := filepath.Join(directory, lifecycleLogFile)
+	_ = withLeaseMutationLock(ctx, path, func() error {
 		if info, statErr := os.Lstat(path); statErr == nil {
 			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 				return errors.New("Phase AI lifecycle log must be a regular non-symlink file")
 			}
-			if info.Size()+int64(len(payload)) > claudeLifecycleLogMaxBytes {
+			if info.Size()+int64(len(payload)) > lifecycleLogMaxBytes {
 				rotated := path + ".1"
 				if rotatedInfo, rotatedErr := os.Lstat(rotated); rotatedErr == nil {
 					if !rotatedInfo.Mode().IsRegular() || rotatedInfo.Mode()&os.ModeSymlink != 0 {
@@ -152,7 +152,7 @@ func appendClaudeLifecycleEvent(directory, event, reason string) {
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			return statErr
 		}
-		file, err := openClaudeEnvironmentFile(path)
+		file, err := openRuntimeEnvironmentFile(path)
 		if err != nil {
 			return err
 		}
@@ -167,17 +167,17 @@ func appendClaudeLifecycleEvent(directory, event, reason string) {
 	})
 }
 
-func writeClaudeRuntimeFailure(path, generation, reason string) {
-	if !validClaudeLifecycleRecord("startup_failed", reason) {
+func writeHookRuntimeFailure(path, generation, reason string) {
+	if !validLifecycleRecord("startup_failed", reason) {
 		reason = "runtime"
 	}
-	_ = writeOwnerOnlyJSON(path, claudeRuntimeFailure{Generation: generation, Reason: reason})
+	_ = writeOwnerOnlyJSON(path, hookRuntimeFailure{Generation: generation, Reason: reason})
 }
 
-func claudeRuntimeFailureMessage(reason string) string {
+func hookRuntimeFailureMessage(reason string) string {
 	switch reason {
 	case "authentication":
-		return errClaudeRuntimeAuthenticationRequired.Error()
+		return errRuntimeAuthenticationRequired.Error()
 	case "fingerprint":
 		return "Phase AI runtime identity could not be verified"
 	case "state_publish":
@@ -187,9 +187,9 @@ func claudeRuntimeFailureMessage(reason string) string {
 	}
 }
 
-func claudeRuntimeFailureError(reason string) error {
+func hookRuntimeFailureError(reason string) error {
 	if reason == "authentication" {
-		return errClaudeRuntimeAuthenticationRequired
+		return errRuntimeAuthenticationRequired
 	}
-	return errors.New(claudeRuntimeFailureMessage(reason))
+	return errors.New(hookRuntimeFailureMessage(reason))
 }

@@ -35,9 +35,9 @@ func wrap(code, text string, isTTY bool) string {
 
 // --- stdout helpers ---
 
-func Bold(text string) string        { return wrap(ansiBold, text, stdoutIsTTY()) }
-func BoldGreen(text string) string    { return wrap(ansiBoldGreen, text, stdoutIsTTY()) }
-func BoldYellow(text string) string   { return wrap(ansiBoldYellow, text, stdoutIsTTY()) }
+func Bold(text string) string       { return wrap(ansiBold, text, stdoutIsTTY()) }
+func BoldGreen(text string) string  { return wrap(ansiBoldGreen, text, stdoutIsTTY()) }
+func BoldYellow(text string) string { return wrap(ansiBoldYellow, text, stdoutIsTTY()) }
 
 // --- stderr helpers ---
 

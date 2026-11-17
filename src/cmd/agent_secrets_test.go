@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -19,9 +21,9 @@ import (
 	"github.com/phasehq/cli/internal/agentapi/providerrulestest"
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
+	"github.com/phasehq/cli/pkg/phase"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	gokeyring "github.com/zalando/go-keyring"
 )
 
@@ -68,6 +70,8 @@ type fakeAgentConsole struct {
 	nextID       int
 	// fail, when it returns a status, answers a secrets call instead.
 	fail func(r *http.Request) (int, string, http.Header)
+	// appAccess, when set, replaces the app-access listing.
+	appAccess string
 }
 
 func newFakeAgentConsole(t *testing.T) *fakeAgentConsole {
@@ -104,6 +108,10 @@ func (c *fakeAgentConsole) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/service/public/v1/agents/app-access/" {
+		if c.appAccess != "" {
+			_, _ = w.Write([]byte(c.appAccess))
+			return
+		}
 		_, _ = w.Write([]byte(`{"schemaVersion":1,"apps":[{"connectionId":"connection-orders","connectionName":"orders-service secrets","grantId":"grant-orders",` +
 			`"app":{"id":"app-orders","name":"orders-service"},"environments":[{"id":"env-dev","name":"Development","envType":"dev"},{"id":"env-staging","name":"Staging","envType":"staging"}],` +
 			`"access":{"read":{"effect":"allow"},"create":{"effect":"allow"},"update":{"effect":"allow"},"delete":{"effect":"allow"}},"grantExpiresAt":null}],"expired":[]}`))
@@ -205,22 +213,13 @@ func (c *fakeAgentConsole) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(payload.Secrets, &ids)
 		kept := secrets[:0]
 		for _, secret := range secrets {
-			if !containsString(ids, secret.ID) {
+			if !slices.Contains(ids, secret.ID) {
 				kept = append(kept, secret)
 			}
 		}
 		c.environments[environment] = kept
 		w.WriteHeader(http.StatusOK)
 	}
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *fakeAgentConsole) takeCalls() []consoleCall {
@@ -301,13 +300,19 @@ func runPhaseCommand(t *testing.T, stdin string, args ...string) (string, string
 }
 
 func resetCommandFlags(command *cobra.Command) {
-	command.Flags().VisitAll(func(flag *pflag.Flag) {
-		_ = flag.Value.Set(flag.DefValue)
-		flag.Changed = false
-	})
+	command.Flags().VisitAll(resetFlag)
 	for _, child := range command.Commands() {
 		resetCommandFlags(child)
 	}
+}
+
+// resetFlag restores one flag to its default. Its type is inferred from
+// VisitAll, so the test needs no direct import of the flag package.
+func resetFlag[F any](flag F) {
+	value := reflect.ValueOf(flag).Elem()
+	setter := value.FieldByName("Value").Interface().(interface{ Set(string) error })
+	_ = setter.Set(value.FieldByName("DefValue").String())
+	value.FieldByName("Changed").SetBool(false)
 }
 
 func TestAgentSecretsListGetAndExport(t *testing.T) {
@@ -326,7 +331,7 @@ func TestAgentSecretsListGetAndExport(t *testing.T) {
 	if strings.Contains(stdout, agentSecretValue) || strings.Contains(stdout, agentSealedValue) {
 		t.Fatalf("list showed a secret value to an Agent:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "AI mode") {
+	if !strings.Contains(stderr, "for Agents on purpose") {
 		t.Fatalf("list did not say values are masked: %q", stderr)
 	}
 	calls := console.takeCalls()
@@ -610,7 +615,8 @@ func TestAgentSecretsOutsideTheGrantedApps(t *testing.T) {
 		t.Fatalf("ungranted environment calls = %+v", calls)
 	}
 	_, _, err = runPhaseCommand(t, "", "secrets", "create", "X", "--app", "billing", "--env", "production", "--random", "hex")
-	if err == nil || !strings.Contains(err.Error(), `No app whose name contains "billing"`) ||
+	if err == nil || !strings.Contains(err.Error(), `No app matching "billing"`) || !strings.Contains(err.Error(), "must be the app's exact name") ||
+		strings.Contains(err.Error(), "contains") ||
 		!strings.Contains(err.Error(), `"appName":"billing"`) || !strings.Contains(err.Error(), `"access":"read_write"`) {
 		t.Fatalf("unknown app name: %v", err)
 	}
@@ -666,6 +672,11 @@ func TestAgentRefusesWhatItCannotUse(t *testing.T) {
 		{[]string{"dynamic-secrets", "list", "--app-id", "app-orders"}, "Dynamic secrets are not available to Agents yet."},
 		{[]string{"dynamic-secrets", "lease", "generate", "secret-id"}, "Dynamic secrets are not available to Agents yet."},
 		{[]string{"secrets", "list", "--app-id", "app-orders", "--lease-ttl", "60"}, "Dynamic secrets are not available to Agents yet."},
+		{[]string{"secrets", "list", "--app-id", "app-orders", "--generate-leases", "true"}, "Dynamic secrets are not available to Agents yet."},
+		{[]string{"secrets", "get", "API_KEY", "--app-id", "app-orders", "--generate-leases", "false"}, "Dynamic secrets are not available to Agents yet."},
+		{[]string{"secrets", "export", "--app-id", "app-orders", "--lease-ttl", "60"}, "Dynamic secrets are not available to Agents yet."},
+		{[]string{"run", "--app-id", "app-orders", "--generate-leases", "true", "--", "true"}, "Dynamic secrets are not available to Agents yet."},
+		{[]string{"run", "--app-id", "app-orders", "--lease-ttl", "60", "--", "true"}, "Dynamic secrets are not available to Agents yet."},
 	}
 	for _, test := range tests {
 		_, _, err := runPhaseCommand(t, "", test.args...)
@@ -881,7 +892,7 @@ func TestPersonalAndServiceTokensKeepTheSDKPath(t *testing.T) {
 }
 
 func TestAIStatusListsAppConnections(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	withAICAKeystore(t, gokeyring.ErrNotFound)
 	originalAIConfig, originalConfig := config.AIConfigPath, config.ConfigFilePath
 	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
@@ -906,14 +917,14 @@ func TestAIStatusListsAppConnections(t *testing.T) {
 	t.Cleanup(proxy.Close)
 	parsed, _ := url.Parse(proxy.URL)
 	parsed.User = url.UserPassword("phase", "runtime-capability")
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: parsed.String(),
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeClaudeEnvironment(directory, os.Getpid(), "generation-one", state.StartedAt, testClaudeEnvironmentPlan(), nil, true); err != nil {
+	if err := writeRuntimeEnvironment(directory, os.Getpid(), "generation-one", state.StartedAt, testRuntimeEnvironmentPlan(), nil, true); err != nil {
 		t.Fatal(err)
 	}
 	status := renderAIStatus(context.Background())
@@ -925,5 +936,69 @@ func TestAIStatusListsAppConnections(t *testing.T) {
 		if !strings.Contains(status, required) {
 			t.Fatalf("status missing %q:\n%s", required, status)
 		}
+	}
+}
+
+const expiredBillingAccess = `{"schemaVersion":1,"apps":[],"expired":[{"connectionId":"connection-billing","connectionName":"billing secrets",` +
+	`"app":{"id":"app-billing","name":"billing"},"expiredAt":"2026-11-01T00:00:00Z"}]}`
+
+// A name that matches only an expired grant is sent by app ID, so the Agent
+// gets the Console's refusal and its renew request.
+func TestAgentAppNameResolvesAnExpiredGrant(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	console.appAccess = expiredBillingAccess
+	console.fail = func(r *http.Request) (int, string, http.Header) {
+		return http.StatusForbidden, `{"error":"Access to billing secrets ended.","code":"agent_grant_expired","request":{"kind":"access_change","title":"Renew access to billing secrets","action":{"type":"agent_grant.renew","version":1,"connectionId":"connection-billing"}}}`, nil
+	}
+	_, _, err := runPhaseCommand(t, "", "secrets", "list", "--app", "billing", "--env", "production")
+	if err == nil || !strings.Contains(err.Error(), "Access to billing secrets ended.") || !strings.Contains(err.Error(), `"type":"agent_grant.renew"`) {
+		t.Fatalf("expired app by name: %v", err)
+	}
+	if calls := secretsCalls(console.takeCalls()); len(calls) != 1 || calls[0].query.Get("app_id") != "app-billing" {
+		t.Fatalf("expired app by name calls = %+v", calls)
+	}
+}
+
+func TestAgentAppsListExplainsExpiredAndMissingAccess(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	console.appAccess = expiredBillingAccess
+	_, stderr, err := runPhaseCommand(t, "", "apps", "list")
+	if err != nil || !strings.Contains(stderr, "Access to billing (app-billing) through billing secrets expired at 2026-11-01T00:00:00Z.") ||
+		!strings.Contains(stderr, `{"action":{"connectionId":"connection-billing","type":"agent_grant.renew","version":1},"kind":"access_change","title":"Renew access to billing secrets"}`) {
+		t.Fatalf("apps list with expired access: err=%v stderr=%q", err, stderr)
+	}
+
+	console = newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	console.appAccess = `{"schemaVersion":1,"apps":[],"expired":[]}`
+	_, _, err = runPhaseCommand(t, "", "apps", "list")
+	if err == nil || err.Error() != phase.NoAppAccessMessage || !strings.Contains(err.Error(), "phase ai guide app-secrets") {
+		t.Fatalf("apps list without access: %v", err)
+	}
+}
+
+// Inside a session that did not export its reserved names, phase run would
+// inject everything; it refuses instead.
+func TestRunRefusesASessionWithoutReservedNames(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	t.Setenv("PHASE_AI_ENABLED", "1")
+	t.Setenv(phaseproxy.ReservedEnvironmentKey, "")
+	if err := os.Unsetenv(phaseproxy.ReservedEnvironmentKey); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := runPhaseCommand(t, "", "run", "--app-id", "app-orders", "--", "true")
+	if err == nil || !strings.Contains(err.Error(), "did not provide its reserved names") {
+		t.Fatalf("run without reserved names: %v", err)
+	}
+	if calls := secretsCalls(console.takeCalls()); len(calls) != 0 {
+		t.Fatalf("run fetched secrets it could not filter: %+v", calls)
+	}
+	// Present but empty is a session with no provider credentials: it runs.
+	t.Setenv(phaseproxy.ReservedEnvironmentKey, "")
+	if _, stderr, err := runPhaseCommand(t, "", "run", "--app-id", "app-orders", "--", "true"); err != nil {
+		t.Fatalf("run with an empty reserved list: %v %s", err, stderr)
 	}
 }

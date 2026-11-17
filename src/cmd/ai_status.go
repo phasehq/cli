@@ -83,10 +83,10 @@ func renderAIStatus(ctx context.Context) string {
 		out.WriteString("Login:       none (run phase auth)\n")
 	}
 
-	directory, dirErr := claudeHookRuntimeDir()
+	directory, dirErr := hookRuntimeDir()
 	if dirErr == nil {
-		health := inspectClaudeRuntime(directory)
-		state, stateErr := readClaudeRuntimeState(filepath.Join(directory, claudeRuntimeStateFile))
+		health := inspectHookRuntime(directory)
+		state, stateErr := readHookRuntimeState(filepath.Join(directory, hookRuntimeStateFile))
 		switch {
 		case health.ready && stateErr == nil:
 			since := ""
@@ -121,7 +121,7 @@ func renderAIStatus(ctx context.Context) string {
 					out.WriteString("             " + line + "\n")
 				}
 			}
-			if refreshedAt, reason := lastClaudeSessionRefresh(directory, time.Now(), 24*time.Hour); !refreshedAt.IsZero() {
+			if refreshedAt, reason := lastSessionRefresh(directory, time.Now(), 24*time.Hour); !refreshedAt.IsZero() {
 				why := "scheduled renewal"
 				if reason == "environment_changed" {
 					why = "Connections or credentials changed in the Console"
@@ -135,13 +135,13 @@ func renderAIStatus(ctx context.Context) string {
 		default:
 			out.WriteString("Proxy:       not running (starts on the next harness prompt or phase ai exec)\n")
 		}
-		var status claudeEnvironmentStatus
-		if readOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), &status) == nil {
+		var status runtimeEnvironmentStatus
+		if readOwnerOnlyJSON(runtimeEnvironmentStatusPath(directory), &status) == nil {
 			routing := "proxy routing retired"
 			if status.ProxyLive && status.PID > 0 && processIsAlive(status.PID) {
 				routing = "proxy routing active"
 			}
-			out.WriteString("Environment: " + claudeEnvironmentPath(directory) + " (" + routing + ")\n")
+			out.WriteString("Environment: " + runtimeEnvironmentPath(directory) + " (" + routing + ")\n")
 		}
 		if aiCAStore.KeystoreAvailable() {
 			out.WriteString("CA:          " + describeCACertificate(filepath.Join(directory, "ca.pem")) + "\n")

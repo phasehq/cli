@@ -1084,18 +1084,6 @@ func (r CapabilitiesResponse) Validate() error {
 	return nil
 }
 
-type RotateSessionResponse struct {
-	SchemaVersion     int             `json:"schemaVersion,omitempty"`
-	SessionUID        string          `json:"sessionUid"`
-	SessionCredential SensitiveString `json:"sessionCredential"`
-	ExpiresAt         *time.Time      `json:"expiresAt,omitempty"`
-	ConfigGeneration  uint64          `json:"configGeneration,omitempty"`
-}
-
-func (r RotateSessionResponse) SessionAuth() SessionAuth {
-	return SessionAuth{SessionUID: r.SessionUID, Credential: r.SessionCredential}
-}
-
 type RequestKind string
 
 const (
@@ -1245,13 +1233,6 @@ type ShipEventsResponse struct {
 	SessionUID    string `json:"sessionUid,omitempty"`
 	Accepted      int    `json:"accepted,omitempty"`
 	Duplicates    int    `json:"duplicates,omitempty"`
-}
-
-type MintAgentTokenRequest struct {
-	SchemaVersion int        `json:"schemaVersion,omitempty"`
-	WorkflowID    string     `json:"workflowId"`
-	Name          string     `json:"name"`
-	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 }
 
 type MintAgentTokenResponse struct {

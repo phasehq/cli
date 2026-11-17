@@ -14,7 +14,7 @@ import (
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
-func testClaudeEnvironmentPlan() phaseproxy.ProcessEnvironmentPlan {
+func testRuntimeEnvironmentPlan() phaseproxy.ProcessEnvironmentPlan {
 	return phaseproxy.ProcessEnvironmentPlan{
 		Set: map[string]string{
 			"PHASE_AI_ENABLED":      "1",
@@ -36,16 +36,16 @@ func testClaudeEnvironmentPlan() phaseproxy.ProcessEnvironmentPlan {
 	}
 }
 
-func withClaudeEnvironmentGOOS(t *testing.T, goos string) {
+func withRuntimeEnvironmentGOOS(t *testing.T, goos string) {
 	t.Helper()
-	previous := claudeEnvironmentGOOS
-	claudeEnvironmentGOOS = goos
-	t.Cleanup(func() { claudeEnvironmentGOOS = previous })
+	previous := runtimeEnvironmentGOOS
+	runtimeEnvironmentGOOS = goos
+	t.Cleanup(func() { runtimeEnvironmentGOOS = previous })
 }
 
-func TestRenderClaudeEnvironmentSeparatesRoutingFromDecoys(t *testing.T) {
-	withClaudeEnvironmentGOOS(t, "linux")
-	content, err := renderClaudeEnvironment(4242, testClaudeEnvironmentPlan(), true)
+func TestRenderRuntimeEnvironmentSeparatesRoutingFromDecoys(t *testing.T) {
+	withRuntimeEnvironmentGOOS(t, "linux")
+	content, err := renderRuntimeEnvironment(4242, testRuntimeEnvironmentPlan(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestRenderClaudeEnvironmentSeparatesRoutingFromDecoys(t *testing.T) {
 		t.Fatalf("file must end with a successful command:\n%s", content)
 	}
 
-	degraded, err := renderClaudeEnvironment(0, testClaudeEnvironmentPlan(), false)
+	degraded, err := renderRuntimeEnvironment(0, testRuntimeEnvironmentPlan(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,25 +90,25 @@ func TestRenderClaudeEnvironmentSeparatesRoutingFromDecoys(t *testing.T) {
 		!strings.Contains(degraded, "proxy is not running") || !strings.HasSuffix(degraded, "\n:\n") {
 		t.Fatalf("degraded environment must keep decoys and drop routing:\n%s", degraded)
 	}
-	if stripped := stripClaudeProxyBlock(content); stripped != degraded {
+	if stripped := stripProxyBlock(content); stripped != degraded {
 		t.Fatalf("stripping the live file must equal the degraded render:\n--- stripped ---\n%s\n--- degraded ---\n%s", stripped, degraded)
 	}
 }
 
-func TestRenderClaudeEnvironmentProbesTheProxyPortOnWindows(t *testing.T) {
-	withClaudeEnvironmentGOOS(t, "windows")
-	content, err := renderClaudeEnvironment(4242, testClaudeEnvironmentPlan(), true)
+func TestRenderRuntimeEnvironmentProbesTheProxyPortOnWindows(t *testing.T) {
+	withRuntimeEnvironmentGOOS(t, "windows")
+	content, err := renderRuntimeEnvironment(4242, testRuntimeEnvironmentPlan(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(content, "kill -0") ||
-		!strings.Contains(content, claudeProxyBlockBegin+"\nif true 2>/dev/null </dev/tcp/127.0.0.1/9543; then\n") {
+		!strings.Contains(content, proxyBlockBegin+"\nif true 2>/dev/null </dev/tcp/127.0.0.1/9543; then\n") {
 		t.Fatalf("Windows liveness guard:\n%s", content)
 	}
-	unrouted := testClaudeEnvironmentPlan()
+	unrouted := testRuntimeEnvironmentPlan()
 	delete(unrouted.Set, "HTTPS_PROXY")
 	delete(unrouted.Set, "https_proxy")
-	content, err = renderClaudeEnvironment(4242, unrouted, true)
+	content, err = renderRuntimeEnvironment(4242, unrouted, true)
 	if err != nil || !strings.Contains(content, "\nif false; then\n") {
 		t.Fatalf("a plan without a proxy must never route: err=%v\n%s", err, content)
 	}
@@ -118,20 +118,20 @@ func TestRenderClaudeEnvironmentProbesTheProxyPortOnWindows(t *testing.T) {
 		"no port":  "http://phase:capability@127.0.0.1",
 		"bad port": "http://phase:capability@127.0.0.1:99999",
 	} {
-		plan := testClaudeEnvironmentPlan()
+		plan := testRuntimeEnvironmentPlan()
 		plan.Set["HTTPS_PROXY"] = proxy
-		if _, err := renderClaudeEnvironment(4242, plan, true); err == nil {
+		if _, err := renderRuntimeEnvironment(4242, plan, true); err == nil {
 			t.Fatalf("%s proxy was accepted", name)
 		}
 	}
 }
 
-func TestRenderClaudeEnvironmentJSONSplitsRoutingFromDecoys(t *testing.T) {
-	payload, err := renderClaudeEnvironmentJSON(4242, testClaudeEnvironmentPlan(), true)
+func TestRenderRuntimeEnvironmentJSONSplitsRoutingFromDecoys(t *testing.T) {
+	payload, err := renderRuntimeEnvironmentJSON(4242, testRuntimeEnvironmentPlan(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.Schema != claudeEnvironmentSchema || payload.PID != 4242 || !payload.ProxyLive {
+	if payload.Schema != runtimeEnvironmentSchema || payload.PID != 4242 || !payload.ProxyLive {
 		t.Fatalf("unexpected payload header: %+v", payload)
 	}
 	for _, key := range []string{"PHASE_AI_ENABLED", "PHASE_AI_CA_BUNDLE", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "AWS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "PGSSLROOTCERT"} {
@@ -150,20 +150,20 @@ func TestRenderClaudeEnvironmentJSONSplitsRoutingFromDecoys(t *testing.T) {
 	if strings.Join(payload.Unset, ",") != "AWS_PROFILE,PHASE_SERVICE_TOKEN" {
 		t.Fatalf("unset = %v", payload.Unset)
 	}
-	degraded, err := renderClaudeEnvironmentJSON(0, testClaudeEnvironmentPlan(), false)
+	degraded, err := renderRuntimeEnvironmentJSON(0, testRuntimeEnvironmentPlan(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if degraded.ProxyLive || len(degraded.Proxy) != 0 || degraded.Set["AWS_ACCESS_KEY_ID"] != "AKIADECOY" {
 		t.Fatalf("degraded payload must keep decoys and drop routing: %+v", degraded)
 	}
-	if _, err := renderClaudeEnvironmentJSON(0, testClaudeEnvironmentPlan(), true); err == nil {
+	if _, err := renderRuntimeEnvironmentJSON(0, testRuntimeEnvironmentPlan(), true); err == nil {
 		t.Fatal("live payload without a PID was accepted")
 	}
 }
 
-func TestRenderClaudeEnvironmentRejectsUnsafeInput(t *testing.T) {
-	if _, err := renderClaudeEnvironment(0, phaseproxy.ProcessEnvironmentPlan{}, true); err == nil {
+func TestRenderRuntimeEnvironmentRejectsUnsafeInput(t *testing.T) {
+	if _, err := renderRuntimeEnvironment(0, phaseproxy.ProcessEnvironmentPlan{}, true); err == nil {
 		t.Fatal("live environment without a PID was accepted")
 	}
 	for name, plan := range map[string]phaseproxy.ProcessEnvironmentPlan{
@@ -171,7 +171,7 @@ func TestRenderClaudeEnvironmentRejectsUnsafeInput(t *testing.T) {
 		"invalid key":   {Set: map[string]string{"AWS-KEY": "a"}},
 		"invalid unset": {Unset: []string{"bad key"}},
 	} {
-		if _, err := renderClaudeEnvironment(1, plan, true); err == nil {
+		if _, err := renderRuntimeEnvironment(1, plan, true); err == nil {
 			t.Fatalf("%s was accepted", name)
 		}
 	}
@@ -207,7 +207,7 @@ func TestClaudeEnvironmentLoaderIsIdempotentAndNamesOnlyThePath(t *testing.T) {
 	}
 }
 
-func sourceClaudeEnvironment(t *testing.T, loaderPath string, extraEnv ...string) string {
+func sourceRuntimeEnvironment(t *testing.T, loaderPath string, extraEnv ...string) string {
 	t.Helper()
 	script := `. "$1"; status=$?; printf '%s|%s|%s|%s' "${HTTPS_PROXY:-}" "${AWS_ACCESS_KEY_ID:-}" "${PHASE_AI_ENABLED:-}" "$status"`
 	command := exec.Command("/bin/sh", "-c", script, "sh", loaderPath)
@@ -219,42 +219,42 @@ func sourceClaudeEnvironment(t *testing.T, loaderPath string, extraEnv ...string
 	return string(output)
 }
 
-func TestClaudeEnvironmentSourcesInRealShell(t *testing.T) {
+func TestRuntimeEnvironmentSourcesInRealShell(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell test")
 	}
 	directory := t.TempDir()
 	loaderPath := filepath.Join(t.TempDir(), "claude.env")
-	if err := installClaudeEnvironmentLoader(loaderPath, claudeEnvironmentPath(directory)); err != nil {
+	if err := installClaudeEnvironmentLoader(loaderPath, runtimeEnvironmentPath(directory)); err != nil {
 		t.Fatal(err)
 	}
-	plan := testClaudeEnvironmentPlan()
-	if got := sourceClaudeEnvironment(t, loaderPath); got != "|||0" {
+	plan := testRuntimeEnvironmentPlan()
+	if got := sourceRuntimeEnvironment(t, loaderPath); got != "|||0" {
 		t.Fatalf("missing environment file must be a silent no-op, got %q", got)
 	}
-	if err := writeClaudeEnvironment(directory, os.Getpid(), "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
+	if err := writeRuntimeEnvironment(directory, os.Getpid(), "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := sourceClaudeEnvironment(t, loaderPath); got != "http://phase:capability@127.0.0.1:9543|AKIADECOY|1|0" {
+	if got := sourceRuntimeEnvironment(t, loaderPath); got != "http://phase:capability@127.0.0.1:9543|AKIADECOY|1|0" {
 		t.Fatalf("live proxy environment, got %q", got)
 	}
-	if got := sourceClaudeEnvironment(t, loaderPath, "PHASE_AI_ENABLED=1"); got != "||1|0" {
+	if got := sourceRuntimeEnvironment(t, loaderPath, "PHASE_AI_ENABLED=1"); got != "||1|0" {
 		t.Fatalf("inherited phase ai run environment must win, got %q", got)
 	}
-	if got := sourceClaudeEnvironment(t, loaderPath, "PHASE_AI_ENABLED=1", claudeHookRuntimeMarker+"=stale"); got != "http://phase:capability@127.0.0.1:9543|AKIADECOY|1|0" {
+	if got := sourceRuntimeEnvironment(t, loaderPath, "PHASE_AI_ENABLED=1", hookRuntimeMarker+"=stale"); got != "http://phase:capability@127.0.0.1:9543|AKIADECOY|1|0" {
 		t.Fatalf("an inherited hook daemon environment must be refreshed, got %q", got)
 	}
 	const deadPID = 1 << 30
-	if err := writeClaudeEnvironment(directory, deadPID, "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
+	if err := writeRuntimeEnvironment(directory, deadPID, "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := sourceClaudeEnvironment(t, loaderPath); got != "|AKIADECOY||0" {
+	if got := sourceRuntimeEnvironment(t, loaderPath); got != "|AKIADECOY||0" {
 		t.Fatalf("dead proxy must drop routing and keep decoys, got %q", got)
 	}
-	if err := writeClaudeEnvironment(directory, 0, "generation-one", time.Time{}, plan, nil, false); err != nil {
+	if err := writeRuntimeEnvironment(directory, 0, "generation-one", time.Time{}, plan, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := sourceClaudeEnvironment(t, loaderPath); got != "|AKIADECOY||0" {
+	if got := sourceRuntimeEnvironment(t, loaderPath); got != "|AKIADECOY||0" {
 		t.Fatalf("degraded environment, got %q", got)
 	}
 }
@@ -276,9 +276,9 @@ func findTestBash(t *testing.T) string {
 	return path
 }
 
-func TestClaudeEnvironmentWindowsGuardSourcesInBash(t *testing.T) {
+func TestRuntimeEnvironmentWindowsGuardSourcesInBash(t *testing.T) {
 	bash := findTestBash(t)
-	withClaudeEnvironmentGOOS(t, "windows")
+	withRuntimeEnvironmentGOOS(t, "windows")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -294,10 +294,10 @@ func TestClaudeEnvironmentWindowsGuardSourcesInBash(t *testing.T) {
 		}
 	}()
 	proxy := "http://phase:capability@" + listener.Addr().String()
-	plan := testClaudeEnvironmentPlan()
+	plan := testRuntimeEnvironmentPlan()
 	plan.Set["HTTPS_PROXY"], plan.Set["https_proxy"] = proxy, proxy
 	directory := t.TempDir()
-	if err := writeClaudeEnvironment(directory, 4242, "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
+	if err := writeRuntimeEnvironment(directory, 4242, "generation-one", time.Now().UTC(), plan, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	inherited := make([]string, 0)
@@ -311,7 +311,7 @@ func TestClaudeEnvironmentWindowsGuardSourcesInBash(t *testing.T) {
 	}
 	source := func() string {
 		script := `. "$1"; status=$?; printf '%s|%s|%s|%s' "${HTTPS_PROXY:-}" "${AWS_ACCESS_KEY_ID:-}" "${PHASE_AI_ENABLED:-}" "$status"`
-		command := exec.Command(bash, "-c", script, "bash", filepath.ToSlash(claudeEnvironmentPath(directory)))
+		command := exec.Command(bash, "-c", script, "bash", filepath.ToSlash(runtimeEnvironmentPath(directory)))
 		command.Env = inherited
 		output, err := command.CombinedOutput()
 		if err != nil {
@@ -328,13 +328,13 @@ func TestClaudeEnvironmentWindowsGuardSourcesInBash(t *testing.T) {
 	}
 }
 
-func TestWriteClaudeEnvironmentIsOwnerOnlyAndRemovable(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+func TestWriteRuntimeEnvironmentIsOwnerOnlyAndRemovable(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
 	connections := []aiproxy.EndpointConnection{{ConnectionID: "conn-1", Name: "aws-prod", ServiceType: "aws", Protocol: "http"}}
-	if err := writeClaudeEnvironment(directory, os.Getpid(), "generation-one", time.Now().UTC(), testClaudeEnvironmentPlan(), connections, true); err != nil {
+	if err := writeRuntimeEnvironment(directory, os.Getpid(), "generation-one", time.Now().UTC(), testRuntimeEnvironmentPlan(), connections, true); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{claudeEnvironmentPath(directory), claudeEnvironmentJSONPath(directory), claudeEnvironmentStatusPath(directory)} {
+	for _, path := range []string{runtimeEnvironmentPath(directory), runtimeEnvironmentJSONPath(directory), runtimeEnvironmentStatusPath(directory)} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -343,104 +343,130 @@ func TestWriteClaudeEnvironmentIsOwnerOnlyAndRemovable(t *testing.T) {
 			t.Fatalf("%s permissions = %o", path, info.Mode().Perm())
 		}
 	}
-	var twin claudeEnvironmentJSON
-	if err := readOwnerOnlyJSON(claudeEnvironmentJSONPath(directory), &twin); err != nil {
+	var twin runtimeEnvironmentJSON
+	if err := readOwnerOnlyJSON(runtimeEnvironmentJSONPath(directory), &twin); err != nil {
 		t.Fatal(err)
 	}
 	if twin.PID != os.Getpid() || !twin.ProxyLive || twin.Proxy["HTTPS_PROXY"] == "" || twin.Set["AWS_ACCESS_KEY_ID"] != "AKIADECOY" {
 		t.Fatalf("JSON twin does not mirror the shell file: %+v", twin)
 	}
-	status, err := os.ReadFile(claudeEnvironmentStatusPath(directory))
+	status, err := os.ReadFile(runtimeEnvironmentStatusPath(directory))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(status), "capability") || strings.Contains(string(status), "AKIADECOY") || !strings.Contains(string(status), `"aws-prod"`) {
 		t.Fatalf("status must be printable and credential-free: %s", status)
 	}
-	health := inspectClaudeRuntime(directory)
+	health := inspectHookRuntime(directory)
 	if health.ready {
 		t.Fatal("no runtime state must not read as ready")
 	}
 	for i := 0; i < 2; i++ {
-		if err := removeClaudeEnvironmentFiles(); err != nil {
+		if err := removeRuntimeEnvironmentFiles(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, path := range []string{claudeEnvironmentPath(directory), claudeEnvironmentJSONPath(directory)} {
+	for _, path := range []string{runtimeEnvironmentPath(directory), runtimeEnvironmentJSONPath(directory)} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("%s survived removal: %v", path, err)
 		}
 	}
 }
 
-func TestInspectClaudeRuntimeAndStatusLines(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
-	if line := claudeEnvironmentStatusLine(inspectClaudeRuntime(directory)); !strings.Contains(line, "proxy unavailable") {
+func TestInspectHookRuntimeAndStatusLines(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
+	if line := runtimeStatusLine(inspectHookRuntime(directory)); !strings.Contains(line, "proxy unavailable") {
 		t.Fatalf("empty directory status = %q", line)
 	}
-	if err := writeOwnerOnlyJSON(claudeRuntimeFailurePath(directory, "generation-one"), claudeRuntimeFailure{Generation: "generation-one", Reason: "authentication"}); err != nil {
+	if err := writeOwnerOnlyJSON(hookRuntimeFailurePath(directory, "generation-one"), hookRuntimeFailure{Generation: "generation-one", Reason: "authentication"}); err != nil {
 		t.Fatal(err)
 	}
-	if line := claudeEnvironmentStatusLine(inspectClaudeRuntime(directory)); !strings.Contains(line, "phase auth --mode token") {
+	if line := runtimeStatusLine(inspectHookRuntime(directory)); !strings.Contains(line, "phase auth --mode token") {
 		t.Fatalf("authentication failure status = %q", line)
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: "generation-two", PID: os.Getpid(), CreatedAt: time.Now().UTC(),
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: "generation-two", PID: os.Getpid(), CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if line := claudeEnvironmentStatusLine(inspectClaudeRuntime(directory)); !strings.Contains(line, "proxy is starting") {
+	if line := runtimeStatusLine(inspectHookRuntime(directory)); !strings.Contains(line, "proxy is starting") {
 		t.Fatalf("starting status = %q", line)
 	}
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-two", RuntimeFingerprint: "binding-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-two", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: "http://phase:capability@127.0.0.1:1",
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
-	if line := claudeEnvironmentStatusLine(inspectClaudeRuntime(directory)); !strings.Contains(line, "no Connections yet") {
+	if line := runtimeStatusLine(inspectHookRuntime(directory)); !strings.Contains(line, "no Connections yet") {
 		t.Fatalf("ready without connections status = %q", line)
 	}
 	connections := []aiproxy.EndpointConnection{{ConnectionID: "conn-1", ServiceType: "aws", Protocol: "http"}, {ConnectionID: "conn-2", Name: "analytics", ServiceType: "postgres", Protocol: "postgres"}}
-	if err := writeClaudeEnvironment(directory, os.Getpid(), "generation-two", state.StartedAt, phaseproxy.ProcessEnvironmentPlan{}, connections, true); err != nil {
+	if err := writeRuntimeEnvironment(directory, os.Getpid(), "generation-two", state.StartedAt, phaseproxy.ProcessEnvironmentPlan{}, connections, true); err != nil {
 		t.Fatal(err)
 	}
-	line := claudeEnvironmentStatusLine(inspectClaudeRuntime(directory))
+	line := runtimeStatusLine(inspectHookRuntime(directory))
 	if !strings.Contains(line, "conn-1 (aws), analytics (postgres)") || strings.Contains(line, "capability") {
 		t.Fatalf("ready status = %q", line)
 	}
 }
 
 func TestReconcileNeverRetiresAReplacementsRouting(t *testing.T) {
-	withClaudeHookTestConfig(t, true)
-	directory := withClaudeHookRuntimeDirectory(t)
-	plan := testClaudeEnvironmentPlan()
+	withHookTestConfig(t, true)
+	directory := withHookRuntimeDirectory(t)
+	plan := testRuntimeEnvironmentPlan()
 	const deadPID = 1 << 30
 	for range 20 {
-		if err := writeClaudeEnvironment(directory, deadPID, "generation-gone", time.Now().UTC(), plan, nil, true); err != nil {
+		if err := writeRuntimeEnvironment(directory, deadPID, "generation-gone", time.Now().UTC(), plan, nil, true); err != nil {
 			t.Fatal(err)
 		}
-		state := claudeRuntimeState{
-			Version: claudeRuntimeStateVersion, Generation: "generation-live", PID: os.Getpid(),
+		state := hookRuntimeState{
+			Version: hookRuntimeStateVersion, Generation: "generation-live", PID: os.Getpid(),
 			StartedAt: time.Now().UTC(), ProxyURL: plan.Set["HTTPS_PROXY"],
 		}
 		done := make(chan error, 1)
-		go func() { done <- publishClaudeRuntime(directory, state, plan, nil) }()
-		reconcileClaudeEnvironment(directory, claudeRuntimeHealth{})
+		go func() { done <- publishHookRuntime(directory, state, plan, nil) }()
+		reconcileRuntimeEnvironment(directory, hookRuntimeHealth{})
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		environment, err := os.ReadFile(claudeEnvironmentPath(directory))
+		environment, err := os.ReadFile(runtimeEnvironmentPath(directory))
 		if err != nil {
 			t.Fatal(err)
 		}
-		var status claudeEnvironmentStatus
-		if err := readOwnerOnlyJSON(claudeEnvironmentStatusPath(directory), &status); err != nil {
+		var status runtimeEnvironmentStatus
+		if err := readOwnerOnlyJSON(runtimeEnvironmentStatusPath(directory), &status); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(environment), claudeProxyBlockBegin) || !status.ProxyLive || status.Generation != "generation-live" {
+		if !strings.Contains(string(environment), proxyBlockBegin) || !status.ProxyLive || status.Generation != "generation-live" {
 			t.Fatalf("a stale reconcile retired the replacement's routing: status=%+v\n%s", status, environment)
+		}
+	}
+}
+
+// The transparent-mode files export the reserved names whenever they export
+// PHASE_AI_ENABLED=1: outside the proxy guard in env.sh, and in the always
+// applied part of env.json, which the OpenCode plugin merges with the rest.
+func TestTransparentEnvironmentFilesCarryReservedNames(t *testing.T) {
+	plan := testRuntimeEnvironmentPlan()
+	plan.Set[phaseproxy.ReservedEnvironmentKey] = "AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY"
+	for _, live := range []bool{true, false} {
+		shell, err := renderRuntimeEnvironment(os.Getpid(), plan, live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(shell, "export PHASE_AI_ENABLED=") && !strings.Contains(shell, "\nexport "+phaseproxy.ReservedEnvironmentKey+"=") {
+			t.Fatalf("env.sh enables Phase AI without %s:\n%s", phaseproxy.ReservedEnvironmentKey, shell)
+		}
+		document, err := renderRuntimeEnvironmentJSON(os.Getpid(), plan, live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, enabled := document.Proxy["PHASE_AI_ENABLED"]; enabled {
+			if _, present := document.Set[phaseproxy.ReservedEnvironmentKey]; !present {
+				t.Fatalf("env.json enables Phase AI without %s: %+v", phaseproxy.ReservedEnvironmentKey, document)
+			}
 		}
 	}
 }

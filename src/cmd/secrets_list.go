@@ -86,6 +86,9 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseAgentDynamicSecretFlags(cmd, p); err != nil {
+		return err
+	}
 
 	// Match Python behavior: lease=show unless --generate-leases explicitly set
 	var lease bool
@@ -103,17 +106,21 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	writeSecretsListGuidance(os.Stdout, os.Stderr, show, ai.IsAIAgent() || ai.AgentLogin())
+	writeSecretsListGuidance(os.Stdout, os.Stderr, show, ai.IsAIAgent(), ai.AgentLogin())
 	return nil
 }
 
-func writeSecretsListGuidance(stdout, stderr io.Writer, show, aiMode bool) {
-	if aiMode {
+func writeSecretsListGuidance(stdout, stderr io.Writer, show, aiHarness, agentLogin bool) {
+	switch {
+	case agentLogin:
+		// --show does not unmask for an Agent, wherever the command runs.
+		fmt.Fprintln(stderr, "🤖 Agent login: secret and sealed values are [REDACTED] for Agents on purpose. A person can see them with their own login or in the Phase Console.")
+	case aiHarness:
 		fmt.Fprintln(stderr, "🤖 AI mode: some values may be [REDACTED] based on secret type. To view, the user should run this command directly in their terminal.")
 	}
 
 	fmt.Fprintln(stdout, "🔬 To view a secret, use: phase secrets get <key>")
-	if !show {
+	if !show && !agentLogin {
 		fmt.Fprintln(stdout, "🥽 To uncover the secrets, use: phase secrets list --show")
 	}
 }

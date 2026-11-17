@@ -132,9 +132,9 @@ func cursorHookCommand(executable string, args ...string) string {
 	if runtime.GOOS == "windows" {
 		return WindowsShellCommand(append([]string{executable}, args...))
 	}
-	command := quotePOSIXCommandArgument(executable)
+	command := QuotePOSIXShell(executable)
 	for _, arg := range args {
-		command += " " + quotePOSIXCommandArgument(arg)
+		command += " " + QuotePOSIXShell(arg)
 	}
 	return command
 }

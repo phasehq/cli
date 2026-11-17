@@ -181,7 +181,7 @@ func TestControlContextAcceptsOnlyOneServiceType(t *testing.T) {
 	}
 }
 
-func TestLocalDiscoverRejectsLiveMaterialBeforeRelay(t *testing.T) {
+func TestLocalDiscoverRejectsLiveMaterialBeforeForwarding(t *testing.T) {
 	const live = "pg-live"
 	tests := map[string]map[string]any{
 		"config env": {

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -162,18 +163,6 @@ func (c *Client) OpenSession(ctx context.Context, input OpenSessionRequest) (*Op
 	return &output, nil
 }
 
-func (c *Client) RefreshConfig(ctx context.Context, session SessionAuth) (*RefreshConfigResponse, error) {
-	if err := validateSession(session); err != nil {
-		return nil, err
-	}
-	var output RefreshConfigResponse
-	path := sessionPath(session.SessionUID, "/config/")
-	if err := c.doJSON(ctx, http.MethodGet, path, &session.Credential, nil, &output, http.StatusOK); err != nil {
-		return nil, err
-	}
-	return &output, nil
-}
-
 // Context fetches the advisory, non-authoritative context for a session.
 func (c *Client) Context(ctx context.Context, session SessionAuth) (*ContextResponse, error) {
 	if err := validateSession(session); err != nil {
@@ -236,18 +225,6 @@ func (c *Client) Discover(ctx context.Context, session SessionAuth) (*DiscoverRe
 	var output DiscoverResponse
 	path := sessionPath(session.SessionUID, "/discover/")
 	if err := c.doJSON(ctx, http.MethodGet, path, &session.Credential, nil, &output, http.StatusOK); err != nil {
-		return nil, err
-	}
-	return &output, nil
-}
-
-func (c *Client) RotateSession(ctx context.Context, session SessionAuth) (*RotateSessionResponse, error) {
-	if err := validateSession(session); err != nil {
-		return nil, err
-	}
-	var output RotateSessionResponse
-	path := sessionPath(session.SessionUID, "/rotate/")
-	if err := c.doJSON(ctx, http.MethodPost, path, &session.Credential, struct{}{}, &output, http.StatusOK, http.StatusCreated); err != nil {
 		return nil, err
 	}
 	return &output, nil
@@ -433,21 +410,6 @@ func (c *Client) ShipEvents(ctx context.Context, session SessionAuth, batch Even
 	return &output, nil
 }
 
-func (c *Client) MintAgentToken(ctx context.Context, agentID string, input MintAgentTokenRequest) (*MintAgentTokenResponse, error) {
-	if agentID == "" {
-		return nil, fmt.Errorf("agents: agent ID is required")
-	}
-	if input.SchemaVersion == 0 {
-		input.SchemaVersion = CurrentSchemaVersion
-	}
-	var output MintAgentTokenResponse
-	path := "/" + url.PathEscape(agentID) + "/tokens/"
-	if err := c.doJSON(ctx, http.MethodPost, path, nil, input, &output, http.StatusOK, http.StatusCreated); err != nil {
-		return nil, err
-	}
-	return &output, nil
-}
-
 func sessionPath(sessionUID, suffix string) string {
 	return "/sessions/" + url.PathEscape(sessionUID) + suffix
 }
@@ -521,7 +483,7 @@ func (c *Client) doJSONWithStatus(
 	}
 	defer zeroBytes(body)
 
-	if !containsStatus(acceptedStatuses, resp.StatusCode) {
+	if !slices.Contains(acceptedStatuses, resp.StatusCode) {
 		return resp.StatusCode, decodeAPIError(resp, body)
 	}
 	if output == nil || len(bytes.TrimSpace(body)) == 0 {
@@ -543,15 +505,6 @@ func readResponseBody(reader io.Reader) ([]byte, error) {
 		return nil, &ResponseTooLargeError{Limit: maxResponseBytes}
 	}
 	return body, nil
-}
-
-func containsStatus(statuses []int, status int) bool {
-	for _, accepted := range statuses {
-		if status == accepted {
-			return true
-		}
-	}
-	return false
 }
 
 func decodeAPIError(response *http.Response, body []byte) error {

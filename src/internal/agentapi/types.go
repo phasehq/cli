@@ -646,6 +646,7 @@ type AppAccessResponse = sdkagents.AppAccessResponse
 type AppRef = sdkagents.AppRef
 type AppEnvironment = sdkagents.AppEnvironment
 type AppAccess = sdkagents.AppAccess
+type ExpiredAppConnection = sdkagents.ExpiredAppConnection
 
 // EffectiveInjections returns what the proxy applies to a request: the list
 // when the payload carries one, otherwise the single packaged-service
@@ -720,7 +721,7 @@ type DiscoverConnection struct {
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
-	// Policy, OperationClasses and GrantExpiresAt are relayed as the Console
+	// Policy, OperationClasses and GrantExpiresAt are forwarded as the Console
 	// sent them. The proxy enforces the copies in its own configuration and
 	// never compares these against it: none of them is part of the Agent's
 	// environment.

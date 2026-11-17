@@ -198,11 +198,10 @@ func sanitizeManifestDiscover(discover *agentapi.DiscoverResponse, backendCreden
 	for connectionIndex := range discover.Connections {
 		environment := discover.Connections[connectionIndex].AgentEnv
 		for key, value := range environment {
-			upper := strings.ToUpper(key)
 			if containsAny(value, forbidden) {
 				return errors.New("discover response contains proxy-only material")
 			}
-			if upper == "PHASE_AI_SESSION_CREDENTIAL" || upper == "PHASE_AGENT_SESSION_CREDENTIAL" || (backendCredential != "" && strings.Contains(value, backendCredential)) {
+			if backendCredential != "" && strings.Contains(value, backendCredential) {
 				delete(environment, key)
 			}
 		}

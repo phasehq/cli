@@ -379,14 +379,15 @@ func codexPluginCommand(executable string, windows bool, arguments ...string) st
 	if windows {
 		return WindowsShellCommand(append([]string{executable}, arguments...))
 	}
-	parts := []string{quotePOSIXCommandArgument(executable)}
+	parts := []string{QuotePOSIXShell(executable)}
 	for _, argument := range arguments {
-		parts = append(parts, quotePOSIXCommandArgument(argument))
+		parts = append(parts, QuotePOSIXShell(argument))
 	}
 	return strings.Join(parts, " ")
 }
 
-func quotePOSIXCommandArgument(value string) string {
+// QuotePOSIXShell quotes value as one POSIX shell word.
+func QuotePOSIXShell(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 

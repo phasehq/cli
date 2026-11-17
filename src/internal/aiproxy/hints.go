@@ -180,7 +180,7 @@ func (h *controlHandler) hints(w http.ResponseWriter, req *http.Request) {
 		writeControlError(w, http.StatusBadGateway, "unsafe_hints_response", "The hints contained proxy-only material.", false)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 }
 
 func hintsName(hints []remoteapi.Hint, host string) bool {

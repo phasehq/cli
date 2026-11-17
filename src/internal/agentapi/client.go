@@ -277,7 +277,7 @@ func (c *Client) do(ctx context.Context, method, endpoint string, requestBody, r
 	return err
 }
 
-// doWithStatus is used only by relay routes whose successful HTTP status is
+// doWithStatus is used only by forwarded routes whose successful HTTP status is
 // part of the Console contract (for example, request creation distinguishes a
 // newly created 201 response from a deduplicated/cooldown 200 response).
 func (c *Client) doWithStatus(ctx context.Context, method, endpoint string, requestBody, responseBody any, sessionCredential SensitiveString) (int, error) {

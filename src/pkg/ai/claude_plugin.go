@@ -42,7 +42,7 @@ type claudeHookHandler struct {
 }
 
 // DefaultClaudeBootstrapPluginPath returns Claude's auto-loaded, user-scoped
-// skills-directory plugin path. The existing phase-cli-ai-relay skill stays standalone;
+// skills-directory plugin path. The phase-cli skill stays standalone;
 // this companion plugin owns only the lifecycle hook.
 func DefaultClaudeBootstrapPluginPath() (string, error) {
 	home, err := os.UserHomeDir()

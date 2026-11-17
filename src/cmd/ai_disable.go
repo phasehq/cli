@@ -42,12 +42,12 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 	var cleanupErrors []error
 	stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
 	defer cancel()
-	if err := stopClaudeHookRuntime(stopContext); err != nil {
+	if err := stopHookRuntime(stopContext); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop hook-managed Phase runtime: %w", err))
 	}
 	// Harness shells source this file before each command; removing it makes
 	// the very next command run with ambient credentials, no restart needed.
-	if err := removeClaudeEnvironmentFiles(); err != nil {
+	if err := removeRuntimeEnvironmentFiles(); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove Phase AI shell environment: %w", err))
 	}
 	if pluginPath, err := ai.DefaultCursorBootstrapPluginPath(); err == nil {
@@ -73,7 +73,9 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 	if cfg != nil {
 		pluginPaths := cfg.OpenCodePlugins
 		if len(pluginPaths) == 0 && cfg.HarnessConfigured(ai.HarnessOpenCode) {
-			pluginPaths, _ = ai.FindOpenCodePlugins(cfg.ConfiguredSkillInstallPaths())
+			if path, err := ai.DefaultOpenCodePluginPath(); err == nil {
+				pluginPaths = []string{path}
+			}
 		}
 		for _, pluginPath := range pluginPaths {
 			_, statErr := os.Stat(pluginPath)
@@ -124,8 +126,8 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("Phase AI integrations were removed, but their local installation state could not be cleared: %w", err)
 		}
 	}
-	if directory, err := claudeHookRuntimeDir(); err == nil {
-		if err := errors.Join(sweepAIDirectory(directory, true), removeAIRuntimeLeftovers(directory)); err != nil {
+	if directory, err := hookRuntimeDir(); err == nil {
+		if err := errors.Join(sweepAIDirectory(directory), removeAIRuntimeLeftovers(directory)); err != nil {
 			return fmt.Errorf("Phase AI was disabled, but ~/.phase/ai could not be cleaned; rerun `phase ai disable`: %w", err)
 		}
 	}

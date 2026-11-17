@@ -132,7 +132,7 @@ func (e *Engine) Ready() error {
 			return err
 		}
 		host, _, err := net.SplitHostPort(e.PostgresListenAddress)
-		if err != nil || !isLoopbackHost(host) {
+		if err != nil || !phaseproxy.IsLoopbackHost(host) {
 			return errors.New("local PostgreSQL proxy listener must bind to loopback")
 		}
 	}
@@ -141,7 +141,7 @@ func (e *Engine) Ready() error {
 		return err
 	}
 	proxyHost, _, err := net.SplitHostPort(proxyAddress)
-	if err != nil || !isLoopbackHost(proxyHost) {
+	if err != nil || !phaseproxy.IsLoopbackHost(proxyHost) {
 		return errors.New("local Phase AI proxy listener must bind to loopback")
 	}
 	return nil
@@ -441,15 +441,6 @@ func defaultAddress(value string) string {
 		return DefaultProxyListenAddress
 	}
 	return value
-}
-
-func isLoopbackHost(host string) bool {
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func listenerIsLoopback(listener net.Listener) bool {

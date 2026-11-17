@@ -289,7 +289,7 @@ func TestOperationMatcherIsReadStrictlyAndLimitedToAWS(t *testing.T) {
 	}
 }
 
-func TestInjectionValueFormatsAreRelayedAndCompared(t *testing.T) {
+func TestInjectionValueFormatsAreForwardedAndCompared(t *testing.T) {
 	document := `{"injection":{"action":"set_header","name":"Authorization","valueFormat":"Bearer {value}","valueFormats":["token {value}"],"valueFrom":{"source":"credential","field":"token"}}}`
 	var discover DiscoverConnection
 	if err := json.Unmarshal([]byte(document), &discover); err != nil {

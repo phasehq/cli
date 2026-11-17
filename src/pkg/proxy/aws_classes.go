@@ -3,6 +3,7 @@ package proxy
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/phasehq/cli/internal/agentapi"
@@ -67,7 +68,7 @@ func classifyAWSAction(classes *agentapi.ActionClasses, service, action string) 
 	if hasVerb(action, classes.ReadVerbs) {
 		return agentapi.ClassRead
 	}
-	if containsString(classes.AdminServices, service) {
+	if slices.Contains(classes.AdminServices, service) {
 		return agentapi.ClassAdmin
 	}
 	lowered := strings.ToLower(action)
@@ -170,19 +171,19 @@ func classifyAWSCall(req *http.Request, classes *agentapi.ActionClasses) ([]Clas
 // call does: the service is one that acts on them, and the call is not to the
 // REST API some of those services have beside it.
 func awsSelectorsDecide(req *http.Request, service string, classes *agentapi.ActionClasses) bool {
-	if !containsString(classes.QueryProtocolServices, service) && !containsString(classes.JSONTargetServices, service) {
+	if !slices.Contains(classes.QueryProtocolServices, service) && !slices.Contains(classes.JSONTargetServices, service) {
 		return false
 	}
-	return !containsString(classes.MixedServices, service) || awsRootPath(req)
+	return !slices.Contains(classes.MixedServices, service) || awsRootPath(req)
 }
 
 // awsQueryProtocolCall reports whether the request is a call to a
 // query-protocol service's action API, which takes its Action from the body.
 func awsQueryProtocolCall(req *http.Request, service string, classes *agentapi.ActionClasses) bool {
-	if !containsString(classes.QueryProtocolServices, service) {
+	if !slices.Contains(classes.QueryProtocolServices, service) {
 		return false
 	}
-	return !containsString(classes.MixedServices, service) || awsRootPath(req)
+	return !slices.Contains(classes.MixedServices, service) || awsRootPath(req)
 }
 
 func awsRootPath(req *http.Request) bool {
@@ -227,7 +228,7 @@ func classifyAWSRESTMethod(req *http.Request, method, service string, classes *a
 			}
 		}
 	}
-	if class != agentapi.ClassRead && containsString(classes.AdminServices, service) {
+	if class != agentapi.ClassRead && slices.Contains(classes.AdminServices, service) {
 		return agentapi.ClassAdmin
 	}
 	return class
@@ -262,13 +263,4 @@ func classRank(class string) int {
 	default:
 		return 0
 	}
-}
-
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
 }

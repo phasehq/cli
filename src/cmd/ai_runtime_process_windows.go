@@ -22,8 +22,8 @@ func configureDetachedProcess(command *exec.Cmd) {
 	}
 }
 
-func stopClaudeProcessGracefully(ctx context.Context, _ *os.Process, state claudeRuntimeState) error {
-	return requestClaudeRuntimeShutdown(ctx, state.ProxyURL)
+func stopRuntimeProcessGracefully(ctx context.Context, _ *os.Process, state hookRuntimeState) error {
+	return requestHookRuntimeShutdown(ctx, state.ProxyURL)
 }
 
 func processIsAlive(pid int) bool {
@@ -47,7 +47,7 @@ func processIsAlive(pid int) bool {
 	return exitCode == windowsStillActive
 }
 
-func openClaudeEnvironmentFile(path string) (*os.File, error) {
+func openRuntimeEnvironmentFile(path string) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
@@ -68,12 +68,12 @@ func openClaudeEnvironmentFile(path string) (*os.File, error) {
 	if err := windows.GetFileInformationByHandle(handle, &information); err != nil ||
 		information.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
 		_ = windows.CloseHandle(handle)
-		return nil, errors.New("Claude environment file must be a regular non-symlink file")
+		return nil, errors.New("Phase AI environment file must be a regular non-symlink file")
 	}
 	return os.NewFile(uintptr(handle), path), nil
 }
 
-func tryLockClaudeLeaseFile(path string) (*os.File, bool, error) {
+func tryLockLeaseFile(path string) (*os.File, bool, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, false, err
@@ -94,7 +94,7 @@ func tryLockClaudeLeaseFile(path string) (*os.File, bool, error) {
 	if err := windows.GetFileInformationByHandle(handle, &information); err != nil ||
 		information.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
 		_ = windows.CloseHandle(handle)
-		return nil, false, errors.New("Claude session lease lock must be a regular non-symlink file")
+		return nil, false, errors.New("Phase AI session lease lock must be a regular non-symlink file")
 	}
 	var overlapped windows.Overlapped
 	err = windows.LockFileEx(
@@ -116,7 +116,7 @@ func tryLockClaudeLeaseFile(path string) (*os.File, bool, error) {
 	return os.NewFile(uintptr(handle), path), true, nil
 }
 
-func unlockClaudeLeaseFile(file *os.File) error {
+func unlockLeaseFile(file *os.File) error {
 	if file == nil {
 		return nil
 	}
@@ -163,11 +163,11 @@ func removeHeldLockFile(path string, guarded ...string) error {
 	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
 		return nil
 	}
-	file, acquired, err := tryLockClaudeLeaseFile(path)
+	file, acquired, err := tryLockLeaseFile(path)
 	if err != nil || !acquired {
 		return nil
 	}
-	defer unlockClaudeLeaseFile(file)
+	defer unlockLeaseFile(file)
 	var errs []error
 	for _, name := range guarded {
 		if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {

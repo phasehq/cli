@@ -26,7 +26,7 @@ func TestExecSelectedConnectionUsesPrivateChildEnvironment(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"schemaVersion": 1, "sessionUid": "session-one",
 				"processEnvironment": phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
-					"PHASE_AI_ENABLED": "1", "HTTP_PROXY": originalProxy, "http_proxy": originalProxy,
+					"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTP_PROXY": originalProxy, "http_proxy": originalProxy,
 					"HTTPS_PROXY": originalProxy, "https_proxy": originalProxy,
 					"AWS_REGION": "default", "PGPASSWORD": "managed-postgres",
 				}},
@@ -38,7 +38,7 @@ func TestExecSelectedConnectionUsesPrivateChildEnvironment(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"schemaVersion": 1, "connectionId": "aws-two", "configGeneration": 1, "processEnvironment": phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
-			"PHASE_AI_ENABLED": "1", "HTTP_PROXY": selectedProxy, "http_proxy": selectedProxy,
+			"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTP_PROXY": selectedProxy, "http_proxy": selectedProxy,
 			"HTTPS_PROXY": selectedProxy, "https_proxy": selectedProxy,
 			"AWS_REGION": "selected", "AWS_SECRET_ACCESS_KEY": "decoy-selected",
 		}, Unset: []string{"AWS_PROFILE"}}})
@@ -71,7 +71,7 @@ func TestSelectedEnvironmentRejectsTokenOrProxySubstitution(t *testing.T) {
 			var selectedProxy string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				values := map[string]string{
-					"PHASE_AI_ENABLED": "1", "HTTP_PROXY": selectedProxy, "http_proxy": selectedProxy,
+					"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTP_PROXY": selectedProxy, "http_proxy": selectedProxy,
 					"HTTPS_PROXY": selectedProxy, "https_proxy": selectedProxy,
 				}
 				if unsafe == "token" {

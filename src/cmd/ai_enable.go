@@ -121,10 +121,9 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve skill install path: %w", err)
 	}
-	// Paths from the released layout (phase-cli/SKILL.md) and from earlier
-	// development builds map onto the current Agent skill beside them; the
-	// files themselves are migrated during installation.
-	installPath = ai.CanonicalAgentSkillPath(absInstallPath)
+	// A path in a skill directory from an earlier build installs the current
+	// skill beside it.
+	installPath = ai.CanonicalSkillPath(absInstallPath)
 	if selectedTarget.ID == "" {
 		selectedTarget, _ = ai.SkillTargetByPath(installPath)
 	}
@@ -136,7 +135,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		cfg.DefaultWorkflowID = workflowID
 	}
 	for index, path := range cfg.SkillInstallPaths {
-		cfg.SkillInstallPaths[index] = ai.CanonicalAgentSkillPath(path)
+		cfg.SkillInstallPaths[index] = ai.CanonicalSkillPath(path)
 	}
 	cfg.Enabled = true
 	cfg.AddHarnessInstallation(selectedTarget.ID, installPath)
@@ -145,7 +144,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	// The shared runtime is stopped through its authenticated control even while
 	// harness sessions hold leases: they fail open and restart the updated
 	// runtime on their next prompt. Only a wrapped command in flight blocks setup.
-	executable, err := claudeHookExecutablePath()
+	executable, err := hookExecutablePath()
 	if err != nil {
 		return fmt.Errorf("resolve Phase executable for Agent hooks: %w", err)
 	}
@@ -153,7 +152,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	defer cancel()
 	// Until the new config is saved, a hook must not start a daemon that would
 	// read the previous one.
-	releaseSetup, err := lockClaudeHookSetup(stopContext)
+	releaseSetup, err := lockHookSetup(stopContext)
 	if err != nil {
 		return fmt.Errorf("prepare Phase AI integration update: %w", err)
 	}
@@ -164,7 +163,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
-	var migratedSecretsPaths []string
+	var keptModified, removedFormer []string
 	for _, skillPath := range cfg.ConfiguredSkillInstallPaths() {
 		harness := ""
 		if filepath.Clean(skillPath) == filepath.Clean(installPath) {
@@ -172,18 +171,21 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		} else if target, found := ai.SkillTargetByPath(skillPath); found {
 			harness = target.ID
 		}
-		result, err := ai.InstallAgentSkillForEnable(skillPath, harness)
+		result, err := ai.InstallSkill(skillPath, harness)
 		if err != nil {
 			return fmt.Errorf("install Phase CLI skill at %s: %w", skillPath, err)
 		}
-		if result.MigratedSecretsPath != "" {
-			migratedSecretsPaths = append(migratedSecretsPaths, result.MigratedSecretsPath)
+		if result.KeptModified {
+			keptModified = append(keptModified, result.Path)
 		}
+		removedFormer = append(removedFormer, result.RemovedFormer...)
 	}
-	fmt.Printf("🪄 Phase skills (v%s) installed to: %s\n", ai.SkillVersion(), filepath.Dir(filepath.Dir(installPath)))
-	fmt.Printf("   %s (Phase AI proxy) and %s (application secrets)\n", ai.AgentSkillName, ai.SecretsSkillName)
-	for _, migratedPath := range migratedSecretsPaths {
-		fmt.Printf("   Earlier Phase skill migrated to: %s\n", migratedPath)
+	fmt.Printf("🪄 Phase skill %s (v%s) installed to: %s\n", ai.SkillName, ai.SkillVersion(), filepath.Dir(filepath.Dir(installPath)))
+	for _, path := range keptModified {
+		fmt.Printf("   Kept your edited skill at %s; delete it and rerun `phase ai enable` to install the current one.\n", path)
+	}
+	for _, path := range removedFormer {
+		fmt.Printf("   Removed a skill from an earlier Phase build: %s\n", path)
 	}
 
 	installations, skipped, err := installConfiguredAIHarnessAdapters(cmd.Context(), cfg, selectedTarget.ID, executable)
@@ -193,10 +195,7 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 	if err := config.SaveAIConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save AI config: %w", err)
 	}
-	// The adapters now run the helper in bin/, so the earlier top-level copy
-	// can go with the other leftovers. An adapter that was skipped may still
-	// run that copy, so it stays until every adapter has been rewritten.
-	sweepAIDirectoryQuietly(cmd.Context(), len(skipped) == 0)
+	sweepAIDirectoryQuietly(cmd.Context())
 	if detail := installations[selectedTarget.ID]; detail != "" {
 		fmt.Printf("🪝 %s\n", detail)
 	}
@@ -377,7 +376,7 @@ func aiEnableHarnessLaunch(target ai.SkillTarget) (open, restart string) {
 	}
 }
 
-func claudeHookExecutablePath() (string, error) {
+func hookExecutablePath() (string, error) {
 	if resolved, err := exec.LookPath(os.Args[0]); err == nil {
 		if absolute, absErr := filepath.Abs(resolved); absErr == nil {
 			return absolute, nil
@@ -453,19 +452,14 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, cfg *config.AIConfi
 			}
 			installed[harness] = "Codex Phase discovery adapter installed: " + installation.Selector
 		case ai.HarnessOpenCode:
-			runtimeDirectory, err := claudeHookRuntimeDir()
+			runtimeDirectory, err := hookRuntimeDir()
 			if err != nil {
 				return nil, nil, err
 			}
-			paths := cfg.OpenCodePlugins
-			if len(paths) == 0 {
-				if paths, err = ai.FindOpenCodePlugins(cfg.ConfiguredSkillInstallPaths()); err != nil {
-					return nil, nil, err
-				}
-			}
+			paths := slices.Clone(cfg.OpenCodePlugins)
 			// Enabling another harness may run without OpenCode's environment, so
 			// only OpenCode's own enable adds the current environment's root.
-			if harness == selected {
+			if harness == selected || len(paths) == 0 {
 				path, err := ai.DefaultOpenCodePluginPath()
 				if err != nil {
 					return nil, nil, err
@@ -482,7 +476,7 @@ func installConfiguredAIHarnessAdapters(ctx context.Context, cfg *config.AIConfi
 				if err := config.RecordOpenCodePlugin(path); err != nil {
 					return nil, nil, fmt.Errorf("record OpenCode Phase plugin: %w", err)
 				}
-				if _, err := ai.InstallOpenCodePlugin(path, hookExecutable, claudeEnvironmentJSONPath(runtimeDirectory)); err != nil {
+				if _, err := ai.InstallOpenCodePlugin(path, hookExecutable, runtimeEnvironmentJSONPath(runtimeDirectory)); err != nil {
 					return nil, nil, fmt.Errorf("install OpenCode Phase plugin at %s: %w", path, err)
 				}
 			}

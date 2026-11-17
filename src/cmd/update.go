@@ -63,7 +63,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
-	updatedExecutable, err := claudeHookExecutablePath()
+	updatedExecutable, err := hookExecutablePath()
 	if err != nil {
 		return fmt.Errorf("resolve updated Phase CLI for Agent hooks: %w", err)
 	}

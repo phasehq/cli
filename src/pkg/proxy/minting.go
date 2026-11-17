@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/phasehq/cli/internal/agentapi"
@@ -92,7 +93,7 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 			continue
 		}
 		if len(rule.Services) > 0 {
-			if service := awsScopeService(req); service != "" && !containsString(rule.Services, service) {
+			if service := awsScopeService(req); service != "" && !slices.Contains(rule.Services, service) {
 				continue
 			}
 		}
@@ -273,7 +274,7 @@ func awsBodyReadAsForm(req *http.Request, service string, guarded bool, classes 
 	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
 	protocolBody := strings.HasPrefix(mediaType, "application/x-amz-json-") || mediaType == "application/cbor"
 	if awsQueryProtocolCall(req, service, classes) {
-		return !(protocolBody && containsString(classes.DualProtocolServices, service))
+		return !(protocolBody && slices.Contains(classes.DualProtocolServices, service))
 	}
 	if guarded || service == "" {
 		return !protocolBody && mediaType != "application/json"

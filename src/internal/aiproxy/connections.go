@@ -144,7 +144,7 @@ func (h *controlHandler) writeConnectionRead(w http.ResponseWriter, response any
 		writeControlError(w, http.StatusBadGateway, "unsafe_connection_response", "The Connection data contained proxy-only material.", false)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 }
 
 // detailsCarryOwnValue reports whether a custom Connection's name, definition

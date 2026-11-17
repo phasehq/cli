@@ -132,7 +132,7 @@ func TestClientSendsCapturedSharedUserAgentOnEveryAgentRoute(t *testing.T) {
 	}
 }
 
-func TestRequestRoutesUseSharedSDKWithoutChangingRelayContract(t *testing.T) {
+func TestRequestRoutesUseSharedSDKWithoutChangingForwardingContract(t *testing.T) {
 	previousUserAgent := network.GetUserAgent()
 	network.SetUserAgent("phase-cli/test sdk-request-adapter")
 	t.Cleanup(func() { network.SetUserAgent(previousUserAgent) })

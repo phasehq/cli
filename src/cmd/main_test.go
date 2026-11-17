@@ -16,7 +16,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	claudeHookRuntimeDir = func() (string, error) { return directory, nil }
+	hookRuntimeDir = func() (string, error) { return directory, nil }
 	aiCAStore = phaseproxy.CAStore{Directory: directory, Keyring: fixedKeyring{err: gokeyring.ErrNotFound}}
 	code := m.Run()
 	_ = os.RemoveAll(directory)

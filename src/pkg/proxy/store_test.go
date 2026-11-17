@@ -443,8 +443,7 @@ func TestComposeEnvironmentExcludesDurableTokensAndIncludesCompatibilityVariable
 	joined := strings.Join(environment, "\n")
 	for _, forbidden := range []string{
 		"durable-user-token", "durable-agent-token", "ambient-session-token", "PHASE_SERVICE_TOKEN=", "PHASE_AGENT_TOKEN=",
-		"PHASE_AI_SESSION_UID=",
-		"PHASE_AI_SESSION_CREDENTIAL=", "PHASE_AGENT_SESSION_CREDENTIAL=", "PHASE_AI_CONTROL_URL=",
+		"PHASE_AI_CONTROL_URL=",
 		"AWS_PROFILE=ambient-admin-profile",
 	} {
 		if strings.Contains(joined, forbidden) {
@@ -968,4 +967,27 @@ func composeTestEnvironment(options EnvironmentOptions) ([]string, error) {
 func mergeTestCABundle(baseBundlePath string, environment []string, scopedTrustKeys []string) (string, func(), error) {
 	prepared, cleanup, err := PrepareProcessCABundle(baseBundlePath, environment, scopedTrustKeys)
 	return prepared.BundlePath, cleanup, err
+}
+
+// Every child environment that enables Phase AI names the variables phase run
+// must keep, even when the session has no provider credential variables.
+func TestCompiledEnvironmentAlwaysCarriesReservedNames(t *testing.T) {
+	for name, credentials := range map[string][]string{"none": nil, "aws": {"aws_secret_access_key", "AWS_ACCESS_KEY_ID"}} {
+		plan, err := CompileProcessEnvironment(EnvironmentOptions{
+			ProxyURL: "http://phase:capability@127.0.0.1:9543", CABundlePath: "/bundle.pem", CredentialEnvironment: credentials,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reserved, present := plan.Set[ReservedEnvironmentKey]
+		if plan.Set["PHASE_AI_ENABLED"] != "1" || !present || !PlanCarriesReservedNames(plan) {
+			t.Fatalf("%s: plan does not carry %s", name, ReservedEnvironmentKey)
+		}
+		if name == "aws" && reserved != "AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY" {
+			t.Fatalf("reserved = %q", reserved)
+		}
+	}
+	if PlanCarriesReservedNames(ProcessEnvironmentPlan{Set: map[string]string{"PHASE_AI_ENABLED": "1"}}) {
+		t.Fatal("a plan without reserved names was accepted")
+	}
 }

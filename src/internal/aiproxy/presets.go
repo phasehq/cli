@@ -153,7 +153,7 @@ func matchPreset(presets []agentapi.Preset, host string, _ int) *agentapi.Preset
 func (h *controlHandler) presets(w http.ResponseWriter, req *http.Request) {
 	presets, err := h.state.presets.list(req.Context())
 	if err != nil {
-		h.writeRelay(w, nil, err)
+		h.writeForward(w, nil, err)
 		return
 	}
 	response := remoteapi.PresetsResponse{
@@ -169,5 +169,5 @@ func (h *controlHandler) presets(w http.ResponseWriter, req *http.Request) {
 		writeControlError(w, http.StatusBadGateway, "unsafe_presets_response", "The preset list contained proxy-only material.", false)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 }

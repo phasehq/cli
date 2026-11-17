@@ -20,22 +20,17 @@ import (
 func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 	openResponse := readFixture(t, "open_session_response.json")
 	discoverResponse := readFixture(t, "discover_response.json")
-	refreshResponse := readFixture(t, "refresh_session_response.json")
 	events := fixtureRoundTrip[EventBatch](t, "events_request.json")
 
 	const durableToken = "durable-token"
-	const mintedSecret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const mintedFullToken = "pss_agent:v1:" + mintedSecret + ":" + mintedSecret + ":" + mintedSecret + ":" + mintedSecret
 	const sessionCredential = "session-credential"
 	session := SessionAuth{SessionUID: "session-123", Credential: SensitiveString(sessionCredential)}
 
 	var mu sync.Mutex
 	hits := make(map[string]int)
 	sessionPaths := map[string]bool{
-		"GET /v1/agents/sessions/session-123/config/":   true,
 		"GET /v1/agents/sessions/session-123/context/":  true,
 		"GET /v1/agents/sessions/session-123/discover/": true,
-		"POST /v1/agents/sessions/session-123/rotate/":  true,
 		"POST /v1/agents/sessions/session-123/revoke/":  true,
 		"POST /v1/agents/requests/":                     true,
 		"GET /v1/agents/requests/request-123/":          true,
@@ -70,15 +65,10 @@ func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 		case "POST /v1/agents/sessions/":
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write(openResponse)
-		case "GET /v1/agents/sessions/session-123/config/":
-			_, _ = w.Write(refreshResponse)
 		case "GET /v1/agents/sessions/session-123/context/":
 			_, _ = w.Write([]byte(`{"schemaVersion":1,"sessionUid":"session-123","markdown":"Use the proxy."}`))
 		case "GET /v1/agents/sessions/session-123/discover/":
 			_, _ = w.Write(discoverResponse)
-		case "POST /v1/agents/sessions/session-123/rotate/":
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"schemaVersion":1,"sessionUid":"session-123","sessionCredential":"rotated-session-credential"}`))
 		case "POST /v1/agents/sessions/session-123/revoke/":
 			w.WriteHeader(http.StatusNoContent)
 		case "POST /v1/agents/requests/":
@@ -111,9 +101,6 @@ func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 		case "POST /v1/agents/sessions/session-123/events/":
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{"schemaVersion":1,"sessionUid":"session-123","accepted":1,"duplicates":0,"batchId":"batch-01J00000000000000000000000"}`))
-		case "POST /v1/agents/agent-123/tokens/":
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"id":"token-123","agentId":"agent-123","workflowId":"workflow-123","name":"CI","fullToken":"` + mintedFullToken + `","bearerToken":"Agent ` + mintedSecret + `"}`))
 		default:
 			http.Error(w, "unexpected route", http.StatusNotFound)
 		}
@@ -130,19 +117,12 @@ func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 	if opened.SessionUID != session.SessionUID {
 		t.Fatalf("OpenSession UID = %q", opened.SessionUID)
 	}
-	if _, err := client.RefreshConfig(ctx, session); err != nil {
-		t.Fatalf("RefreshConfig: %v", err)
-	}
 	contextResponse, err := client.Context(ctx, session)
 	if err != nil || contextResponse.Markdown != "Use the proxy." {
 		t.Fatalf("Context = %+v, %v", contextResponse, err)
 	}
 	if _, err := client.Discover(ctx, session); err != nil {
 		t.Fatalf("Discover: %v", err)
-	}
-	rotated, err := client.RotateSession(ctx, session)
-	if err != nil || rotated.SessionCredential.Reveal() != "rotated-session-credential" {
-		t.Fatalf("RotateSession = %+v, %v", rotated, err)
 	}
 	if err := client.RevokeSession(ctx, session); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
@@ -162,26 +142,15 @@ func TestClientRoutesStatusesAndDualAuthentication(t *testing.T) {
 	if err != nil || shipped.Accepted != 1 || shipped.Duplicates != 0 {
 		t.Fatalf("ShipEvents = %+v, %v", shipped, err)
 	}
-	minted, err := client.MintAgentToken(ctx, "agent-123", MintAgentTokenRequest{WorkflowID: "workflow-123", Name: "CI"})
-	if err != nil || minted.FullToken.Reveal() != mintedFullToken || minted.BearerToken.Reveal() != "Agent "+mintedSecret {
-		t.Fatalf("MintAgentToken = %+v, %v", minted, err)
-	}
-	mintedAuthentication, err := minted.Authentication()
-	if err != nil || mintedAuthentication.Type != AuthenticationAgent || mintedAuthentication.Token.Reveal() != mintedSecret {
-		t.Fatalf("MintAgentToken Authentication = %+v, %v", mintedAuthentication, err)
-	}
 
 	wantRoutes := []string{
 		"POST /v1/agents/sessions/",
-		"GET /v1/agents/sessions/session-123/config/",
 		"GET /v1/agents/sessions/session-123/context/",
 		"GET /v1/agents/sessions/session-123/discover/",
-		"POST /v1/agents/sessions/session-123/rotate/",
 		"POST /v1/agents/sessions/session-123/revoke/",
 		"POST /v1/agents/requests/",
 		"GET /v1/agents/requests/request-123/",
 		"POST /v1/agents/sessions/session-123/events/",
-		"POST /v1/agents/agent-123/tokens/",
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -377,7 +346,7 @@ func TestClientReturnsTypedCanonicalAPIError(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(t, server.URL, AgentAuthentication("durable-token"))
-	_, err := client.RefreshConfig(context.Background(), SessionAuth{SessionUID: "session-123", Credential: "session-secret"})
+	_, err := client.Context(context.Background(), SessionAuth{SessionUID: "session-123", Credential: "session-secret"})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("error = %T %v, want *APIError", err, err)

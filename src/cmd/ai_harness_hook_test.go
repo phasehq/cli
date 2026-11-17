@@ -43,21 +43,21 @@ func withHarnessHookConfig(t *testing.T, harness string) {
 
 func prepareHarnessHookRuntime(t *testing.T) string {
 	t.Helper()
-	directory := withClaudeHookRuntimeDirectory(t)
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one",
+	directory := withHookRuntimeDirectory(t)
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one",
 		RuntimeFingerprint: "fingerprint-one", PID: os.Getpid(),
 		ProxyURL: "http://phase:capability@127.0.0.1:9543",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+	originalEnsure := hookEnsureRuntime
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
 		return phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
-			"PHASE_AI_ENABLED": "1", "AWS_SECRET_ACCESS_KEY": "decoy-never-print",
+			"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "AWS_SECRET_ACCESS_KEY": "decoy-never-print",
 		}}, nil
 	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
 	return directory
 }
 
@@ -128,13 +128,13 @@ func TestCodexGuardWrapsCommandWithoutExposingRuntimePlan(t *testing.T) {
 
 func TestCodexGuardExplainsAuthenticationRecoveryWithoutBlockingAmbientTools(t *testing.T) {
 	withHarnessHookConfig(t, ai.HarnessCodex)
-	withClaudeHookRuntimeDirectory(t)
+	withHookRuntimeDirectory(t)
 	t.Setenv("PHASE_AI_ENABLED", "")
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+	originalEnsure := hookEnsureRuntime
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
 		return phaseproxy.ProcessEnvironmentPlan{}, airuntime.ErrAuthenticationRequired
 	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
 
 	command, output := newHarnessHookCommand(`{
 		"session_id":"codex-session","hook_event_name":"PreToolUse","tool_name":"Bash",
@@ -272,7 +272,7 @@ func TestWrappedHarnessGuardsLeaveManifestFetchToExactlyOnceWrapperBoundary(t *t
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			withHarnessHookConfig(t, test.harness)
-			directory := withClaudeHookRuntimeDirectory(t)
+			directory := withHookRuntimeDirectory(t)
 			t.Setenv("PHASE_AI_ENABLED", "")
 
 			var statusCalls atomic.Int32
@@ -289,7 +289,7 @@ func TestWrappedHarnessGuardsLeaveManifestFetchToExactlyOnceWrapperBoundary(t *t
 					_ = json.NewEncoder(writer).Encode(map[string]any{
 						"schemaVersion": 1, "sessionUid": "session-one",
 						"processEnvironment": map[string]any{
-							"set": map[string]string{"PHASE_AI_ENABLED": "1", "HTTP_PROXY": proxyURL},
+							"set": map[string]string{"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTP_PROXY": proxyURL},
 						},
 					})
 				default:
@@ -304,23 +304,23 @@ func TestWrappedHarnessGuardsLeaveManifestFetchToExactlyOnceWrapperBoundary(t *t
 			parsed.User = url.UserPassword("phase", "runtime-capability")
 			proxyURL = parsed.String()
 
-			originalFingerprint := claudeHookFingerprint
-			originalScopeFingerprint := claudeHookScopeFingerprint
-			claudeHookFingerprint = func() (string, error) { return "binding-one", nil }
-			claudeHookScopeFingerprint = func() (string, error) { return "scope-one", nil }
+			originalFingerprint := hookFingerprint
+			originalScopeFingerprint := hookScopeFingerprint
+			hookFingerprint = func() (string, error) { return "binding-one", nil }
+			hookScopeFingerprint = func() (string, error) { return "scope-one", nil }
 			t.Cleanup(func() {
-				claudeHookFingerprint = originalFingerprint
-				claudeHookScopeFingerprint = originalScopeFingerprint
+				hookFingerprint = originalFingerprint
+				hookScopeFingerprint = originalScopeFingerprint
 			})
 			now := time.Now().UTC()
-			if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), claudeRuntimeState{
-				Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "scope-one",
+			if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), hookRuntimeState{
+				Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "scope-one",
 				PID: os.Getpid(), StartedAt: now, ProxyURL: proxyURL,
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-				Version: claudeRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: now,
+			if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+				Version: hookRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: now,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -370,7 +370,7 @@ func TestWrappedHarnessSessionStartsAreLazyAndDoNotTouchRuntime(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			withHarnessHookConfig(t, test.harness)
-			directory := withClaudeHookRuntimeDirectory(t)
+			directory := withHookRuntimeDirectory(t)
 			t.Setenv("PHASE_AI_ENABLED", "")
 
 			var statusCalls atomic.Int32
@@ -387,7 +387,7 @@ func TestWrappedHarnessSessionStartsAreLazyAndDoNotTouchRuntime(t *testing.T) {
 					_ = json.NewEncoder(writer).Encode(map[string]any{
 						"schemaVersion": 1, "sessionUid": "session-one",
 						"processEnvironment": map[string]any{
-							"set": map[string]string{"PHASE_AI_ENABLED": "1", "HTTP_PROXY": proxyURL},
+							"set": map[string]string{"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTP_PROXY": proxyURL},
 						},
 					})
 				default:
@@ -402,23 +402,23 @@ func TestWrappedHarnessSessionStartsAreLazyAndDoNotTouchRuntime(t *testing.T) {
 			parsed.User = url.UserPassword("phase", "runtime-capability")
 			proxyURL = parsed.String()
 
-			originalFingerprint := claudeHookFingerprint
-			originalScopeFingerprint := claudeHookScopeFingerprint
-			claudeHookFingerprint = func() (string, error) { return "binding-one", nil }
-			claudeHookScopeFingerprint = func() (string, error) { return "scope-one", nil }
+			originalFingerprint := hookFingerprint
+			originalScopeFingerprint := hookScopeFingerprint
+			hookFingerprint = func() (string, error) { return "binding-one", nil }
+			hookScopeFingerprint = func() (string, error) { return "scope-one", nil }
 			t.Cleanup(func() {
-				claudeHookFingerprint = originalFingerprint
-				claudeHookScopeFingerprint = originalScopeFingerprint
+				hookFingerprint = originalFingerprint
+				hookScopeFingerprint = originalScopeFingerprint
 			})
 			now := time.Now().UTC()
-			if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), claudeRuntimeState{
-				Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "scope-one",
+			if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), hookRuntimeState{
+				Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one", RuntimeScopeFingerprint: "scope-one",
 				PID: os.Getpid(), StartedAt: now, ProxyURL: proxyURL,
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-				Version: claudeRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: now,
+			if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+				Version: hookRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: now,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -433,7 +433,7 @@ func TestWrappedHarnessSessionStartsAreLazyAndDoNotTouchRuntime(t *testing.T) {
 			if got := manifestCalls.Load(); got != 0 {
 				t.Fatalf("SessionStart fetched the Agent manifest %d times, want 0", got)
 			}
-			leasePath, err := claudeSessionLeasePath(directory, harnessLeaseID(test.harness, test.sessionID))
+			leasePath, err := sessionLeasePath(directory, harnessLeaseID(test.harness, test.sessionID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -445,15 +445,15 @@ func TestWrappedHarnessSessionStartsAreLazyAndDoNotTouchRuntime(t *testing.T) {
 }
 
 func TestEnsureHarnessRuntimeReadyColdFallbackFailsClosed(t *testing.T) {
-	withClaudeHookRuntimeDirectory(t)
+	withHookRuntimeDirectory(t)
 	expected := errors.New("cold runtime failed")
 	var ensureCalls atomic.Int32
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+	originalEnsure := hookEnsureRuntime
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
 		ensureCalls.Add(1)
 		return phaseproxy.ProcessEnvironmentPlan{}, expected
 	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
 
 	err := ensureHarnessRuntimeReady(context.Background())
 	if !errors.Is(err, expected) || ensureCalls.Load() != 1 {
@@ -464,11 +464,11 @@ func TestEnsureHarnessRuntimeReadyColdFallbackFailsClosed(t *testing.T) {
 func TestCodexGuardReportsManagedRuntimeRecycle(t *testing.T) {
 	withHarnessHookConfig(t, ai.HarnessCodex)
 	t.Setenv("PHASE_AI_ENABLED", "")
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
-		return phaseproxy.ProcessEnvironmentPlan{}, fmt.Errorf("%w: test recycle", errClaudeRuntimeRefreshing)
+	originalEnsure := hookEnsureRuntime
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+		return phaseproxy.ProcessEnvironmentPlan{}, fmt.Errorf("%w: test recycle", errHookRuntimeRefreshing)
 	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
 
 	command, output := newHarnessHookCommand(`{
 		"session_id":"codex-session","hook_event_name":"PreToolUse","tool_name":"Bash",
@@ -631,11 +631,11 @@ func TestCursorGuardCreatesBoundedFallbackLease(t *testing.T) {
 	if err := runAICursorEvent(command, []string{"guard"}); err != nil {
 		t.Fatal(err)
 	}
-	leasePath, err := claudeSessionLeasePath(directory, harnessLeaseID(ai.HarnessCursor, "tool:race-tool"))
+	leasePath, err := sessionLeasePath(directory, harnessLeaseID(ai.HarnessCursor, "tool:race-tool"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lease claudeSessionLease
+	var lease sessionLease
 	if err := readOwnerOnlyJSON(leasePath, &lease); err != nil {
 		t.Fatal(err)
 	}
@@ -668,12 +668,12 @@ func runOpenCodeCommandForTest(t *testing.T, original string) openCodeCommandRes
 func TestOpenCodeCommandLeavesOrdinaryToolsAloneWithoutRuntime(t *testing.T) {
 	withHarnessHookConfig(t, ai.HarnessOpenCode)
 	t.Setenv("PHASE_AI_ENABLED", "")
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+	originalEnsure := hookEnsureRuntime
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
 		t.Fatal("ordinary OpenCode command attempted to start the Phase runtime")
 		return phaseproxy.ProcessEnvironmentPlan{}, nil
 	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
 	response := runOpenCodeCommandForTest(t, "git status && gh pr create --fill")
 	if response.SchemaVersion != 1 || response.Managed || response.Command != "" || response.Error != "" {
 		t.Fatalf("ordinary OpenCode command was intercepted: %#v", response)
@@ -691,11 +691,11 @@ func TestOpenCodeCommandWrapsOnlyManagedToolsWithoutReturningRuntimeMaterial(t *
 	if strings.Contains(response.Command, "curl http://phase.invalid/v1/status") || strings.Contains(response.Command, "decoy-never-print") {
 		t.Fatalf("OpenCode wrapper exposed the original command or runtime material: %s", response.Command)
 	}
-	leasePath, err := claudeSessionLeasePath(directory, harnessLeaseID(ai.HarnessOpenCode, "opencode-session"))
+	leasePath, err := sessionLeasePath(directory, harnessLeaseID(ai.HarnessOpenCode, "opencode-session"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lease claudeSessionLease
+	var lease sessionLease
 	if err := readOwnerOnlyJSON(leasePath, &lease); err != nil {
 		t.Fatal(err)
 	}
@@ -707,11 +707,11 @@ func TestOpenCodeCommandWrapsOnlyManagedToolsWithoutReturningRuntimeMaterial(t *
 func TestOpenCodeCommandFailsClosedOnlyForManagedToolsWhenRuntimeIsUnavailable(t *testing.T) {
 	withHarnessHookConfig(t, ai.HarnessOpenCode)
 	t.Setenv("PHASE_AI_ENABLED", "")
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+	originalEnsure := hookEnsureRuntime
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
 		return phaseproxy.ProcessEnvironmentPlan{}, errors.New("runtime unavailable")
 	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
 	response := runOpenCodeCommandForTest(t, "curl http://phase.invalid/v1/status")
 	if !response.Managed || response.Command != "" || !strings.Contains(response.Error, "ordinary ambient tools remain available") {
 		t.Fatalf("managed OpenCode command did not fail closed: %#v", response)
@@ -719,18 +719,18 @@ func TestOpenCodeCommandFailsClosedOnlyForManagedToolsWhenRuntimeIsUnavailable(t
 }
 
 func TestExpiredHarnessLeaseIsRemoved(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
-	path, err := claudeSessionLeasePath(directory, "cursor:expired")
+	directory := withHookRuntimeDirectory(t)
+	path, err := sessionLeasePath(directory, "cursor:expired")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOwnerOnlyJSON(path, claudeSessionLease{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one",
+	if err := writeOwnerOnlyJSON(path, sessionLease{
+		Version: hookRuntimeStateVersion, Generation: "generation-one",
 		UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(-time.Minute),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	active, err := hasActiveClaudeSessionLease(directory, "generation-one", time.Now().UTC())
+	active, err := hasActiveSessionLease(directory, "generation-one", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,24 +743,24 @@ func TestExpiredHarnessLeaseIsRemoved(t *testing.T) {
 }
 
 func TestMalformedHarnessLeaseDoesNotPinRuntime(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
-	malformedPath, err := claudeSessionLeasePath(directory, "cursor:malformed")
+	directory := withHookRuntimeDirectory(t)
+	malformedPath, err := sessionLeasePath(directory, "cursor:malformed")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(malformedPath, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	validPath, err := claudeSessionLeasePath(directory, "cursor:valid")
+	validPath, err := sessionLeasePath(directory, "cursor:valid")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOwnerOnlyJSON(validPath, claudeSessionLease{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", UpdatedAt: time.Now().UTC(),
+	if err := writeOwnerOnlyJSON(validPath, sessionLease{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", UpdatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	active, err := hasActiveClaudeSessionLease(directory, "generation-one", time.Now().UTC())
+	active, err := hasActiveSessionLease(directory, "generation-one", time.Now().UTC())
 	if err != nil || !active {
 		t.Fatalf("active=%v err=%v", active, err)
 	}
@@ -770,17 +770,17 @@ func TestMalformedHarnessLeaseDoesNotPinRuntime(t *testing.T) {
 }
 
 func TestHarnessCommandLeaseIsHeldAndReleased(t *testing.T) {
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	now := time.Now().UTC()
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: now, ProxyURL: "http://phase:capability@127.0.0.1:9543",
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: now,
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: state.Generation, PID: state.PID, CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -788,11 +788,11 @@ func TestHarnessCommandLeaseIsHeldAndReleased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths, err := filepath.Glob(filepath.Join(directory, claudeSessionLeasePrefix+"*"+claudeSessionLeaseSuffix))
+	paths, err := filepath.Glob(filepath.Join(directory, sessionLeasePrefix+"*"+sessionLeaseSuffix))
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("command lease paths=%v err=%v", paths, err)
 	}
-	var lease claudeSessionLease
+	var lease sessionLease
 	if err := readOwnerOnlyJSON(paths[0], &lease); err != nil {
 		t.Fatal(err)
 	}
@@ -852,27 +852,27 @@ func harnessTestProxyURL(t *testing.T, rawURL, capability string) string {
 	return parsed.String()
 }
 
-func writeHarnessRuntimeFixture(t *testing.T, directory, leaseID string, state *claudeRuntimeState) harnessRuntimeBinding {
+func writeHarnessRuntimeFixture(t *testing.T, directory, leaseID string, state *hookRuntimeState) harnessRuntimeBinding {
 	t.Helper()
 	createdAt := time.Now().UTC().Add(-time.Minute)
-	lock := claudeRuntimeLock{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: createdAt,
+	lock := hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: createdAt,
 	}
-	if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), lock); err != nil {
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), lock); err != nil {
 		t.Fatal(err)
 	}
-	leasePath, err := claudeSessionLeasePath(directory, leaseID)
+	leasePath, err := sessionLeasePath(directory, leaseID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease := claudeSessionLease{
-		Version: claudeRuntimeStateVersion, Generation: lock.Generation, UpdatedAt: time.Now().UTC(),
+	lease := sessionLease{
+		Version: hookRuntimeStateVersion, Generation: lock.Generation, UpdatedAt: time.Now().UTC(),
 	}
 	if err := writeOwnerOnlyJSON(leasePath, lease); err != nil {
 		t.Fatal(err)
 	}
 	if state != nil {
-		if err := writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), *state); err != nil {
+		if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), *state); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -908,7 +908,7 @@ func manifestSuccessResponse(proxyURL string) remoteapi.ManifestResponse {
 		SchemaVersion: agentapi.SchemaVersion,
 		SessionUID:    "session-refreshed",
 		ProcessEnvironment: phaseproxy.ProcessEnvironmentPlan{Set: map[string]string{
-			"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": proxyURL, "HTTP_PROXY": proxyURL,
+			"PHASE_AI_ENABLED": "1", "PHASE_AI_RESERVED_ENV": "", "HTTPS_PROXY": proxyURL, "HTTP_PROXY": proxyURL,
 		}},
 	}
 }
@@ -918,7 +918,7 @@ func TestHarnessExecWaitsForManifestRefreshAndExecutesCommandOnce(t *testing.T) 
 		t.Skip("shell execution assertion uses printf")
 	}
 	withHarnessHookConfig(t, ai.HarnessCodex)
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	t.Setenv("PHASE_AI_ENABLED", "")
 	originalWait, originalPoll := harnessRuntimeCycleWait, harnessRuntimeCyclePoll
 	harnessRuntimeCycleWait, harnessRuntimeCyclePoll = 2*time.Second, 5*time.Millisecond
@@ -935,8 +935,8 @@ func TestHarnessExecWaitsForManifestRefreshAndExecutesCommandOnce(t *testing.T) 
 	refreshedProxyURL = harnessTestProxyURL(t, refreshedServer.URL, "refreshed-capability")
 
 	oldStartedAt := time.Now().UTC().Add(-time.Minute)
-	refreshedState := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+	refreshedState := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: refreshedProxyURL,
 	}
 	rotationResult := make(chan error, 1)
@@ -951,13 +951,13 @@ func TestHarnessExecWaitsForManifestRefreshAndExecutesCommandOnce(t *testing.T) 
 		rotateOnce.Do(func() {
 			go func() {
 				time.Sleep(20 * time.Millisecond)
-				rotationResult <- writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), refreshedState)
+				rotationResult <- writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), refreshedState)
 			}()
 		})
 	}))
 	defer oldServer.Close()
-	oldState := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+	oldState := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: oldStartedAt, ProxyURL: harnessTestProxyURL(t, oldServer.URL, "old-capability"),
 	}
 	const leaseID = "codex:session-one"
@@ -988,7 +988,7 @@ func TestHarnessExecWaitsForRuntimeStateGapAndExecutesCommandOnce(t *testing.T) 
 		t.Skip("shell execution assertion uses printf")
 	}
 	withHarnessHookConfig(t, ai.HarnessCodex)
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	t.Setenv("PHASE_AI_ENABLED", "")
 	originalWait, originalPoll := harnessRuntimeCycleWait, harnessRuntimeCyclePoll
 	harnessRuntimeCycleWait, harnessRuntimeCyclePoll = 2*time.Second, 5*time.Millisecond
@@ -1001,8 +1001,8 @@ func TestHarnessExecWaitsForRuntimeStateGapAndExecutesCommandOnce(t *testing.T) 
 	}))
 	defer server.Close()
 	proxyURL = harnessTestProxyURL(t, server.URL, "gap-capability")
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: proxyURL,
 	}
 	const leaseID = "codex:state-gap"
@@ -1010,7 +1010,7 @@ func TestHarnessExecWaitsForRuntimeStateGapAndExecutesCommandOnce(t *testing.T) 
 	publishResult := make(chan error, 1)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		publishResult <- writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeStateFile), state)
+		publishResult <- writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state)
 	}()
 
 	output, err := runHarnessExecTest(t, leaseID, "printf x")
@@ -1030,7 +1030,7 @@ func TestHarnessExecDoesNotRunCommandWhenRuntimeLockChangesDuringRefresh(t *test
 		t.Skip("shell execution assertion uses printf")
 	}
 	withHarnessHookConfig(t, ai.HarnessCodex)
-	directory := withClaudeHookRuntimeDirectory(t)
+	directory := withHookRuntimeDirectory(t)
 	t.Setenv("PHASE_AI_ENABLED", "")
 	originalWait, originalPoll := harnessRuntimeCycleWait, harnessRuntimeCyclePoll
 	harnessRuntimeCycleWait, harnessRuntimeCyclePoll = 2*time.Second, 5*time.Millisecond
@@ -1046,15 +1046,15 @@ func TestHarnessExecDoesNotRunCommandWhenRuntimeLockChangesDuringRefresh(t *test
 		changeOnce.Do(func() {
 			go func() {
 				time.Sleep(20 * time.Millisecond)
-				lockChange <- writeOwnerOnlyJSON(filepath.Join(directory, claudeRuntimeLockFile), claudeRuntimeLock{
-					Version: claudeRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: time.Now().UTC(),
+				lockChange <- writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+					Version: hookRuntimeStateVersion, Generation: "generation-one", PID: os.Getpid(), CreatedAt: time.Now().UTC(),
 				})
 			}()
 		})
 	}))
 	defer server.Close()
-	state := claudeRuntimeState{
-		Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+	state := hookRuntimeState{
+		Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 		PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: harnessTestProxyURL(t, server.URL, "old-capability"),
 	}
 	const leaseID = "codex:lock-change"
@@ -1099,7 +1099,7 @@ func TestHarnessExecDoesNotRunCommandForUnchangedManifestFailures(t *testing.T) 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			withHarnessHookConfig(t, ai.HarnessCodex)
-			directory := withClaudeHookRuntimeDirectory(t)
+			directory := withHookRuntimeDirectory(t)
 			t.Setenv("PHASE_AI_ENABLED", "")
 			originalWait, originalPoll := harnessRuntimeCycleWait, harnessRuntimeCyclePoll
 			harnessRuntimeCycleWait, harnessRuntimeCyclePoll = 40*time.Millisecond, 5*time.Millisecond
@@ -1114,8 +1114,8 @@ func TestHarnessExecDoesNotRunCommandForUnchangedManifestFailures(t *testing.T) 
 				_, _ = writer.Write([]byte(test.body))
 			}))
 			defer server.Close()
-			state := claudeRuntimeState{
-				Version: claudeRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
+			state := hookRuntimeState{
+				Version: hookRuntimeStateVersion, Generation: "generation-one", RuntimeFingerprint: "binding-one",
 				PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: harnessTestProxyURL(t, server.URL, "unchanged-capability"),
 			}
 			const leaseID = "codex:unchanged-session"
@@ -1173,11 +1173,11 @@ func TestOpenCodeSessionKickRegistersLeaseAndNeverFails(t *testing.T) {
 	if output.Len() != 0 {
 		t.Fatalf("session kick printed output: %q", output.String())
 	}
-	leasePath, err := claudeSessionLeasePath(directory, harnessLeaseID(ai.HarnessOpenCode, "pid-4242"))
+	leasePath, err := sessionLeasePath(directory, harnessLeaseID(ai.HarnessOpenCode, "pid-4242"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lease claudeSessionLease
+	var lease sessionLease
 	if err := readOwnerOnlyJSON(leasePath, &lease); err != nil {
 		t.Fatalf("OpenCode session lease was not registered: %v", err)
 	}
@@ -1187,12 +1187,12 @@ func TestOpenCodeSessionKickRegistersLeaseAndNeverFails(t *testing.T) {
 
 	// Disabled integrations and inherited environments are silent no-ops.
 	t.Setenv("PHASE_AI_ENABLED", "1")
-	originalEnsure := claudeHookEnsureRuntime
-	claudeHookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+	originalEnsure := hookEnsureRuntime
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
 		t.Fatal("inherited environment attempted to start the Phase runtime")
 		return phaseproxy.ProcessEnvironmentPlan{}, nil
 	}
-	t.Cleanup(func() { claudeHookEnsureRuntime = originalEnsure })
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
 	if err := runAIOpenCodeSession(command, nil); err != nil {
 		t.Fatal(err)
 	}

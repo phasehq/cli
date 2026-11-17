@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,12 +24,12 @@ import (
 //	ai/ca.lock                                   CA store                          serializes CA load and publication              kept
 //	ai/runtime-ca-bundle.pem                     every proxy start                 trust bundle child processes are pointed at     kept: live phase ai run children may read it
 //	ai/env.sh, env.json, env-status.json         hook daemon                       environment harness shells and plugins load     phase ai disable
-//	ai/claude-runtime.json                       hook daemon                       running daemon's PID, generation, proxy URL     daemon exit
-//	ai/claude-runtime.lock                       hooks starting the daemon         daemon ownership                                daemon exit
-//	ai/claude-runtime-<generation>.error.json    hook daemon                       why a daemon failed, for hooks and status       read by the waiting hook, or sweep
-//	ai/claude-session-<id>.lease.json            hooks, phase ai exec              keeps the daemon alive for a session/command    session or command end, daemon exit, sweep
-//	ai/claude-runtime.log, .log.1                hooks and daemon                  lifecycle log, rotated at 1 MiB (2 MiB max)     phase ai disable
-//	ai/claude-runtime.setup.lock                 phase ai enable, hooks            keeps hooks from starting during setup          phase ai disable
+//	ai/runtime.json                              hook daemon                       running daemon's PID, generation, proxy URL     daemon exit
+//	ai/runtime.lock                              hooks starting the daemon         daemon ownership                                daemon exit
+//	ai/runtime-<generation>.error.json           hook daemon                       why a daemon failed, for hooks and status       read by the waiting hook, or sweep
+//	ai/session-<id>.lease.json                   hooks, phase ai exec              keeps the daemon alive for a session/command    session or command end, daemon exit, sweep
+//	ai/runtime.log, .log.1                       hooks and daemon                  lifecycle log, rotated at 1 MiB (2 MiB max)     phase ai disable
+//	ai/runtime.setup.lock                        phase ai enable, hooks            keeps hooks from starting during setup          phase ai disable
 //	ai/*.mutation.lock (runtime lock, lease       hooks and daemon                  OS locks for the files above; one per name,     phase ai disable
 //	  registry, log)                                                               none per session
 //	ai/event-spool/<session>/<event>.json        proxy                             denial/error audit events not yet delivered     on delivery; folder when drained or by sweep when empty
@@ -37,34 +37,58 @@ import (
 //	ai/codex-marketplace/                        phase ai enable --harness codex   Codex plugin marketplace                        phase ai disable
 //	ai/.phase-runtime-*, .phase-ca-*             atomic writers                    temporary files                                 by the writer; leftovers by sweep
 //
-// Earlier layouts the sweep also removes: claude-session-*.lease.json.mutation.lock
-// (one lock per session), ca-key.pem (plaintext CA key), java-truststore.p12,
-// runtime-java-truststore.p12, phase-ca.pem, and a top-level phase-hook-v1 with
-// its metadata from before the helper moved into bin/.
+// Names earlier builds wrote are in formerAINames and formerAIPatterns, the
+// one place that knows about them. Obsolete CA files (ca-key.pem, a plaintext
+// key, and the Java trust stores) are removed by phaseproxy.SweepCAFiles under
+// the CA lock.
 
 const (
 	aiSweepTemporaryAge = time.Hour
 	aiSweepSpoolAge     = 10 * time.Minute
 	eventSpoolDirectory = "event-spool"
+	formerRuntimeState  = "claude-runtime.json"
 )
 
+// formerAINames are files earlier builds wrote directly in ~/.phase/ai: the
+// runtime files before they lost their claude- prefix, and the shared helper
+// from before it moved into bin/.
+var formerAINames = []string{
+	formerRuntimeState,
+	"claude-runtime.lock",
+	"claude-runtime.lock" + leaseLockSuffix,
+	"claude-runtime.setup.lock",
+	"claude-runtime.log",
+	"claude-runtime.log.1",
+	"claude-runtime.log" + leaseLockSuffix,
+	"claude-session-leases.registry",
+	"claude-session-leases.registry" + leaseLockSuffix,
+	"phase-hook-v1",
+	"phase-hook-v1.metadata.json",
+	"phase-hook-v1.exe",
+	"phase-hook-v1.exe.metadata.json",
+}
+
+// formerAIPatterns are per-session and per-generation files of earlier builds,
+// including the per-session lock files they kept.
+var formerAIPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^claude-session-[0-9a-f]{32}\.lease\.json(\.mutation\.lock)?$`),
+	regexp.MustCompile(`^claude-runtime-[0-9a-f]{32}\.error\.json$`),
+}
+
 var (
-	sessionLeaseLockPattern = regexp.MustCompile(`^claude-session-[0-9a-f]{32}\.lease\.json\.mutation\.lock$`)
-	runtimeFailurePattern   = regexp.MustCompile(`^claude-runtime-([0-9a-f]{32})\.error\.json$`)
-	spoolSessionPattern     = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	runtimeFailurePattern = regexp.MustCompile(`^runtime-([0-9a-f]{32})\.error\.json$`)
+	spoolSessionPattern   = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
 
 // sweepAIDirectory removes leftovers from ~/.phase/ai: leases whose session or
-// daemon is gone, per-session lock files, empty event-spool folders, failure
-// records of other daemons, stale temporary files and files from earlier
-// layouts. It touches only names in the inventory above, directly inside the
-// directory (and event-spool), never follows symlinks, and is safe beside live
-// sessions: leases are judged under the lease registry lock, CA files under
-// the CA lock, lock files are removed only while held, and spool folders only
-// when empty and idle. legacyHook also removes a top-level shared hook from
-// the earlier layout; only enable and disable pass it, since an adapter that
-// enable has not rewritten may still run that file.
-func sweepAIDirectory(directory string, legacyHook bool) error {
+// daemon is gone, empty event-spool folders, failure records of other daemons,
+// stale temporary files and the names earlier builds wrote. It touches only
+// names in the inventory above, directly inside the directory (and
+// event-spool), never follows symlinks, and is safe beside live sessions:
+// leases are judged under the lease registry lock, CA files under the CA lock,
+// lock files are removed only while held, and spool folders only when empty
+// and idle.
+func sweepAIDirectory(directory string) error {
 	info, err := os.Lstat(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -79,8 +103,11 @@ func sweepAIDirectory(directory string, legacyHook bool) error {
 	if err := phaseproxy.SweepCAFiles(directory); err != nil {
 		errs = append(errs, err)
 	}
-	live := liveClaudeRuntimeGeneration(directory)
-	if _, _, err := activeClaudeLeases(directory, live, time.Now()); err != nil {
+	live := liveHookRuntimeGeneration(directory)
+	if _, _, err := activeSessionLeases(directory, live, time.Now()); err != nil {
+		errs = append(errs, err)
+	}
+	if err := stopFormerRuntime(directory); err != nil {
 		errs = append(errs, err)
 	}
 	entries, err := os.ReadDir(directory)
@@ -95,8 +122,12 @@ func sweepAIDirectory(directory string, legacyHook bool) error {
 			continue
 		}
 		switch {
-		case sessionLeaseLockPattern.MatchString(name):
-			errs = append(errs, removeHeldLockFile(path))
+		case formerAIName(name):
+			if strings.HasSuffix(name, ".lock") {
+				errs = append(errs, removeHeldLockFile(path))
+			} else {
+				errs = append(errs, removeIfExists(path))
+			}
 		case runtimeFailurePattern.MatchString(name):
 			if live == "" || runtimeFailurePattern.FindStringSubmatch(name)[1] != live {
 				errs = append(errs, removeIfExists(path))
@@ -108,20 +139,40 @@ func sweepAIDirectory(directory string, legacyHook bool) error {
 		}
 	}
 	errs = append(errs, sweepEventSpool(filepath.Join(directory, eventSpoolDirectory), now))
-	if legacyHook {
-		errs = append(errs, removeLegacySharedHook(directory))
-	}
 	return errors.Join(errs...)
 }
 
-// liveClaudeRuntimeGeneration is the generation of a daemon whose process is
+func formerAIName(name string) bool {
+	if slices.Contains(formerAINames, name) {
+		return true
+	}
+	return slices.ContainsFunc(formerAIPatterns, func(pattern *regexp.Regexp) bool { return pattern.MatchString(name) })
+}
+
+// stopFormerRuntime stops a daemon an earlier build started under its former
+// state file. It holds the proxy port, so the current runtime could not start
+// beside it.
+func stopFormerRuntime(directory string) error {
+	state, err := readHookRuntimeState(filepath.Join(directory, formerRuntimeState))
+	if err != nil || state.PID <= 0 || !processIsAlive(state.PID) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := requestHookRuntimeShutdown(ctx, state.ProxyURL); err != nil {
+		return fmt.Errorf("stop the Phase AI runtime of an earlier build: %w", err)
+	}
+	return waitForRuntimeProcessExit(ctx, state.PID, 2*time.Second)
+}
+
+// liveHookRuntimeGeneration is the generation of a daemon whose process is
 // alive, or "" when none is running.
-func liveClaudeRuntimeGeneration(directory string) string {
-	if lock, err := readClaudeRuntimeLock(filepath.Join(directory, claudeRuntimeLockFile)); err == nil &&
+func liveHookRuntimeGeneration(directory string) string {
+	if lock, err := readHookRuntimeLock(filepath.Join(directory, hookRuntimeLockFile)); err == nil &&
 		lock.Generation != "" && lock.PID > 0 && processIsAlive(lock.PID) {
 		return lock.Generation
 	}
-	if state, err := readClaudeRuntimeState(filepath.Join(directory, claudeRuntimeStateFile)); err == nil &&
+	if state, err := readHookRuntimeState(filepath.Join(directory, hookRuntimeStateFile)); err == nil &&
 		state.Generation != "" && state.PID > 0 && processIsAlive(state.PID) {
 		return state.Generation
 	}
@@ -158,35 +209,6 @@ func sweepEventSpool(spool string, now time.Time) error {
 	return nil
 }
 
-// removeLegacySharedHook removes the shared helper earlier builds installed
-// directly in ~/.phase/ai, only when its metadata says Phase owns it.
-func removeLegacySharedHook(directory string) error {
-	name := "phase-hook-v1"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	executable := filepath.Join(directory, name)
-	metadataPath := executable + ".metadata.json"
-	info, err := os.Lstat(metadataPath)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil
-	}
-	payload, err := os.ReadFile(metadataPath)
-	if err != nil {
-		return nil
-	}
-	var metadata struct {
-		Owner string `json:"owner"`
-	}
-	if json.Unmarshal(payload, &metadata) != nil || metadata.Owner != "phase-cli" {
-		return nil
-	}
-	if info, err := os.Lstat(executable); err == nil && !info.Mode().IsRegular() {
-		return nil
-	}
-	return errors.Join(removeIfExists(executable), removeIfExists(metadataPath))
-}
-
 func removeIfExists(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -198,24 +220,24 @@ func removeIfExists(path string) error {
 // daemon has stopped: the lifecycle log and the fixed lock files, which are
 // only useful while Phase AI is enabled. The CA and the trust bundles stay.
 func removeAIRuntimeLeftovers(directory string) error {
-	logPath := filepath.Join(directory, claudeLifecycleLogFile)
+	logPath := filepath.Join(directory, lifecycleLogFile)
 	return errors.Join(
-		removeHeldLockFile(logPath+claudeLeaseLockSuffix, logPath, logPath+".1"),
-		removeHeldLockFile(filepath.Join(directory, claudeLeaseRegistryName+claudeLeaseLockSuffix)),
-		removeHeldLockFile(filepath.Join(directory, claudeRuntimeLockFile+claudeLeaseLockSuffix)),
-		removeHeldLockFile(filepath.Join(directory, claudeSetupLockFile)),
+		removeHeldLockFile(logPath+leaseLockSuffix, logPath, logPath+".1"),
+		removeHeldLockFile(filepath.Join(directory, leaseRegistryName+leaseLockSuffix)),
+		removeHeldLockFile(filepath.Join(directory, hookRuntimeLockFile+leaseLockSuffix)),
+		removeHeldLockFile(filepath.Join(directory, hookSetupLockFile)),
 	)
 }
 
 // sweepAIDirectoryQuietly runs the sweep where a failure must not stop the
 // command that triggered it.
-func sweepAIDirectoryQuietly(ctx context.Context, legacyHook bool) {
+func sweepAIDirectoryQuietly(ctx context.Context) {
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
-	directory, err := claudeHookRuntimeDir()
+	directory, err := hookRuntimeDir()
 	if err != nil {
 		return
 	}
-	_ = sweepAIDirectory(directory, legacyHook)
+	_ = sweepAIDirectory(directory)
 }

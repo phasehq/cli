@@ -27,6 +27,8 @@ type AgentBackend struct {
 	// userData is the app access listing in the SDK's shape, read once per
 	// process and kept in memory only.
 	userData *misc.AppKeyResponse
+	// expired are the app grants whose time limit passed, from the same read.
+	expired []agentapi.ExpiredAppConnection
 }
 
 // agentTarget is the environment a call addresses, with the names to show.
@@ -80,6 +82,7 @@ func (b *AgentBackend) UserData() (*misc.AppKeyResponse, error) {
 		return nil, agentError(err)
 	}
 	data := &misc.AppKeyResponse{Apps: []misc.App{}}
+	b.expired = access.Expired
 	appIndex := map[string]int{}
 	for _, connection := range access.Apps {
 		index, known := appIndex[connection.App.ID]
@@ -134,7 +137,7 @@ func (b *AgentBackend) target(appName, envName, appID, access string) (agentTarg
 			if candidate.ID == appID {
 				app = candidate
 			}
-		case strings.Contains(strings.ToLower(candidate.Name), strings.ToLower(appName)):
+		case nameMatches(candidate.Name, appName):
 			if app == nil || len(candidate.Name) < len(app.Name) {
 				app = candidate
 			}
@@ -144,9 +147,16 @@ func (b *AgentBackend) target(appName, envName, appID, access string) (agentTarg
 		if appID != "" {
 			return agentTarget{appID: appID, env: envName, appLabel: appID, envLabel: envName}, nil
 		}
+		// An expired grant is still addressed by its app ID, so the Agent gets
+		// the Console's refusal and its renew request.
+		if expired, ok := b.expiredApp(appName); ok {
+			return agentTarget{appID: expired.App.ID, env: envName, appLabel: expired.App.Name, envLabel: envName}, nil
+		}
 		return agentTarget{}, &AgentRefusal{&agentapi.AppSecretsError{
-			Code:    "agent_grant_missing",
-			Message: fmt.Sprintf("No app whose name contains %q is available to this Agent's Workflow.", appName),
+			Code: "agent_grant_missing",
+			Message: fmt.Sprintf("No app matching %q is available to this Agent's Workflow. The request below asks for the app by name, "+
+				"which must be the app's exact name; the Console answers when the request is filed and may still refuse it, "+
+				"for example when there is no such app or the app does not use server-side encryption.", appName),
 			Request: appAccessRequest(appName, envName, access),
 		}}
 	}
@@ -159,6 +169,67 @@ func (b *AgentBackend) target(appName, envName, appID, access string) (agentTarg
 	}
 	return target, nil
 }
+
+func nameMatches(name, wanted string) bool {
+	return strings.Contains(strings.ToLower(name), strings.ToLower(wanted))
+}
+
+// expiredApp finds an expired grant by app name, matched as granted apps are.
+func (b *AgentBackend) expiredApp(appName string) (agentapi.ExpiredAppConnection, bool) {
+	var found *agentapi.ExpiredAppConnection
+	for index := range b.expired {
+		candidate := &b.expired[index]
+		if nameMatches(candidate.App.Name, appName) && (found == nil || len(candidate.App.Name) < len(found.App.Name)) {
+			found = candidate
+		}
+	}
+	if found == nil {
+		return agentapi.ExpiredAppConnection{}, false
+	}
+	return *found, true
+}
+
+// ExpiredApps describes, for apps list, each app whose access has ended, with
+// the request that asks a member to renew it.
+func (b *AgentBackend) ExpiredApps() ([]string, error) {
+	if _, err := b.UserData(); err != nil {
+		return nil, err
+	}
+	descriptions := make([]string, 0, len(b.expired))
+	for _, expired := range b.expired {
+		refusal := &AgentRefusal{&agentapi.AppSecretsError{
+			Code: "agent_grant_expired",
+			Message: fmt.Sprintf("Access to %s (%s) through %s expired at %s.", expired.App.Name, expired.App.ID,
+				expired.ConnectionName, expired.ExpiredAt.UTC().Format(time.RFC3339)),
+			Request: renewRequest(expired.ConnectionID, expired.ConnectionName),
+		}}
+		descriptions = append(descriptions, refusal.Error())
+	}
+	return descriptions, nil
+}
+
+// renewRequest is the request that asks a member to renew an ended grant, in
+// the shape the Console sends with its own refusals.
+func renewRequest(connectionID, connectionName string) json.RawMessage {
+	title := "Renew access to " + connectionName
+	if len([]rune(title)) > 120 {
+		title = string([]rune(title)[:120])
+	}
+	payload, err := json.Marshal(map[string]any{
+		"kind":  "access_change",
+		"title": title,
+		"action": map[string]any{
+			"type": "agent_grant.renew", "version": 1, "connectionId": connectionID,
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return payload
+}
+
+// NoAppAccessMessage is what apps list says when an Agent has no app access.
+const NoAppAccessMessage = "This Agent has no app access yet; access to an app is asked for with a request a member approves (run `phase ai guide app-secrets`)."
 
 // appAccessRequest is the request an Agent sends to ask for an app by name.
 func appAccessRequest(appName, envName, access string) json.RawMessage {

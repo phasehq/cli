@@ -92,13 +92,7 @@ var protectedEnvironmentKeys = map[string]struct{}{
 	"PHASE_SERVICE_TOKEN":              {},
 	"PHASE_AGENT_TOKEN":                {},
 	"PHASE_AI_ENABLED":                 {},
-	"PHASE_AI_PROXY_URL":               {},
-	"PHASE_AI_CA_CERT":                 {},
 	"PHASE_AI_CA_BUNDLE":               {},
-	"PHASE_AGENT_SESSION_CREDENTIAL":   {},
-	"PHASE_AGENT_CONTROL_URL":          {},
-	"PHASE_AI_SESSION_UID":             {},
-	"PHASE_AI_SESSION_CREDENTIAL":      {},
 	"PHASE_AI_CONTROL_URL":             {},
 	ReservedEnvironmentKey:             {},
 	"HTTP_PROXY":                       {},
@@ -168,6 +162,16 @@ func ReservedRunEnvironmentKey(key string, sessionReserved []string) bool {
 		return true
 	}
 	return containsEnvironmentKey(phaseCredentialEnvironmentKeys, key) || containsEnvironmentKey(sessionReserved, key)
+}
+
+// PlanCarriesReservedNames reports whether a plan that enables Phase AI also
+// carries ReservedEnvironmentKey, which phase run needs inside the session.
+func PlanCarriesReservedNames(plan ProcessEnvironmentPlan) bool {
+	if plan.Set["PHASE_AI_ENABLED"] != "1" {
+		return true
+	}
+	_, present := plan.Set[ReservedEnvironmentKey]
+	return present
 }
 
 // SplitReservedEnvironment reads the value of ReservedEnvironmentKey.
@@ -711,7 +715,7 @@ func validateProxyEnvironmentOptions(options EnvironmentOptions) (*url.URL, erro
 	if !ValidProxyUsername(proxyURL.User.Username()) || !present || capability == "" {
 		return nil, fmt.Errorf("AI proxy URL must contain a runtime capability")
 	}
-	if !isLoopbackHostname(proxyURL.Hostname()) {
+	if !IsLoopbackHost(proxyURL.Hostname()) {
 		return nil, fmt.Errorf("AI proxy URL must use loopback")
 	}
 	if options.CABundlePath == "" {
@@ -1009,7 +1013,9 @@ func mergeAdapterEnvironment(destination, source map[string]string) error {
 	return nil
 }
 
-func isLoopbackHostname(host string) bool {
+// IsLoopbackHost reports whether host, a URL hostname, names this machine:
+// localhost (any case, optional trailing dot) or a loopback IP.
+func IsLoopbackHost(host string) bool {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "localhost" {
 		return true
@@ -1024,7 +1030,7 @@ func mergeRuntimeEnvironment(destination, source map[string]string, label string
 			return fmt.Errorf("%s contains an invalid environment key", label)
 		}
 		upper := strings.ToUpper(key)
-		if _, protected := protectedEnvironmentKeys[upper]; protected || strings.HasPrefix(upper, "PHASE_AI_") {
+		if _, protected := protectedEnvironmentKeys[upper]; protected || strings.HasPrefix(upper, "PHASE_AI_") || strings.HasPrefix(upper, "PHASE_AGENT_") {
 			return fmt.Errorf("%s cannot override protected environment key %s", label, key)
 		}
 		if label == "configEnv" {

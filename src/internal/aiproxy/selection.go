@@ -222,5 +222,5 @@ func (h *controlHandler) connectionEnvironment(w http.ResponseWriter, req *http.
 		writeControlError(w, http.StatusBadGateway, "unsafe_connection_environment", "The Connection environment contained proxy-only material.", false)
 		return
 	}
-	h.writeRelay(w, response, nil)
+	h.writeForward(w, response, nil)
 }

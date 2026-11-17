@@ -50,6 +50,9 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseAgentDynamicSecretFlags(cmd, p); err != nil {
+		return err
+	}
 
 	opts := sdk.GetOptions{
 		EnvName: envName,
