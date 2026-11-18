@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/offline"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	"github.com/spf13/cobra"
 )
 
@@ -33,6 +36,17 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		}
 		for _, id := range ids {
 			keyring.DeleteCredentials(id)
+		}
+		// ~/.phase also holds the Phase AI directory: its logs, spooled audit
+		// events and trust files. Stop the proxy first so it writes nothing
+		// back, and drop the CA key from the system keystore with them.
+		stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+		if err := stopHookRuntime(stopContext); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
+		}
+		cancel()
+		if err := phaseproxy.DeleteStoredCAKey(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove the Phase AI CA key from the system keystore: %v\n", err)
 		}
 		phaseHomeDir := filepath.Dir(config.PhaseSecretsDir)
 		if _, err := os.Stat(phaseHomeDir); err == nil {

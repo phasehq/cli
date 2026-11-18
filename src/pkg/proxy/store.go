@@ -86,6 +86,19 @@ var memoryCAs = struct {
 // private key cannot be kept in a system keystore.
 const NoKeystoreNotice = "There is no system keystore on this machine, so the Phase AI CA key is kept in memory only and a new CA is created each time the proxy starts."
 
+// DeleteStoredCAKey removes the CA private key from the system keystore, for a
+// purge of all local data. A missing key or keystore is not an error.
+func DeleteStoredCAKey() error {
+	err := gokeyring.Delete(caKeyringService, caKeyringUser)
+	if err == nil || errors.Is(err, gokeyring.ErrNotFound) {
+		return nil
+	}
+	if !(CAStore{}).KeystoreAvailable() {
+		return nil
+	}
+	return err
+}
+
 // renewalWindow keeps short test validities from renewing on every call.
 func renewalWindow(validity time.Duration) time.Duration {
 	window := caRenewalWindow
