@@ -30,6 +30,7 @@ func init() {
 	authCmd.Flags().String("service-account-id", "", "Service account ID (required for aws-iam and azure modes)")
 	authCmd.Flags().Int("ttl", 0, "Token TTL in seconds (for external identity modes)")
 	authCmd.Flags().Bool("no-store", false, "Print token to stdout instead of storing (for external identity modes)")
+	authCmd.Flags().Bool("insecure-storage", false, "Store an Agent token in plain text in the Phase config file when no system keystore is available")
 	authCmd.Flags().String("azure-resource", "", "Azure AD resource/audience for token request (for azure mode, default: https://management.azure.com/)")
 	rootCmd.AddCommand(authCmd)
 }
@@ -193,15 +194,24 @@ func runAgentTokenAuth(cmd *cobra.Command, host, authToken string) error {
 	}
 
 	accountID := agentLocalAccountID(lookup)
-	// Agent tokens are never written to config.json as a fallback. If the OS
-	// keyring is unavailable, fail closed and leave no plaintext credential.
-	if err := keyring.SetCredentials(accountID, authToken); err != nil {
-		return fmt.Errorf("store Agent token securely in OS keyring: %w", err)
-	}
+	// An Agent token goes to the system keystore. Without one the login fails,
+	// unless the person chose plain-text storage with --insecure-storage.
+	insecureStorage, _ := cmd.Flags().GetBool("insecure-storage")
 	userConfig := agentUserConfig(host, accountID, identity)
+	var storedInConfig bool
+	storedInConfig, err = storeAgentToken(keyring.SetCredentials, accountID, authToken, insecureStorage)
+	if err != nil {
+		return err
+	}
+	if storedInConfig {
+		userConfig.Token = authToken
+	}
 	if err := config.AddUser(userConfig); err != nil {
 		_ = keyring.DeleteCredentials(accountID)
 		return fmt.Errorf("save Agent login metadata: %w", err)
+	}
+	if storedInConfig {
+		fmt.Fprintln(cmd.ErrOrStderr(), "⚠️  No system keystore is available, so the Agent token is stored in plain text in the Phase config file.")
 	}
 	fmt.Fprintf(
 		cmd.OutOrStdout(),
@@ -214,6 +224,19 @@ func runAgentTokenAuth(cmd *cobra.Command, host, authToken string) error {
 		)),
 	)
 	return nil
+}
+
+// storeAgentToken puts the token in the system keystore. When the keystore
+// refuses it, the login fails unless plain-text storage was chosen; it then
+// reports that the caller must keep the token in the config file.
+func storeAgentToken(set func(accountID, token string) error, accountID, token string, insecureStorage bool) (inConfig bool, err error) {
+	if err := set(accountID, token); err != nil {
+		if !insecureStorage {
+			return false, fmt.Errorf("store Agent token in the system keystore: %w; if this machine has no keystore, rerun with --insecure-storage to store the token in plain text in the Phase config file", err)
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func agentUserConfig(host, accountID string, identity *agentapi.AgentIdentity) config.UserConfig {
