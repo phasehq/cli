@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -783,6 +784,9 @@ func TestAgentOutputIsMaskedWithAndWithoutAHarness(t *testing.T) {
 }
 
 func TestAgentRunInjectsAndKeepsSessionVariables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the child command is written for a POSIX shell")
+	}
 	console := newFakeAgentConsole(t)
 	isolateAgentCommand(t, console.server.URL)
 	console.environments["app-orders/development"] = append(console.environments["app-orders/development"],

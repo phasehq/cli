@@ -46,6 +46,7 @@ echo "$status" | grep -q "^CA:" || fail "status does not report the CA"
 if ! echo "$output" | grep -q "$NO_KEYSTORE"; then
   [ -f "$HOME_DIR/.phase/ai/ca.pem" ] || fail "ca.pem missing"
 fi
-grep -rq "PRIVATE KEY" "$HOME_DIR/.phase/ai" 2>/dev/null && fail "a file under ~/.phase/ai contains private key material"
+# The helper in bin/ is a copy of the CLI, whose code names the PEM header.
+find "$HOME_DIR/.phase/ai" -type f ! -path '*/bin/*' -exec grep -q "PRIVATE KEY" {} + 2>/dev/null && fail "a file under ~/.phase/ai contains private key material"
 [ -f "$HOME_DIR/.claude/skills/phase-cli/SKILL.md" ] || fail "Phase skill missing"
 echo "OK: $MODE"
