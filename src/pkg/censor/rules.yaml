@@ -1,0 +1,174 @@
+# Pattern rules applied to every scanned request, whatever the index holds.
+#
+# Each rule is a regex, or a prefix plus a charset and a length, or keyword_value
+# (the value written right after a keyword). A regex with a group named "secret"
+# replaces only that group. Every candidate is scored:
+#
+#   score = rule score (default 60)
+#         + keyword_bonus   when a keyword ends within keyword_window bytes before it on
+#                           the same line, or is the JSON key holding it
+#         + validator_bonus when the rule's validator (format structure or checksum) passes
+#         - ignore_penalty  for documentation example values (the ignore lists below)
+#         - shape_penalty   for keyword_value candidates shaped like a git hash, a UUID,
+#                           a digest or an inline image
+#
+# At or above redact_at (default 50) it becomes ph:<label>:<n>, the same n for the same
+# value. At or above alert_at (default 30) it is only recorded. Below that it's dropped.
+# action: alert never redacts. min_entropy is in bits per byte, on the candidate.
+# hints are literal strings one of which every match contains: the regex only runs on
+# text that holds one (a prefix rule's prefix is its hint). Exact inventory matches
+# don't go through any of this: they always redact.
+scoring:
+  keyword_window: 40
+  keyword_bonus: 30
+  validator_bonus: 20
+  ignore_penalty: 100
+  shape_penalty: 25
+  # Matched case-insensitively, anywhere in a word: "secret" also finds client_secret
+  # and STRIPE_SECRET_KEY.
+  keywords:
+    - password
+    - passwd
+    - pwd
+    - passphrase
+    - secret
+    - token
+    - api_key
+    - apikey
+    - api-key
+    - access_key
+    - accesskey
+    - private_key
+    - privatekey
+    - credential
+    - auth
+    - bearer
+    - signing_key
+    - encryption_key
+    - session_key
+    # connection string markers
+    - 'password='
+    - 'pwd='
+    - connectionstring
+    - connection_string
+    - dsn
+  # Documentation and placeholder values: AWS's own examples, and the usual stand-ins.
+  ignore_values:
+    - AKIAIOSFODNN7EXAMPLE
+    - wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    - ASIAIOSFODNN7EXAMPLE
+  ignore_substrings:
+    - example
+    - xxxxxxxx
+    - your_
+    - your-
+    - changeme
+    - placeholder
+    - redacted
+    - dummy
+    - '<token>'
+    - '1234567890abcdef'
+  # Things written after a keyword that aren't secrets: references to one, URLs
+  # without credentials, cloud resource names, and code identifiers. These apply to
+  # keyword_value candidates only; the values and substrings above apply to all rules.
+  ignore_patterns:
+    - '^(?:process\.env|os\.environ|os\.Getenv|ENV\[|env\.|secrets\.|vars\.|\$\{?[A-Za-z_])'
+    - '^[a-z][a-z0-9+.-]*://[^@]*$'
+    - '^(?:arn:|[a-z]{2}-[a-z]+-\d:\d{12}:)'
+    - '^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+(?:\(\))?$'
+    - '^[A-Za-z_]+\d{0,4}$'
+    # a base64 PEM certificate, such as a kubeconfig's certificate-authority-data
+    - '^LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS'
+
+rules:
+  # Phase tokens: pss_<kind>:v<version>:<64 hex>, followed by up to three more
+  # 64-hex key shares (Personal Access and Agent tokens are v1, Service Account
+  # tokens v2; older service tokens are v1).
+  - id: phase-user-token
+    description: Phase personal access token
+    regex: '\bpss_user:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
+    hints: ['pss_user:']
+    validator: phase-token
+    label: phase_pat
+  - id: phase-service-token
+    description: Phase service or service account token
+    regex: '\bpss_service:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
+    hints: ['pss_service:']
+    validator: phase-token
+    label: phase_service_token
+  - id: phase-agent-token
+    description: Phase Agent token
+    regex: '\bpss_agent:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
+    hints: ['pss_agent:']
+    validator: phase-token
+    label: phase_agent_token
+
+  - id: aws-access-key-id
+    description: AWS access key id (long-lived or temporary)
+    regex: '\b(?:AKIA|ASIA)[0-9A-Z]{16}\b'
+    hints: [AKIA, ASIA]
+    validator: aws-key-id
+    label: aws_access_key_id
+  - id: aws-secret-access-key
+    description: the value written next to an aws_secret_access_key name
+    regex: '(?i)aws_secret_access_key["'']?\s*[=:]\s*["'']?(?P<secret>[A-Za-z0-9/+]{40})'
+    min_entropy: 3.5
+    hints: [ws_secret_access_key, WS_SECRET_ACCESS_KEY, ws_Secret_Access_Key]
+    label: aws_secret_access_key
+  - id: github-classic-token
+    description: GitHub classic personal access, OAuth, user, server or refresh token
+    regex: '\bgh[pousr]_[A-Za-z0-9]{36}\b'
+    min_entropy: 3.0
+    hints: [ghp_, gho_, ghu_, ghs_, ghr_]
+    validator: github-checksum
+    label: github_token
+  - id: github-fine-grained-token
+    description: GitHub fine-grained personal access token
+    prefix: github_pat_
+    charset: A-Za-z0-9_
+    min_length: 70
+    max_length: 100
+    label: github_token
+  - id: private-key-block
+    description: a PEM private key, whole block, including inside an env file with literal \n
+    regex: '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----'
+    hints: ['PRIVATE KEY-----']
+    validator: pem-der
+    label: private_key
+  - id: private-key-header
+    description: a PEM private key header with no end, such as a truncated paste
+    regex: '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----'
+    action: alert
+    hints: ['PRIVATE KEY-----']
+    label: private_key_header
+  - id: slack-token
+    description: Slack bot, user or app token
+    regex: '\bxox[abposr]-[0-9A-Za-z-]{20,}'
+    hints: [xoxa-, xoxb-, xoxp-, xoxo-, xoxs-, xoxr-]
+    label: slack_token
+  - id: stripe-live-key
+    description: Stripe live secret or restricted key
+    regex: '\b[sr]k_live_[0-9A-Za-z]{20,}'
+    hints: [k_live_]
+    label: stripe_key
+  - id: jwt
+    description: a signed JSON Web Token; redacted only with a keyword such as bearer or token nearby
+    regex: '\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}'
+    hints: [eyJ]
+    validator: jwt
+    score: 10
+    alert_at: 25
+    label: jwt
+
+  # Fires only through scoring: a high-entropy value with a letter and a digit,
+  # assigned right after a keyword. With no keyword nearby there is no candidate at
+  # all, so git hashes, UUIDs and base64 images elsewhere never reach it.
+  - id: keyword-high-entropy
+    description: a high-entropy value assigned right after a secret-sounding name
+    keyword_value: true
+    min_length: 16
+    min_entropy: 3.5
+    score: 20
+    redact_at: 50
+    alert_at: 40
+    label: keyword_secret
