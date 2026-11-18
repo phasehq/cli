@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -65,6 +66,17 @@ func listSecrets(p phase.SecretsBackend, envName, appName, appID, tags, path str
 		return err
 	}
 
+	if show {
+		var shown []sdk.SecretResult
+		for _, secret := range secrets {
+			if !ai.ShouldRedact(secret.Type) {
+				shown = append(shown, secret)
+			}
+		}
+		if err := protectSecrets(context.Background(), p, shown); err != nil {
+			return err
+		}
+	}
 	appLabel, envLabel := contextNames(p, secrets, appName, envName, appID)
 	display.RenderSecretsTree(secrets, show, appLabel, envLabel, emptyResultHint(path, tags, "list", true))
 	return nil

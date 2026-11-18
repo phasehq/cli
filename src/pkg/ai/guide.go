@@ -21,9 +21,9 @@ var guideTopics = []GuideTopic{
 	{"connections", "Discovering services, requesting a Connection or a credential update, phase ai exec, what an approval does to the session"},
 	{"custom-http", "Connections to any HTTP service: definitions, presets, hosts without a Connection"},
 	{"access-rules", "Allowed, ask and blocked calls, the secret guard, time-limited access and renewal"},
-	{"app-secrets", "Requesting app access, the secrets commands, refusals"},
+	{"app-secrets", "Requesting app access, the secrets commands, refusals, secret placeholders"},
 	{"workflow-context", "The Workflow notes members keep, and asking to change them"},
-	{"troubleshooting", "Recognising Phase failures, event IDs, provider limits, choosing one Connection"},
+	{"troubleshooting", "Recognising Phase failures, event IDs, provider limits, choosing one Connection, leak protection"},
 }
 
 // GuideTopics lists the topics in the order the skill names them.

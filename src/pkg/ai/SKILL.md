@@ -21,6 +21,10 @@ Values Phase shows masked (`[REDACTED]`, decoy credentials, `PHASE_REDACTED_CRED
 
 Never ask the human to paste a secret or credential into chat, a command, a file, or a request.
 
+## Secret placeholders
+
+Inside a Phase AI session the proxy removes secret values Phase handed out, and well-known token formats, from what is sent to the model, and puts a placeholder such as `ph:secret:<id>` in their place. Only what the model sees changes: the file or variable still holds the real value, and commands run through `phase run` still get it. Refer to the secret by its key name (for example `DATABASE_URL`), not by the placeholder, and never try to work around the masking (no re-encoding, splitting, or printing it another way). A request refused with `secret_in_request` carried a value in its URL: leave the value out.
+
 ## What this session has
 
 - `phase ai status` shows whether Phase AI is enabled, which login is in use, and the Connections of a running proxy.
@@ -65,6 +69,6 @@ Read a guide when the task needs it. Each works with no session and no login:
 | `phase ai guide connections` | Discovering services, requesting a Connection or a credential update, `phase ai exec`, what an approval does to the session |
 | `phase ai guide custom-http` | Connections to any HTTP service: definitions, presets, hosts without a Connection |
 | `phase ai guide access-rules` | Allowed, ask and blocked calls, the secret guard, time-limited access and renewal |
-| `phase ai guide app-secrets` | Requesting app access, the secrets commands, refusals |
+| `phase ai guide app-secrets` | Requesting app access, the secrets commands, refusals, secret placeholders |
 | `phase ai guide workflow-context` | The Workflow notes members keep, and asking to change them |
-| `phase ai guide troubleshooting` | Recognising Phase failures, event IDs, provider limits, choosing one Connection |
+| `phase ai guide troubleshooting` | Recognising Phase failures, event IDs, provider limits, choosing one Connection, leak protection |

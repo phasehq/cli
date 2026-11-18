@@ -80,14 +80,19 @@ func runSecretsGet(cmd *cobra.Command, args []string) error {
 		keySet[k] = true
 	}
 
-	var results []sdk.SecretResult
+	var results, shown []sdk.SecretResult
 	for _, s := range secrets {
 		if keySet[s.Key] {
 			if ai.ShouldRedact(s.Type) {
 				s.Value = "[REDACTED]"
+			} else {
+				shown = append(shown, s)
 			}
 			results = append(results, s)
 		}
+	}
+	if err := protectSecrets(cmd.Context(), p, shown); err != nil {
+		return err
 	}
 
 	if len(results) == 0 {

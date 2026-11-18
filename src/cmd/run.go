@@ -99,6 +99,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		resolvedSecrets[secret.Key] = secret.Value
 	}
 	skipped := skipReservedSessionVariables(resolvedSecrets)
+	var injected []sdk.SecretResult
+	for _, secret := range allSecrets {
+		if _, kept := resolvedSecrets[secret.Key]; kept {
+			injected = append(injected, secret)
+		}
+	}
+	if err := protectSecrets(cmd.Context(), p, injected); err != nil {
+		return err
+	}
 
 	// Print injection stats to stderr (matches Python CLI behavior)
 	secretCount := len(resolvedSecrets)

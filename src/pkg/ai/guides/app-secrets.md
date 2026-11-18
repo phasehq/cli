@@ -27,6 +27,10 @@ Every call is checked by the Phase Console. When it refuses one, the command pri
 
 Inside a Phase AI session, `phase run` does not inject a secret whose name the session reserves (proxy, CA and Phase variables, and provider credential variables such as `AWS_SECRET_ACCESS_KEY`); it names the ones it skipped on stderr.
 
+## Placeholders in the conversation
+
+Inside a Phase AI session, every secret value `phase secrets export`, `get`, `list --show`, `phase run` and `phase shell` hand out is registered with the proxy first, and the proxy replaces it with `ph:<type>:<id>` in what is sent to the model (`ph:secret:<id>` for a secret, `ph:dynamic:<lease-id>` for a dynamic secret lease). Well-known token formats are replaced the same way (`ph:<format>:<n>`). The value was removed only from what the model sees: files, variables and commands run through `phase run` still have the real one. Refer to the secret by its key name, never by the placeholder, and never try to work around the masking. `config` values are never replaced. With an Agent login, a command that cannot register its values with the proxy refuses to run; `phase ai status` shows why.
+
 ## Select the app and environment
 
 Discover the available scope, then prefer explicit scope on every command:

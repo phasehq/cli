@@ -66,6 +66,43 @@ type StatusResponse struct {
 	SafeToPrint   bool               `json:"safeToPrint"`
 	Connections   []StatusConnection `json:"connections"`
 	Links         ControlLinks       `json:"links"`
+	// LeakProtection is what the proxy does with model traffic: counts and
+	// host names only.
+	LeakProtection *LeakProtectionStatus `json:"leakProtection,omitempty"`
+}
+
+// InventoryKeyResponse is GET /v1/inventory/key: the key a process of the
+// session indexes values with before it registers them. Format is the version
+// of the entries the proxy reads.
+type InventoryKeyResponse struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Key           string `json:"key"`
+	Format        int    `json:"format"`
+}
+
+// InventoryRequest is POST /v1/inventory: entries built by censor.IndexValue
+// with the session's key. They carry keyed hashes, never a value.
+type InventoryRequest struct {
+	SchemaVersion int               `json:"schemaVersion"`
+	Entries       []json.RawMessage `json:"entries"`
+}
+
+// InventoryResponse counts the values a registration protected and those it
+// could not.
+type InventoryResponse struct {
+	SchemaVersion int `json:"schemaVersion"`
+	Added         int `json:"added"`
+	Unprotected   int `json:"unprotected"`
+}
+
+// LeakProtectionStatus describes the proxy's leak protection. It never names a
+// value, an id or anything derived from a value.
+type LeakProtectionStatus struct {
+	Mode           string   `json:"mode"`
+	SecretsKnown   int      `json:"secretsKnown"`
+	Unprotected    int      `json:"unprotected"`
+	InspectedHosts []string `json:"inspectedHosts"`
+	UnreadHosts    []string `json:"unreadHosts"`
 }
 
 // ConnectionDetail is what an Agent may read about one of its Connections. It

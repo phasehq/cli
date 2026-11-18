@@ -70,6 +70,11 @@ func newEventBuffer(state *runtimeState, interval time.Duration, spoolDirectory 
 }
 
 func (b *eventBuffer) Emit(event agentapi.Event) {
+	// A failure that recorded no event has nothing to report, and the Console
+	// would refuse an event without an ID, and every batch after it.
+	if event.EventID == "" {
+		return
+	}
 	redactRequestFields(&event, b.state.eventSecrets())
 	durable := durableAuditEvent(event)
 	if !b.safe(&event) {
@@ -162,11 +167,12 @@ func durableAuditEvent(event agentapi.Event) bool {
 
 // eventDetailText and eventDetailNumbers are the only detail members an event
 // may carry besides aws_sigv4_failure, path and rule: what the access policy
-// or the secret guard decided, flat and bounded. An event never carries a
+// or the secret guard decided, or what leak protection found (counts, rule
+// labels and placeholders), flat and bounded. An event never carries a
 // request or response value, nor the request an ask offers.
 var (
-	eventDetailText    = []string{"connectionId", "connectionName", "class", "method", "operation"}
-	eventDetailNumbers = []string{"scrubbedValues"}
+	eventDetailText    = []string{"connectionId", "connectionName", "class", "method", "operation", "harness", "mode", "where", "labels", "placeholders"}
+	eventDetailNumbers = []string{"scrubbedValues", "inventoryHits", "ruleRedactions", "ruleAlerts", "signedFindings", "placeholderCount", "windowSeconds"}
 )
 
 // Console's limits for detail values.

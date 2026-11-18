@@ -145,6 +145,76 @@ Connection appears with `serviceType` and `credentialProvider` `http`; its
 `credentialId` is the Connection ID and `credentialRevision` is the value
 revision.
 
+### GET /v1/inventory/key and POST /v1/inventory (leak protection)
+
+Used by the CLI itself (`internal/leakguard`), never by the Agent's own tools.
+Before a command hands out secret values inside a session it fetches the key,
+indexes each value locally with `pkg/censor`, and registers the entries. The
+entries carry keyed hashes and lengths, never a value.
+
+```http
+GET http://phase.invalid/v1/inventory/key
+
+200 {"schemaVersion":1,"key":"<base64, 32 bytes>","format":1}
+```
+
+```http
+POST http://phase.invalid/v1/inventory
+Content-Type: application/json
+
+{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"<secret id>","forms":[...]}]}
+
+200 {"schemaVersion":1,"added":1,"unprotected":0}
+```
+
+- Body ≤ 4 MiB (413 `inventory_too_large`), at most 4096 entries; unknown
+  fields, another `schemaVersion` or any malformed entry is 400
+  `invalid_inventory` and nothing of the batch is added.
+- 507 `leak_inventory_full` once the index holds 10000 values or its chunk cap.
+- No route returns entries, hashes or ids. `GET /v1/status` adds
+  `leakProtection` with counts and host names only:
+  `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...]}`.
+- The mode comes from `PHASE_AI_LEAK_PROTECTION` in the proxy's environment:
+  `censor` (default; anything unknown counts as censor), `observe`, `off`.
+
+Inspected traffic: a CONNECT to a host in the leak protection table
+(`internal/aiproxy/leak_hosts.go`) is answered with the proxy's certificate even
+when no Connection covers it, and each request with a body is read before the
+secret guard, the access policy and credential injection. The URL of every
+request is read; headers (all but `Authorization`, `Proxy-Authorization`,
+`X-Api-Key` and `Cookie`) and the body only when there is a body. On the
+paths that carry conversation content (`conversationPaths` in the table) every
+pattern rule applies; elsewhere on the host only registered values and Phase's
+own token formats are looked for. A registered value or a Phase token in the
+URL, or in a binary body, blocks the request in `censor` mode; in a header it
+is only reported:
+
+```http
+HTTP/1.1 403 Forbidden
+X-Phase-Error-Code: secret_in_request
+
+{"error":{"code":"secret_in_request","message":"Phase blocked this request: ...","retryable":false,"details":{}}}
+```
+
+Events have `eventType` `leak_protection` and never carry matched content. A
+request is reported only when it is blocked, left unread, or holds a
+placeholder not yet reported for its host by this proxy process (at most 4096
+per host; past that, at most one event per host per minute); alerts alone are
+not reported. `outcome` is `denied` (blocked), `censored` (something was
+replaced), `reported` (found, nothing changed, such as a header), `observed`
+(`observe` mode), `unread` or `bypass`. Only blocks are spooled durably;
+the others may be dropped while the Console is unreachable and never make the
+session unavailable. `detail` holds `harness`, `mode`, `where`,
+`inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` (found in
+text the provider signed, left as it was), `labels`, `placeholders` (the newly
+seen ones, comma-separated, cut to 512 characters), `placeholderCount` (all of
+the request's) and, for a pass-through window, `windowSeconds`.
+
+A pass-through window opens only when a client answers the proxy's
+certificate with a TLS certificate alert twice in a row for a host. A client
+that drops the connection without an alert keeps failing on that host;
+`PHASE_AI_LEAK_PROTECTION=off` is the way out.
+
 ### GET /v1/connections and GET /v1/connections/{connectionId}
 
 What the Agent may read about its Connections. Both are answered from the

@@ -7,6 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
+	github.com/klauspost/compress v1.18.0
 	github.com/manifoldco/promptui v0.9.0
 	github.com/phasehq/golang-sdk/v2 v2.4.1
 	github.com/spf13/cobra v1.8.0

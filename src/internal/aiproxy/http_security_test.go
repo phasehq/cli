@@ -282,7 +282,7 @@ func TestWebSocketClosesWhenBindingBecomesInvalid(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		(&httpProxy{state: state}).watchWebSocket(context.Background(), clientSide, upstreamSide, snapshot, make(chan struct{}))
+		(&httpProxy{state: state}).watchWebSocket(context.Background(), clientSide, upstreamSide, func() error { return state.validateProtocolBinding(snapshot) }, make(chan struct{}))
 	}()
 	state.setUnhealthy()
 	_ = clientPeer.SetReadDeadline(time.Now().Add(time.Second))

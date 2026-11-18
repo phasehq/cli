@@ -94,7 +94,14 @@ func renderAIStatus(ctx context.Context) string {
 				since = ", up " + formatStatusDuration(time.Since(state.StartedAt))
 			}
 			out.WriteString(fmt.Sprintf("Proxy:       running (pid %d%s)\n", state.PID, since))
-			connections := aiStatusConnections(ctx, state.ProxyURL)
+			proxyStatus := aiProxyStatus(ctx, state.ProxyURL)
+			var connections []remoteapi.StatusConnection
+			if proxyStatus != nil {
+				connections = proxyStatus.Connections
+				if connections == nil {
+					connections = []remoteapi.StatusConnection{}
+				}
+			}
 			if connections == nil {
 				for _, connection := range health.connections {
 					connections = append(connections, remoteapi.StatusConnection{ConnectionID: connection.ConnectionID, Name: connection.Name, ServiceType: connection.ServiceType, Protocol: connection.Protocol})
@@ -120,6 +127,9 @@ func renderAIStatus(ctx context.Context) string {
 				} else {
 					out.WriteString("             " + line + "\n")
 				}
+			}
+			if proxyStatus != nil && proxyStatus.LeakProtection != nil {
+				out.WriteString("Leaks:       " + leakProtectionSummary(*proxyStatus.LeakProtection) + "\n")
 			}
 			if refreshedAt, reason := lastSessionRefresh(directory, time.Now(), 24*time.Hour); !refreshedAt.IsZero() {
 				why := "scheduled renewal"
@@ -195,7 +205,37 @@ func appScopeSummary(scope remoteapi.AppScope) string {
 	return summary
 }
 
-func aiStatusConnections(ctx context.Context, rawProxyURL string) []remoteapi.StatusConnection {
+// leakProtectionSummary is the one status line about leak protection: the
+// mode, how many secrets are known, how many could not be protected, and which
+// listed hosts are not inspected. It never names a secret.
+func leakProtectionSummary(status remoteapi.LeakProtectionStatus) string {
+	var mode string
+	switch status.Mode {
+	case "observe":
+		mode = "observe (secrets in model traffic are reported, not replaced)"
+	case "off":
+		mode = "off (model traffic is not inspected)"
+	default:
+		mode = "censor (secrets in model traffic are replaced with placeholders)"
+	}
+	line := fmt.Sprintf("%s; %d %s known", mode, status.SecretsKnown, plural(status.SecretsKnown, "secret", "secrets"))
+	if status.Unprotected > 0 {
+		line += fmt.Sprintf(", %d too short or plain to protect", status.Unprotected)
+	}
+	if len(status.UnreadHosts) > 0 {
+		line += "; not inspected: " + strings.Join(status.UnreadHosts, ", ")
+	}
+	return line
+}
+
+func plural(count int, one, many string) string {
+	if count == 1 {
+		return one
+	}
+	return many
+}
+
+func aiProxyStatus(ctx context.Context, rawProxyURL string) *remoteapi.StatusResponse {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -221,10 +261,7 @@ func aiStatusConnections(ctx context.Context, rawProxyURL string) []remoteapi.St
 	if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&status) != nil || !status.SafeToPrint {
 		return nil
 	}
-	if status.Connections == nil {
-		return []remoteapi.StatusConnection{}
-	}
-	return status.Connections
+	return &status
 }
 
 func describeCACertificate(path string) string {

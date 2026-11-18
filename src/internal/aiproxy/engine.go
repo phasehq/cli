@@ -71,6 +71,9 @@ type engineRuntime struct {
 	mu         sync.Mutex
 	capability agentapi.SensitiveString
 	decoys     *decoyHistory
+	// leak is the process's leak protection inventory. It outlives a recycled
+	// backend session and goes with the process.
+	leak *leakGuard
 }
 
 // drainingHandler prevents a new HTTP request from entering the old backend
@@ -157,6 +160,24 @@ func validateExplicitListenPort(address, label string) error {
 		return fmt.Errorf("%s must use an explicit port from 1 through 65535; port 0/random allocation is not supported", label)
 	}
 	return nil
+}
+
+// leakGuard returns the process-wide leak protection, made on first use with
+// the mode in the process's environment.
+func (e *Engine) leakGuard() (*leakGuard, error) {
+	engineRuntimeInitMu.Lock()
+	defer engineRuntimeInitMu.Unlock()
+	if e.runtime == nil {
+		e.runtime = &engineRuntime{}
+	}
+	if e.runtime.leak == nil {
+		guard, err := newLeakGuardFromEnvironment()
+		if err != nil {
+			return nil, fmt.Errorf("start leak protection: %w", err)
+		}
+		e.runtime.leak = guard
+	}
+	return e.runtime.leak, nil
 }
 
 func (e *Engine) processRuntimeCapability(backend agentapi.SensitiveString) (agentapi.SensitiveString, error) {
@@ -332,10 +353,15 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		endpoints.ProcessEnvironment = processEnvironment
 		manifest.processEnvironment = processEnvironment
 	}
-	control := &controlHandler{state: state, environments: environments}
+	leak, err := e.leakGuard()
+	if err != nil {
+		return err
+	}
+	control := &controlHandler{state: state, environments: environments, leak: leak}
 	httpHandler := &httpProxy{
 		state: state, ca: session.CA, transport: transport,
 		dial: dial, lockdown: e.Lockdown, events: events, manifest: manifest, control: control, lifecycle: ctx,
+		leak: leak,
 	}
 	trackedHandler := &drainingHandler{handler: httpHandler}
 	proxyServer := &http.Server{

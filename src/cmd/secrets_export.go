@@ -90,6 +90,15 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 	}
 
 	var secretsList []util.KeyValue
+	// What leaves with a real value is registered with leak protection first.
+	var handedOut []sdk.SecretResult
+	exportSecret := func(key string, secret sdk.SecretResult) {
+		value := exportValue(secret)
+		if value == secret.Value {
+			handedOut = append(handedOut, secret)
+		}
+		secretsList = append(secretsList, util.KeyValue{Key: key, Value: value})
+	}
 	if len(filterKeys) > 0 {
 		// Check for missing keys
 		var missingKeys []string
@@ -113,12 +122,15 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		}
 		// Export only the requested keys (in the order they were specified)
 		for _, key := range filterKeys {
-			secretsList = append(secretsList, util.KeyValue{Key: key, Value: exportValue(lastByKey[key])})
+			exportSecret(key, lastByKey[key])
 		}
 	} else {
 		for _, secret := range allSecrets {
-			secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: exportValue(secret)})
+			exportSecret(secret.Key, secret)
 		}
+	}
+	if err := protectSecrets(cmd.Context(), p, handedOut); err != nil {
+		return err
 	}
 
 	// An export that produces nothing is otherwise silent; say why on stderr so

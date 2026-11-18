@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
@@ -29,6 +30,21 @@ type AgentBackend struct {
 	userData *misc.AppKeyResponse
 	// expired are the app grants whose time limit passed, from the same read.
 	expired []agentapi.ExpiredAppConnection
+	// secretIDs maps what Get returned to each secret's Phase id, for leak
+	// protection's placeholders.
+	idMu      sync.Mutex
+	secretIDs map[string]string
+}
+
+func secretIDKey(result sdk.SecretResult) string {
+	return result.Application + "\x00" + result.Environment + "\x00" + result.Path + "\x00" + result.Key
+}
+
+// SecretID is the Phase id of a secret this backend returned, or "".
+func (b *AgentBackend) SecretID(result sdk.SecretResult) string {
+	b.idMu.Lock()
+	defer b.idMu.Unlock()
+	return b.secretIDs[secretIDKey(result)]
 }
 
 // agentTarget is the environment a call addresses, with the names to show.
@@ -310,6 +326,14 @@ func (b *AgentBackend) Get(opts sdk.GetOptions) ([]sdk.SecretResult, error) {
 		}
 		if result.Lifecycle == "" {
 			result.Lifecycle = sdk.SecretLifecycleStatic
+		}
+		if secret.ID != "" {
+			b.idMu.Lock()
+			if b.secretIDs == nil {
+				b.secretIDs = map[string]string{}
+			}
+			b.secretIDs[secretIDKey(result)] = secret.ID
+			b.idMu.Unlock()
 		}
 		results = append(results, result)
 	}

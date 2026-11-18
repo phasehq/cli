@@ -40,6 +40,7 @@ var errApprovedRequestRefreshFailed = errors.New("approved Agent request refresh
 type controlHandler struct {
 	state        *runtimeState
 	environments *connectionEnvironmentCompiler
+	leak         *leakGuard
 }
 
 // ServeProxyHTTP serves control routes at the reserved phase.invalid origin.
@@ -86,6 +87,10 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request) {
 		h.connection(w, id)
 	case req.Method == http.MethodGet && path == "/v1/status":
 		h.status(w)
+	case req.Method == http.MethodGet && path == "/v1/inventory/key":
+		h.inventoryKey(w)
+	case req.Method == http.MethodPost && path == "/v1/inventory":
+		h.addInventory(w, req)
 	case req.Method == http.MethodGet && path == "/v1/presets":
 		h.presets(w, req)
 	case req.Method == http.MethodGet && path == "/v1/hints":
@@ -163,11 +168,12 @@ func (h *controlHandler) capabilities(w http.ResponseWriter, req *http.Request) 
 
 func (h *controlHandler) status(w http.ResponseWriter) {
 	h.writeForward(w, remoteapi.StatusResponse{
-		SchemaVersion: agentapi.SchemaVersion,
-		Kind:          "phase.ai.status",
-		SafeToPrint:   true,
-		Connections:   h.state.statusConnections(time.Now()),
-		Links:         publicControlLinks(),
+		SchemaVersion:  agentapi.SchemaVersion,
+		Kind:           "phase.ai.status",
+		SafeToPrint:    true,
+		Connections:    h.state.statusConnections(time.Now()),
+		Links:          publicControlLinks(),
+		LeakProtection: h.leakStatus(),
 	}, nil)
 }
 

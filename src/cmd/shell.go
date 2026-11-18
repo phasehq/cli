@@ -79,6 +79,9 @@ func runShell(cmd *cobra.Command, args []string) error {
 	for _, secret := range allSecrets {
 		resolvedSecrets[secret.Key] = secret.Value
 	}
+	if err := protectSecrets(cmd.Context(), p, allSecrets); err != nil {
+		return err
+	}
 
 	// Collect env/app info for display
 	appLabel, envLabel := contextNames(p, allSecrets, appName, envName, appID)

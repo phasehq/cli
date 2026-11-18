@@ -37,6 +37,8 @@ type httpProxy struct {
 	events           *eventBuffer
 	manifest         *manifestHandler
 	control          *controlHandler
+	// leak is the process's leak protection; nil leaves model traffic alone.
+	leak *leakGuard
 	// clock is the time source for expiry checks; nil means time.Now.
 	clock func() time.Time
 	// lifecycle ends with the engine run. Requests read off a hijacked CONNECT
@@ -173,6 +175,14 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 			failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The proxy request could not be forwarded.", decision: "block", reason: "unclassifiable_request"}
 			return processedResponse{failure: failure}
 		}
+		// An unbound host is read inside a tunnel only for leak protection;
+		// a WebSocket on it must still reach the service.
+		if tunnelAuth != nil {
+			restoreWebSocketUpgrade(req, upstream)
+		}
+		if stopped := p.inspectForLeaks(req, upstream, nil, host, port, started); stopped != nil {
+			return *stopped
+		}
 		roundTripper := p.unboundTransport
 		if roundTripper == nil {
 			roundTripper = p.transport
@@ -183,8 +193,9 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		}
 		// The service refused a request no Connection covers. Its answer is
 		// passed on untouched; how to ask for a Connection is kept for
-		// GET /v1/hints.
-		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		// GET /v1/hints. A model host read for leak protection is the
+		// harness's own business: its refusals are about the harness's login.
+		if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) && p.leak.inspects(host, port) == nil {
 			p.state.noteConnectionNeeded(hintReasonUpstreamRejected, host, port, response.StatusCode)
 		}
 		return processedResponse{response: response}
@@ -217,6 +228,12 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	}
 	if tunnelAuth != nil {
 		restoreWebSocketUpgrade(req, upstream)
+	}
+	// Leak protection reads the request as the Agent sent it, before anything
+	// the proxy adds; whatever it rewrites is what is checked, signed and sent
+	// below.
+	if stopped := p.inspectForLeaks(req, upstream, binding, host, port, started); stopped != nil {
+		return *stopped
 	}
 	// The secret guard, then the grant's access policy, both before anything
 	// is re-signed, swapped in or attached.
@@ -384,6 +401,16 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 			writeProxyError(w, failure)
 			return
 		}
+		// A model host of a known harness is read for leak protection,
+		// unless its client keeps refusing the proxy's certificate.
+		if match := p.leak.inspects(host, port); match != nil && !p.leak.handshakes.bypassed(host) {
+			if err := p.state.availability(); err != nil {
+				writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
+				return
+			}
+			p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)}, func(ok bool) { p.noteLeakHandshake(host, port, match, ok) })
+			return
+		}
 		// A raw tunnel hides the service's answer from the proxy, so the host
 		// is only remembered: GET /v1/hints names the preset it belongs to,
 		// should the service turn the Agent away.
@@ -395,7 +422,7 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
 		return
 	}
-	p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)})
+	p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)}, nil)
 }
 
 func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host string, port int) {
@@ -463,7 +490,10 @@ func (p *httpProxy) watchUnboundTunnel(ctx context.Context, client, upstream net
 	}
 }
 
-func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host string, port int, authentication tunnelAuthentication) {
+// mitmConnect answers a CONNECT with the proxy's certificate and serves the
+// tunnel's requests. handshake, when set, learns whether the client completed
+// TLS with that certificate.
+func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host string, port int, authentication tunnelAuthentication, handshake func(bool)) {
 	certificate, err := p.ca.CertificateForHost(host)
 	if err != nil {
 		writeProxyError(w, &requestFailure{status: http.StatusBadGateway, code: "certificate_generation_failed", message: "The proxy could not establish a protected tunnel."})
@@ -492,7 +522,13 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 	}
 	tlsClient := tls.Server(client, &tls.Config{Certificates: []tls.Certificate{*certificate}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
 	if err := tlsClient.HandshakeContext(tunnelContext); err != nil {
+		if handshake != nil && tunnelContext.Err() == nil && refusedCertificate(err) {
+			handshake(false)
+		}
 		return
+	}
+	if handshake != nil {
+		handshake(true)
 	}
 	reader := bufio.NewReader(tlsClient)
 	for {
@@ -608,7 +644,13 @@ func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clien
 	defer request.Body.Close()
 	defer result.response.Body.Close()
 	upstream, writable := result.response.Body.(io.ReadWriteCloser)
-	if !validWebSocketResponse(request, result.response) || !writable || p.state.validateProtocolBinding(result.snapshot) != nil {
+	// A WebSocket no Connection covers runs on a host read for leak
+	// protection; it lives as long as the session does.
+	check := func() error { return p.state.validateProtocolBinding(result.snapshot) }
+	if result.snapshot.binding == nil {
+		check = p.state.availability
+	}
+	if !validWebSocketResponse(request, result.response) || !writable || check() != nil {
 		failure := &requestFailure{status: http.StatusBadGateway, code: "invalid_websocket_upgrade", message: "The upstream WebSocket handshake was invalid.", decision: "error", reason: "upstream_error"}
 		if result.snapshot.binding != nil {
 			failure.binding = result.snapshot.binding
@@ -633,16 +675,33 @@ func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clien
 	}
 	stop := make(chan struct{})
 	defer close(stop)
-	go p.watchWebSocket(ctx, client, upstream, result.snapshot, stop)
+	go p.watchWebSocket(ctx, client, upstream, check, stop)
+	host, port, _ := requestAuthority(request)
+	if match := p.leak.inspects(host, port); match.inspectsPath(request.URL.Path) {
+		p.relayInspectedWebSocket(clientReader, client, upstream, request, host, port, match)
+		return
+	}
 	copyBidirectional(&bufferedReadWriteCloser{Reader: clientReader, Writer: client, Closer: client}, upstream)
 }
 
-func (p *httpProxy) watchWebSocket(ctx context.Context, client, upstream io.Closer, snapshot protocolBindingSnapshot, stop <-chan struct{}) {
+// relayInspectedWebSocket copies the server's frames back untouched and reads
+// the client's on the way out. Whichever side ends first ends both.
+func (p *httpProxy) relayInspectedWebSocket(clientReader *bufio.Reader, client *tls.Conn, upstream io.ReadWriteCloser, request *http.Request, host string, port int, match *leakHostMatch) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { p.pumpLeakFrames(clientReader, upstream, request, host, port, match); done <- struct{}{} }()
+	<-done
+	_ = client.Close()
+	_ = upstream.Close()
+	<-done
+}
+
+func (p *httpProxy) watchWebSocket(ctx context.Context, client, upstream io.Closer, check func() error, stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		changed := p.state.changeSignal()
-		if p.state.validateProtocolBinding(snapshot) != nil {
+		if check() != nil {
 			_ = client.Close()
 			_ = upstream.Close()
 			return

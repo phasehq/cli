@@ -56,6 +56,10 @@ func runDynamicSecretsLeaseGenerate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := protectLeaseCredentials(cmd.Context(), result); err != nil {
+		return err
+	}
+
 	var formatted json.RawMessage
 	if err := json.Unmarshal(result, &formatted); err != nil {
 		fmt.Println(string(result))

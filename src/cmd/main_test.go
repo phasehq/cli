@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/pkg/ai"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	gokeyring "github.com/zalando/go-keyring"
@@ -22,6 +23,9 @@ func TestMain(m *testing.M) {
 	// The stale-skill notice reads the home directory's skill paths; only its
 	// own tests, which set a temporary HOME, may run it.
 	staleSkillCheck = func() []ai.StaleSkill { return nil }
+	// Leak protection registers with the proxy named in the environment; a
+	// test that wants a session sets one of its own.
+	leakguard.Environment = func(string) string { return "" }
 	code := m.Run()
 	_ = os.RemoveAll(directory)
 	os.Exit(code)

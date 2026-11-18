@@ -11,6 +11,18 @@
 
 Every proxied request and every proxy refusal carries an `X-Phase-Event-Id` response header (AWS-shaped errors repeat it as `RequestId`). It holds no credential material. Quote it when reporting a Phase problem so the human can find the event in the Console. The proxy swaps credentials in requests and never rewrites responses, so identities in provider output are real; the one exception is the secret guard (`phase ai guide access-rules`).
 
+## Leak protection
+
+The proxy reads what AI tools send to their model providers and replaces secret values Phase handed out with `ph:<type>:<id>` placeholders. `phase ai status` shows the mode on its `Leaks:` line. The human sets it with `PHASE_AI_LEAK_PROTECTION` where the proxy starts:
+
+- `censor` (the default): values are replaced; a value in a URL or a binary body cannot be replaced, so that request is refused with `secret_in_request`. A value in a header is reported and the request goes out, and text the provider signed (thinking blocks) is never changed.
+- `observe`: values are found and reported to the Console, nothing is changed.
+- `off`: model traffic is not read.
+
+A host listed as not inspected is a model host whose traffic Phase does not read: its client refuses the proxy's certificate or its service refuses re-sent requests (Cursor, OpenCode's hosted models), or its client refused the proxy's certificate twice in a row and is passed through for a while. Secrets sent there reach the provider. Never change the mode, or the proxy settings, to get past a placeholder.
+
+Only a client that refuses the certificate with a TLS alert opens that pass-through window. A client that drops the connection without saying why keeps failing on that host; the human can set `PHASE_AI_LEAK_PROTECTION=off` where the proxy starts and restart the session to let it through unread.
+
 ## When Phase is unavailable
 
 Failure to reach `phase.invalid` blocks only the requested Phase operation. Bash, Git, GitHub CLI, provider clients, builds, tests, and other ambient tools remain available. Do not recommend disabling Phase, rerunning `phase ai enable`, or restarting the harness because discovery is unavailable.
