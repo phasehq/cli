@@ -2,10 +2,16 @@ package censor
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/url"
 	"runtime"
 	"strconv"
@@ -831,5 +837,86 @@ func TestNumbersThatLookLikeKeyMaterialAreListed(t *testing.T) {
 		if _, err := ParseEntries(encoded); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// fakeCertificate and fakeOtherKey are made with an Ed25519 key. The keys of
+// fakePEM are on a NIST curve, and everything on one spells the same dozen
+// bytes for its algorithm: a certificate on such a curve holds a chunk of every
+// such key about one time in three, which is not what these tests are about.
+func fakeCertificate(t testing.TB) string {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "kubernetes"}, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+func fakeOtherKey(t testing.TB) string {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+}
+
+// A certificate is public, and every certificate begins and ends as the next
+// does. One that is a leaf of a document is left out of the index, as text or
+// in base64, so registering a kubeconfig does not have every other certificate
+// replaced. A private key that comes with one keeps it in.
+func TestACertificateLeafIsPublic(t *testing.T) {
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificatePEM, keyPEM := fakeCertificate(t), fakePEM(t)
+	encoded := base64.StdEncoding.EncodeToString([]byte(certificatePEM))
+	bundle := certificatePEM + keyPEM
+	for value, want := range map[string]bool{
+		certificatePEM:                      true,
+		strings.TrimSpace(certificatePEM):   true,
+		certificatePEM + fakeCertificate(t): true,
+		encoded:                             true,
+		strings.TrimRight(encoded, "="):     true,
+		bundle:                              false,
+		base64.StdEncoding.EncodeToString([]byte(bundle)): false,
+		keyPEM: false,
+		"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS and then words": false,
+		"about -----BEGIN CERTIFICATE----- lines":       false,
+	} {
+		if certificate(value) != want {
+			t.Errorf("certificate(%.40q...) is %v", value, !want)
+		}
+	}
+	document, _ := json.Marshal(map[string]string{"ca": certificatePEM, "ca_data": encoded, "key": keyPEM, "key_data": base64.StdEncoding.EncodeToString([]byte(keyPEM))})
+	ix, entries := buildWithEntries(t, newKey(t), secret{ID: "tls", Value: string(document)})
+	if got := entries["tls"].Unprotected; len(got) != 2 || got[0] != (Unprotected{Part: "leaf:0", Reason: ReasonPublicLeaf}) || got[1] != (Unprotected{Part: "leaf:1", Reason: ReasonPublicLeaf}) {
+		t.Errorf("unprotected: %+v", got)
+	}
+	// Other certificates are left alone, and so is a key of another kind: the
+	// armour of the registered key, as text and in base64, is structure.
+	another := "tls.crt: " + base64.StdEncoding.EncodeToString([]byte(fakeCertificate(t))) + "\nca.crt: |\n" + fakeCertificate(t) +
+		"tls.key: " + base64.StdEncoding.EncodeToString([]byte(fakeOtherKey(t))) + "\nssh.key: |\n" + fakeOtherKey(t)
+	if out, report := ix.RedactWith([]byte(another), ScanOptions{Rules: only}); string(out) != another || report.Inventory != 0 {
+		t.Errorf("other certificates and keys were changed:\n%s", out)
+	}
+	if out, report := ix.RedactWith([]byte("tls.key: "+base64.StdEncoding.EncodeToString([]byte(keyPEM))+"\n"), ScanOptions{Rules: only}); string(out) != "tls.key: ph:secret:tls\n" || report.Inventory != 1 {
+		t.Errorf("the key in base64 was left:\n%s", out)
+	}
+	body := strings.Split(strings.TrimSpace(keyPEM), "\n")
+	if out, report := ix.RedactWith([]byte(keyPEM), ScanOptions{Rules: only}); report.Inventory == 0 || bytes.Contains(out, []byte(body[1])) || bytes.Contains(out, []byte(body[2])) {
+		t.Errorf("the key next to the certificates was left:\n%s", out)
 	}
 }

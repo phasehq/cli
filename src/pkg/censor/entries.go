@@ -40,7 +40,7 @@ const (
 	ReasonLowEntropy  = "too little entropy to protect"
 	ReasonTooLong     = "too long to protect"
 	ReasonShortLeaf   = "too short for a leaf"
-	ReasonPublicLeaf  = "looks public (a URL or an email address)"
+	ReasonPublicLeaf  = "looks public (a URL, an email address or a certificate)"
 	ReasonNumbers     = "numbers, which are not indexed next to strings"
 	partURLPassword   = "url-password"
 	partLeafPrefix    = "leaf:"

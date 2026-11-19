@@ -134,8 +134,8 @@ func jsonEscapeHTML(value string) string {
 var structuralPrefix = regexp.MustCompile(`^(?:[a-z]+[_:-]){1,4}(?:v\d+[_:-])?`)
 
 // weakMask marks the bytes of a value that are structure rather than secret: a
-// token's type prefix, PEM armour lines, and all of a URL but its password. It is
-// nil when there is none.
+// token's type prefix, PEM armour lines, as text or in base64, and all of a URL
+// but its password. It is nil when there is none.
 func weakMask(value string) []bool {
 	mask := make([]bool, len(value))
 	marked := false
@@ -160,6 +160,29 @@ func weakMask(value string) []bool {
 			mark(offset, offset+len(line))
 		}
 		offset += len(line)
+	}
+	// The base64 of a PEM block, as a kubeconfig holds a key: the characters
+	// that spell its armour lines are in the base64 of every such block.
+	if strings.HasPrefix(value, "LS0tLS1CRUdJTi") {
+		if decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(value, "=")); err == nil {
+			offset = 0
+			for _, line := range strings.SplitAfter(string(decoded), "\n") {
+				if strings.HasPrefix(line, "-----") {
+					// From the first character made of the bits of the line and
+					// the break before it alone, to the last, or to the padding
+					// when the line ends the block.
+					from, to := offset, (offset+len(line))*8/6
+					for from > 0 && (decoded[from-1] == '\n' || decoded[from-1] == '\r') {
+						from--
+					}
+					if offset+len(line) == len(decoded) {
+						to = len(value)
+					}
+					mark((from*8+5)/6, to)
+				}
+				offset += len(line)
+			}
+		}
 	}
 	if from, to, ok := credentialSpan(value); ok {
 		mark(0, from)
@@ -390,10 +413,30 @@ func keyNumbers(value string) int {
 	return count
 }
 
-// looksPublic keeps a key file's URLs and identity out of the index: redacting them
-// would hide ordinary text without protecting anything. A URL with a password in
-// it, or a token for its user, is a credential.
+// certificate reports a PEM certificate, or several, with no private key among
+// them: as text, or in base64 as a kubeconfig holds one. A certificate is
+// public, and every one begins and ends as the next does, so one in the index
+// would be found in all the others.
+func certificate(value string) bool {
+	text := value
+	// "-----BEGIN CERTIFICATE" in base64.
+	if strings.HasPrefix(value, "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS") {
+		decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(value, "="))
+		if err != nil {
+			return false
+		}
+		text = string(decoded)
+	}
+	return strings.HasPrefix(text, "-----BEGIN CERTIFICATE-----") && !strings.Contains(text, "PRIVATE KEY")
+}
+
+// looksPublic keeps a key file's URLs, identity and certificates out of the
+// index: redacting them would hide ordinary text without protecting anything.
+// A URL with a password in it, or a token for its user, is a credential.
 func looksPublic(value string) bool {
+	if certificate(value) {
+		return true
+	}
 	if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
 		return !strings.ContainsAny(value, " \n") && urlCredential(value) == ""
 	}
