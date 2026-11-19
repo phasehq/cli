@@ -13,6 +13,11 @@ func TestInventoryIdentityHasOneFormPerTenant(t *testing.T) {
 	if !want.Known() || want.Tenant != "https://console.phase.dev\norganisation\n"+organisation || want.Login != "https://console.phase.dev\nuser\n"+account {
 		t.Fatalf("the canonical form: %q %q", want.Tenant, want.Login)
 	}
+	// The kinds are a session's principal types, letter for letter: a proxy
+	// takes its own from its session, and a command's has to be the same.
+	if InventoryLoginUser != "user" || InventoryLoginAgent != "agent" || InventoryLoginServiceAccount != "service_account" {
+		t.Fatalf("the kinds of login: %q %q %q", InventoryLoginUser, InventoryLoginAgent, InventoryLoginServiceAccount)
+	}
 	for _, host := range []string{
 		"https://console.phase.dev:443/", "HTTPS://Console.Phase.dev", "https://console.phase.dev/", " https://console.phase.dev ",
 		"https://console.phase.dev./", "https://CONSOLE.PHASE.DEV:443", "https://console.phase.dev/service/public", "https://console.phase.dev/service/public/v1/agents/",

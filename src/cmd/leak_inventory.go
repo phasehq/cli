@@ -104,10 +104,10 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 }
 
 // leakUnstoredSummary says how often a command that is not of the session's
-// organisation registered with this proxy: values it never stores.
+// own login registered with this proxy: values it never stores.
 func leakUnstoredSummary(inventory remoteapi.LeakInventoryStatus) string {
 	if inventory.Unstored == 0 {
 		return ""
 	}
-	return fmt.Sprintf(", %d registrations from commands of another organisation, or of no login they could state, protected until this proxy exits", inventory.Unstored)
+	return fmt.Sprintf(", %d registrations from commands of another login, or of none they could state, protected until this proxy exits", inventory.Unstored)
 }

@@ -506,8 +506,8 @@ func proxyKey(ctx context.Context, client *http.Client, current string, identity
 	if err != nil {
 		return handedKey{}, errors.New("the Phase AI proxy sent an invalid key")
 	}
-	// The confirming key is this login's own. A proxy that reads scheme 1
-	// only sends the one key, which is all that scheme uses.
+	// The confirming key is this command's: its login's own at that login's
+	// proxy, a guest's at any other. Scheme 1 sends one key, all it uses.
 	var key *censor.Key
 	if answer.ConfirmKey == "" {
 		key, err = censor.LookupKeyFromBytes(lookup)

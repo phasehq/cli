@@ -9,19 +9,8 @@ import (
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
-// The inventory outlives the proxy process when there is a system keystore:
-// the master key is kept there and the entries in a file beside the CA
-// (phaseproxy.InventoryStore). A proxy loads what the file holds when it
-// starts, so a conversation resumed after the hook-managed proxy's idle
-// exit, an upgrade or a reboot still has its values replaced, and it adds
-// what is registered with it. Every proxy of one user shares the store.
-//
-// A proxy matches what every login of its tenant stored, each record under
-// its own principal's key, and hands a command the confirming key of the
-// login that command states: see leakGuard.place for who is stored where.
-//
-// Entries are loaded as a registration's are taken: through the index's own
-// validation, so nothing in the file is trusted further than a client is.
+// A proxy loads what its tenant's logins stored (phaseproxy.InventoryStore),
+// through the index's own validation, and stores what its own login registers.
 
 // newStoredLeakGuard makes the guard over a store, opened for the tenant of
 // the session the Console named. With no store or identity nothing is kept.

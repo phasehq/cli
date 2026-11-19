@@ -10,7 +10,7 @@ import (
 	"github.com/phasehq/cli/internal/agentapi"
 )
 
-// The kinds of login an inventory tells apart: the Console's.
+// The kinds of login an inventory tells apart: a session's principal types.
 const (
 	InventoryLoginUser           = agentapi.IdentityUser
 	InventoryLoginServiceAccount = agentapi.IdentityServiceAccount
@@ -24,7 +24,8 @@ const (
 type InventoryIdentity struct {
 	// Tenant is "<origin>\norganisation\n<organisation id>".
 	Tenant string
-	// Login is "<origin>\n<kind>\n<account or Agent id>".
+	// Login is "<origin>\n<kind>\n<id>": the Agent's id, a service account's,
+	// or for a user the organisation member's, as a session's principal has it.
 	Login string
 }
 

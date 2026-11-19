@@ -6,80 +6,65 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func identityToken(prefix string) string {
 	return prefix + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
 }
 
-// The Console says who a token is on one route per kind of token, and the
-// client reads the organisation and the Agent's or account's id, nothing else.
-func TestTokenIdentityIsTheConsolesAnswerForTheTokensKind(t *testing.T) {
-	var paths, authorizations []string
-	account := `{"user_id":"user-1","account_id":"service-account-1","organisation":{"id":"org-1","name":"an organisation"},"wrapped_key_share":"a-key-share","apps":[{"id":"an-app"}]}`
+// The session the Console opens says whose it is, and so does its config.
+// The client asks no other route for it, and an older Console's says nothing.
+func TestSessionPayloadNamesItsOrganisationAndPrincipal(t *testing.T) {
+	var paths []string
+	identity := `,"organisation":{"id":"org-1"},"principal":{"type":"user","id":"member-1"}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths, authorizations = append(paths, r.Method+" "+r.URL.Path), append(authorizations, r.Header.Get("Authorization"))
-		switch r.URL.Path {
-		case "/service/secrets/tokens/":
-			_, _ = w.Write([]byte(account))
-		case "/service/public/v1/agents/identity/":
-			_, _ = w.Write([]byte(`{"schemaVersion":1,"principalType":"agent","agent":{"id":"agent-1","name":"an Agent"},"workflow":{"id":"w-1","name":"a Workflow"},"organization":{"id":"org-1","name":"an organisation"}}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		body := `{"schemaVersion":1,"sessionUid":"session-1","expiresAt":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `","configGeneration":1,"configEnv":{},"connections":[]` + identity
+		if r.Method == http.MethodPost {
+			body += `,"sessionCredential":"a-session-capability"`
 		}
+		_, _ = w.Write([]byte(body + "}"))
 	}))
 	defer server.Close()
-	for name, c := range map[string]struct {
-		token, path, authorization string
-		want                       TokenIdentity
-	}{
-		"a user's":            {identityToken("pss_user:v1:"), "GET /service/secrets/tokens/", "Bearer User ", TokenIdentity{"org-1", IdentityUser, "user-1"}},
-		"a service account's": {identityToken("pss_service:v2:"), "GET /service/secrets/tokens/", "Bearer ServiceAccount ", TokenIdentity{"org-1", IdentityServiceAccount, "service-account-1"}},
-		"an Agent's":          {identityToken("pss_agent:v1:"), "GET /service/public/v1/agents/identity/", "Bearer Agent ", TokenIdentity{"org-1", IdentityAgent, "agent-1"}},
-	} {
-		// However the host was given, the routes are the same host's.
-		for _, host := range []string{server.URL, server.URL + "/", server.URL + "/service/public", server.URL + "/service/public/v1/agents"} {
-			paths, authorizations = nil, nil
-			client, err := NewClient(host, c.token, server.Client())
-			if err != nil {
-				t.Fatalf("%s at %s: %v", name, host, err)
-			}
-			got, err := client.TokenIdentity(context.Background())
-			if err != nil || *got != c.want {
-				t.Fatalf("%s at %s: %+v %v", name, host, got, err)
-			}
-			if len(paths) != 1 || paths[0] != c.path || !strings.HasPrefix(authorizations[0], c.authorization) {
-				t.Fatalf("%s at %s asked %v", name, host, paths)
-			}
-			if client.Host() != server.URL {
-				t.Fatalf("%s at %s: the client's host is %q", name, host, client.Host())
-			}
+	for _, named := range []bool{true, false} {
+		if !named {
+			identity = ""
 		}
-	}
-	// An answer that names no organisation or no account of the token's kind
-	// is no identity: nothing is filled in from the other fields.
-	for name, answer := range map[string]string{
-		"no organisation":            `{"user_id":"user-1"}`,
-		"an empty organisation":      `{"user_id":"user-1","organisation":{"id":""}}`,
-		"another kind's id":          `{"account_id":"service-account-1","organisation":{"id":"org-1"}}`,
-		"an empty answer":            `{}`,
-		"an answer that is not JSON": `<html>`,
-	} {
-		account = answer
-		client, err := NewClient(server.URL, identityToken("pss_user:v1:"), server.Client())
+		paths = nil
+		// However the host was given, the client's host is the same one.
+		client, err := NewClient(server.URL+"/service/public", identityToken("pss_user:v1:"), server.Client())
+		if err != nil || client.Host() != server.URL {
+			t.Fatalf("the client's host is %q: %v", client.Host(), err)
+		}
+		opened, err := client.OpenSession(context.Background(), OpenSessionRequest{WorkflowID: "workflow-1"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, err := client.TokenIdentity(context.Background()); err == nil {
-			t.Fatalf("%s gave an identity: %+v", name, got)
+		config, err := client.RefreshSession(context.Background(), opened.SessionUID, opened.SessionCredential)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for where, session := range map[string]SessionConfig{"open": opened.SessionConfig, "config": *config} {
+			if !named {
+				if session.Organisation != nil || session.Principal != nil {
+					t.Fatalf("%s: an older Console's session was given an identity", where)
+				}
+				continue
+			}
+			if session.Organisation == nil || session.Organisation.ID != "org-1" || session.Principal == nil || *session.Principal != (SessionPrincipal{Type: IdentityUser, ID: "member-1"}) {
+				t.Fatalf("%s: %+v %+v", where, session.Organisation, session.Principal)
+			}
+		}
+		if len(paths) != 2 || paths[0] != "POST /service/public/v1/agents/sessions/" || paths[1] != "GET /service/public/v1/agents/sessions/session-1/config/" {
+			t.Fatalf("the client asked %v", paths)
 		}
 	}
-	legacy, err := NewClient(server.URL, identityToken("pss_service:v1:"), server.Client())
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths = nil
-	if got, err := legacy.TokenIdentity(context.Background()); err == nil || len(paths) != 0 {
-		t.Fatalf("a legacy service token gave an identity: %+v, after asking %v", got, paths)
+	// The kinds are a session's principal types, by the token's own kind.
+	for prefix, kind := range map[string]string{"pss_user:v1:": "user", "pss_agent:v1:": "agent", "pss_service:v2:": "service_account", "pss_service:v1:": ""} {
+		client, err := NewClient(server.URL, identityToken(prefix), server.Client())
+		if err != nil || client.TokenType().IdentityKind() != kind {
+			t.Fatalf("a %s token is a %q: %v", prefix, client.TokenType().IdentityKind(), err)
+		}
 	}
 }

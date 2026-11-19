@@ -10,7 +10,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/phasehq/cli/internal/agentapi"
+	"github.com/phasehq/cli/internal/airuntime"
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
@@ -197,5 +200,104 @@ func TestLoginIdentityOfASavedAgentLogin(t *testing.T) {
 	agent := config.UserConfig{Host: "https://console.test", ID: "agent-local", PrincipalType: config.PrincipalAgent, PrincipalID: "agent-9", OrganizationID: &organisation}
 	if got := SavedLoginIdentity(agent.Host, phaseproxy.InventoryLoginUser, agent); got.Known() {
 		t.Fatalf("an Agent's record with a user's token: %q", got.Login)
+	}
+}
+
+// memoryKeystore stands in for the system keystore a proxy keeps its CA key in.
+type memoryKeystore map[string]string
+
+func (m memoryKeystore) Get(service, user string) (string, error) {
+	value, ok := m[service+"/"+user]
+	if !ok {
+		return "", gokeyring.ErrNotFound
+	}
+	return value, nil
+}
+
+func (m memoryKeystore) Set(service, user, value string) error {
+	m[service+"/"+user] = value
+	return nil
+}
+
+// identityEngine keeps the identity of the session a runtime hands it.
+type identityEngine struct{ served *phaseproxy.InventoryIdentity }
+
+func (identityEngine) Ready() error { return nil }
+func (identityEngine) Capabilities() airuntime.EngineCapabilities {
+	return airuntime.EngineCapabilities{Protocols: []string{"http"}, InjectionActions: []string{"set_header"}}
+}
+func (e identityEngine) Serve(_ context.Context, session *airuntime.ProxySession) error {
+	*e.served = session.Identity
+	return nil
+}
+func (identityEngine) Run(context.Context, *airuntime.ProxySession, []string) error { return nil }
+
+// One login is the same to a command and to the proxy of a session it opens,
+// or the command would be a guest of its own proxy and nothing would be stored.
+func TestACommandAndItsProxySayTheSameOfOneLogin(t *testing.T) {
+	// The Console's ids: a user token's user_id, on the route a login is saved
+	// from, is its organisation member's id, and so is its session's principal.
+	const organisation, member, agent = "0b5e7c1a-1111-4222-8333-444455556666", "9f1c2d3e-aaaa-4bbb-8ccc-ddddeeeeffff", "5d2a9c47-0000-4abc-8def-123456789abc"
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		kind, _, _ := strings.Cut(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), " ")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions/"):
+			principal := `{"type":"user","id":"` + member + `"}`
+			if kind == "Agent" {
+				principal = `{"type":"agent","id":"` + agent + `"}`
+			}
+			_, _ = w.Write([]byte(`{"schemaVersion":1,"sessionUid":"a-session","sessionCredential":"a-session-capability","expiresAt":"` +
+				time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `","configGeneration":1,"configEnv":{},"connections":[],"organisation":{"id":"` + organisation + `"},"principal":` + principal + `}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/revoke/"):
+			_, _ = w.Write([]byte(`{"schemaVersion":1,"sessionUid":"a-session","revokedAt":"` + time.Now().UTC().Format(time.RFC3339) + `"}`))
+		case r.URL.Path == "/service/secrets/tokens/":
+			_, _ = w.Write([]byte(`{"user_id":"` + member + `","organisation":{"id":"` + organisation + `","name":"an organisation"},"apps":[]}`))
+		case r.URL.Path == "/service/public/v1/agents/identity/":
+			_, _ = w.Write([]byte(`{"schemaVersion":1,"principalType":"agent","agent":{"id":"` + agent + `","name":"an Agent"},"workflow":{"id":"w","name":"a Workflow"},"organization":{"id":"` + organisation + `","name":"an organisation"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"schemaVersion":1,"apps":[],"expired":[]}`))
+		}
+	}))
+	t.Cleanup(console.Close)
+	org := organisation
+	for name, c := range map[string]struct {
+		token, workflow, kind, id string
+		// saved is the login's record as phase auth writes it, nil for a
+		// token from the environment.
+		saved *config.UserConfig
+	}{
+		"a saved user login":                    {testToken("pss_user:"), "workflow-1", "user", member, &config.UserConfig{ID: member, OrganizationID: &org}},
+		"a user's token from the environment":   {testToken("pss_user:"), "workflow-1", "user", member, nil},
+		"a saved Agent login":                   {testToken("pss_agent:"), "", "agent", agent, &config.UserConfig{ID: "agent-local", PrincipalType: config.PrincipalAgent, PrincipalID: agent, OrganizationID: &org}},
+		"an Agent's token from the environment": {testToken("pss_agent:"), "", "agent", agent, nil},
+	} {
+		if c.saved != nil {
+			c.saved.Host, c.saved.Token = console.URL, c.token
+			isolateLogins(t, *c.saved)
+		} else {
+			isolateLogins(t)
+			t.Setenv("PHASE_SERVICE_TOKEN", c.token)
+			t.Setenv("PHASE_HOST", console.URL)
+		}
+		if _, err := NewBackend(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		command := LoginIdentity(context.Background())
+		client, err := agentapi.NewClient(console.URL, c.token, console.Client())
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var proxy phaseproxy.InventoryIdentity
+		runtime := &airuntime.Runtime{Client: client, WorkflowID: c.workflow, CAStore: phaseproxy.CAStore{Directory: t.TempDir(), Keyring: memoryKeystore{}}}
+		if err := runtime.ServeManaged(context.Background(), identityEngine{&proxy}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		want := phaseproxy.InventoryIdentity{
+			Tenant: console.URL + "\norganisation\n" + organisation, Login: console.URL + "\n" + c.kind + "\n" + c.id,
+		}
+		if command != want || proxy != want || !command.Is(proxy) {
+			t.Fatalf("%s: the command says %q of %q and its proxy %q of %q", name, command.Login, command.Tenant, proxy.Login, proxy.Tenant)
+		}
 	}
 }

@@ -26,56 +26,16 @@ import (
 	"github.com/phasehq/cli/pkg/censor"
 )
 
-// The leak protection inventory is kept in two places, so that a proxy that
-// starts again still knows the values registered with the one before it:
+// The leak protection inventory: one master key in the system keystore and one
+// owner-only file of sealed records (see internal/aiproxy/CONTROL_API.md).
 //
-//   - one master key, in the system keystore beside the CA key, one per
-//     user, made on first use, never written to disk and never handed out;
-//   - the entries, in one owner-only file in the Phase AI directory.
+// Store format 1, integers big-endian. A head is sealed under the file key and
+// a body under its tenant's key, each bound to what precedes it:
 //
-// Everything is partitioned by tenant: the Phase host and the organisation a
-// login belongs to (InventoryIdentity). From the master a proxy derives its
-// own tenant's root and nothing of another's (HKDF-SHA-256), and from that
-// root, a label each: the lookup key, which the tenant's clients are handed;
-// a confirming key per principal (a login, named by a keyed tag of it), which
-// that login's clients are handed; and the keys records are sealed and tagged
-// with, which no one is. One more key comes from the master itself: the file
-// key, which seals each record's head and is every proxy's of this user.
-//
-// The file holds what censor.Entries hold (keyed hashes, lengths, weak flags,
-// a placeholder's type and id), whether an id is a key name and the record's
-// principal, each record sealed under its tenant's key. A proxy opens its own
-// tenant's records only: another's are kept as they are and counted.
-// What each party can test a guess against is in the Limits of package censor.
-//
-// File layout, store format 1 (integers big-endian):
-//
-//	magic "PHLKINV1" | format uint32 | key id [8]
-//	then records: length uint32 | nonce [12] | sealed head | nonce [12] | sealed body
-//	head: scheme uint32 | registered int64 (Unix seconds)
-//	      | tenant tag [16] | login tag [16] | content tag [16]
-//
-// The head is sealed under the file key (AES-256-GCM, the file header as
-// additional data), so the file in the clear shows how many records it holds
-// and how long each is, and not whose a record is, of which login, or when
-// it was registered. The body is one flag byte (1: the id is a key name), the
-// principal's id [16] and the entries as censor.Entries.Marshal writes them,
-// sealed under the tenant's key with the file header and the head as
-// additional data. The tags are keyed: the login tag is the same for every
-// record of one login of one tenant, and the content tag for the same
-// entries of the same principal.
-//
-// Two numbers version what is stored. The store format is the layout above:
-// a build reads every format up to its own, and leaves a file of a newer
-// format alone, running from memory. The scheme of a record is the matching
-// scheme of its entries (censor.EntriesVersion): a record whose scheme this
-// build does not match is kept as it is, for the build that does, and
-// counted. No record replaces another's (a placeholder may name several
-// values): one goes after 30 days unregistered, or when its own login
-// stores past a bound (see inventoryBounds). Scheme 1 is never stored.
-//
-// A file or a key that exists and cannot be read is never written over: the
-// proxy runs from memory and says why. Only "there is none" makes either.
+//	magic "PHLKINV1" | format uint32 | key id [8], then for each record
+//	length uint32 | nonce [12] | sealed head | nonce [12] | sealed body
+//	head: scheme uint32 | registered int64 | tenant, login, content tag [16] each
+//	body: flag byte (1: the id is a key name) | principal id [16] | entries
 const (
 	// InventoryStoreFormat is the store format this build writes.
 	InventoryStoreFormat = 1
@@ -124,9 +84,6 @@ const (
 	// maxInventoryRecordBytes bounds one record: a registration is at most
 	// 4 MiB on the wire.
 	maxInventoryRecordBytes = 8 << 20
-	// maxInventoryPrincipals bounds the logins one proxy makes a principal
-	// for as clients state them. A stored record's principal needs no room.
-	maxInventoryPrincipals = 128
 )
 
 // storeBound is a number of records and their bytes.
@@ -350,27 +307,17 @@ func MemoryInventory() (*Inventory, error) {
 	return memoryInventory(InventoryReasonNotConfigured)
 }
 
-// errInventoryLogins is a proxy asked to make a principal for more logins
-// than it has room for.
-var errInventoryLogins = errors.New("the leak protection inventory holds too many logins")
-
 // Principal is a login's place in the inventory, the same from every proxy
-// while the master lasts. An empty login gets one this process alone holds.
+// while the master lasts: a proxy makes its own session's, and no client's.
 func (inv *Inventory) Principal(login string) (InventoryPrincipal, error) {
 	var id [inventoryTagSize]byte
 	if login == "" {
+		// An empty login gets one this process alone holds.
 		if _, err := rand.Read(id[:]); err != nil {
 			return InventoryPrincipal{}, err
 		}
 	} else {
 		id = inv.tag("principal", []byte(login))
-	}
-	inv.principalMu.Lock()
-	_, known := inv.principals[id]
-	full := len(inv.principals) >= maxInventoryPrincipals
-	inv.principalMu.Unlock()
-	if !known && full {
-		return InventoryPrincipal{}, errInventoryLogins
 	}
 	return inv.principal(id)
 }

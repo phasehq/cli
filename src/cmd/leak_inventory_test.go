@@ -217,11 +217,11 @@ func TestLeakProtectionSummarySaysHowTheInventoryIsKept(t *testing.T) {
 		},
 		"commands of another account": {
 			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 2, Unstored: 3},
-			"; inventory kept across restarts (2 loaded at start), 3 registrations from commands of another organisation, or of no login they could state, protected until this proxy exits",
+			"; inventory kept across restarts (2 loaded at start), 3 registrations from commands of another login, or of none they could state, protected until this proxy exits",
 		},
 		"a session the Console did not name": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "no_tenant", Unstored: 1},
-			"; inventory kept in memory only (the Console did not say which organisation and login this session is), 1 registrations from commands of another organisation, or of no login they could state, protected until this proxy exits",
+			"; inventory kept in memory only (the Console did not say which organisation and login this session is), 1 registrations from commands of another login, or of none they could state, protected until this proxy exits",
 		},
 		"no store": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "not_configured"},

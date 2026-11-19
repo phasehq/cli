@@ -83,15 +83,15 @@ type InventoryKeyRequest struct {
 // values with. Format is the version of the entries the proxy reads.
 type InventoryKeyResponse struct {
 	SchemaVersion int `json:"schemaVersion"`
-	// Key is the lookup key: the proxy's tenant's for a command of that
-	// tenant, and one of this proxy process alone for any other.
+	// Key is the lookup key: the proxy's tenant's for a command that states
+	// the proxy's own login, and one of this proxy process alone for any other.
 	Key string `json:"key"`
-	// ConfirmKey is the confirming key of the login the command stated, and
-	// of no other. A proxy that reads scheme 1 only sends none.
+	// ConfirmKey is the proxy's own login's confirming key for such a command,
+	// and a guest's of this process for any other. Scheme 1 alone sends none.
 	ConfirmKey string `json:"confirmKey,omitempty"`
 	Format     int    `json:"format"`
-	// KeyID names the two keys without giving either: a registration sends
-	// it back, so entries made under keys the proxy no longer uses are refused.
+	// KeyID names the two keys without giving either, and for a command that
+	// stated no identity its key request: a registration sends it back.
 	KeyID string `json:"keyId,omitempty"`
 }
 
@@ -190,8 +190,8 @@ type LeakInventoryStatus struct {
 	// OtherTenants counts stored records of other hosts or organisations.
 	// They are never opened or matched: this is all a session learns of them.
 	OtherTenants int `json:"otherTenants,omitempty"`
-	// Unstored counts registrations from commands of another tenant or of
-	// none stated: kept until the proxy exits, counted whatever they held.
+	// Unstored counts registrations from commands that are not of the proxy's
+	// own login: kept until the proxy exits, counted whatever they held.
 	Unstored int `json:"unstored,omitempty"`
 	// Damaged counts stored entries that could not be read.
 	Damaged int `json:"damaged,omitempty"`

@@ -157,17 +157,24 @@ The entries carry keyed hashes and lengths, never a value.
 The proxy it finds may be running as another login: a daemon started before
 `phase users switch`, or a command with another account's token in its
 environment. So nothing is decided by the proxy's login alone. The proxy
-knows who its own session is from the Console, the command says who it is,
-and where a registration goes follows from the two:
+knows who its own session is from the session the Console opened for it, the
+command says who it is, and where a registration goes follows from the two:
 
-| The command states | The proxy does |
-|---|---|
-| the proxy's tenant and login | Stores the values under that login and writes them as `ph:<type>:<id>`. |
-| the proxy's tenant, another login | Stores the values under that other login, and writes them as `ph:<type>` with no id, in the request and in events: the id may be one the session's login cannot see. A proxy that later runs as that login writes the id. |
-| another tenant, nothing, or anything that is not a well-formed identity | Protects the values for the life of this proxy process only, in memory, as `ph:<type>` with no id. Nothing is stored, for the proxy's tenant or for the command's, and nothing is counted but the registration itself (`unstored`). |
+| The command states | It is handed | The proxy does |
+|---|---|---|
+| the proxy's tenant and the proxy's login | The stored keys of that login: the tenant's lookup key and the login's confirming key. | Stores the values under that login and writes them as `ph:<type>:<id>`. |
+| anything else: another login of the proxy's tenant, another tenant, nothing, or anything that is not a well-formed identity | Keys of this proxy process alone, with nothing of the store in them. | A guest: protects the values for the life of this proxy process only, in memory, as `ph:<type>` with no id, in the request and in events. Nothing is stored, for the proxy's login, for the login the command stated or for anyone, and nothing is counted but the registration itself (`unstored`). |
 
 A proxy whose own session the Console did not name is the last row to every
-command.
+command. A proxy never hands out the keys of, and never writes into, the
+stored partition of a login other than its session's own.
+
+What a proxy loads is wider than what it writes. At start it loads the stored
+entries of every login of its tenant, each written by that login's own proxy,
+and matches the other logins' as withheld: whole values only, `ph:<type>` and
+no id. So a value a person registered through their own login's proxy is
+still removed from their Agent's traffic after a restart, and a value
+registered through somebody else's proxy is protected until that proxy exits.
 
 The proxy is looked for through an ordered list of sources, and the first one
 that finds a proxy is used (`leakguard.AddSource` adds another):
@@ -238,27 +245,33 @@ a reboot still has its values replaced before anything registers them again:
   value this version cannot parse), the proxy runs from memory
   (`key_unreadable`) and writes neither the keystore nor the file.
 - Everything is kept apart by tenant. A tenant is a Phase host and an
-  organisation id; a login is its kind (`user`, `service-account` or `agent`)
-  and its account or Agent id. One function writes both, for the proxy and
-  for every registering command (`phaseproxy.NewInventoryIdentity`): the host
-  is parsed, so its scheme and name in any case, a default port written or
-  not, and a trailing slash, dot or path are one tenant, and another host,
-  port or scheme is another.
-- The proxy's identity is what the Console says its session's token is, asked
-  once when the first session opens (`airuntime.Runtime`): the Agent identity
-  route for an Agent token (`agent.id`, `organization.id`), and for a user's
-  or a service account's token the route a login is saved from
-  (`GET /service/secrets/tokens/`: `user_id` or `account_id`, and
-  `organisation.id`). The login file is not read for it, so a token from the
-  environment has a tenant like any other. The response that opens a session
-  carries neither id. When the Console does not answer, or names no
-  organisation or account, the session has no identity: its inventory is in
-  memory only (`no_tenant`), nothing is read from or written to the store,
-  and it writes no id for any command. Nothing is guessed.
-- A registering command states its own identity: a saved login's from its
-  own record, as the Console gave it when it was saved, read for the account
-  the command's token was read for; a token from the environment asks the
-  Console the same two routes. A command that cannot tell states nothing.
+  organisation id; a login is its kind (`user`, `service_account` or `agent`,
+  the principal types of a session) and its id: an Agent's id, a service
+  account's, and for a user the organisation member's id. One function writes
+  both, for the proxy and for every registering command
+  (`phaseproxy.NewInventoryIdentity`): the host is parsed, so its scheme and
+  name in any case, a default port written or not, and a trailing slash, dot
+  or path are one tenant, and another host, port or scheme is another.
+- The proxy's identity is what the session it opened says
+  (`airuntime.Runtime`): the response that opens a session carries
+  `"organisation":{"id":...}` and `"principal":{"type":"agent"|"user","id":...}`,
+  where the id is the Agent's or, for a user's token, the organisation
+  member's. The proxy asks no other route for it and reads no login file, so
+  a token from the environment has a tenant like any other, and so has a
+  proxy that serves a peer elsewhere. A session that names no organisation or
+  no principal, as an older Console's does not, or a principal of another
+  kind than its token, has no identity: its inventory is in memory only
+  (`no_tenant`), nothing is read from or written to the store, and it writes
+  no id for any command. Nothing is guessed and no other route is tried. A
+  runtime whose first session named nobody stays so for its life.
+- A registering command has no session, and states its own identity: a saved
+  login's from its own record, as the Console gave it when it was saved, read
+  for the account the command's token was read for; a token from the
+  environment asks the Console (the Agent identity route, `agent.id` and
+  `organization.id`, or the route a login is saved from,
+  `GET /service/secrets/tokens/`: `user_id` or `account_id`, and
+  `organisation.id`). The ids are the session's: `user_id` there is the
+  organisation member's id. A command that cannot tell states nothing.
   The proxy never takes a tenant or a login from a command as its own.
 - A proxy process serves one identity for its life. A session of another
   tenant or login is refused before anything is opened for it.
@@ -273,10 +286,13 @@ a reboot still has its values replaced before anything registers them again:
     learns of them is their number (`otherTenants`): no id, no type, no size;
   - a request that holds a value another tenant stored is sent on
     unchanged, and no event or status says anything of it;
-  - the key route hands a command of another tenant, or of none it could
-    state, nothing derived for any stored tenant: it hands it a lookup key
-    and a confirming key made when this proxy process started, derived from
-    nothing that is kept, which the next proxy does not have. Entries made
+  - the key route hands every command that does not state the proxy's own
+    tenant and login nothing derived for any stored tenant or login: it
+    hands it a lookup key and a confirming key made from what this proxy
+    process drew when it started, which is kept nowhere and which the next
+    proxy does not have. Guests share the lookup key. The confirming key is
+    one per stated identity, and for a command that states none, one per
+    key request, so no guest confirms what another registered. Entries made
     under them are matched by a pass of their own, written `ph:<type>`,
     and never stored.
 - Within a tenant, every key is derived from the tenant's root with
@@ -289,9 +305,9 @@ a reboot still has its values replaced before anything registers them again:
     chunk and the tail hashes. A principal is a login of the tenant: the
     Phase host, the kind of login and its account or Agent id (never a
     token). It is named by a keyed tag of that login, and its confirming key
-    is expanded from that tag. A command is handed the confirming key of the
-    login it states, and a command is trusted to state its own: leak
-    protection is against accidents. No statement gets a command a key of
+    is expanded from that tag. A proxy hands out one stored confirming key:
+    its own session's login's, to a command that states that tenant and
+    login. No statement gets a command the key of another login or of
     another tenant;
   - the keys the file is sealed and tagged with.
 - The entries are kept in `leak-inventory.bin` in the Phase AI directory,
@@ -311,13 +327,14 @@ a reboot still has its values replaced before anything registers them again:
   which login, when it was registered, or which records share a tenant, a
   login or a placeholder. A proxy opens every head, to keep other tenants'
   records and count them, and the bodies of its own tenant alone.
-- A proxy acts as one principal, and it matches the records of every
-  principal of its tenant: each candidate is confirmed with the confirming
+- A proxy acts as one principal and writes that principal's records alone.
+  It matches the records of every principal of its tenant, each written by
+  that login's own proxy: a candidate is confirmed with the confirming
   key of the principal its record names. A value a person's own login
-  registered is therefore still replaced when their Agent's tool reads it,
-  and the same value registered by two logins is a record each, matched
-  through either.
-- A value registered by another login than the session's is replaced by
+  registered with their own proxy is therefore still replaced when their
+  Agent's tool reads it, and the same value stored by two logins is a record
+  each, matched through either.
+- A value stored by another login than the session's is replaced by
   `ph:<type>` with no id, in the request and in events alike: the id (a
   secret's id or key name) may be one the session's login cannot see. When
   the session's own login registered the same value, its own placeholder
@@ -331,13 +348,13 @@ a reboot still has its values replaced before anything registers them again:
 - Counts are per login. `secretsKnown` counts a type and id once for each
   login of the tenant that registered it, so no count says whether another
   login holds an id, and it counts nothing a guest registered.
-- Every proxy of the user loads the file when it starts and writes what is
-  registered with it, under `leak-inventory.lock`: the file is read again
-  under the lock and written whole, so nothing another proxy stored is lost.
-  A proxy does not pick up what another registers while both run. The lock
-  file is never removed, the lock is waited for at most two seconds (after
-  which the proxy runs from memory, `store_busy`), and the keystore is never
-  asked while it is held.
+- Every proxy of the user loads the file when it starts and writes what its
+  own login registers with it, under `leak-inventory.lock`: the file is read
+  again under the lock and written whole, so nothing another proxy stored is
+  lost. A proxy does not pick up what another registers while both run. The
+  lock file is never removed, the lock is waited for at most two seconds
+  (after which the proxy runs from memory, `store_busy`), and the keystore is
+  never asked while it is held.
 - Only entries of scheme 2 are stored. Scheme 1 entries, which an older
   client may register, carry whole rolling hashes: they are matched while
   the proxy runs and never written.
@@ -352,14 +369,16 @@ a reboot still has its values replaced before anything registers them again:
   another tenant, or of another login of the same tenant, is never dropped
   to make room. An entry not registered again for 30 days is dropped
   whosever it is.
-- What the running proxy holds is bounded the same way: one login registers
-  up to half the index (5000 values, half the chunks), guests a quarter
-  together, and a login past its share gets 507 while the others still
-  register. A proxy that starts loads at most half the index, and a quarter
-  for one login: the session's own login's values first, then the others',
-  each most recently registered first. The rest stay in the store and are
-  counted under `notLoaded`, so a proxy that starts again always has room,
-  however much one client registered before.
+- What the running proxy holds is bounded the same way: one login registers up
+  to half the index (5000 values, half the chunks), guests a quarter together,
+  and a login past its share gets 507 while the others still register. A guest
+  that states who it is registers a value once however often its commands run.
+  One that states nothing is a new guest with every key request, so its values
+  are held again each time, within that quarter. A proxy that starts loads at
+  most half the index, and a quarter for one login: the session's own login's
+  values first, then the others', each most recently registered first. The
+  rest stay in the store and are counted under `notLoaded`, so a proxy that
+  starts again always has room, however much one client registered before.
 - `phase users logout` removes the records of the login that logs out, and
   every record of its tenant when no saved login of that tenant is left on
   the machine. It makes no key and no file, and leaves other tenants'
@@ -396,24 +415,32 @@ the base64 of a hex value.
   holds no key of this tenant, opens none of its records, and sees a count.
   A command of another tenant that registers with this proxy is a guest: it
   is handed keys of this process alone and learns nothing of what is stored.
+- **A command that states another login of the proxy's tenant** is a guest
+  too. It is handed nothing derived from the master, so with the file, and
+  even with that login's entries out of their seal, it holds no key their
+  hashes were made under: a right guess indexes to other hashes. The proxy
+  takes a right and a wrong guess registered in that login's name alike,
+  and writes neither.
 - **The file alone** says nothing a guess can be tested against: every
   record is sealed under a key derived from the master, and so is its head.
   It shows how many records are stored in all and how long each is.
 - **A client of a session with the file.** Any process that holds a proxy's
-  capability, an AI Agent included, is handed the lookup key and the
-  confirming key of the login it states, for as long as the master lasts.
+  capability, an AI Agent included, is handed the tenant's lookup key and
+  the confirming key of the proxy's own login when it states that login,
+  for as long as the master lasts, and no other login's by any statement.
   Neither opens the file, so with the file it is where the file alone is.
   Were its tenant's entries out of their seal, it could confirm a guessed
   chunk only of its own principal's values, which it can read anyway. Of
   another principal's (the developer's own login, another Agent) it would
   hold the 24 lookup bits a chunk and no hash it can compute: the bits list
   the guesses that fit, one in 2^24, and nothing says which is right, so a
-  chunk of b unknown bits keeps 2^(b-24) candidates. A client is trusted to
-  state its own login; one that states another login of its tenant is handed
-  that login's confirming key. A client can still send guesses through the
-  proxy and see whether they are replaced: a chunk's bytes of traffic a
-  guess for a value of its own login, and for another login's only a guess
-  of the whole value is answered, with nothing stored to narrow either.
+  chunk of b unknown bits keeps 2^(b-24) candidates. A client is trusted
+  this far and no further: one that states the proxy's own login is handed
+  that login's keys, as that login's commands are, since leak protection is
+  against accidents. A client can still send guesses through the proxy and
+  see whether they are replaced: a chunk's bytes of traffic a guess for a
+  value of the proxy's login, and for another login's only a guess of the
+  whole value is answered, with nothing stored to narrow either.
 - **A process of the same user with the keystore and the file** has the
   master, hence every key of every tenant, and confirms a guessed chunk of any principal's
   value by hashing it. The 24 bits let it skip all but one guess in 2^24
@@ -440,26 +467,30 @@ Content-Type: application/json
 
 {"schemaVersion":1,"tenant":"https://console.phase.dev\norganisation\n<organisation id>","login":"https://console.phase.dev\nuser\n<account id>"}
 
-200 {"schemaVersion":1,"key":"<base64, 32 bytes>","confirmKey":"<base64, 32 bytes>","format":2,"keyId":"<16 hex digits>"}
+200 {"schemaVersion":1,"key":"<base64, 32 bytes>","confirmKey":"<base64, 32 bytes>","format":2,"keyId":"<16 or 32 hex digits>"}
 ```
 
 `tenant` and `login` say who the command is, as
 `phaseproxy.NewInventoryIdentity` writes them; both are left out by a command
 that cannot tell, and `GET /v1/inventory/key` states nothing either. Unknown
 fields, another `schemaVersion` and a body over 4 KiB are 400
-`invalid_inventory`. For a command of the proxy's tenant, `key` is that
-tenant's lookup key and `confirmKey` the confirming key of the login the
-command stated. For any other command both are keys of this proxy process
-alone. The answer never holds the master, a confirming key of a login the
-command did not state, or anything derived for a stored tenant the command
-is not of. A client indexes with both keys; `confirmKey` is left out only by
-a proxy that reads scheme 1 alone, whose one key did both.
+`invalid_inventory`. For a command that states the proxy's own tenant and
+login, `key` is that tenant's lookup key and `confirmKey` that login's
+confirming key. For any other command both are keys of this proxy process
+alone: the lookup key its guests share, and a confirming key of the identity
+the command stated or, when it stated none, of this one request. The answer
+never holds the master, a confirming key of a login that is not the proxy's
+own, or anything derived for a stored tenant or login the command is not of.
+A client indexes with both keys; `confirmKey` is left out only by a proxy
+that reads scheme 1 alone, whose one key did both.
 
 `keyId` names the two keys without giving either. A registration sends it
 back, and the proxy refuses entries made under keys it does not hand that
 command (409 `inventory_key_changed`, nothing added): entries under other
 keys would be held and never matched. The client fetches the key again and
-registers again, once.
+registers again, once. For a command that stated no identity the `keyId`
+also names its key request, which is all that tells its keys from another
+such command's, so its registration is refused the same way without one.
 
 `format` is the matching scheme the proxy's own version indexes under
 (`censor.EntriesVersion`). The proxy takes entries of every scheme it still
@@ -483,7 +514,8 @@ Content-Type: application/json
   where the entries go is decided from them on every registration (the table
   above), never from an earlier request. Left out, or not a well-formed
   identity, the command is nobody's: its values are protected until the
-  proxy exits and are not stored.
+  proxy exits and are not stored, and its `keyId` says which key request's
+  keys its entries were made under.
 
 - Body ≤ 4 MiB (413 `inventory_too_large`), at most 4096 entries; unknown
   fields, another `schemaVersion` or any malformed entry is 400
@@ -496,13 +528,12 @@ Content-Type: application/json
   key name. The proxy never guesses the kind from the id's shape. It remembers
   it per placeholder, and a placeholder once registered as a key name stays
   one.
-- 507 `leak_inventory_full` once the login the command stated holds its share
-  of the index (5000 values or half the chunks; a quarter for guests
+- 507 `leak_inventory_full` once the proxy's own login holds its share of the
+  index (5000 values or half the chunks), or its guests hold theirs (a quarter
   together), or the index holds 10000 values or its chunk cap. It is that
-  login's alone until the whole index is full, and it does not outlive the
-  proxy: one that starts again loads the most recently registered values
-  into half the index. A restart makes room; it does not clear what is
-  stored.
+  share's alone until the whole index is full, and it does not outlive the
+  proxy: one that starts again loads the most recently registered values into
+  half the index. A restart makes room; it does not clear what is stored.
 - A value too short or plain to protect is counted once for its type and id,
   however often it is registered, and at most 4096 such are remembered; past
   that the count stays where it is.
@@ -517,9 +548,10 @@ Content-Type: application/json
   `{"storage":"stored","loaded":9,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`,
   with `otherTenants` when the file holds records of other hosts or
   organisations (a count, and all that is said of them), and `unstored` when
-  commands of another tenant, or of none they could state, registered with
-  this proxy: a count of those registrations, each one counted whatever it
-  held, so it says nothing of an id or of whether a value was seen before.
+  commands that are not of the session's own login registered with this
+  proxy (its guests): a count of those registrations, each one counted
+  whatever it held, so it says nothing of an id or of whether a value was
+  seen before.
   `storage` is `stored` or `memory`, and `reason` says why it is `memory`:
   `no_keystore` (the machine has no system keystore), `key_unreadable` (the
   keystore did not give the key; nothing is written), `newer_store_format`

@@ -35,7 +35,7 @@ const maxInventoryKeyBody = 4096
 const invalidInventoryKeyMessage = "The key request must be {\"schemaVersion\":1} with, when the command knows them, its tenant and login."
 
 // inventoryKey hands a command the keys it indexes with, by who it says it
-// is (leakGuard.place): never the master, never a stored tenant's to another's.
+// is (leakGuard.place): a stored login's only to a command that states it.
 func (h *controlHandler) inventoryKey(w http.ResponseWriter, req *http.Request) {
 	if h.leak == nil {
 		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection is not running in this proxy.", false)
@@ -57,7 +57,13 @@ func (h *controlHandler) inventoryKey(w http.ResponseWriter, req *http.Request) 
 		}
 		stated = phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login}
 	}
-	place, err := h.leak.place(stated)
+	// A command that states no identity gets keys made for this request.
+	asked, err := newLeakKeyRequest()
+	if err != nil {
+		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
+		return
+	}
+	place, err := h.leak.place(stated, asked)
 	if err != nil {
 		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
 		return
@@ -144,15 +150,15 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 	}
 	// Where the entries go is decided here, from what this request states,
 	// and never from what an earlier one did.
-	place, err := h.leak.place(phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login})
-	if err != nil {
-		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
-		return
-	}
+	place, err := h.leak.place(phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login}, leakKeyRequest(request.KeyID))
 	// Entries made under other keys than this place's would be held and
 	// never matched: the command fetches the key again.
-	if request.KeyID != "" && request.KeyID != place.keyID() {
+	if errors.Is(err, errLeakKeyUnknown) || (err == nil && request.KeyID != "" && request.KeyID != place.keyID()) {
 		writeControlError(w, http.StatusConflict, "inventory_key_changed", "The entries were made under a key this proxy does not use for this command. Fetch the key again and register again.", true)
+		return
+	}
+	if err != nil {
+		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
 		return
 	}
 	added, unprotected, err := h.leak.addAt(place, entries, keyNamed)

@@ -105,11 +105,11 @@ func consoleIdentity(ctx context.Context, backend SecretsBackend, host, kind str
 	case *AgentBackend:
 		asked, cancel := context.WithTimeout(ctx, identityTimeout)
 		defer cancel()
-		who, err := b.client.TokenIdentity(asked)
+		who, err := b.client.Identity(asked)
 		if err != nil {
 			return phaseproxy.InventoryIdentity{}
 		}
-		return phaseproxy.NewInventoryIdentity(host, who.OrganizationID, who.Kind, who.ID)
+		return phaseproxy.NewInventoryIdentity(host, who.Organization.ID, kind, who.Agent.ID)
 	case *sdk.Phase:
 		data, err := Init(b)
 		if err != nil || data.Organisation == nil {
