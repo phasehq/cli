@@ -815,6 +815,10 @@ func randomRuntimeGeneration() (string, error) {
 	return hex.EncodeToString(random), nil
 }
 
+// sessionLeaseGlob matches only the names sessionLeasePath writes, so a sweep
+// never touches another file that happens to share the suffix.
+var sessionLeaseGlob = sessionLeasePrefix + strings.Repeat("[0-9a-f]", 32) + sessionLeaseSuffix
+
 func sessionLeasePath(directory, sessionID string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || len(sessionID) > 512 {
@@ -994,7 +998,7 @@ func hasActiveSessionLease(directory, generation string, now time.Time) (bool, e
 func activeSessionLeases(directory, generation string, now time.Time) (bool, bool, error) {
 	sessions, commands := false, false
 	err := withLeaseRegistryLock(context.Background(), directory, func() error {
-		paths, err := filepath.Glob(filepath.Join(directory, sessionLeasePrefix+"*"+sessionLeaseSuffix))
+		paths, err := filepath.Glob(filepath.Join(directory, sessionLeaseGlob))
 		if err != nil {
 			return err
 		}
@@ -1318,7 +1322,7 @@ func waitForRuntimeProcessExit(ctx context.Context, pid int, timeout time.Durati
 
 func removeLeasesForGeneration(directory, generation string) error {
 	return withLeaseRegistryLock(context.Background(), directory, func() error {
-		paths, err := filepath.Glob(filepath.Join(directory, sessionLeasePrefix+"*"+sessionLeaseSuffix))
+		paths, err := filepath.Glob(filepath.Join(directory, sessionLeaseGlob))
 		if err != nil {
 			return err
 		}

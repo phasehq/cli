@@ -1042,3 +1042,30 @@ func TestActiveSessionLeasesKeepsLeaseRenewedAfterTheScanTime(t *testing.T) {
 		t.Fatalf("renewed lease was pruned: %v", err)
 	}
 }
+
+func TestLeaseSweepsKeepFilesPhaseDidNotName(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
+	foreign := filepath.Join(directory, "session-backup.lease.json")
+	if err := os.WriteFile(foreign, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalid, err := sessionLeasePath(directory, "claude:broken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invalid, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := activeSessionLeases(directory, "generation-one", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLeasesForGeneration(directory, "generation-one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("a file Phase did not write was removed: %v", err)
+	}
+	if _, err := os.Stat(invalid); !os.IsNotExist(err) {
+		t.Fatalf("an unreadable Phase lease was kept: %v", err)
+	}
+}
