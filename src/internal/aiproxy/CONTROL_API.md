@@ -189,12 +189,15 @@ a value registered with the running proxy is found by every piece that proxy
 found before there was a store. A value a proxy knows only from the store,
 because it started again and no command has registered the value with it
 since, is found whole in every form, and by its pieces as scheme 2 finds
-them: a run of hex digits (a hex key, or the hex of any value) is then
-certain to be found from 47 characters of it, where 23 are enough for a value
-registered with the running proxy. That lasts until a command registers the
-value with that proxy again, as the next command that reads it does. Such a
-value is then held both ways until the proxy exits: one value to every count
-and one placeholder where it stands, its chunks counted for both.
+them: a piece of a run of hex digits (a hex key, or the hex of any value)
+needs 24 characters that scheme hashed together, which 47 characters of the
+run always hold, where a piece of a value registered with the running proxy
+needs 12, which 23 always hold (`pkg/censor`'s Limits give the odds that
+such a piece is too plain to count). That lasts until a command registers
+the value with that proxy again, as the next command that reads it does.
+Such a value is then held both ways until the proxy exits: one value to
+every count and one placeholder where it stands, its chunks counted for
+both, and a scan makes a pass for each of the two keys.
 
 The proxy is looked for through an ordered list of sources, and the first one
 that finds a proxy is used (`leakguard.AddSource` adds another):
