@@ -129,6 +129,9 @@ func IndexValue(key *Key, typ, id, value string) (*Entries, error) {
 				continue
 			}
 			b.addValue(part, l.value)
+			if password := urlPassword(l.value); password != "" {
+				b.addValue(part, password)
+			}
 		}
 		return b.finish()
 	}

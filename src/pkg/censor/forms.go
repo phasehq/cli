@@ -251,10 +251,11 @@ func jsonLeaves(value string) []leaf {
 }
 
 // looksPublic keeps a key file's URLs and identity out of the index: redacting them
-// would hide ordinary text without protecting anything.
+// would hide ordinary text without protecting anything. A URL with a password in
+// it is a credential.
 func looksPublic(value string) bool {
 	if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
-		return !strings.ContainsAny(value, " \n")
+		return !strings.ContainsAny(value, " \n") && urlPassword(value) == ""
 	}
 	if at := strings.IndexByte(value, '@'); at > 0 && !strings.ContainsAny(value, " \n:/") && strings.Contains(value[at:], ".") {
 		return true
