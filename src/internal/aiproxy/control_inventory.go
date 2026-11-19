@@ -25,7 +25,7 @@ func (h *controlHandler) leakStatus() *remoteapi.LeakProtectionStatus {
 	if h.leak == nil {
 		return nil
 	}
-	return h.leak.status()
+	return h.leak.status(h.tool)
 }
 
 // inventoryKey hands the key to a process of this session that is about to
@@ -38,6 +38,35 @@ func (h *controlHandler) inventoryKey(w http.ResponseWriter) {
 	h.writeForward(w, remoteapi.InventoryKeyResponse{
 		SchemaVersion: agentapi.SchemaVersion, Key: base64.StdEncoding.EncodeToString(h.leak.key.Bytes()), Format: censor.EntriesVersion,
 	}, nil)
+}
+
+const invalidInventoryMessage = "The inventory must be {\"schemaVersion\":1,\"entries\":[...]} with at most 4096 entries; idKinds, when sent, says phase_id or key_name for each entry."
+
+// inventoryKeyNamed reads what a registration says of its ids: for each
+// entry, whether the id is a secret's key name. The client says so; nothing
+// is guessed from an id's shape. A registration that does not say is taken to
+// hold key names throughout, so an id it sent never reaches an event.
+func inventoryKeyNamed(kinds []string, entries int) ([]bool, bool) {
+	keyNamed := make([]bool, entries)
+	if len(kinds) == 0 {
+		for i := range keyNamed {
+			keyNamed[i] = true
+		}
+		return keyNamed, true
+	}
+	if len(kinds) != entries {
+		return nil, false
+	}
+	for i, kind := range kinds {
+		switch kind {
+		case remoteapi.InventoryIDPhase:
+		case remoteapi.InventoryIDKeyName:
+			keyNamed[i] = true
+		default:
+			return nil, false
+		}
+	}
+	return keyNamed, true
 }
 
 // addInventory takes entries from any process that holds the proxy
@@ -66,7 +95,12 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
 		request.SchemaVersion != agentapi.SchemaVersion || len(request.Entries) > maxInventoryEntries {
-		writeControlError(w, http.StatusBadRequest, "invalid_inventory", "The inventory must be {\"schemaVersion\":1,\"entries\":[...]} with at most 4096 entries.", false)
+		writeControlError(w, http.StatusBadRequest, "invalid_inventory", invalidInventoryMessage, false)
+		return
+	}
+	keyNamed, ok := inventoryKeyNamed(request.IDKinds, len(request.Entries))
+	if !ok {
+		writeControlError(w, http.StatusBadRequest, "invalid_inventory", invalidInventoryMessage, false)
 		return
 	}
 	entries := make([]*censor.Entries, 0, len(request.Entries))
@@ -78,7 +112,7 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 		}
 		entries = append(entries, entry)
 	}
-	added, unprotected, err := h.leak.add(entries)
+	added, unprotected, err := h.leak.add(entries, keyNamed)
 	switch {
 	case errors.Is(err, errLeakInventoryFull):
 		writeControlError(w, http.StatusInsufficientStorage, "leak_inventory_full", "The leak protection inventory is full: this proxy cannot protect more values. Restart the Phase AI session to start a new inventory.", false)

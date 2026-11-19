@@ -11,9 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -785,28 +783,10 @@ func requestHookRuntimeShutdown(ctx context.Context, rawProxyURL string) error {
 	return nil
 }
 
+// phaseProxyHTTPClient is the control client with the timeouts the CLI's own
+// commands and hooks wait for.
 func phaseProxyHTTPClient(rawProxyURL string) (*http.Client, error) {
-	parsed, err := url.Parse(rawProxyURL)
-	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User == nil {
-		return nil, errors.New("Phase proxy URL is invalid")
-	}
-	if parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("Phase proxy URL is invalid")
-	}
-	password, present := parsed.User.Password()
-	if !phaseproxy.ValidProxyUsername(parsed.User.Username()) || !present || password == "" {
-		return nil, errors.New("Phase proxy authentication is unavailable")
-	}
-	if !phaseproxy.IsLoopbackHost(parsed.Hostname()) {
-		return nil, errors.New("managed Phase proxy is not bound to loopback")
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyURL(parsed)
-	transport.DialContext = (&net.Dialer{Timeout: 2 * time.Second}).DialContext
-	return &http.Client{
-		Transport: transport, Timeout: 3 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}, nil
+	return phaseproxy.ControlClient(rawProxyURL, 2*time.Second, 3*time.Second)
 }
 
 func firstEnvironmentValue(keys ...string) string {

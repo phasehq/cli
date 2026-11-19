@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -14,9 +15,22 @@ const (
 	wsOpContinuation = 0x0
 	wsOpText         = 0x1
 	wsOpClose        = 0x8
+
+	// Close codes (RFC 6455 section 7.4.1): the endpoint is going away, and
+	// the endpoint received a message that violates its policy.
+	wsCloseGoingAway       = 1001
+	wsClosePolicyViolation = 1008
+
+	// wsBlockedReason is what the client is told when a message is blocked. A
+	// close frame holds at most 123 bytes of it.
+	wsBlockedReason = "Phase blocked a message: it holds a secret value that cannot be removed."
+
+	// wsCloseWait is how long the proxy waits for the frame the service is
+	// sending to finish before it gives up on a close frame of its own.
+	wsCloseWait = 2 * time.Second
 )
 
-// wsFrameHeader is one frame's header as the client sent it.
+// wsFrameHeader is one frame's header as it was sent.
 type wsFrameHeader struct {
 	fin    bool
 	rsv1   bool
@@ -94,17 +108,94 @@ func maskedClientFrame(opcode byte, payload []byte) ([]byte, error) {
 	return frame, nil
 }
 
-// pumpLeakFrames copies the client's frames upstream, holding each text
-// message until its last frame has arrived so it can be read whole. A text
-// message that holds a secret goes out as one new frame with the value
-// replaced; everything else (control frames, binary messages, a text message
-// over the size limit, one that is not JSON) goes out as the client framed it.
-// Binary messages are not read; the first one on a connection is reported.
-// It returns when the client side ends or a write upstream fails.
-func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, request *http.Request, host string, port int, match *leakHostMatch) {
+// wsClosePayload is a close frame's body: the code, then why. A control
+// frame holds at most 125 bytes.
+func wsClosePayload(code uint16, reason string) []byte {
+	if len(reason) > 123 {
+		reason = reason[:123]
+	}
+	return append(binary.BigEndian.AppendUint16(nil, code), reason...)
+}
+
+// wsDownstream carries the service's frames to the client one whole frame at
+// a time, so that the proxy can put a close frame of its own between two of
+// them. Written anywhere else it would land inside a frame the service is
+// still sending, and the client would read it as that frame's data.
+type wsDownstream struct {
+	// mu is held for the length of one frame.
+	mu     sync.Mutex
+	client io.Writer
+	// closed is set once the proxy's close frame went out. Nothing follows it.
+	closed bool
+	// wait is how long close waits for a frame to finish; zero means
+	// wsCloseWait.
+	wait time.Duration
+}
+
+// relay copies the service's frames to the client until either side ends or
+// the proxy has closed the WebSocket.
+func (d *wsDownstream) relay(upstream io.Reader) {
+	reader := bufio.NewReader(upstream)
+	for {
+		frame, err := readWSFrameHeader(reader)
+		if err != nil || !d.forward(frame, reader) {
+			return
+		}
+	}
+}
+
+func (d *wsDownstream) forward(frame *wsFrameHeader, reader *bufio.Reader) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return false
+	}
+	if _, err := d.client.Write(frame.raw); err != nil {
+		return false
+	}
+	_, err := io.CopyN(d.client, reader, int64(frame.length))
+	return err == nil
+}
+
+// close tells the client the WebSocket is closed and why, once the frame the
+// service is sending, if any, is through. A service that stalls inside a
+// frame gets no close frame after it: the connection is dropped instead.
+func (d *wsDownstream) close(code uint16, reason string) {
+	wait := d.wait
+	if wait <= 0 {
+		wait = wsCloseWait
+	}
+	deadline := time.Now().Add(wait)
+	for !d.mu.TryLock() {
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	defer d.mu.Unlock()
+	if d.closed {
+		return
+	}
+	d.closed = true
+	payload := wsClosePayload(code, reason)
+	// A server's frame is not masked.
+	_, _ = d.client.Write(append([]byte{0x80 | wsOpClose, byte(len(payload))}, payload...))
+}
+
+// pumpLeakFrames copies the client's frames upstream, holding each message
+// until its last frame has arrived so it can be read whole. What it does with
+// a message is what the policy says for a request body of the same kind
+// (leak_policy.go): text, JSON or not, goes out as one new frame with what
+// was found replaced; a binary message, and one compressed against the
+// handshake, cannot be rewritten, so a known value or a Phase token in it
+// blocks. Blocking a message ends the WebSocket: the client is sent a close
+// frame that says its message broke policy, and the message is never sent.
+// Control frames, and a message too long to hold, go out as the client framed
+// them. It returns when the client side ends, a write upstream fails, or a
+// message is blocked.
+func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, downstream *wsDownstream, request *http.Request, host string, port int, match *leakHostMatch) {
 	guard := p.leak
 	opts := guard.scanOptionsFor(match, request.URL.Path)
-	binaryReported := false
 	var held [][]byte
 	var message []byte
 	var messageOpcode byte
@@ -135,14 +226,10 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, req
 		}
 		if frame.opcode != wsOpContinuation {
 			messageOpcode = frame.opcode
-			if messageOpcode != wsOpText && !binaryReported {
-				binaryReported = true
-				p.emitLeakMessageEvent(request, host, port, &leakScan{match: match, mode: guard.mode, protocol: "websocket", opts: opts, unread: leakReasonBinary})
-			}
 		}
-		// Binary messages, and the rest of a message already passed on, are
-		// streamed through without being held.
-		if messageOpcode != wsOpText || passing {
+		// The rest of a message already passed on is streamed through without
+		// being held.
+		if passing {
 			if !write(frame.raw) {
 				return
 			}
@@ -163,7 +250,9 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, req
 			if _, err := io.CopyN(upstream, reader, int64(frame.length)); err != nil {
 				return
 			}
-			p.emitLeakMessageEvent(request, host, port, &leakScan{match: match, mode: guard.mode, protocol: "websocket", opts: opts, unread: leakReasonOverLimit})
+			scan := guard.newScan(match, "websocket", opts)
+			scan.leaveUnread(leakReasonOverLimit, leakScopeMessage)
+			p.emitLeakMessageEvent(request, host, port, scan)
 			held, message, compressed = nil, nil, false
 			passing = !frame.fin
 			continue
@@ -182,13 +271,25 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, req
 		if !frame.fin {
 			continue
 		}
-		out := held
 		scan := guard.newScan(match, "websocket", opts)
-		if compressed {
+		var rewritten []byte
+		switch {
+		case compressed:
 			// The compression offer is removed from the handshake, so this is a
-			// client that compressed anyway; its bytes are not readable here.
-			scan.unread = leakReasonCompressed
-		} else if rewritten := p.scanLeakMessage(scan, message); rewritten != nil && guard.mode == leakModeCensor {
+			// client that compressed anyway; its bytes are looked at as they came.
+			scan.leaveUnread(leakReasonCompressed, leakScopeMessage)
+			guard.readFixed(scan, leakPartOpaque, message, "message")
+		case messageOpcode == wsOpText:
+			rewritten = guard.readPayload(scan, message, "message")
+		default:
+			guard.readFixed(scan, leakPartBinary, message, "message")
+		}
+		out := held
+		switch scan.verdict(rewritten != nil) {
+		case leakBlock:
+			p.blockLeakMessage(request, host, port, scan, upstream, downstream)
+			return
+		case leakReplace:
 			replacement, err := maskedClientFrame(wsOpText, rewritten)
 			if err != nil {
 				return
@@ -204,19 +305,17 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, req
 	}
 }
 
-// scanLeakMessage reads one whole text message. Only JSON is rewritten; any
-// other text goes out as it was and is reported.
-func (p *httpProxy) scanLeakMessage(scan *leakScan, message []byte) []byte {
-	out, report, err := p.leak.index.RewriteJSON(message, scan.opts)
-	if err != nil {
-		scan.unread = leakReasonNotJSON
-		return nil
+// blockLeakMessage ends a WebSocket over a message that must not go out. The
+// message's frames were held, so the service has seen none of them and is
+// told only that the client is going away.
+func (p *httpProxy) blockLeakMessage(request *http.Request, host string, port int, scan *leakScan, upstream io.Writer, downstream *wsDownstream) {
+	if p.events != nil {
+		p.events.Emit(p.leakEvent(nil, request, host, port, scan, "block", "denied", leakReasonFound, 0, time.Now()))
 	}
-	scan.addReport(report, "message")
-	if report == nil || !report.Changed {
-		return nil
+	downstream.close(wsClosePolicyViolation, wsBlockedReason)
+	if frame, err := maskedClientFrame(wsOpClose, wsClosePayload(wsCloseGoingAway, "")); err == nil {
+		_, _ = upstream.Write(frame)
 	}
-	return out
 }
 
 func (p *httpProxy) emitLeakMessageEvent(request *http.Request, host string, port int, scan *leakScan) {

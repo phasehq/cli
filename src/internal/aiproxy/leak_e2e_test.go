@@ -51,7 +51,10 @@ type leakRig struct {
 	proxyURL      *url.URL
 	phaseRoots    *x509.CertPool
 	providerRoots *x509.CertPool
-	events        *eventBuffer
+	// bothRoots trusts Phase and the provider: a client that has talked to
+	// the provider itself and is then read by the proxy.
+	bothRoots *x509.CertPool
+	events    *eventBuffer
 	// provider is the fake model provider, and wire what each connection to it
 	// carried before any TLS: the tests of hosts whose hello is copied read
 	// the hellos it was sent.
@@ -87,6 +90,9 @@ func newLeakRigWith(t *testing.T, mode string, configure func(provider *httptest
 	}
 	rig.providerRoots = x509.NewCertPool()
 	rig.providerRoots.AppendCertsFromPEM(providerPEM)
+	rig.bothRoots = x509.NewCertPool()
+	rig.bothRoots.AppendCertsFromPEM(phasePEM)
+	rig.bothRoots.AppendCertsFromPEM(providerPEM)
 
 	provider := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rig.mu.Lock()
@@ -490,7 +496,7 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 		deadline := time.Now().Add(2 * time.Second)
 		for {
 			rig.guard.handshakes.mu.Lock()
-			state := rig.guard.handshakes.hosts[host]
+			state := rig.guard.handshakes.hosts[hostKey(host)]
 			got := 0
 			if state != nil {
 				got = state.failures
@@ -507,12 +513,12 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 	}
 	refuse()
 	waitFailures(1)
-	if rig.guard.handshakes.bypassed(host) {
+	if rig.guard.handshakes.bypassed(hostKey(host)) {
 		t.Fatal("one refusal opened a window")
 	}
 	refuse()
 	waitFailures(2)
-	if !rig.guard.handshakes.bypassed(host) {
+	if !rig.guard.handshakes.bypassed(hostKey(host)) {
 		t.Fatal("two refusals in a row did not open a window")
 	}
 	// Inside the window the client is passed through unread.
@@ -526,7 +532,7 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 		event.Detail["windowSeconds"] != float64(20) || event.Detail["harness"] != "claude" {
 		t.Fatalf("window event: %+v", event)
 	}
-	if status := rig.guard.status(); !containsString(status.UnreadHosts, host) {
+	if status := rig.guard.status(""); !containsString(status.UnreadHosts, host) {
 		t.Fatalf("status lists the host as inspected during the window: %+v", status)
 	}
 	// After the window a client that trusts Phase is read again, and its
@@ -537,14 +543,14 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 		t.Fatal("the host was not read after the window")
 	}
 	rig.guard.handshakes.mu.Lock()
-	cleared := rig.guard.handshakes.hosts[host] == nil
+	cleared := rig.guard.handshakes.hosts[hostKey(host)] == nil
 	rig.guard.handshakes.mu.Unlock()
 	if !cleared {
 		t.Fatal("a successful handshake did not clear the count")
 	}
 	refuse()
 	waitFailures(1)
-	if rig.guard.handshakes.bypassed(host) {
+	if rig.guard.handshakes.bypassed(hostKey(host)) {
 		t.Fatal("one refusal after a success opened a window")
 	}
 }
@@ -716,7 +722,9 @@ func TestLeakProtectionRewritesCodexWebSocketMessages(t *testing.T) {
 
 	create := []byte(`{"type":"response.create","model":"gpt-5","input":[{"type":"function_call_output","call_id":"c1","output":"STRIPE_KEY=` + leakSecretOne + `\n"}]}`)
 	half := len(create) / 2
-	binaryPayload := append([]byte{0, 1, 2}, leakSecretOne...)
+	// Bytes that are not text and hold nothing known. A binary message that
+	// holds a known value is blocked: see the WebSocket tests of the policy.
+	binaryPayload := []byte{0, 1, 2, 0xff, 0xfe, 0x80, 'f', 'r', 'a', 'm', 'e'}
 	for _, frame := range [][]byte{
 		clientFrame(false, wsOpText, create[:half]),
 		clientFrame(true, 0x9, []byte("ping")),
@@ -768,23 +776,17 @@ func TestLeakProtectionRewritesCodexWebSocketMessages(t *testing.T) {
 	if closing := next(); closing.opcode != wsOpClose {
 		t.Fatalf("the close frame was not passed on: %+v", closing)
 	}
-	rig.leakEvents(3)
+	// Binary messages and text that is not JSON are read like a request body
+	// of the same kind, so a clean one is no event: only the replaced value is
+	// reported.
+	rig.leakEvents(1)
 	events := rig.leakEventsNow()
-	var censored, notJSON bool
-	binaryReports := 0
-	for _, event := range events {
-		if event.Protocol != "websocket" || event.Path != "/backend-api/codex/responses" || event.Detail["harness"] != "codex" {
-			t.Fatalf("event: %+v", event)
-		}
-		censored = censored || (event.Outcome == outcomeCensored && event.Detail["placeholders"] == "ph:secret:stripe")
-		notJSON = notJSON || (event.Outcome == outcomeUnread && event.Reason == leakReasonNotJSON)
-		if event.Outcome == outcomeUnread && event.Reason == leakReasonBinary {
-			binaryReports++
-		}
-	}
-	// Binary messages are passed on as they are and reported once per connection.
-	if !censored || !notJSON || binaryReports != 1 {
+	if len(events) != 1 {
 		t.Fatalf("events: %+v", events)
+	}
+	if event := events[0]; event.Protocol != "websocket" || event.Path != "/backend-api/codex/responses" || event.Detail["harness"] != "codex" ||
+		event.Outcome != outcomeCensored || event.Detail["placeholders"] != "ph:secret:stripe" || event.Detail["where"] != "message" {
+		t.Fatalf("event: %+v", event)
 	}
 }
 
@@ -827,7 +829,7 @@ func TestLeakProtectionFixtureEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := rig.guard.add(entry); err != nil {
+		if _, _, err := rig.guard.add(entry, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -883,7 +885,7 @@ func TestLeakProtectionRegistrationRoundTrip(t *testing.T) {
 	if err != nil || result.Added != 2 || result.Unprotected != 1 {
 		t.Fatalf("registration: %+v %v", result, err)
 	}
-	if status := rig.guard.status(); status.SecretsKnown != 2 || status.Unprotected != 1 {
+	if status := rig.guard.status(""); status.SecretsKnown != 2 || status.Unprotected != 1 {
 		t.Fatalf("status after registration: %+v", status)
 	}
 	postMessages(t, rig.client(rig.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(leakSecretOne+" "+leakSecretTwo), "")

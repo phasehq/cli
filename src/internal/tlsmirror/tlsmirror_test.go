@@ -509,3 +509,197 @@ func TestOnlyOneFileImportsUTLS(t *testing.T) {
 		t.Fatalf("%s is imported by %v; only internal/tlsmirror/tlsmirror.go may import it", library, importers)
 	}
 }
+
+// Fresh gives the hello a client sends when it has no session: what the same
+// client sent on its first connection, with nothing left of the session.
+func TestFreshIsTheClientsHelloWithoutItsSession(t *testing.T) {
+	for name, version := range map[string]uint16{"a TLS 1.3 pre-shared key": tls.VersionTLS13, "a TLS 1.2 session ticket": tls.VersionTLS12} {
+		t.Run(name, func(t *testing.T) {
+			server := newRecordingServer(t, nil)
+			config := distinctiveConfig("mirror.test", server.roots)
+			config.MaxVersion = version
+			config.ClientSessionCache = tls.NewLRUClientSessionCache(4)
+			first := helloOf(t, config)
+			if hello, err := ParseHello(first); err != nil || hello.Resumes {
+				t.Fatalf("the client's first hello offers a session: %+v %v", hello, err)
+			}
+			// A connection of the client's own leaves it holding a session.
+			own := tls.Client(server.dial(t), config)
+			if err := own.Handshake(); err != nil {
+				t.Fatal(err)
+			}
+			echo(t, own)
+			_ = own.Close()
+			resuming := helloOf(t, config)
+			offered, err := ParseHello(resuming)
+			if err != nil || !offered.Resumes || offered.EarlyData {
+				t.Fatalf("the client's second hello offers no session: %+v %v", offered, err)
+			}
+
+			fresh, err := Fresh(resuming)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := ParseHello(fresh)
+			if err != nil || got.Resumes {
+				t.Fatalf("the fresh hello still offers a session: %+v %v", got, err)
+			}
+			want, _ := ParseHello(first)
+			if !reflect.DeepEqual(got, want) || !SameShape(first, fresh) {
+				t.Fatalf("the fresh hello offers %+v, the client's first hello %+v", got, want)
+			}
+			if bytes.Equal(fresh, resuming) || len(fresh) >= len(resuming) || SameShape(fresh, resuming) {
+				t.Fatal("the fresh hello is the resuming one")
+			}
+			// The client's own bytes are not changed by it.
+			if again, _ := ParseHello(resuming); !again.Resumes {
+				t.Fatal("making the fresh hello changed the client's own")
+			}
+			// It can be copied, and the copy offers the server nothing: the
+			// handshake that follows is a full one.
+			if err := Check(fresh, "mirror.test"); err != nil {
+				t.Fatalf("the fresh hello cannot be copied: %v", err)
+			}
+			if err := Check(resuming, "mirror.test"); !errors.Is(err, ErrResumes) {
+				t.Fatalf("the resuming hello itself: %v", err)
+			}
+			conn, _, err := Client(testContext(t), server.dial(t), fresh, "mirror.test", server.roots)
+			if err != nil {
+				t.Fatal(err)
+			}
+			echo(t, conn)
+			sent, info := server.last(t)
+			seen, _ := ParseHello(sent)
+			if seen.Resumes || !SameShape(first, sent) || !reflect.DeepEqual(info.Extensions, want.Extensions) {
+				t.Fatalf("the server was sent %+v", seen)
+			}
+			server.mu.Lock()
+			resumed := server.states[len(server.states)-1].DidResume
+			server.mu.Unlock()
+			if resumed || server.version(t) != version {
+				t.Fatalf("the copy's handshake resumed a session (%v) or is TLS %04x", resumed, server.version(t))
+			}
+		})
+	}
+}
+
+func TestFreshDropsOnlyWhatOffersASession(t *testing.T) {
+	plain := helloOf(t, distinctiveConfig("mirror.test", nil))
+	// A hello that offers nothing is returned as it is: the same bytes.
+	same, err := Fresh(plain)
+	if err != nil || len(same) != len(plain) || &same[0] != &plain[0] {
+		t.Fatalf("a hello with no session was rebuilt: %v", err)
+	}
+	ticketed := withExtension(t, plain, extensionSessionTicket, nil)
+	for name, c := range map[string]struct {
+		record, want []byte
+		earlyData    bool
+	}{
+		"a pre-shared key":                  {withExtension(t, plain, extensionPreSharedKey, []byte("identities and binders")), plain, false},
+		"early data":                        {withExtension(t, plain, extensionEarlyData, nil), plain, true},
+		"early data and a pre-shared key":   {withExtension(t, withExtension(t, plain, extensionEarlyData, nil), extensionPreSharedKey, []byte("identities and binders")), plain, true},
+		"a session ticket":                  {withExtension(t, plain, extensionSessionTicket, []byte("a ticket from the server")), ticketed, false},
+		"a ticket and an unknown extension": {withExtension(t, withExtension(t, plain, extensionSessionTicket, []byte("a ticket")), 0xfe01, []byte("kept")), withExtension(t, ticketed, 0xfe01, []byte("kept")), false},
+	} {
+		hello, err := ParseHello(c.record)
+		if err != nil || !hello.Resumes || hello.EarlyData != c.earlyData {
+			t.Fatalf("%s: %+v %v", name, hello, err)
+		}
+		fresh, err := Fresh(c.record)
+		if err != nil || !bytes.Equal(fresh, c.want) {
+			t.Errorf("%s: the fresh hello is not the hello without its session: %v", name, err)
+		}
+	}
+	for name, record := range map[string][]byte{"not a hello": []byte("GET / HTTP/1.1\r\n\r\n"), "nothing": nil, "half a hello": plain[:len(plain)/2]} {
+		if _, err := Fresh(record); !errors.Is(err, ErrNotHello) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Damaged in any way, a hello is refused or rebuilt into one that parses
+	// and offers nothing; it never stops the process.
+	resuming := withExtension(t, withExtension(t, withExtension(t, plain, extensionSessionTicket, []byte("ticket")), extensionEarlyData, nil), extensionPreSharedKey, []byte("identities and binders"))
+	random := rand.New(rand.NewPCG(20261119, 43))
+	rebuilt := 0
+	for round := 0; round < 4000; round++ {
+		damaged := bytes.Clone(resuming)
+		switch random.IntN(4) {
+		case 0:
+			damaged = damaged[:random.IntN(len(damaged))]
+		case 1:
+			damaged = append(damaged, byte(random.IntN(256)))
+		default:
+			for flips := 1 + random.IntN(3); flips > 0; flips-- {
+				damaged[random.IntN(len(damaged))] ^= byte(1 << random.IntN(8))
+			}
+		}
+		_, parseErr := ParseHello(damaged)
+		fresh, err := Fresh(damaged)
+		switch {
+		case err != nil:
+			if !errors.Is(err, ErrNotHello) || parseErr == nil {
+				t.Fatalf("round %d: %v for a hello that parses: %v", round, err, parseErr == nil)
+			}
+		default:
+			rebuilt++
+			if hello, err := ParseHello(fresh); err != nil || hello.Resumes {
+				t.Fatalf("round %d: the rebuilt hello does not parse or offers a session: %v", round, err)
+			}
+		}
+	}
+	if rebuilt == 0 {
+		t.Fatal("no damaged hello could be rebuilt: the test shows nothing")
+	}
+}
+
+// A client that pads its hellos by their length sends one padding when it
+// offers a session and another when it does not. SameClient sets padding
+// aside and nothing else.
+func TestSameClientSetsAsideOnlyPadding(t *testing.T) {
+	plain := helloOf(t, distinctiveConfig("mirror.test", nil))
+	padded := withExtension(t, plain, extensionPadding, make([]byte, 200))
+	if SameShape(plain, padded) {
+		t.Fatal("a padded hello has the shape of the same hello without padding: the test shows nothing")
+	}
+	if !SameClient(plain, padded) || !SameClient(padded, plain) || !SameClient(plain, plain) {
+		t.Fatal("a hello and the same hello padded are not one client's")
+	}
+	if !SameClient(padded, withExtension(t, plain, extensionPadding, make([]byte, 7))) {
+		t.Fatal("two paddings of one hello are not one client's")
+	}
+	// A hello made fresh from one that offered a session is the same
+	// client's as the padded hello it sent without one.
+	resuming := withExtension(t, plain, extensionPreSharedKey, []byte("identities and binders"))
+	fresh, err := Fresh(resuming)
+	if err != nil || !SameClient(padded, fresh) || SameClient(padded, resuming) {
+		t.Fatalf("the fresh hello is not the padded client's: %v", err)
+	}
+	other := distinctiveConfig("mirror.test", nil)
+	other.CurvePreferences = []tls.CurveID{tls.X25519}
+	for name, record := range map[string][]byte{
+		"other groups":        helloOf(t, other),
+		"another server name": helloOf(t, distinctiveConfig("other.test", nil)),
+		"another extension":   withExtension(t, plain, 0xfe01, []byte("private use")),
+		"an empty ticket":     withExtension(t, plain, extensionSessionTicket, nil),
+		"not a hello":         []byte("GET / HTTP/1.1\r\n\r\n"),
+		"nothing":             nil,
+		"a hello cut short":   padded[:len(padded)-3],
+		"padding and another": withExtension(t, withExtension(t, plain, extensionPadding, make([]byte, 9)), 0xfe01, []byte("private use")),
+	} {
+		if SameClient(padded, record) || SameClient(record, padded) {
+			t.Errorf("%s: taken for the same client", name)
+		}
+	}
+	// A copy of a padded hello is padded to the same length, so the hello a
+	// client sent without a session can be copied as it was.
+	server := newRecordingServer(t, nil)
+	padded = withExtension(t, helloOf(t, distinctiveConfig("mirror.test", server.roots)), extensionPadding, make([]byte, 200))
+	conn, _, err := Client(testContext(t), server.dial(t), padded, "mirror.test", server.roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo(t, conn)
+	sent, _ := server.last(t)
+	if hello, _ := ParseHello(sent); !SameShape(padded, sent) || len(sent) != len(padded) || hello.Extensions[len(hello.Extensions)-1] != extensionPadding {
+		t.Fatal("the copy of a padded hello is not padded as the client's was")
+	}
+}

@@ -106,12 +106,12 @@ func TestLeakRequestWithoutABodyCostsOnlyTheScan(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api/wham/tasks/list?limit=20&task_filter=current", nil)
 	upstream := request.Clone(request.Context())
 	upstream.Body = nil
-	match := guard.inspects("chatgpt.com", 443)
+	match := guard.inspects(envFlow, "chatgpt.com", 443)
 	opts := guard.scanOptionsFor(match, request.URL.Path)
 	target := []byte(request.URL.RequestURI())
 	scanOnly := testing.AllocsPerRun(200, func() { guard.index.FindWith(target, opts) })
 	inspect := testing.AllocsPerRun(200, func() {
-		if p.inspectForLeaks(request, upstream, nil, "chatgpt.com", 443, time.Time{}) != nil {
+		if p.inspectForLeaks(request, upstream, nil, envFlow, "chatgpt.com", 443, time.Time{}) != nil {
 			t.Fatal("a clean request was stopped")
 		}
 	})
@@ -172,27 +172,27 @@ func TestReportedPlaceholdersAreBounded(t *testing.T) {
 	now := time.Now()
 	log.now = func() time.Time { return now }
 	for i := 0; i < maxReportedPlaceholders; i++ {
-		if fresh := log.fresh("api.anthropic.com", []string{fmt.Sprintf("ph:secret:%d", i)}); len(fresh) != 1 {
+		if fresh := log.fresh(hostKey("api.anthropic.com"), []string{fmt.Sprintf("ph:secret:%d", i)}); len(fresh) != 1 {
 			t.Fatalf("placeholder %d was not fresh", i)
 		}
 	}
-	if fresh := log.fresh("api.anthropic.com", []string{"ph:secret:0"}); len(fresh) != 0 {
+	if fresh := log.fresh(hostKey("api.anthropic.com"), []string{"ph:secret:0"}); len(fresh) != 0 {
 		t.Fatal("a reported placeholder was reported again")
 	}
-	if fresh := log.fresh("api.anthropic.com", []string{"ph:secret:over-a"}); len(fresh) != 1 {
+	if fresh := log.fresh(hostKey("api.anthropic.com"), []string{"ph:secret:over-a"}); len(fresh) != 1 {
 		t.Fatal("the first placeholder past the bound was not reported")
 	}
-	if fresh := log.fresh("api.anthropic.com", []string{"ph:secret:over-b"}); len(fresh) != 0 {
+	if fresh := log.fresh(hostKey("api.anthropic.com"), []string{"ph:secret:over-b"}); len(fresh) != 0 {
 		t.Fatal("past the bound, a second report came within the minute")
 	}
-	if fresh := log.fresh("api.openai.com", []string{"ph:secret:over-b"}); len(fresh) != 1 {
+	if fresh := log.fresh(hostKey("api.openai.com"), []string{"ph:secret:over-b"}); len(fresh) != 1 {
 		t.Fatal("another host was affected")
 	}
 	now = now.Add(reportedOverflowPeriod)
-	if fresh := log.fresh("api.anthropic.com", []string{"ph:secret:over-b"}); len(fresh) != 1 {
+	if fresh := log.fresh(hostKey("api.anthropic.com"), []string{"ph:secret:over-b"}); len(fresh) != 1 {
 		t.Fatal("past the bound, nothing was reported after a minute")
 	}
-	if len(log.hosts["api.anthropic.com"].seen) != maxReportedPlaceholders {
+	if len(log.hosts[hostKey("api.anthropic.com")].seen) != maxReportedPlaceholders {
 		t.Fatal("the reported set grew past its bound")
 	}
 }
@@ -262,9 +262,9 @@ func TestLeakBareConnectsNeverOpenAWindow(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 	rig.guard.handshakes.mu.Lock()
-	counted := rig.guard.handshakes.hosts[host]
+	counted := rig.guard.handshakes.hosts[hostKey(host)]
 	rig.guard.handshakes.mu.Unlock()
-	if counted != nil || rig.guard.handshakes.bypassed(host) {
+	if counted != nil || rig.guard.handshakes.bypassed(hostKey(host)) {
 		t.Fatalf("bare CONNECTs counted toward a window: %+v", counted)
 	}
 	original := anthropicBody("key " + leakSecretOne)

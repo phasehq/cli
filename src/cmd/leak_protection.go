@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/phasehq/cli/internal/leakguard"
@@ -29,27 +30,83 @@ const (
 	leakProtectionInactiveMsg = "Phase: leak protection is not active in this shell, so values from this command are not removed from model traffic."
 )
 
-// leakRegister is the registration call; tests replace it.
-var leakRegister = leakguard.Register
+// leakRuntimeSource names the source that finds the hook-managed proxy from
+// the runtime state on disk.
+const leakRuntimeSource = "runtime"
+
+// The session's own environment is leakguard's first source. The proxy the
+// harness hooks keep running is the second: a command in a shell that does
+// not load the Phase environment (Codex's and Cursor's shells, another
+// terminal) still hands out values a harness on this machine can read. A
+// later source, such as the phase up engine, is one more AddSource.
+func init() {
+	leakguard.AddSource(leakguard.Source{Name: leakRuntimeSource, Find: hookRuntimeProxy})
+}
+
+// leakRuntimeStat is the one file check a command pays when no proxy runs;
+// tests count it.
+var leakRuntimeStat = os.Lstat
+
+// hookRuntimeProxy finds the hook-managed proxy the way phase ai status does:
+// from the runtime state, when the process that wrote it is alive. With no
+// state file it costs one stat, and it never touches the network.
+func hookRuntimeProxy() (string, bool) {
+	directory, err := hookRuntimeDir()
+	if err != nil {
+		return "", false
+	}
+	path := filepath.Join(directory, hookRuntimeStateFile)
+	if _, err := leakRuntimeStat(path); err != nil {
+		return "", false
+	}
+	state, err := readHookRuntimeState(path)
+	if err != nil || validateHookRuntimeState(state, "") != nil {
+		return "", false
+	}
+	return state.ProxyURL, true
+}
+
+// leakLocate finds the proxy to register with, and leakRegister registers
+// with it; tests replace them.
+var (
+	leakLocate   = leakguard.Locate
+	leakRegister = func(ctx context.Context, proxy leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
+		return proxy.Register(ctx, values)
+	}
+)
 
 // leakWarnings is where warnings go; tests replace it. Never stdout, which
 // may be what the command's output is piped into.
 var leakWarnings io.Writer = os.Stderr
 
-// inactiveNotice is printed at most once per process.
-var inactiveNotice sync.Once
+// inactiveNotice and runtimeWarning are each printed at most once per process.
+var inactiveNotice, runtimeWarning sync.Once
 
-// protectValues registers values with the session's leak protection before
-// the command hands them to anything outside the CLI. Inside a session, a
-// failure refuses the command for an Agent login and warns otherwise. Outside
-// one, an Agent login is told once that nothing is protected; it is not
-// refused, since Agent tokens are used from shells that do not load the Phase
-// environment.
+// protectValues registers values with leak protection before the command
+// hands them to anything outside the CLI.
 func protectValues(ctx context.Context, agent bool, values []leakguard.Value) error {
 	if len(values) == 0 {
 		return nil
 	}
-	if !leakguard.Active() {
+	proxy, found := leakLocate()
+	return protectValuesWith(ctx, proxy, found, agent, values)
+}
+
+// protectValuesWith registers values with the proxy that was found, and says
+// what a failure means:
+//   - inside a session, a failure refuses the command for an Agent login and
+//     warns otherwise: what the command hands out is in front of the model;
+//   - a proxy found any other way is registered with as well, and a failure
+//     there warns once and never refuses, whoever is logged in: the command
+//     may have nothing to do with an AI tool;
+//   - with no proxy at all, an Agent login is told once that nothing is
+//     protected; it is not refused, since Agent tokens are used from shells
+//     that do not load the Phase environment.
+func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent bool, values []leakguard.Value) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if !found {
 		if agent {
 			inactiveNotice.Do(func() { fmt.Fprintln(leakWarnings, leakProtectionInactiveMsg) })
 		}
@@ -58,40 +115,46 @@ func protectValues(ctx context.Context, agent bool, values []leakguard.Value) er
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, err := leakRegister(ctx, values); err != nil {
-		full := errors.Is(err, leakguard.ErrInventoryFull)
-		switch {
-		case agent && full:
-			return errLeakInventoryFull
-		case agent:
-			return errLeakProtectionUnreachable
-		case full:
-			fmt.Fprintln(leakWarnings, leakInventoryFullWarning)
-		default:
-			fmt.Fprintln(leakWarnings, leakProtectionWarning)
-		}
+	_, err := leakRegister(ctx, proxy, values)
+	if err == nil {
+		return nil
+	}
+	full := errors.Is(err, leakguard.ErrInventoryFull)
+	warning := leakProtectionWarning
+	if full {
+		warning = leakInventoryFullWarning
+	}
+	switch {
+	case !proxy.InSession():
+		runtimeWarning.Do(func() { fmt.Fprintln(leakWarnings, warning) })
+	case agent && full:
+		return errLeakInventoryFull
+	case agent:
+		return errLeakProtectionUnreachable
+	default:
+		fmt.Fprintln(leakWarnings, warning)
 	}
 	return nil
 }
 
 // protectSecrets registers the secrets a command is about to hand out. A
 // secret's placeholder id is its Phase id when the backend knows it, otherwise
-// its key name.
+// its key name, and the registration says which it is.
 func protectSecrets(ctx context.Context, backend phase.SecretsBackend, secrets []sdk.SecretResult) error {
-	_, agent := backend.(*phase.AgentBackend)
-	active := leakguard.Active()
-	if !active && !agent {
+	typed, agent := backend.(*phase.AgentBackend)
+	proxy, found := leakLocate()
+	if !found && !agent {
 		return nil
 	}
 	values := make([]leakguard.Value, 0, len(secrets))
 	for _, secret := range secrets {
-		value := leakguard.Value{Type: secret.Type, ID: secret.Key, Value: secret.Value}
+		value := leakguard.Value{Type: secret.Type, ID: secret.Key, KeyName: true, Value: secret.Value}
 		if secret.IsDynamic {
 			value.Type = "dynamic"
 		}
-		if typed, ok := backend.(*phase.AgentBackend); ok {
+		if agent {
 			if id := typed.SecretID(secret); id != "" {
-				value.ID = id
+				value.ID, value.KeyName = id, false
 			}
 		}
 		if !leakguard.Protectable(value.Type) {
@@ -99,12 +162,13 @@ func protectSecrets(ctx context.Context, backend phase.SecretsBackend, secrets [
 		}
 		values = append(values, value)
 	}
-	// Outside a session only the backend says whether this is an Agent login,
-	// so nothing else is read for a command that registers nothing.
-	if active && !agent {
+	// Only a session treats an Agent login differently, and outside one only
+	// the backend says whether this is an Agent login, so nothing else is read
+	// for a command that registers nothing.
+	if found && proxy.InSession() && !agent {
 		agent = phase.ActiveLoginIsAgent()
 	}
-	return protectValues(ctx, agent, values)
+	return protectValuesWith(ctx, proxy, found, agent, values)
 }
 
 // protectLeaseCredentials registers the credentials of the leases in a
@@ -139,6 +203,7 @@ func collectLeaseCredentials(node any, values *[]leakguard.Value, depth int) {
 				credential, _ := raw.(map[string]any)
 				secret, _ := credential["value"].(string)
 				if secret != "" {
+					// A lease's id is the Console's own.
 					*values = append(*values, leakguard.Value{Type: "dynamic", ID: id, Value: secret})
 				}
 			}

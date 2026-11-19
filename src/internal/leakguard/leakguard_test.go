@@ -37,13 +37,15 @@ func withEnvironment(t *testing.T, values map[string]string) {
 // fakeProxy answers the two control routes the way the Phase proxy does, as
 // an HTTP proxy that receives absolute-form requests for phase.invalid.
 type fakeProxy struct {
-	mu        sync.Mutex
-	key       *censor.Key
-	keyCalls  int
-	posts     int
-	sizes     []int
-	entries   []*censor.Entries
-	bodies    [][]byte
+	mu       sync.Mutex
+	key      *censor.Key
+	keyCalls int
+	posts    int
+	sizes    []int
+	entries  []*censor.Entries
+	bodies   [][]byte
+	// kinds holds what each registration said of its ids, entry by entry.
+	kinds     [][]string
 	keyStatus int
 	full      bool
 }
@@ -81,10 +83,11 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 			fake.sizes = append(fake.sizes, len(body))
 			fake.bodies = append(fake.bodies, body)
 			var request remoteapi.InventoryRequest
-			if json.Unmarshal(body, &request) != nil || len(body) > 4<<20 {
+			if json.Unmarshal(body, &request) != nil || len(body) > 4<<20 || len(request.IDKinds) != len(request.Entries) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			fake.kinds = append(fake.kinds, request.IDKinds)
 			answer := remoteapi.InventoryResponse{SchemaVersion: 1}
 			for _, raw := range request.Entries {
 				entry, err := censor.ParseEntries(raw)
@@ -264,5 +267,146 @@ func TestAFullInventoryIsNotAnUnreachableProxy(t *testing.T) {
 	_, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}})
 	if !errors.Is(err, ErrInventoryFull) {
 		t.Fatalf("a full inventory came back as %v", err)
+	}
+}
+
+// withSource adds a source for the length of a test.
+func withSource(t *testing.T, source Source) {
+	t.Helper()
+	sourcesMu.Lock()
+	previous := sources
+	sourcesMu.Unlock()
+	AddSource(source)
+	t.Cleanup(func() {
+		sourcesMu.Lock()
+		sources = previous
+		sourcesMu.Unlock()
+	})
+}
+
+func capabilityURL(server *httptest.Server) string {
+	return strings.Replace(server.URL, "http://", "http://phase:capability@", 1)
+}
+
+// A proxy is looked for in order: the session's own environment first, then
+// whatever else was added. The first that finds one is registered with.
+func TestSourcesAreTriedInOrder(t *testing.T) {
+	session, sessionServer := newFakeProxy(t)
+	machine, machineServer := newFakeProxy(t)
+	later, laterServer := newFakeProxy(t)
+	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}
+	machineRuns := true
+	asked := 0
+	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { asked++; return capabilityURL(machineServer), machineRuns }})
+	withSource(t, Source{Name: "later", Find: func() (string, bool) { return capabilityURL(laterServer), true }})
+	// A source without a name or a way to look is not kept.
+	sourcesMu.RLock()
+	before := len(sources)
+	sourcesMu.RUnlock()
+	AddSource(Source{Name: "", Find: func() (string, bool) { return capabilityURL(laterServer), true }})
+	AddSource(Source{Name: "nothing"})
+	sourcesMu.RLock()
+	if len(sources) != before || sources[0].Name != SourceSession {
+		t.Fatalf("the sources: %d, first %q", len(sources), sources[0].Name)
+	}
+	sourcesMu.RUnlock()
+
+	// Inside a session the session's own proxy is used, and nothing else is
+	// even asked.
+	withEnvironment(t, sessionEnvironment(sessionServer))
+	found, ok := Locate()
+	if !ok || !found.InSession() || found.Source != SourceSession || asked != 0 {
+		t.Fatalf("inside a session: %+v %v, %d other sources asked", found, ok, asked)
+	}
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || session.posts != 1 || machine.posts != 0 {
+		t.Fatalf("inside a session: %+v %v", result, err)
+	}
+
+	// With no proxy in the environment, the next source that finds one.
+	withEnvironment(t, map[string]string{})
+	found, ok = Locate()
+	if !ok || found.InSession() || found.Source != "runtime" || found.URL != capabilityURL(machineServer) {
+		t.Fatalf("outside a session: %+v %v", found, ok)
+	}
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || machine.posts != 1 || machine.keyCalls != 1 || session.posts != 1 {
+		t.Fatalf("outside a session: %+v %v", result, err)
+	}
+	// And the one after it when that one finds nothing.
+	machineRuns = false
+	if found, ok = Locate(); !ok || found.Source != "later" {
+		t.Fatalf("after the first found nothing: %+v %v", found, ok)
+	}
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || later.posts != 1 || machine.posts != 1 {
+		t.Fatalf("after the first found nothing: %+v %v", result, err)
+	}
+}
+
+// When no source finds a proxy nothing is registered and nothing is called.
+func TestNoProxyFoundCostsNothing(t *testing.T) {
+	fake, _ := newFakeProxy(t)
+	withEnvironment(t, map[string]string{})
+	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { return "", false }})
+	// A source that says it found a proxy and names none found none.
+	withSource(t, Source{Name: "empty", Find: func() (string, bool) { return "", true }})
+	if found, ok := Locate(); ok {
+		t.Fatalf("a proxy was found: %+v", found)
+	}
+	result, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}})
+	if err != nil || result != (Result{}) || fake.keyCalls != 0 || fake.posts != 0 {
+		t.Fatalf("with no proxy: %+v %v", result, err)
+	}
+}
+
+// A registration says of each id whether it is a secret's key name, in step
+// with its entries however they are split.
+func TestRegistrationSaysWhatEachIDIs(t *testing.T) {
+	fake, server := newFakeProxy(t)
+	withEnvironment(t, sessionEnvironment(server))
+	previous := maxBatchBytes
+	maxBatchBytes = 40 << 10
+	t.Cleanup(func() { maxBatchBytes = previous })
+	var values []Value
+	for i := 0; i < 8; i++ {
+		raw := make([]byte, 600)
+		_, _ = rand.Read(raw)
+		values = append(values, Value{Type: "secret", ID: "value-" + string(rune('a'+i)), KeyName: i%3 == 0, Value: base64.StdEncoding.EncodeToString(raw)})
+	}
+	// A value that cannot be protected still says what its id is.
+	values = append(values, Value{Type: "secret", ID: "LOG LEVEL", KeyName: true, Value: "abc"})
+	result, err := Register(context.Background(), values)
+	if err != nil || result.Added != 8 || result.Unprotected != 1 {
+		t.Fatalf("register: %+v %v", result, err)
+	}
+	if fake.posts < 2 {
+		t.Fatalf("%d posts: the registration was not split", fake.posts)
+	}
+	wanted := map[string]string{}
+	for _, value := range values {
+		kind := remoteapi.InventoryIDPhase
+		if value.KeyName {
+			kind = remoteapi.InventoryIDKeyName
+		}
+		wanted[PlaceholderID(value.ID)] = kind
+	}
+	said := map[string]string{}
+	index := 0
+	for _, kinds := range fake.kinds {
+		for _, kind := range kinds {
+			said[fake.entries[index].ID] = kind
+			index++
+		}
+	}
+	if len(said) != len(values) || index != len(fake.entries) {
+		t.Fatalf("%d ids were described for %d values", len(said), len(values))
+	}
+	for id, kind := range wanted {
+		if said[id] != kind {
+			t.Errorf("%s was registered as %q, want %q", id, said[id], kind)
+		}
+	}
+	for _, body := range fake.bodies {
+		if !strings.Contains(string(body), `"idKinds":["`) {
+			t.Fatalf("a registration does not say what its ids are: %.80s", body)
+		}
 	}
 }

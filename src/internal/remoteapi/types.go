@@ -85,7 +85,21 @@ type InventoryKeyResponse struct {
 type InventoryRequest struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Entries       []json.RawMessage `json:"entries"`
+	// IDKinds says, entry by entry, what each entry's id is: InventoryIDPhase
+	// or InventoryIDKeyName. The client knows which it sent; the proxy never
+	// guesses from the id's shape. Absent, every id is taken for a key name.
+	IDKinds []string `json:"idKinds,omitempty"`
 }
+
+const (
+	// InventoryIDPhase is an id the Console issued, such as a secret's id or
+	// a lease's id.
+	InventoryIDPhase = "phase_id"
+	// InventoryIDKeyName is a secret's key name. The Console does not know
+	// the key names of an end-to-end encrypted app, so the proxy keeps such
+	// an id out of the events it sends.
+	InventoryIDKeyName = "key_name"
+)
 
 // InventoryResponse counts the values a registration protected and those it
 // could not.

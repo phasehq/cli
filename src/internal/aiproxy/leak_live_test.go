@@ -119,7 +119,7 @@ func liveValues(t *testing.T, guard *leakGuard, path string) (registered, unprot
 	if scanner.Err() != nil {
 		t.Fatalf("%s: the file of values could not be read", liveValuesEnvironmentKey)
 	}
-	registered, unprotected, err = guard.add(entries)
+	registered, unprotected, err = guard.add(entries, nil)
 	if err != nil {
 		t.Fatalf("the values could not be registered: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestLiveLeakProxy(t *testing.T) {
 	}
 	stopPath := os.Getenv(liveStopEnvironmentKey)
 	proxyURL := &url.URL{Scheme: "http", User: url.UserPassword("phase", state.runtimeCapability.Reveal()), Host: listener.Addr().String()}
-	status := guard.status()
+	status := guard.status("")
 	var copied []string
 	for _, harness := range guard.hosts {
 		for _, rule := range harness.Hosts {
@@ -291,7 +291,7 @@ func TestLiveLeakProxy(t *testing.T) {
 	if err := events.Stop(); err != nil {
 		output.line("events: %v", err)
 	}
-	status = guard.status()
+	status = guard.status("")
 	output.line("stopped: %d events printed; not inspected at the end: %s", lines.Load(), strings.Join(status.UnreadHosts, ", "))
 }
 
@@ -301,10 +301,10 @@ func TestLiveEventLineHoldsNoContent(t *testing.T) {
 	guard := newTestLeakGuard(t, leakModeCensor)
 	registerLeakValues(t, guard, map[string]string{"live-1": leakSecretOne})
 	proxy := &httpProxy{leak: guard}
-	match := guard.inspects("opencode.ai", 443)
+	match := guard.inspects(envFlow, "opencode.ai", 443)
 	scan := guard.newScan(match, "http", censor.ScanOptions{})
 	body := []byte(`{"messages":[{"role":"user","content":"the key is ` + leakSecretOne + `"}]}`)
-	if guard.scanPayload(scan, body, "body") == nil {
+	if guard.readPayload(scan, body, "body") == nil {
 		t.Fatal("the value was not found")
 	}
 	scan.changed, scan.listed = true, scan.placeholders
@@ -312,7 +312,7 @@ func TestLiveEventLineHoldsNoContent(t *testing.T) {
 	event := proxy.leakEvent(nil, request, "opencode.ai", 443, scan, "allow", outcomeCensored, leakReasonFound, 0, time.Now())
 	event.Detail = safeEventDetail(event.Detail, nil)
 	line := liveEventLine(event)
-	want := "event type=leak_protection outcome=censored reason=secret_in_request host=opencode.ai path=/zen/v1/chat/completions method=POST protocol=http decision=allow harness=opencode inventoryHits=1 mode=censor placeholderCount=1 where=body placeholders=ph:secret:live-1"
+	want := "event type=leak_protection outcome=censored reason=secret_in_request host=opencode.ai path=/zen/v1/chat/completions method=POST protocol=http decision=allow capture=proxy harness=opencode inventoryHits=1 mode=censor placeholderCount=1 replacedCount=1 severity=medium where=body placeholders=ph:secret:live-1"
 	if line != want || strings.Contains(line, leakSecretOne) {
 		t.Fatalf("the line for an event:\n%s\n%s", line, want)
 	}

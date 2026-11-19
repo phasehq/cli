@@ -1,9 +1,12 @@
 // Package leakguard registers secret values the CLI is about to hand out with
-// the leak protection of the Phase AI session it runs in. It indexes each value
-// locally with the session's key and sends only keyed hashes; the proxy then
+// the leak protection of a running Phase AI proxy. It indexes each value
+// locally with the proxy's key and sends only keyed hashes; the proxy then
 // replaces the value with ph:<type>:<id> wherever it appears in model traffic.
 //
-// Outside a Phase AI session it does nothing and makes no call.
+// The proxy is found through an ordered list of sources: the session a
+// command runs in names it in the environment, and other sources find one
+// that runs on the machine for commands whose shell does not carry that
+// environment. When no source finds one it does nothing and makes no call.
 package leakguard
 
 import (
@@ -16,9 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -45,9 +46,14 @@ var maxBatchBytes = 3 << 20
 // Value is one value to protect. Type is the placeholder's type (the secret's
 // type, or "dynamic" for a lease) and ID its id.
 type Value struct {
-	Type  string
-	ID    string
-	Value string
+	Type string
+	ID   string
+	// KeyName says ID is the secret's key name and not an id the Console
+	// issued. The proxy is told, and keeps such an id out of the events it
+	// sends: the Console does not know the key names of an end-to-end
+	// encrypted app. The placeholder the model sees is the same either way.
+	KeyName bool
+	Value   string
 }
 
 // Result counts what the proxy protected and what it could not.
@@ -71,6 +77,70 @@ var Environment = os.Getenv
 // in its environment.
 func Active() bool {
 	return Environment("PHASE_AI_ENABLED") == "1" && proxyURL() != ""
+}
+
+// SourceSession is the source that reads the session's own environment.
+const SourceSession = "session"
+
+// Source is one way to find a running Phase AI proxy. Find returns the
+// proxy's address with its capability, as a runtime hands it out, and whether
+// one runs. Every command that hands out a value calls it, so it must cost
+// next to nothing when no proxy runs: a look at the environment or one file,
+// never the network.
+type Source struct {
+	Name string
+	Find func() (proxyURL string, found bool)
+}
+
+var (
+	sourcesMu sync.RWMutex
+	// sources are tried in order. The session's own environment comes first:
+	// a command inside a session registers with that session's proxy.
+	sources = []Source{{Name: SourceSession, Find: sessionProxy}}
+)
+
+func sessionProxy() (string, bool) {
+	if !Active() {
+		return "", false
+	}
+	return proxyURL(), true
+}
+
+// AddSource adds a way to find a running proxy, tried after the ones already
+// there.
+func AddSource(source Source) {
+	if source.Name == "" || source.Find == nil {
+		return
+	}
+	sourcesMu.Lock()
+	defer sourcesMu.Unlock()
+	sources = append(sources, source)
+}
+
+// Proxy is a running Phase AI proxy to register values with.
+type Proxy struct {
+	// URL is the proxy's address with its capability.
+	URL string
+	// Source names the source that found it.
+	Source string
+}
+
+// InSession reports a proxy named by the process's own environment: the
+// command runs inside that proxy's session, where what it hands out is read
+// by the model unless the proxy removes it.
+func (p Proxy) InSession() bool { return p.Source == SourceSession }
+
+// Locate returns the proxy to register with: the first one a source finds.
+func Locate() (Proxy, bool) {
+	sourcesMu.RLock()
+	ordered := sources
+	sourcesMu.RUnlock()
+	for _, source := range ordered {
+		if found, ok := source.Find(); ok && found != "" {
+			return Proxy{URL: found, Source: source.Name}, true
+		}
+	}
+	return Proxy{}, false
 }
 
 func proxyURL() string {
@@ -105,32 +175,45 @@ var (
 	keyProxy  string
 )
 
-// Register protects values with the session's leak protection. It does nothing
-// outside a session, or when there is nothing to protect. It never sends a
-// value: the proxy receives keyed hashes only.
+// Register protects values with the leak protection of the proxy Locate
+// finds. It does nothing when none is found, or when there is nothing to
+// protect.
 func Register(ctx context.Context, values []Value) (Result, error) {
-	var result Result
-	if !Active() {
-		return result, nil
+	proxy, found := Locate()
+	if !found {
+		return Result{}, nil
 	}
+	return proxy.Register(ctx, values)
+}
+
+// registration is one POST: entries and, for each, what its id is.
+type registration struct {
+	entries []json.RawMessage
+	kinds   []string
+}
+
+// Register protects values with this proxy's leak protection. It never sends
+// a value: the proxy receives keyed hashes only.
+func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
+	var result Result
 	values = protectable(values)
 	if len(values) == 0 {
 		return result, nil
 	}
-	client, err := sessionClient(proxyURL())
+	client, err := phaseproxy.ControlClient(p.URL, Timeout, Timeout)
 	if err != nil {
 		return result, err
 	}
 	keyContext, cancelKey := context.WithTimeout(ctx, Timeout)
-	key, err := sessionKey(keyContext, client)
+	key, err := proxyKey(keyContext, client, p.URL)
 	cancelKey()
 	if err != nil {
 		return result, err
 	}
 	// Indexing is local work, so only the calls to the proxy count against
 	// the timeout: the key above, and the registrations below together.
-	var batches [][]json.RawMessage
-	var batch []json.RawMessage
+	var batches []registration
+	var batch registration
 	size := 0
 	for _, value := range values {
 		entries, err := censor.IndexValue(key, value.Type, value.ID, value.Value)
@@ -149,13 +232,17 @@ func Register(ctx context.Context, values []Value) (Result, error) {
 				return result, errors.New("a value could not be indexed for leak protection")
 			}
 		}
-		if size+len(encoded) > maxBatchBytes && len(batch) > 0 {
-			batches, batch, size = append(batches, batch), nil, 0
+		if size+len(encoded) > maxBatchBytes && len(batch.entries) > 0 {
+			batches, batch, size = append(batches, batch), registration{}, 0
 		}
-		batch = append(batch, encoded)
+		kind := remoteapi.InventoryIDPhase
+		if value.KeyName {
+			kind = remoteapi.InventoryIDKeyName
+		}
+		batch.entries, batch.kinds = append(batch.entries, encoded), append(batch.kinds, kind)
 		size += len(encoded)
 	}
-	if len(batch) > 0 {
+	if len(batch.entries) > 0 {
 		batches = append(batches, batch)
 	}
 	postContext, cancelPost := context.WithTimeout(ctx, Timeout)
@@ -191,36 +278,10 @@ func protectable(values []Value) []Value {
 	return kept
 }
 
-func sessionClient(rawProxyURL string) (*http.Client, error) {
-	parsed, err := url.Parse(rawProxyURL)
-	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User == nil {
-		return nil, errors.New("the Phase AI proxy address is invalid")
-	}
-	password, present := parsed.User.Password()
-	if !phaseproxy.ValidProxyUsername(parsed.User.Username()) || !present || password == "" {
-		return nil, errors.New("the Phase AI proxy credential is unavailable")
-	}
-	if !phaseproxy.IsLoopbackHost(parsed.Hostname()) {
-		return nil, errors.New("the Phase AI proxy is not on this machine")
-	}
-	// Control calls go to the main capability, whichever Connection the
-	// environment selected.
-	parsed.User = url.UserPassword("phase", password)
-	transport := &http.Transport{
-		Proxy:       http.ProxyURL(parsed),
-		DialContext: (&net.Dialer{Timeout: Timeout}).DialContext,
-	}
-	return &http.Client{
-		Transport: transport, Timeout: Timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}, nil
-}
-
-// sessionKey fetches the key once per process and proxy.
-func sessionKey(ctx context.Context, client *http.Client) (*censor.Key, error) {
+// proxyKey fetches a proxy's key once per process and proxy.
+func proxyKey(ctx context.Context, client *http.Client, current string) (*censor.Key, error) {
 	keyMu.Lock()
 	defer keyMu.Unlock()
-	current := proxyURL()
 	if cachedKey != nil && keyProxy == current {
 		return cachedKey, nil
 	}
@@ -253,8 +314,8 @@ func sessionKey(ctx context.Context, client *http.Client) (*censor.Key, error) {
 	return key, nil
 }
 
-func post(ctx context.Context, client *http.Client, entries []json.RawMessage) (Result, error) {
-	body, err := json.Marshal(remoteapi.InventoryRequest{SchemaVersion: agentapi.SchemaVersion, Entries: entries})
+func post(ctx context.Context, client *http.Client, batch registration) (Result, error) {
+	body, err := json.Marshal(remoteapi.InventoryRequest{SchemaVersion: agentapi.SchemaVersion, Entries: batch.entries, IDKinds: batch.kinds})
 	if err != nil {
 		return Result{}, err
 	}

@@ -405,8 +405,11 @@ func (r *leakRig) passedThroughOnce(t *testing.T, reason string) {
 		t.Fatalf("%d events for connections passed through unread, want one: %+v", len(events), events)
 	}
 	event := events[0]
+	// It says whose connection it was and that the whole of it went unread,
+	// and nothing else: the proxy read nothing it could grade or count.
 	if event.Reason != reason || event.Host != mirrorHost || event.Port != 443 || event.Path != "/" || event.ProxyDecision != "allow" ||
-		event.EventType != leakEventType || event.Detail["harness"] != "opencode" || event.Detail["mode"] != leakModeCensor || len(event.Detail) != 2 {
+		event.EventType != leakEventType || event.Detail["harness"] != "opencode" || event.Detail["mode"] != leakModeCensor ||
+		event.Detail["capture"] != CaptureProxy || event.Detail["scope"] != leakScopeConnection || len(event.Detail) != 4 {
 		t.Fatalf("the event for a connection passed through for %s: %+v", reason, event)
 	}
 	if durableAuditEvent(event) {
@@ -565,7 +568,7 @@ func TestMirrorPassesThroughWhatIsNotAHello(t *testing.T) {
 	}
 	// Two connections for one reason are reported once.
 	rig.passedThroughOnce(t, leakReasonHelloUnreadable)
-	if rig.guard.handshakes.bypassed(mirrorHost) {
+	if rig.guard.handshakes.bypassed(hostKey(mirrorHost)) {
 		t.Fatal("bytes that are not TLS opened a pass-through window")
 	}
 }
@@ -605,25 +608,266 @@ func TestMirrorPassesThroughAClientThatSendsNoHelloInTime(t *testing.T) {
 	rig.passedThroughOnce(t, leakReasonHelloUnreadable)
 }
 
-// A hello that resumes a session is the client's business with the service.
-func TestMirrorPassesThroughAHelloThatResumesASession(t *testing.T) {
-	rig := newLeakRig(t, leakModeCensor)
-	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
-	config := distinctiveTLS(rig.providerRoots)
-	config.ServerName = mirrorHost
-	config.ClientSessionCache = tls.NewLRUClientSessionCache(8)
-
-	// The client's first connection is to the service itself and leaves it
-	// holding a ticket.
-	raw, err := net.Dial("tcp", rig.provider.Listener.Addr().String())
+// directSession leaves a client holding a session of the service's own: one
+// connection straight to the fake provider, as a client makes when a
+// connection of its went through unread. It returns the hello the client
+// opened that connection with, its hello when it has no session.
+func (r *leakRig) directSession(t *testing.T, config *tls.Config) []byte {
+	t.Helper()
+	index := r.wire.count()
+	raw, err := net.Dial("tcp", r.provider.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	direct := tls.Client(raw, config)
-	if response, _ := exchange(t, direct, bufio.NewReader(direct), "GET /zen/v1/models HTTP/1.1\r\nHost: "+mirrorHost+"\r\n\r\n"); response.StatusCode != http.StatusOK {
+	// A ticket, when one is sent, arrives with the first answer.
+	if response, _ := exchange(t, direct, bufio.NewReader(direct), "GET /zen/v1/models HTTP/1.1\r\nHost: "+config.ServerName+"\r\n\r\n"); response.StatusCode != http.StatusOK {
 		t.Fatalf("the direct connection: %d", response.StatusCode)
 	}
 	_ = direct.Close()
+	return r.wire.hello(t, index)
+}
+
+// A client that offers to resume a session is read like any other. The
+// service is sent a copy of the hello that client opens a connection with
+// when it has no session, and the client's own hello is answered with a full
+// handshake. Before, one connection that went through unread left the client
+// with the service's ticket, and every later connection went through unread.
+func TestMirrorReadsAClientThatOffersToResumeASession(t *testing.T) {
+	for name, version := range map[string]uint16{"a TLS 1.3 pre-shared key": tls.VersionTLS13, "a TLS 1.2 session ticket": tls.VersionTLS12} {
+		t.Run(name, func(t *testing.T) {
+			rig := newLeakRig(t, leakModeCensor)
+			registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+			config := distinctiveTLS(rig.bothRoots)
+			config.ServerName = mirrorHost
+			config.MaxVersion = version
+			config.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+			first := rig.directSession(t, config)
+			if hello, err := tlsmirror.ParseHello(first); err != nil || hello.Resumes {
+				t.Fatalf("the client's first hello offers a session: %+v %v", hello, err)
+			}
+
+			body := chatBody("the key is " + leakSecretOne)
+			for attempt := 0; attempt < 2; attempt++ {
+				index := rig.wire.count()
+				conn, tap := rig.connectTLS(t, mirrorHost, config)
+				sent := tap.hello(t)
+				if hello, err := tlsmirror.ParseHello(sent); err != nil || !hello.Resumes {
+					t.Fatalf("connection %d: the client's hello offers no session: %+v %v", attempt, hello, err)
+				}
+				// The client fell back to a full handshake, with the proxy.
+				state := conn.ConnectionState()
+				if state.DidResume || state.Version != version {
+					t.Fatalf("connection %d: resumed = %v, TLS %04x", attempt, state.DidResume, state.Version)
+				}
+				if _, err := state.PeerCertificates[0].Verify(x509.VerifyOptions{Roots: rig.phaseRoots, DNSName: mirrorHost}); err != nil {
+					t.Fatalf("connection %d: the client was not answered by the proxy: %v", attempt, err)
+				}
+				if response, _ := exchange(t, conn, bufio.NewReader(conn), chatRequest(mirrorHost, body)); response.StatusCode != http.StatusOK {
+					t.Fatalf("connection %d: status %d", attempt, response.StatusCode)
+				}
+				// The request was read.
+				received := rig.lastReceived()
+				if want := bytes.Replace(body, []byte(leakSecretOne), []byte("ph:secret:stripe"), 1); !bytes.Equal(received.body, want) {
+					t.Fatalf("connection %d: the provider received %s", attempt, received.body)
+				}
+				// One connection to the service, opened with the client's hello
+				// as it is when the client has no session: no offer in it, and
+				// the same extensions in the same order as the client's first.
+				if rig.wire.count() != index+1 {
+					t.Fatalf("connection %d: %d connections to the provider, want one", attempt, rig.wire.count()-index)
+				}
+				upstream := rig.wire.hello(t, index)
+				got, err := tlsmirror.ParseHello(upstream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, _ := tlsmirror.ParseHello(first)
+				if got.Resumes || !reflect.DeepEqual(got.Extensions, want.Extensions) {
+					t.Fatalf("connection %d: the provider was sent extensions %v (offers a session: %v), the client's first hello had %v", attempt, got.Extensions, got.Resumes, want.Extensions)
+				}
+				if !tlsmirror.SameShape(first, upstream) || tlsmirror.SameShape(sent, upstream) {
+					t.Fatalf("connection %d: the provider was not sent the client's hello as it is without a session", attempt)
+				}
+				sameHello(t, first, received.wire.hello(t))
+				_ = conn.Close()
+			}
+			if events := rig.unreadTunnels(); len(events) != 0 {
+				t.Fatalf("a connection that offered a session was passed through unread: %+v", events)
+			}
+			if events := rig.leakEventsNow(); len(events) != 1 || events[0].Outcome != outcomeCensored {
+				t.Fatalf("events: %+v", events)
+			}
+		})
+	}
+}
+
+// When a client that was seen without a session later offers one, the hello
+// it sent then is what is copied: its own hello in every part, the padding a
+// client adds by its hello's length included, which cannot be worked out
+// from a hello that offers a session.
+func TestMirrorCopiesTheHelloAClientSentWithoutASession(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	config := distinctiveTLS(rig.bothRoots)
+	config.ServerName = mirrorHost
+	config.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+	body := chatBody("the key is " + leakSecretOne)
+	key := hostKey(mirrorHost)
+
+	// The client's first connection is read, and offers no session.
+	conn, tap := rig.connectTLS(t, mirrorHost, config)
+	if response, _ := exchange(t, conn, bufio.NewReader(conn), chatRequest(mirrorHost, body)); response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", response.StatusCode)
+	}
+	_ = conn.Close()
+	first := tap.hello(t)
+	if kept := rig.guard.mirrored.like(key, first); !bytes.Equal(kept, first) {
+		t.Fatal("the hello a client sent without a session was not kept")
+	}
+	if rig.guard.mirrored.like(leakStateKey{tool: "opencode", host: mirrorHost}, first) != nil || rig.guard.mirrored.like(hostKey("api.anthropic.com"), first) != nil {
+		t.Fatal("a hello kept for one tool and host answers for another")
+	}
+
+	// Stand in for a client that pads by length (Go's does not): what is kept
+	// for it is the hello it sent, padded to 512 bytes as such a client pads.
+	message := len(first) - 5
+	if message <= 0xff || message >= 0x200-5 {
+		t.Fatalf("the client's hello is %d bytes, not a length a client pads", message)
+	}
+	padded := withHelloExtension(t, first, 21, make([]byte, 0x200-message-4))
+	rig.guard.mirrored.mu.Lock()
+	rig.guard.mirrored.seen[key] = [][]byte{padded}
+	rig.guard.mirrored.mu.Unlock()
+
+	// A connection that went straight to the service leaves the client with
+	// a session, which it offers on its next connection.
+	rig.directSession(t, config)
+	index := rig.wire.count()
+	conn, tap = rig.connectTLS(t, mirrorHost, config)
+	sent := tap.hello(t)
+	if hello, err := tlsmirror.ParseHello(sent); err != nil || !hello.Resumes {
+		t.Fatalf("the client's hello offers no session: %+v %v", hello, err)
+	}
+	if response, _ := exchange(t, conn, bufio.NewReader(conn), chatRequest(mirrorHost, body)); response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", response.StatusCode)
+	}
+	if bytes.Contains(rig.lastReceived().body, []byte(leakSecretOne)) {
+		t.Fatal("the request was not read")
+	}
+	upstream := rig.wire.hello(t, index)
+	got, err := tlsmirror.ParseHello(upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Resumes || got.Extensions[len(got.Extensions)-1] != 21 || len(upstream)-5 != 0x200 || !tlsmirror.SameShape(padded, upstream) {
+		t.Fatalf("the provider was sent %d bytes with extensions %v, not the hello the client sent without a session", len(upstream)-5, got.Extensions)
+	}
+	if events := rig.unreadTunnels(); len(events) != 0 {
+		t.Fatalf("a connection was passed through unread: %+v", events)
+	}
+
+	// A hello that offered a session is never kept, and the hellos kept for
+	// a tool and host are few: the oldest goes first.
+	rig.guard.mirrored.mu.Lock()
+	kept := len(rig.guard.mirrored.seen[key])
+	rig.guard.mirrored.mu.Unlock()
+	if kept != 1 {
+		t.Fatalf("%d hellos are kept after a connection that offered a session", kept)
+	}
+	memory := newFreshHellos()
+	var shapes [][]byte
+	for i := 0; i < maxFreshHellos+2; i++ {
+		shapes = append(shapes, withHelloExtension(t, first, 0xfe00+uint16(i), nil))
+		memory.remember(key, shapes[i])
+		memory.remember(key, shapes[i])
+	}
+	if len(memory.seen[key]) != maxFreshHellos || memory.like(key, shapes[0]) != nil || memory.like(key, shapes[1]) != nil ||
+		!bytes.Equal(memory.like(key, shapes[len(shapes)-1]), shapes[len(shapes)-1]) {
+		t.Fatalf("%d hellos are kept for one tool and host", len(memory.seen[key]))
+	}
+	for i := 0; i < 2*maxRememberedHosts; i++ {
+		memory.remember(hostKey(fmt.Sprintf("h%d.example", i)), first)
+	}
+	if len(memory.seen) > maxRememberedHosts {
+		t.Fatalf("hellos are kept for %d hosts", len(memory.seen))
+	}
+}
+
+// withHelloExtension adds one extension to the end of a ClientHello record.
+func withHelloExtension(t *testing.T, record []byte, kind uint16, data []byte) []byte {
+	t.Helper()
+	added := append([]byte{byte(kind >> 8), byte(kind), byte(len(data) >> 8), byte(len(data))}, data...)
+	out := append(bytes.Clone(record), added...)
+	grow := func(at, size int) {
+		value := 0
+		for _, b := range out[at : at+size] {
+			value = value<<8 | int(b)
+		}
+		value += len(added)
+		for i := range size {
+			out[at+size-1-i] = byte(value >> (8 * i))
+		}
+	}
+	// After the record and handshake headers, the version and the random:
+	// the session id, the cipher suites and the compression methods.
+	at := 5 + 4 + 2 + 32
+	at += 1 + int(out[at])
+	at += 2 + int(out[at])<<8 + int(out[at+1])
+	at += 1 + int(out[at])
+	grow(3, 2)  // the record
+	grow(6, 3)  // the handshake message
+	grow(at, 2) // the extensions
+	if _, err := tlsmirror.ParseHello(out); err != nil {
+		t.Fatalf("the extended hello is malformed: %v", err)
+	}
+	return out
+}
+
+// A hello that says early data follows it is left to the service. The
+// proxy's own TLS can neither read that data nor skip it, so answering the
+// client would end its connection; unread is the lesser harm.
+func TestMirrorPassesThroughAHelloWithEarlyData(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	// A hello of a real client, with the extension added.
+	conn, first := rig.connectTLS(t, mirrorHost, distinctiveTLS(rig.phaseRoots))
+	_ = conn.Close()
+	hello := withHelloExtension(t, first.hello(t), 42, nil)
+	if parsed, err := tlsmirror.ParseHello(hello); err != nil || !parsed.EarlyData || !parsed.Resumes {
+		t.Fatalf("the hello does not announce early data: %+v %v", parsed, err)
+	}
+	index := rig.wire.count()
+	tap := rig.connect(t, mirrorHost)
+	if _, err := tap.Write(hello); err != nil {
+		t.Fatal(err)
+	}
+	// The service is sent the client's own bytes on one connection, and its
+	// answer comes back: here a TLS alert, since this service takes no early
+	// data either.
+	if !bytes.Equal(rig.wire.hello(t, index), hello) {
+		t.Fatal("the provider did not receive the client's own hello")
+	}
+	answer := make([]byte, 5)
+	if _, err := io.ReadFull(tap, answer); err != nil || answer[0] != 21 {
+		t.Fatalf("the service's answer did not come back: % x %v", answer, err)
+	}
+	if rig.wire.count() != index+1 {
+		t.Fatalf("%d connections to the provider, want the client's own alone", rig.wire.count()-index)
+	}
+	rig.passedThroughOnce(t, leakReasonHelloResumption)
+}
+
+// A hello that offers a session and cannot be copied exactly even without the
+// offer is still left to the service, as the client's business with it: here
+// one that names another server than the CONNECT did.
+func TestMirrorPassesThroughAResumingHelloItCannotCopy(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	config := distinctiveTLS(rig.providerRoots)
+	config.ServerName = "elsewhere.example"
+	config.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+	rig.directSession(t, config)
 
 	index := rig.wire.count()
 	conn, tap := rig.connectTLS(t, mirrorHost, config)
@@ -750,7 +994,7 @@ func TestMirrorPassesThroughWhenItsHandshakeFails(t *testing.T) {
 	rig.passedThroughOnce(t, leakReasonUpstreamHandshake)
 	// Nothing was terminated, so nothing was counted against the client.
 	rig.guard.handshakes.mu.Lock()
-	counted := rig.guard.handshakes.hosts[mirrorHost]
+	counted := rig.guard.handshakes.hosts[hostKey(mirrorHost)]
 	rig.guard.handshakes.mu.Unlock()
 	if counted != nil {
 		t.Fatalf("a connection passed through was counted as a handshake: %+v", counted)
@@ -772,7 +1016,7 @@ func TestMirrorEndsTheTunnelWhenTheServiceCannotBeReached(t *testing.T) {
 	if err := tls.Client(tap, config).Handshake(); err == nil {
 		t.Fatal("the client completed TLS with a service that cannot be reached")
 	}
-	if dials.Load() != 1 || len(rig.unreadTunnels()) != 0 || rig.guard.handshakes.bypassed(mirrorHost) {
+	if dials.Load() != 1 || len(rig.unreadTunnels()) != 0 || rig.guard.handshakes.bypassed(hostKey(mirrorHost)) {
 		t.Fatalf("%d dials, %d events", dials.Load(), len(rig.unreadTunnels()))
 	}
 }
@@ -788,14 +1032,14 @@ func TestMirrorHostCountsARefusedCertificate(t *testing.T) {
 	failures := func() int {
 		rig.guard.handshakes.mu.Lock()
 		defer rig.guard.handshakes.mu.Unlock()
-		if state := rig.guard.handshakes.hosts[mirrorHost]; state != nil {
+		if state := rig.guard.handshakes.hosts[hostKey(mirrorHost)]; state != nil {
 			return state.failures
 		}
 		return 0
 	}
 	body := chatBody("the key is " + leakSecretOne)
 	for want := 1; want <= 2; want++ {
-		if rig.guard.handshakes.bypassed(mirrorHost) {
+		if rig.guard.handshakes.bypassed(hostKey(mirrorHost)) {
 			t.Fatal("one refusal opened a window")
 		}
 		client, taps := rig.tappedClient(distinctiveTLS(rig.providerRoots))
@@ -813,7 +1057,7 @@ func TestMirrorHostCountsARefusedCertificate(t *testing.T) {
 		sameHello(t, taps.hello(t, 0), rig.wire.hello(t, want-1))
 		rig.wire.closed(t, want-1)
 	}
-	if !rig.guard.handshakes.bypassed(mirrorHost) || rig.receivedCount() != 0 {
+	if !rig.guard.handshakes.bypassed(hostKey(mirrorHost)) || rig.receivedCount() != 0 {
 		t.Fatal("two refusals in a row did not open a window, or a refused request went out")
 	}
 	// Inside the window the tunnel is raw.
@@ -1330,27 +1574,31 @@ func TestMirrorDoesNotApplyToAConnectionsHost(t *testing.T) {
 }
 
 func TestUnreadTunnelsAreReportedOncePerHostAndReasonAMinute(t *testing.T) {
-	log := newUnreadTunnelLog()
+	log := newUnreadLog()
 	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 	log.now = func() time.Time { return now }
-	if !log.fresh(mirrorHost, leakReasonHelloResumption) {
+	if !log.fresh(hostKey(mirrorHost), leakReasonHelloResumption) {
 		t.Fatal("the first pass-through was not reported")
 	}
 	for i := 0; i < 50; i++ {
 		now = now.Add(time.Second)
-		if log.fresh(mirrorHost, leakReasonHelloResumption) {
+		if log.fresh(hostKey(mirrorHost), leakReasonHelloResumption) {
 			t.Fatalf("a pass-through %d seconds after the report was reported again", i+1)
 		}
 	}
-	if !log.fresh(mirrorHost, leakReasonUpstreamNotHTTP1) || !log.fresh("other.example", leakReasonHelloResumption) {
+	if !log.fresh(hostKey(mirrorHost), leakReasonUpstreamNotHTTP1) || !log.fresh(hostKey("other.example"), leakReasonHelloResumption) {
 		t.Fatal("another reason or another host was not reported")
 	}
-	now = now.Add(unreadTunnelPeriod)
-	if !log.fresh(mirrorHost, leakReasonHelloResumption) || log.fresh(mirrorHost, leakReasonHelloResumption) {
+	// Another tool on the same host has a count of its own.
+	if !log.fresh(leakStateKey{tool: "opencode", host: mirrorHost}, leakReasonHelloResumption) || log.fresh(leakStateKey{tool: "opencode", host: mirrorHost}, leakReasonHelloResumption) {
+		t.Fatal("another tool on the same host was not reported once")
+	}
+	now = now.Add(unreadPeriod)
+	if !log.fresh(hostKey(mirrorHost), leakReasonHelloResumption) || log.fresh(hostKey(mirrorHost), leakReasonHelloResumption) {
 		t.Fatal("a pass-through a minute later was not reported once")
 	}
 	for i := 0; i < 4*maxRememberedHosts; i++ {
-		log.fresh(fmt.Sprintf("h%d.example", i), leakReasonHelloUnreadable)
+		log.fresh(hostKey(fmt.Sprintf("h%d.example", i)), leakReasonHelloUnreadable)
 	}
 	if len(log.last) > maxRememberedHosts {
 		t.Fatalf("the log grew to %d entries", len(log.last))
@@ -1365,7 +1613,7 @@ func TestUnreadTunnelEventFitsTheConsole(t *testing.T) {
 			t.Errorf("%q is not a reason the Console takes", reason)
 		}
 	}
-	detail := map[string]any{"mode": leakModeCensor, "harness": "opencode"}
+	detail := map[string]any{"mode": leakModeCensor, "harness": "opencode", "capture": CaptureTunnel, "scope": leakScopeConnection}
 	if kept := safeEventDetail(detail, nil); !reflect.DeepEqual(kept, detail) {
 		t.Fatalf("the detail is cut before it reaches the Console: %+v", kept)
 	}

@@ -74,6 +74,10 @@ type engineRuntime struct {
 	// leak is the process's leak protection inventory. It outlives a recycled
 	// backend session and goes with the process.
 	leak *leakGuard
+	// flows holds what capture layers said about connections that have not
+	// sent their CONNECT yet. It goes with the process as well, so a note
+	// left while a session is recycled is still found.
+	flows *flowNotes
 }
 
 // drainingHandler prevents a new HTTP request from entering the old backend
@@ -353,11 +357,14 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	if err != nil {
 		return err
 	}
-	control := &controlHandler{state: state, environments: environments, leak: leak}
+	// A proxy started for one harness reads model hosts for that tool only.
+	// A label that names no listed tool leaves it unknown.
+	tool := leak.hosts.toolFor(session.HarnessLabel)
+	control := &controlHandler{state: state, environments: environments, leak: leak, tool: tool}
 	httpHandler := &httpProxy{
 		state: state, ca: session.CA, transport: transport,
 		dial: dial, lockdown: e.Lockdown, events: events, manifest: manifest, control: control, lifecycle: ctx,
-		leak: leak,
+		leak: leak, tool: tool, flows: e.flowNotes(),
 	}
 	trackedHandler := &drainingHandler{handler: httpHandler}
 	proxyServer := &http.Server{

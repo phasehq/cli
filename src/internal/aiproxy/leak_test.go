@@ -38,6 +38,14 @@ func newTestLeakGuard(t *testing.T, mode string) *leakGuard {
 	return guard
 }
 
+// envFlow is a client that was given the proxy through its environment and
+// is not known to be any listed tool: every client there was before flows
+// were told apart.
+var envFlow = FlowContext{Capture: CaptureProxy}
+
+// hostKey is what such a client's host is remembered under.
+func hostKey(host string) leakStateKey { return leakStateKey{host: host} }
+
 // registerLeakValues indexes values as the CLI would and adds them.
 func registerLeakValues(t *testing.T, guard *leakGuard, values map[string]string) {
 	t.Helper()
@@ -49,7 +57,8 @@ func registerLeakValues(t *testing.T, guard *leakGuard, values map[string]string
 		}
 		entries = append(entries, entry)
 	}
-	if _, _, err := guard.add(entries); err != nil {
+	// The ids are the Console's own, so events name them.
+	if _, _, err := guard.add(entries, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -98,7 +107,7 @@ func TestLeakHostTable(t *testing.T) {
 		{"example.com", "/", 443, false, ""},
 	}
 	for _, c := range cases {
-		match := guard.inspects(c.host, c.port)
+		match := guard.inspects(envFlow, c.host, c.port)
 		if got := match.inspectsPath(c.path); got != c.inspected {
 			t.Errorf("%s:%d%s inspected = %v, want %v", c.host, c.port, c.path, got, c.inspected)
 		}
@@ -133,11 +142,11 @@ func TestLeakHostTable(t *testing.T) {
 	if strings.Count(string(encoded), `"mirrorHello":true`) != 1 {
 		t.Fatalf("the flag is not written as mirrorHello: %s", encoded)
 	}
-	if off := newTestLeakGuard(t, leakModeOff); off.inspects("api.anthropic.com", 443) != nil {
+	if off := newTestLeakGuard(t, leakModeOff); off.inspects(envFlow, "api.anthropic.com", 443) != nil {
 		t.Fatal("off mode still reads model hosts")
 	}
 	var none *leakGuard
-	if none.inspects("api.anthropic.com", 443) != nil {
+	if none.inspects(envFlow, "api.anthropic.com", 443) != nil {
 		t.Fatal("a proxy without leak protection reads model hosts")
 	}
 }
@@ -264,7 +273,7 @@ func TestHandshakeBypassIsPerHostAndNeedsTwoFailures(t *testing.T) {
 	tracker := newHandshakeTracker()
 	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 	tracker.now = func() time.Time { return now }
-	host := "api.anthropic.com"
+	host := hostKey("api.anthropic.com")
 
 	if window := tracker.note(host, false); window != 0 || tracker.bypassed(host) {
 		t.Fatal("one failed handshake must not open a pass-through: a dropped connection looks the same")
@@ -272,7 +281,7 @@ func TestHandshakeBypassIsPerHostAndNeedsTwoFailures(t *testing.T) {
 	if window := tracker.note(host, false); window != 20*time.Second || !tracker.bypassed(host) {
 		t.Fatalf("two failures in a row should open a 20 second window, got %v", window)
 	}
-	if tracker.bypassed("chatgpt.com") {
+	if tracker.bypassed(hostKey("chatgpt.com")) {
 		t.Fatal("the pass-through is for one host")
 	}
 	now = now.Add(21 * time.Second)
@@ -300,7 +309,7 @@ func TestHandshakeBypassIsPerHostAndNeedsTwoFailures(t *testing.T) {
 func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 	guard := newTestLeakGuard(t, leakModeCensor)
 	registerLeakValues(t, guard, map[string]string{"one": leakSecretOne, "two": leakSecretTwo, "short": "abc"})
-	status := guard.status()
+	status := guard.status("")
 	if status.Mode != leakModeCensor || status.SecretsKnown != 2 || status.Unprotected != 1 {
 		t.Fatalf("status counts are wrong: %+v", status)
 	}
@@ -309,9 +318,9 @@ func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 		containsString(status.InspectedHosts, "cursor.sh") {
 		t.Fatalf("status hosts are wrong: %+v", status)
 	}
-	guard.handshakes.note("api.anthropic.com", false)
-	guard.handshakes.note("api.anthropic.com", false)
-	status = guard.status()
+	guard.handshakes.note(hostKey("api.anthropic.com"), false)
+	guard.handshakes.note(hostKey("api.anthropic.com"), false)
+	status = guard.status("")
 	if containsString(status.InspectedHosts, "api.anthropic.com") || !containsString(status.UnreadHosts, "api.anthropic.com") {
 		t.Fatalf("a host in a pass-through window is still listed as inspected: %+v", status)
 	}
@@ -321,7 +330,7 @@ func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 			t.Fatalf("status names a value or an id: %s", payload)
 		}
 	}
-	off := newTestLeakGuard(t, leakModeOff).status()
+	off := newTestLeakGuard(t, leakModeOff).status("")
 	if len(off.InspectedHosts) != 0 || !containsString(off.UnreadHosts, "api.anthropic.com") {
 		t.Fatalf("off mode lists hosts as inspected: %+v", off)
 	}

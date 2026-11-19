@@ -39,6 +39,12 @@ type httpProxy struct {
 	control          *controlHandler
 	// leak is the process's leak protection; nil leaves model traffic alone.
 	leak *leakGuard
+	// tool is the one AI tool this proxy serves, in the leak protection
+	// table's ids, when the proxy was started for one; empty otherwise.
+	tool string
+	// flows holds what capture layers in this process said about connections
+	// that are about to send a CONNECT; nil when there are none.
+	flows *flowNotes
 	// mirrorHelloWait is how long a client may take to send its TLS hello to a
 	// host whose hello is copied; zero means mirrorHelloTimeout.
 	mirrorHelloWait time.Duration
@@ -76,6 +82,9 @@ const eventIDHeader = "X-Phase-Event-Id"
 
 type tunnelAuthentication struct {
 	connectionID string
+	// flow says how the tunnel's connection reached the proxy and whose it
+	// is. Leak protection reads a host only for the flows it is listed for.
+	flow FlowContext
 	// upstream, when set, sends every request of the tunnel. The tunnel is to
 	// a host that accepts only its own client's TLS, and these are connections
 	// opened with a copy of the hello the client opened the tunnel with.
@@ -161,8 +170,10 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
 	}
 	selection := selectedConnection(req)
+	flow := p.ownFlow()
 	if tunnelAuth != nil {
 		selection = tunnelAuth.connectionID
+		flow = tunnelAuth.flow
 	}
 	binding, matchErr := p.state.findBinding(host, port, req.URL.EscapedPath(), selection)
 	if matchErr != nil {
@@ -189,7 +200,7 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		if tunnelAuth != nil {
 			restoreWebSocketUpgrade(req, upstream)
 		}
-		if stopped := p.inspectForLeaks(req, upstream, nil, host, port, started); stopped != nil {
+		if stopped := p.inspectForLeaks(req, upstream, nil, flow, host, port, started); stopped != nil {
 			return *stopped
 		}
 		response, roundTripErr := p.transportFor(tunnelAuth, false).RoundTrip(upstream)
@@ -200,7 +211,7 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		// passed on untouched; how to ask for a Connection is kept for
 		// GET /v1/hints. A model host read for leak protection is the
 		// harness's own business: its refusals are about the harness's login.
-		if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) && p.leak.inspects(host, port) == nil {
+		if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) && p.leak.inspects(flow, host, port) == nil {
 			p.state.noteConnectionNeeded(hintReasonUpstreamRejected, host, port, response.StatusCode)
 		}
 		return processedResponse{response: response}
@@ -237,7 +248,7 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	// Leak protection reads the request as the Agent sent it, before anything
 	// the proxy adds; whatever it rewrites is what is checked, signed and sent
 	// below.
-	if stopped := p.inspectForLeaks(req, upstream, binding, host, port, started); stopped != nil {
+	if stopped := p.inspectForLeaks(req, upstream, binding, flow, host, port, started); stopped != nil {
 		return *stopped
 	}
 	// The secret guard, then the grant's access policy, both before anything
@@ -391,6 +402,10 @@ func makeEvent(binding *binding, req *http.Request, decision, outcome, reason st
 func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	p.wg.Add(1)
 	defer p.wg.Done()
+	// Whose connection this is comes from the capture layer that noted it, or
+	// from the proxy itself; never from anything the request says. A note is
+	// used up by the CONNECT it was left for, whatever becomes of it.
+	flow := p.connectFlow(req)
 	host, port, err := phaseproxy.ParseAuthority(req.Host, 443)
 	if err != nil {
 		writeProxyError(w, &requestFailure{status: http.StatusBadRequest, code: "invalid_connect_target", message: "The CONNECT target is invalid."})
@@ -405,6 +420,7 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		writeProxyError(w, &requestFailure{status: http.StatusForbidden, code: "ambiguous_agent_binding", message: "The CONNECT target is ambiguous."})
 		return
 	}
+	authentication := tunnelAuthentication{connectionID: selectedConnection(req), flow: flow}
 	if !bound {
 		if p.lockdown {
 			failure := &requestFailure{
@@ -419,14 +435,15 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 			writeProxyError(w, failure)
 			return
 		}
-		// A model host of a known harness is read for leak protection,
-		// unless its client keeps refusing the proxy's certificate.
-		if match := p.leak.inspects(host, port); match != nil && !p.leak.handshakes.bypassed(host) {
+		// A model host is read for leak protection when the table lists it
+		// for this flow, unless that tool's client keeps refusing the proxy's
+		// certificate there.
+		if match := p.leak.inspects(authentication.flow, host, port); match != nil && !p.leak.handshakes.bypassed(match.key) {
 			if err := p.state.availability(); err != nil {
 				writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
 				return
 			}
-			p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)}, match)
+			p.mitmConnect(w, req, host, port, authentication, match)
 			return
 		}
 		// A raw tunnel hides the service's answer from the proxy, so the host
@@ -440,7 +457,7 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
 		return
 	}
-	p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)}, nil)
+	p.mitmConnect(w, req, host, port, authentication, nil)
 }
 
 // dialUnbound opens a connection the way the proxy does for a host no
@@ -563,8 +580,10 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 		defer mirror.close()
 		authentication.upstream = mirror.transport
 		terminated = replayed
-		// A ticket of the proxy's would come back in this client's next hello,
-		// and a hello that resumes a session is not copied.
+		// The client's hello is answered with a full handshake whatever
+		// session it offers: that session is the service's. The proxy gives no
+		// ticket of its own either, so the client's next hello is the one it
+		// sends to the service and can be copied as it is.
 		termination.SessionTicketsDisabled = true
 	}
 	tlsClient := tls.Server(terminated, termination)
@@ -620,7 +639,7 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 			continue
 		}
 		if result.response.StatusCode == http.StatusSwitchingProtocols {
-			p.handleWebSocket(tunnelContext, tlsClient, reader, inner, result)
+			p.handleWebSocket(tunnelContext, tlsClient, reader, inner, result, authentication.flow)
 			return
 		}
 		if result.event.EventID != "" {
@@ -687,7 +706,7 @@ func responseForMITMClient(upstream *http.Response, request *http.Request) *http
 	return response
 }
 
-func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clientReader *bufio.Reader, request *http.Request, result processedResponse) {
+func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clientReader *bufio.Reader, request *http.Request, result processedResponse, flow FlowContext) {
 	defer request.Body.Close()
 	defer result.response.Body.Close()
 	upstream, writable := result.response.Body.(io.ReadWriteCloser)
@@ -724,19 +743,24 @@ func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clien
 	defer close(stop)
 	go p.watchWebSocket(ctx, client, upstream, check, stop)
 	host, port, _ := requestAuthority(request)
-	if match := p.leak.inspects(host, port); match.inspectsPath(request.URL.Path) {
+	if match := p.leak.inspects(flow, host, port); match.inspectsPath(request.URL.Path) {
 		p.relayInspectedWebSocket(clientReader, client, upstream, request, host, port, match)
 		return
 	}
 	copyBidirectional(&bufferedReadWriteCloser{Reader: clientReader, Writer: client, Closer: client}, upstream)
 }
 
-// relayInspectedWebSocket copies the server's frames back untouched and reads
-// the client's on the way out. Whichever side ends first ends both.
+// relayInspectedWebSocket copies the server's frames back untouched, one
+// frame at a time, and reads the client's on the way out. Whichever side ends
+// first ends both.
 func (p *httpProxy) relayInspectedWebSocket(clientReader *bufio.Reader, client *tls.Conn, upstream io.ReadWriteCloser, request *http.Request, host string, port int, match *leakHostMatch) {
+	downstream := &wsDownstream{client: client}
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
-	go func() { p.pumpLeakFrames(clientReader, upstream, request, host, port, match); done <- struct{}{} }()
+	go func() { downstream.relay(upstream); done <- struct{}{} }()
+	go func() {
+		p.pumpLeakFrames(clientReader, upstream, downstream, request, host, port, match)
+		done <- struct{}{}
+	}()
 	<-done
 	_ = client.Close()
 	_ = upstream.Close()

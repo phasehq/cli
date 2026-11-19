@@ -148,9 +148,33 @@ revision.
 ### GET /v1/inventory/key and POST /v1/inventory (leak protection)
 
 Used by the CLI itself (`internal/leakguard`), never by the Agent's own tools.
-Before a command hands out secret values inside a session it fetches the key,
-indexes each value locally with `pkg/censor`, and registers the entries. The
-entries carry keyed hashes and lengths, never a value.
+Before a command hands out secret values it looks for a running proxy, fetches
+that proxy's key, indexes each value locally with `pkg/censor`, and registers
+the entries. The entries carry keyed hashes and lengths, never a value.
+
+The proxy is looked for through an ordered list of sources, and the first one
+that finds a proxy is used (`leakguard.AddSource` adds another):
+
+1. The session the command runs in: `PHASE_AI_ENABLED=1` and the proxy
+   variables in its environment.
+2. The hook-managed proxy, through its runtime state (`runtime.json` in the
+   Phase AI directory, the file `phase ai status` reads), when the process
+   that wrote it is alive. This is what covers a command in a shell that does
+   not load the Phase environment: Codex's and Cursor's shells, or another
+   terminal.
+
+With no proxy running the lookup costs one file check: nothing is read and
+nothing is called. What a failed registration means depends on how the proxy
+was found:
+
+| The proxy was found through | When the registration fails |
+|---|---|
+| the session's environment | An Agent-token login is refused before any value leaves. Any other login gets one warning line on stderr and carries on. |
+| the runtime state | One warning line on stderr, once per process, and the command carries on, whoever is logged in. |
+| nothing | Nothing is registered. An Agent-token login is told once that leak protection is not active. |
+
+Every caller reaches the control API through one client,
+`phaseproxy.ControlClient`: `phase ai status`, the hooks and this registration.
 
 ```http
 GET http://phase.invalid/v1/inventory/key
@@ -162,7 +186,7 @@ GET http://phase.invalid/v1/inventory/key
 POST http://phase.invalid/v1/inventory
 Content-Type: application/json
 
-{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"<secret id>","forms":[...]}]}
+{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"<secret id>","forms":[...]}],"idKinds":["phase_id"]}
 
 200 {"schemaVersion":1,"added":1,"unprotected":0}
 ```
@@ -170,24 +194,92 @@ Content-Type: application/json
 - Body ≤ 4 MiB (413 `inventory_too_large`), at most 4096 entries; unknown
   fields, another `schemaVersion` or any malformed entry is 400
   `invalid_inventory` and nothing of the batch is added.
+- `idKinds` says, entry by entry, what each entry's `id` is: `phase_id` (an id
+  the Console issued, such as a secret's id or a lease's id) or `key_name` (a
+  secret's key name, which is what a login other than an Agent token registers
+  a secret under). It holds one member per entry, or is left out; any other
+  length or word is 400 `invalid_inventory`. Left out, every id is taken for a
+  key name. The proxy never guesses the kind from the id's shape. It remembers
+  it per placeholder, and a placeholder once registered as a key name stays
+  one.
 - 507 `leak_inventory_full` once the index holds 10000 values or its chunk cap.
+- A value too short or plain to protect is counted once for its type and id,
+  however often it is registered, and at most 4096 such are remembered; past
+  that the count stays where it is.
 - No route returns entries, hashes or ids. `GET /v1/status` adds
   `leakProtection` with counts and host names only:
   `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...]}`.
+  A proxy started for one tool lists that tool's hosts as inspected, and the
+  hosts listed for other tools only as unread.
 - The mode comes from `PHASE_AI_LEAK_PROTECTION` in the proxy's environment:
   `censor` (default; anything unknown counts as censor), `observe`, `off`.
 
-Inspected traffic: a CONNECT to a host in the leak protection table
-(`internal/aiproxy/leak_hosts.go`) is answered with the proxy's certificate even
-when no Connection covers it, and each request with a body is read before the
-secret guard, the access policy and credential injection. The URL of every
-request is read; headers (all but `Authorization`, `Proxy-Authorization`,
-`X-Api-Key` and `Cookie`) and the body only when there is a body. On the
-paths that carry conversation content (`conversationPaths` in the table) every
-pattern rule applies; elsewhere on the host only registered values and Phase's
-own token formats are looked for. A registered value or a Phase token in the
-URL, or in a binary body, blocks the request in `censor` mode; in a header it
-is only reported:
+#### Whose traffic is read
+
+The table (`internal/aiproxy/leak_hosts.go`) has one list of model hosts per AI
+tool: `claude`, `codex`, `opencode`, `cursor`. A provider's API that several
+tools call is listed under each of them with the same rule (`api.anthropic.com`
+and `api.openai.com` are also in OpenCode's list). Every connection carries a
+flow: how it reached the proxy (`capture`) and which tool opened it, when that
+is known.
+
+| The tool is | Captured by | A host is read when |
+|---|---|---|
+| known | either way | that tool's list has it |
+| not known | the proxy environment (`proxy`) | any tool's list has it, as its first entry says |
+| not known | a tunnel (`tunnel`) | never |
+
+A host that is read is answered with the proxy's certificate on port 443 even
+when no Connection covers it. A flow that is not read is not inspected at all.
+When a Connection covers its host the tunnel is still terminated for the
+Connection, as for any other host.
+
+Where a flow comes from:
+
+- A capture layer in the proxy's own process (a tunnel's router) calls
+  `Engine.NoteFlow(remoteAddr, FlowContext{Capture, Tool})` with the loopback
+  address and port its connection to the proxy comes from, before it sends the
+  CONNECT. The note is used by the first CONNECT from that address, waits
+  about ten seconds, and at most 4096 wait at once; `NoteFlow` returns an error
+  when it could not keep one, and the flow must then not be handed over.
+- Nothing a request carries sets a flow: no header, target or proxy user name.
+- A CONNECT nobody noted is a client of the proxy environment. Its tool is the
+  one the proxy was started for (`phase ai run -- claude` is `claude`,
+  `phase ai exec` the harness that invoked it); the hook-managed proxy serves
+  every harness and names none. A harness label that is not a listed tool
+  leaves the tool unknown.
+- `Engine.ShouldRead(tool, host)` and `Engine.ReadHosts(tool)` tell a capture
+  layer which flows to hand over, without a copy of the table.
+
+What the proxy remembers about a host it remembers per tool and host: the
+pass-through windows, the once-a-minute limit on unread reports and the
+placeholders already reported. One tool's refused handshakes never open a
+window for another tool on the same host.
+
+#### What is read, and what happens to it
+
+Each request to a read host is inspected before the secret guard, the access
+policy and credential injection. The URL of every request is read; headers
+(all but `Authorization`, `Proxy-Authorization`, `X-Api-Key` and `Cookie`) and
+the body only when there is a body. On the paths that carry conversation
+content (`conversationPaths` in the table) every pattern rule applies;
+elsewhere on the host only registered values and Phase's own token formats are
+looked for.
+
+One table (`internal/aiproxy/leak_policy.go`) says what happens in each kind of
+bytes, and a request body and a WebSocket message are read by it alike:
+
+| Found in | A registered value or a Phase token | Anything else |
+|---|---|---|
+| the URL | blocks | reported |
+| a header | reported | reported |
+| JSON, or other text (a body, a text message) | replaced | replaced or reported, as the rule says |
+| bytes that are not text (a binary body, a binary message) | blocks | reported |
+| a body or message that cannot be decoded (an encoding the proxy does not undo, a message compressed against the handshake) | blocks, and it is reported as unread | reported as unread |
+| a body or message over 16 MiB | not read: passes, reported as unread | |
+
+`observe` reads the same way and never replaces or blocks. A blocked request
+is refused:
 
 ```http
 HTTP/1.1 403 Forbidden
@@ -196,39 +288,81 @@ X-Phase-Error-Code: secret_in_request
 {"error":{"code":"secret_in_request","message":"Phase blocked this request: ...","retryable":false,"details":{}}}
 ```
 
-Events have `eventType` `leak_protection` and never carry matched content. A
-request is reported only when it is blocked, left unread, or holds a
-placeholder not yet reported for its host by this proxy process (at most 4096
-per host; past that, at most one event per host per minute); alerts alone are
-not reported. `outcome` is `denied` (blocked), `censored` (something was
-replaced), `reported` (found, nothing changed, such as a header), `observed`
-(`observe` mode), `unread` or `bypass`. Only blocks are spooled durably;
-the others may be dropped while the Console is unreachable and never make the
-session unavailable. `detail` holds `harness`, `mode`, `where`,
-`inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` (found in
-text the provider signed, left as it was), `labels`, `placeholders` (the newly
-seen ones, comma-separated, cut to 512 characters), `placeholderCount` (all of
-the request's) and, for a pass-through window, `windowSeconds`.
+On a WebSocket the compression offer is removed from the handshake, each
+client message is held until its last frame has arrived, and a message that is
+replaced goes out as one new frame. A blocked message is never sent: the
+client gets a close frame with code 1008 (policy violation) and the reason,
+the service a close frame with code 1001, and the connection ends. The
+service's own frames are passed back untouched, one whole frame at a time.
+
+#### Events
+
+Events have `eventType` `leak_protection` and never carry matched content.
+A request or message is reported when:
+
+- it is blocked (always);
+- it holds a placeholder not yet reported for its tool and host by this proxy
+  process (at most 4096 per tool and host; past that, at most one event a
+  minute);
+- it was left unread, once for its tool, host and reason and then at most
+  once a minute, whatever the reason;
+- its only finding sits in text the provider signed (a thinking block,
+  `encrypted_content`), which is never changed: one `reported` event, then at
+  most one a minute for its tool and host.
+
+Alerts alone are not reported. `outcome` is `denied` (blocked), `censored`
+(something was replaced), `reported` (found, nothing changed), `observed`
+(`observe` mode), `unread` or `bypass`. Only blocks are spooled durably; the
+others may be dropped while the Console is unreachable and never make the
+session unavailable. `detail` holds:
+
+| Member | Meaning |
+|---|---|
+| `mode` | `censor` or `observe` |
+| `harness` | the flow's tool when it is known, otherwise the tool inferred from the host |
+| `capture` | `proxy` or `tunnel` |
+| `where` | `url`, `header`, `body`, `message`, comma-separated |
+| `inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` | counts; `signedFindings` is what was found in text the provider signed and left as it was |
+| `labels` | rule labels |
+| `placeholders` | the newly seen ones, comma-separated, cut to 512 characters. A placeholder registered as a key name is written `ph:<type>` with no id, once per type |
+| `placeholderCount` | the distinct placeholders of the request, key names included |
+| `replacedCount` | how many of them were actually replaced in what went out; 0 in `observe` mode and for a header or a block |
+| `severity` | `high` when the request held 5 or more distinct placeholders, or a Phase token, or was blocked; `medium` for 1 to 4; `low` when it held only alerts or findings in signed text. Not on `unread` and `bypass` events |
+| `scope` | on `unread` events and on a block of something unread: `request`, `message` or `connection` |
+| `windowSeconds` | on a `bypass` event, the length of the pass-through window |
 
 A pass-through window opens only when a client answers the proxy's
-certificate with a TLS certificate alert twice in a row for a host. A client
-that drops the connection without an alert keeps failing on that host;
+certificate with a TLS certificate alert twice in a row for a tool and host. A
+client that drops the connection without an alert keeps failing on that host;
 `PHASE_AI_LEAK_PROTECTION=off` is the way out.
 
-Hosts that answer only their own client's TLS (`mirrorHello` in the table;
-`opencode.ai`, for OpenCode's hosted models). A request re-sent over Go's TLS
-is refused by such a service, so the proxy re-sends over connections that open
-with a copy of the ClientHello the client sent (`internal/tlsmirror`). It
-decides before it terminates the client's TLS, in this order:
+#### Hosts that answer only their own client's TLS
+
+`mirrorHello` in the table; `opencode.ai`, for OpenCode's hosted models. A
+request re-sent over Go's TLS is refused by such a service, so the proxy
+re-sends over connections that open with a copy of the ClientHello the client
+sent (`internal/tlsmirror`). It decides before it terminates the client's TLS,
+in this order:
 
 1. The CONNECT is answered. The client's first TLS record is read (5 second
    limit, at most 16384 bytes). If it is not one record holding exactly one
    whole ClientHello, or does not arrive in time: `hello_unreadable`.
-2. A hello that offers to resume a session (a `pre_shared_key` or `early_data`
-   extension, or a session ticket) is never copied: `hello_resumption`.
-3. The copy is built and compared with the original; the random, the session
-   id, the key shares and GREASE values are its own, everything else must be
-   equal byte for byte. If it is not: `hello_not_mirrored`.
+2. A hello that offers to resume a session (a `pre_shared_key` extension or a
+   session ticket) is never copied as it is: the session is the client's with
+   the service. The proxy rebuilds the hello that client sends on a
+   connection that resumes nothing (`pre_shared_key` and `early_data` dropped,
+   the ticket emptied, everything else kept in its order) and copies that
+   one. When the same client was seen without a session earlier (for the same
+   tool and host, the same hello once padding is set aside), the hello it
+   sent then is copied instead: a client pads a hello by its length, which
+   the rebuilt one cannot show. Up to four such hellos are kept per tool and
+   host, in memory only. A hello that says early data follows (`early_data`)
+   is passed through instead, `hello_resumption`: the proxy's TLS can neither
+   read that data nor skip it.
+3. The copy is built and compared with the hello it copies; the random, the
+   session id, the key shares and GREASE values are its own, everything else
+   must be equal byte for byte. If it is not: `hello_not_mirrored`, or
+   `hello_resumption` when the client's hello offered a session.
 4. The upstream connection is opened with the copy, through the proxy's dialer
    for hosts no Connection covers, and the service's certificate is verified
    for the CONNECT host against the roots the proxy's own TLS trusts. If the
@@ -236,18 +370,22 @@ decides before it terminates the client's TLS, in this order:
    reached at all, the client's connection is closed: there is nothing to
    hand it to.
 5. If the service chose a protocol other than HTTP/1.1: `upstream_not_http1`.
-6. Only then is the client's TLS answered with the proxy's certificate
-   (HTTP/1.1, no session tickets), and the tunnel is read like any inspected
-   host's. A client that refuses the certificate counts toward the
-   pass-through window above.
+6. Only then is the client's own hello answered with the proxy's certificate
+   and a full handshake (HTTP/1.1, no session tickets, whatever session the
+   hello offered), and the tunnel is read like any inspected host's. A client
+   that refuses the certificate counts toward the pass-through window above.
+
+So a client that holds the service's ticket, from a connection that went
+through unread, is read on its next connection like any other; it is not
+passed through for the life of its process.
 
 At each named reason nothing has been sent to the client's TLS yet, so the
 connection is handed to the service as the client opened it (a new TCP
 connection, the bytes already read, then both directions copied) and is not
 read. That is one `unread` event with `method` `CONNECT`, `path` `/`, the
-reason, and `detail` `harness` and `mode`; it is sent once for a host and
-reason, then at most once a minute. No event or log carries anything of a
-hello.
+reason, and `detail` `harness`, `mode`, `capture` and `scope` `connection`; it
+is sent once for a tool, host and reason, then at most once a minute. No event
+or log carries anything of a hello.
 
 Every request of a terminated tunnel leaves over connections opened with that
 tunnel's copy: the one opened in step 4, then, when another is needed, a new

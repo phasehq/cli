@@ -61,6 +61,10 @@ type ProxySession struct {
 	Client  *agentapi.Client
 	CA      *proxy.CA
 	CAPaths proxy.CAPaths
+	// HarnessLabel names the one AI tool this session's proxy serves, as
+	// phase ai run and phase ai exec resolve it. It is empty for a proxy that
+	// serves whatever harness reaches it, such as the hook-managed daemon.
+	HarnessLabel string
 }
 
 func New(workflowOverride string) (*Runtime, error) {
@@ -237,6 +241,8 @@ func (r *Runtime) withSession(ctx context.Context, engine Engine, command []stri
 	if command == nil {
 		return engine.Serve(ctx, proxySession)
 	}
+	// Only a proxy started for one command knows whose traffic it carries.
+	proxySession.HarnessLabel = r.HarnessLabel
 	return engine.Run(ctx, proxySession, command)
 }
 

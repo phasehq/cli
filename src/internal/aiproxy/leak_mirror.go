@@ -21,6 +21,14 @@ import (
 // re-sends inspected requests over connections that open with a copy of the
 // ClientHello the client itself sent (package tlsmirror).
 //
+// A client that holds a session with the service offers to resume it. That
+// offer is never copied: the session is the client's, not the proxy's. The
+// proxy copies the hello that client sends when it has no session instead,
+// and answers the client's own hello with a full handshake, which is what any
+// server does that does not take a ticket. Without that, one connection that
+// went through unread would leave the client with the service's ticket, and
+// every later connection would offer it and go through unread too.
+//
 // It has to decide before it terminates the client's TLS, a technique known
 // as peek and splice: read the client's hello, open the upstream connection
 // with the copy, and only then answer the hello with the proxy's certificate.
@@ -54,13 +62,15 @@ var (
 
 // mirrorTunnel is the upstream side of one client connection to such a host.
 // Every connection it opens starts with a copy of the hello that client
-// opened its tunnel with; it never opens one any other way.
+// opened its tunnel with, or of the one it sends with no session to resume;
+// it never opens one any other way.
 type mirrorTunnel struct {
 	proxy   *httpProxy
 	host    string
 	address string
-	hello   []byte
-	roots   *x509.CertPool
+	// hello is the hello that is copied. It never offers a session.
+	hello []byte
+	roots *x509.CertPool
 	// transport sends the tunnel's requests over the tunnel's connections.
 	transport *http.Transport
 
@@ -110,7 +120,7 @@ func (p *httpProxy) openMirror(ctx context.Context, client net.Conn, pending *bu
 	reason := ""
 	switch {
 	case err == nil:
-		if tunnel, reason, err = p.dialMirror(ctx, host, port, hello); err != nil {
+		if tunnel, reason, err = p.dialMirror(ctx, match, host, port, hello); err != nil {
 			// No connection to the service could be opened: there is nothing
 			// to hand the client to, and its connection ends.
 			return nil, nil, false
@@ -128,17 +138,111 @@ func (p *httpProxy) openMirror(ctx context.Context, client net.Conn, pending *bu
 	return &replayConn{Conn: source, replay: bytes.NewReader(hello)}, tunnel, true
 }
 
+// maxFreshHellos is how many hellos are kept per tool and host. One client
+// program sends one, and a few versions of it may run at once.
+const maxFreshHellos = 4
+
+// freshHellos keeps, per tool and host, the hellos clients opened connections
+// with when they had no session to offer. What a client pads its hello with
+// depends on the hello's length, so the hello it sends without a session
+// cannot always be worked out from one that offers a session; the one it did
+// send can be used as it was. Hellos hold nothing secret, and none is ever
+// written anywhere.
+type freshHellos struct {
+	mu   sync.Mutex
+	seen map[leakStateKey][][]byte
+}
+
+func newFreshHellos() *freshHellos {
+	return &freshHellos{seen: map[leakStateKey][][]byte{}}
+}
+
+func (f *freshHellos) remember(key leakStateKey, hello []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kept := f.seen[key]
+	for _, known := range kept {
+		if tlsmirror.SameShape(known, hello) {
+			return
+		}
+	}
+	// A domain entry matches any number of subdomains.
+	if kept == nil && len(f.seen) >= maxRememberedHosts {
+		clear(f.seen)
+	}
+	if len(kept) >= maxFreshHellos {
+		kept = kept[1:]
+	}
+	f.seen[key] = append(kept, bytes.Clone(hello))
+}
+
+// like returns the hello kept for a tool and host that is the same client's
+// as fresh, a hello made from one that offered a session, or nil. The latest
+// one kept comes first.
+func (f *freshHellos) like(key leakStateKey, fresh []byte) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kept := f.seen[key]
+	for i := len(kept) - 1; i >= 0; i-- {
+		if tlsmirror.SameClient(kept[i], fresh) {
+			return kept[i]
+		}
+	}
+	return nil
+}
+
+// mirroredHello returns the hello to copy for a client's hello: the hello
+// itself, or, when it offers to resume a session, the one that client sends
+// with no session. offered says the client's hello offered one. reason is
+// set when the connection has to be passed through whatever could be copied.
+func (p *httpProxy) mirroredHello(match *leakHostMatch, hello []byte) (mirrored []byte, offered bool, reason string) {
+	parsed, err := tlsmirror.ParseHello(hello)
+	if err != nil {
+		return nil, false, leakReasonHelloNotMirrored
+	}
+	if !parsed.Resumes {
+		return hello, false, ""
+	}
+	// A client that sends early data expects the server to read it or to
+	// skip it. The proxy's TLS does neither and would end the handshake, so
+	// such a connection is left to the service.
+	if parsed.EarlyData {
+		return nil, true, leakReasonHelloResumption
+	}
+	fresh, err := tlsmirror.Fresh(hello)
+	if err != nil {
+		return nil, true, leakReasonHelloResumption
+	}
+	// The hello this client sent when it had no session is its own in every
+	// part, padding included. The one made here is used when none was seen.
+	if seen := p.leak.mirrored.like(match.key, fresh); seen != nil {
+		fresh = seen
+	}
+	return fresh, true, ""
+}
+
 // dialMirror opens a tunnel's first upstream connection. It returns the
 // tunnel, or the reason the client's connection is passed through instead, or
 // an error when the service cannot be reached at all.
-func (p *httpProxy) dialMirror(ctx context.Context, host string, port int, hello []byte) (*mirrorTunnel, string, error) {
+func (p *httpProxy) dialMirror(ctx context.Context, match *leakHostMatch, host string, port int, hello []byte) (*mirrorTunnel, string, error) {
+	hello, offered, reason := p.mirroredHello(match, hello)
+	if reason != "" {
+		return nil, reason, nil
+	}
+	// A client that offered a session is passed through for that when no
+	// exact copy of its hello without one can be sent.
+	notCopied := leakReasonHelloNotMirrored
+	if offered {
+		notCopied = leakReasonHelloResumption
+	}
 	// Checked before anything is dialled, so a hello that is never copied
 	// costs the service no connection.
 	if err := tlsmirror.Check(hello, host); err != nil {
-		if errors.Is(err, tlsmirror.ErrResumes) {
-			return nil, leakReasonHelloResumption, nil
-		}
-		return nil, leakReasonHelloNotMirrored, nil
+		return nil, notCopied, nil
+	}
+	if !offered {
+		// This is the hello the client sends without a session, as it sent it.
+		p.leak.mirrored.remember(match.key, hello)
 	}
 	tunnel := &mirrorTunnel{
 		proxy: p, host: host, address: net.JoinHostPort(host, strconv.Itoa(port)), hello: hello, roots: p.unboundRoots(),
@@ -151,7 +255,7 @@ func (p *httpProxy) dialMirror(ctx context.Context, host string, port int, hello
 	case errors.Is(err, errMirrorNotHTTP1):
 		return nil, leakReasonUpstreamNotHTTP1, nil
 	case errors.Is(err, tlsmirror.ErrNotCopied), errors.Is(err, tlsmirror.ErrResumes), errors.Is(err, tlsmirror.ErrNotHello):
-		return nil, leakReasonHelloNotMirrored, nil
+		return nil, notCopied, nil
 	default:
 		return nil, leakReasonUpstreamHandshake, nil
 	}
@@ -267,12 +371,13 @@ func (p *httpProxy) passThroughUnread(ctx context.Context, client net.Conn, read
 // that was passed through unread, and why. It says nothing of what the
 // connection carried: the proxy did not read it.
 func (p *httpProxy) noteUnreadTunnel(host string, port int, match *leakHostMatch, reason string) {
-	if p.events == nil || !p.leak.unreadTunnels.fresh(host, reason) {
+	if p.events == nil || !p.leak.unread.fresh(match.key, reason) {
 		return
 	}
 	event := newRequestEvent(nil, http.MethodConnect, host, port, "/", "allow", outcomeUnread, reason, 0, 0, "")
 	event.EventType = leakEventType
-	event.Detail = map[string]any{"mode": p.leak.mode, "harness": match.harness}
+	event.Detail = leakFlowDetail(p.leak.mode, match)
+	event.Detail["scope"] = leakScopeConnection
 	p.events.Emit(event)
 }
 

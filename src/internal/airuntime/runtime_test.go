@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -757,5 +758,85 @@ func TestRuntimeServesWhenOnlyACustomValueIsExposed(t *testing.T) {
 	err, calls = serve(t, sessionWith(leaking), func(*ProxySession) {})
 	if !errors.Is(err, agentapi.ErrUnsafeAgentVisibleEnvironment) || calls != 0 || strings.Contains(err.Error(), "pg-live-0123456789") {
 		t.Fatalf("a packaged value collision reached the engine: calls=%d err=%v", calls, err)
+	}
+}
+
+// labelEngine keeps the harness label of each session it is handed.
+type labelEngine struct {
+	mu     sync.Mutex
+	labels []string
+}
+
+func (*labelEngine) Ready() error { return nil }
+func (*labelEngine) Capabilities() EngineCapabilities {
+	return EngineCapabilities{Protocols: []string{"http"}, InjectionActions: []string{"set_header"}}
+}
+func (e *labelEngine) keep(session *ProxySession) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.labels = append(e.labels, session.HarnessLabel)
+	return nil
+}
+func (e *labelEngine) Serve(_ context.Context, session *ProxySession) error { return e.keep(session) }
+func (e *labelEngine) Run(_ context.Context, session *ProxySession, _ []string) error {
+	return e.keep(session)
+}
+
+// A proxy started for one command is told which harness that command is, so
+// it can read model hosts for that tool alone. A proxy that serves whatever
+// reaches it is told nothing, whatever harness happened to start it.
+func TestTheEngineIsToldTheHarnessOnlyWhenItServesOne(t *testing.T) {
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"schemaVersion": 1, "sessionUid": "session-label", "sessionCredential": "capability-label",
+				"expiresAt": time.Now().Add(time.Hour).UTC(), "maxExpiresAt": time.Now().Add(2 * time.Hour).UTC(),
+				"configGeneration": 1, "configEnv": map[string]string{}, "connections": []any{},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/revoke/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"schemaVersion": 1, "sessionUid": "session-label", "revokedAt": time.Now().UTC()})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer console.Close()
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("CURSOR_AGENT", "")
+	t.Setenv("OPENCODE", "")
+	t.Setenv("AGENT", "")
+	t.Setenv("CODEX", "1")
+	token := "pss_user:v1:" + strings.Repeat("a", 64) + ":" + strings.Repeat("b", 64) + ":" + strings.Repeat("c", 64) + ":" + strings.Repeat("d", 64)
+	client, err := agentapi.NewClient(console.URL, token, console.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRuntime := func() *Runtime {
+		return &Runtime{
+			Client: client, WorkflowID: "workflow-1",
+			CAStore: proxy.CAStore{Directory: t.TempDir(), Keyring: &memoryPrivateKeyStore{values: map[string]string{}}},
+		}
+	}
+	engine := &labelEngine{}
+	// phase ai run -- claude: the child is the harness.
+	if err := newRuntime().Run(context.Background(), engine, []string{"/usr/local/bin/claude"}); err != nil {
+		t.Fatal(err)
+	}
+	// phase ai run --harness: what the caller resolved.
+	labelled := newRuntime()
+	labelled.HarnessLabel = "opencode"
+	if err := labelled.Run(context.Background(), engine, []string{"/opt/launcher"}); err != nil {
+		t.Fatal(err)
+	}
+	// phase ai exec: the harness that invoked it.
+	if err := newRuntime().Exec(context.Background(), engine, []string{"/usr/bin/true"}); err != nil {
+		t.Fatal(err)
+	}
+	// The hook-managed proxy serves every harness on the machine.
+	if err := newRuntime().ServeManaged(context.Background(), engine); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"claude-code", "opencode", "codex", ""}; !reflect.DeepEqual(engine.labels, want) {
+		t.Fatalf("the engine was told %q, want %q", engine.labels, want)
 	}
 }

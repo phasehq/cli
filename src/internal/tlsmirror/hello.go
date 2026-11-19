@@ -18,6 +18,7 @@ const (
 	extensionServerName        = 0
 	extensionSupportedGroups   = 10
 	extensionALPN              = 16
+	extensionPadding           = 21
 	extensionSessionTicket     = 35
 	extensionPreSharedKey      = 41
 	extensionEarlyData         = 42
@@ -71,6 +72,9 @@ type Hello struct {
 	// Resumes reports a hello that offers a session to resume: it carries a
 	// pre_shared_key or early_data extension, or a session ticket.
 	Resumes bool
+	// EarlyData reports a hello that says data follows it at once, before the
+	// server has answered. Only a server that holds the session can read it.
+	EarlyData bool
 }
 
 // ParseHello reads the shape of a ClientHello from the TLS record that holds
@@ -93,6 +97,96 @@ func SameShape(a, b []byte) bool {
 		return false
 	}
 	return bytes.Equal(x, y)
+}
+
+// Fresh returns the hello the client that sent record opens a connection with
+// when it has no session to offer: the same record without its pre_shared_key
+// and early_data extensions and with its session ticket emptied, everything
+// else as it was and in the order it was sent. A hello that offers no session
+// is returned as it is. Nothing of a session the client holds is left in the
+// result, so a copy of it promises the server nothing. The error is
+// ErrNotHello for bytes that are not one whole ClientHello.
+//
+// One thing cannot be worked out from a hello that offers a session: a client
+// that pads its hellos by their length (RFC 7685) pads the shorter hello it
+// sends without a session differently. SameClient tells whether a hello such
+// a client did send without a session is the same client's.
+func Fresh(record []byte) ([]byte, error) {
+	hello, err := ParseHello(record)
+	if err != nil {
+		return nil, err
+	}
+	if !hello.Resumes {
+		return record, nil
+	}
+	fresh := rebuilt(record, func(kind uint16, data []byte) ([]byte, bool) {
+		switch kind {
+		case extensionPreSharedKey, extensionEarlyData:
+			return nil, false
+		case extensionSessionTicket:
+			// Empty, it only says the client takes tickets.
+			return nil, true
+		}
+		return data, true
+	})
+	if again, err := ParseHello(fresh); err != nil || again.Resumes {
+		return nil, ErrNotHello
+	}
+	return fresh, nil
+}
+
+// SameClient reports whether two ClientHello records are hellos of one
+// client that differ, past what is new for every connection, in padding
+// alone: the same shape once the padding extension is set aside. That is how
+// a client's hello with a session to offer, made fresh, relates to the hello
+// the same client sent when it had none.
+func SameClient(a, b []byte) bool {
+	if _, err := ParseHello(a); err != nil {
+		return false
+	}
+	if _, err := ParseHello(b); err != nil {
+		return false
+	}
+	unpadded := func(kind uint16, data []byte) ([]byte, bool) { return data, kind != extensionPadding }
+	return SameShape(rebuilt(a, unpadded), rebuilt(b, unpadded))
+}
+
+// rebuilt returns a copy of a ClientHello record with each extension as each
+// says: dropped, or kept with the data it returns. record must have parsed.
+func rebuilt(record []byte, each func(kind uint16, data []byte) ([]byte, bool)) []byte {
+	// The parse has checked every length read here: past the version, the
+	// random, the session id, the cipher suites and the compression methods.
+	at := recordHeaderLength + 4 + 2 + 32
+	at += 1 + int(record[at])
+	at += 2 + int(binary.BigEndian.Uint16(record[at:]))
+	at += 1 + int(record[at])
+	if at == len(record) {
+		// A hello with no extensions at all.
+		return bytes.Clone(record)
+	}
+	start := at + 2
+	out := make([]byte, start, len(record))
+	copy(out, record)
+	for extensions := (fields{record[start:]}); !extensions.empty(); {
+		rawKind, kind, _ := extensions.uint16()
+		data, _ := extensions.vector(2)
+		kept, keep := each(kind, data.rest)
+		if !keep {
+			continue
+		}
+		out = append(out, rawKind...)
+		out = binary.BigEndian.AppendUint16(out, uint16(len(kept)))
+		out = append(out, kept...)
+	}
+	setLength := func(at, size, value int) {
+		for i := range size {
+			out[at+size-1-i] = byte(value >> (8 * i))
+		}
+	}
+	setLength(start-2, 2, len(out)-start)                             // the extensions
+	setLength(recordHeaderLength+1, 3, len(out)-recordHeaderLength-4) // the handshake message
+	setLength(3, 2, len(out)-recordHeaderLength)                      // the record
+	return out
 }
 
 // isGREASE reports a reserved value clients send at random to keep servers
@@ -277,8 +371,10 @@ func (h *Hello) readExtension(kind uint16, data fields, blank bool) bool {
 		}
 	case extensionSessionTicket:
 		h.Resumes = h.Resumes || !data.empty()
-	case extensionPreSharedKey, extensionEarlyData:
+	case extensionPreSharedKey:
 		h.Resumes = true
+	case extensionEarlyData:
+		h.Resumes, h.EarlyData = true, true
 	case extensionSupportedVersions:
 		versions, ok := data.vector(1)
 		if !ok || !data.empty() {

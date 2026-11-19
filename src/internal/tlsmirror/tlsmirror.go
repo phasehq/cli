@@ -20,6 +20,10 @@
 // own, and the server's certificate is verified as crypto/tls verifies it. A
 // hello that cannot be copied exactly is refused, so the caller can leave
 // that connection to the client instead.
+//
+// A hello that offers to resume a session is never copied as it is. Fresh
+// rebuilds the hello that client sends on a connection that resumes nothing,
+// and that one is copied under the same exactness check.
 package tlsmirror
 
 import (
@@ -35,7 +39,8 @@ import (
 var (
 	// ErrResumes means the hello offers to resume a session. That session is
 	// between the client and the service; a copy of the offer would be a
-	// promise the proxy cannot keep.
+	// promise the proxy cannot keep. Fresh gives the hello the same client
+	// sends when it has no session, which can be copied.
 	ErrResumes = errors.New("tlsmirror: the ClientHello resumes a session")
 	// ErrNotCopied means no exact copy of the hello can be sent.
 	ErrNotCopied = errors.New("tlsmirror: the ClientHello cannot be copied exactly")

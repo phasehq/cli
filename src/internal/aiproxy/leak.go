@@ -5,6 +5,8 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -52,18 +54,29 @@ type leakGuard struct {
 	limitedRules *censor.Rules
 	reported     *placeholderLog
 
-	// matches remembers what the table says about the hosts seen, so the
-	// check every request makes allocates nothing.
+	// matches remembers what the table says about the hosts seen, per flow, so
+	// the check every request makes allocates nothing.
 	matchMu sync.Mutex
-	matches map[string]*leakHostMatch
+	matches map[leakMatchKey]*leakHostMatch
 
 	mu sync.Mutex
 	// unprotected names the type and id of values that could not be indexed.
 	// They are counted for status and never returned.
 	unprotected map[string]struct{}
+	// keyNamed holds the placeholders whose id is a secret's key name, as the
+	// client that registered them said. An event never carries such an id.
+	keyNamed map[string]struct{}
 
-	handshakes    *handshakeTracker
-	unreadTunnels *unreadTunnelLog
+	handshakes *handshakeTracker
+	unread     *unreadLog
+	// mirrored keeps the hellos of clients whose hello is copied, as they
+	// sent them with no session to offer.
+	mirrored *freshHellos
+}
+
+// leakMatchKey is a flow and the host as a client wrote it.
+type leakMatchKey struct {
+	tool, capture, host string
 }
 
 func newLeakGuard(mode string) (*leakGuard, error) {
@@ -81,8 +94,8 @@ func newLeakGuard(mode string) (*leakGuard, error) {
 	}
 	return &leakGuard{
 		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, limitedRules: limited,
-		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, handshakes: newHandshakeTracker(),
-		unreadTunnels: newUnreadTunnelLog(),
+		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, keyNamed: map[string]struct{}{},
+		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(),
 	}, nil
 }
 
@@ -100,8 +113,8 @@ func (g *leakGuard) newScan(match *leakHostMatch, protocol string, opts censor.S
 	return &leakScan{match: match, mode: g.mode, protocol: protocol, opts: opts}
 }
 
-// Placeholders already reported, per host, so the history every model request
-// repeats is reported once. The set is bounded; once a host's is full, new
+// Placeholders already reported, per tool and host, so the history every model
+// request repeats is reported once. The set is bounded; once one is full, new
 // placeholders there are reported at most once a minute.
 const (
 	maxReportedPlaceholders = 4096
@@ -115,27 +128,31 @@ type reportedHost struct {
 
 type placeholderLog struct {
 	mu    sync.Mutex
-	hosts map[string]*reportedHost
+	hosts map[leakStateKey]*reportedHost
 	now   func() time.Time
 }
 
 func newPlaceholderLog() *placeholderLog {
-	return &placeholderLog{hosts: map[string]*reportedHost{}}
+	return &placeholderLog{hosts: map[leakStateKey]*reportedHost{}}
 }
 
-// fresh returns the placeholders not yet reported for host and marks them
-// reported. Only hosts in the table are ever inspected, so the map of hosts
-// stays small.
-func (l *placeholderLog) fresh(host string, placeholders []string) []string {
+// fresh returns the placeholders not yet reported for a tool and host and
+// marks them reported. Only hosts in the table are ever inspected, so the map
+// stays small; it is bounded all the same.
+func (l *placeholderLog) fresh(key leakStateKey, placeholders []string) []string {
 	if len(placeholders) == 0 {
 		return nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	state := l.hosts[host]
+	state := l.hosts[key]
 	if state == nil {
+		// A domain entry matches any number of subdomains.
+		if len(l.hosts) >= maxRememberedHosts {
+			clear(l.hosts)
+		}
 		state = &reportedHost{seen: map[string]struct{}{}}
-		l.hosts[host] = state
+		l.hosts[key] = state
 	}
 	var fresh, unkept []string
 	for _, placeholder := range placeholders {
@@ -162,39 +179,51 @@ func (l *placeholderLog) fresh(host string, placeholders []string) []string {
 	return fresh
 }
 
-// A whole connection passed through unread is reported once for its host and
-// reason, then at most once a minute: a client whose connections cannot be
-// read opens one after another, and each would say the same thing.
-const unreadTunnelPeriod = time.Minute
+// Something left unread is reported once for its tool, host and reason, then
+// at most once a minute: a client whose connections, bodies or messages cannot
+// be read sends one after another, and each would say the same thing. A
+// finding that sits only in text the provider signed is limited the same way,
+// under a reason of its own.
+const (
+	unreadPeriod = time.Minute
+	// leakQuietSignedText is the key a signed-text finding is limited under.
+	// It is never an event's reason.
+	leakQuietSignedText = "signed_text"
+)
 
-type unreadTunnelLog struct {
+type unreadKey struct {
+	leakStateKey
+	reason string
+}
+
+type unreadLog struct {
 	mu   sync.Mutex
-	last map[string]time.Time
+	last map[unreadKey]time.Time
 	now  func() time.Time
 }
 
-func newUnreadTunnelLog() *unreadTunnelLog {
-	return &unreadTunnelLog{last: map[string]time.Time{}}
+func newUnreadLog() *unreadLog {
+	return &unreadLog{last: map[unreadKey]time.Time{}}
 }
 
-// fresh reports whether a pass-through of host for reason is to be reported
+// fresh reports whether something left unread for reason is to be reported
 // now, and remembers that it was.
-func (l *unreadTunnelLog) fresh(host, reason string) bool {
+func (l *unreadLog) fresh(key leakStateKey, reason string) bool {
 	now := time.Now()
 	if l.now != nil {
 		now = l.now()
 	}
-	key := host + " " + reason
+	entry := unreadKey{leakStateKey: key, reason: reason}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if last, reported := l.last[key]; reported && now.Sub(last) < unreadTunnelPeriod {
+	if last, reported := l.last[entry]; reported && now.Sub(last) < unreadPeriod {
 		return false
 	}
 	// A domain entry matches any number of subdomains.
 	if len(l.last) >= maxRememberedHosts {
 		clear(l.last)
 	}
-	l.last[key] = now
+	l.last[entry] = now
 	return true
 }
 
@@ -222,10 +251,17 @@ func newLeakGuardFromEnvironment() (*leakGuard, error) {
 // errLeakInventoryFull is what a registration gets once the index is at a cap.
 var errLeakInventoryFull = errors.New("the leak protection inventory is full")
 
+// maxUnprotectedNames bounds the values remembered as too short or plain to
+// protect. Such a value adds nothing to the index, so the index's own caps do
+// not bound them; past this the count stays where it is.
+const maxUnprotectedNames = 4096
+
 // add indexes validated entries. Nothing of a batch is added once the index is
-// full, and the entries added before it stay.
-func (g *leakGuard) add(entries []*censor.Entries) (added, unprotected int, err error) {
-	for _, entry := range entries {
+// full, and the entries added before it stay. keyNamed says, entry by entry,
+// that the entry's id is a secret's key name; an entry it does not cover has
+// an id the Console issued.
+func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
+	for i, entry := range entries {
 		if err := g.index.Add(entry); err != nil {
 			if errors.Is(err, censor.ErrIndexFull) {
 				return added, unprotected, errLeakInventoryFull
@@ -236,9 +272,18 @@ func (g *leakGuard) add(entries []*censor.Entries) (added, unprotected int, err 
 		g.mu.Lock()
 		if entry.Protected() {
 			delete(g.unprotected, name)
+			// Once a placeholder is known to hold a key name it stays so,
+			// whatever a later registration says of the same id.
+			if i < len(keyNamed) && keyNamed[i] {
+				g.keyNamed[entry.Placeholder()] = struct{}{}
+			}
 			added++
 		} else {
-			g.unprotected[name] = struct{}{}
+			// A value is counted once however often it is registered, and the
+			// names kept for that are bounded.
+			if _, counted := g.unprotected[name]; !counted && len(g.unprotected) < maxUnprotectedNames {
+				g.unprotected[name] = struct{}{}
+			}
 			unprotected++
 		}
 		g.mu.Unlock()
@@ -252,23 +297,61 @@ func (g *leakGuard) unprotectedCount() int {
 	return len(g.unprotected)
 }
 
-// status is counts and host names only.
-func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
-	inspected := g.hosts.hostNames(leakTreatmentInspect)
-	unread := g.hosts.hostNames(leakTreatmentUnread)
+// eventPlaceholders is how placeholders are written in an event. One whose id
+// is a secret's key name is written as ph:<type> alone, once for its type: the
+// Console does not know the key names of an end-to-end encrypted app, and an
+// event must not tell it. What the model is shown keeps the whole placeholder.
+func (g *leakGuard) eventPlaceholders(placeholders []string) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.keyNamed) == 0 {
+		return placeholders
+	}
+	written := make([]string, 0, len(placeholders))
+	for _, placeholder := range placeholders {
+		if _, named := g.keyNamed[placeholder]; named {
+			placeholder = placeholder[:strings.LastIndexByte(placeholder, ':')]
+			if slices.Contains(written, placeholder) {
+				continue
+			}
+		}
+		written = append(written, placeholder)
+	}
+	return written
+}
+
+// status is counts and host names only. tool is the one tool the proxy
+// serves, when it knows it: a host listed for another tool only is then not
+// read for the proxy's own clients, and is named as not inspected.
+func (g *leakGuard) status(tool string) *remoteapi.LeakProtectionStatus {
+	inspected := g.hosts.hostNames(tool, leakTreatmentInspect)
+	unread := g.hosts.hostNames(tool, leakTreatmentUnread)
+	if tool != "" {
+		for _, treatment := range []string{leakTreatmentInspect, leakTreatmentUnread} {
+			for _, host := range g.hosts.hostNames("", treatment) {
+				if !slices.Contains(inspected, host) && !slices.Contains(unread, host) {
+					unread = append(unread, host)
+				}
+			}
+		}
+	}
 	if g.mode == leakModeOff {
 		unread = append(inspected, unread...)
 		inspected = []string{}
 	} else if bypassed := g.handshakes.bypassedHosts(); len(bypassed) > 0 {
 		kept := inspected[:0:0]
 		for _, host := range inspected {
-			if containsString(bypassed, host) {
+			if slices.Contains(bypassed, host) {
 				unread = append(unread, host)
 				continue
 			}
 			kept = append(kept, host)
 		}
 		inspected = kept
+	}
+	sort.Strings(unread)
+	if inspected == nil {
+		inspected = []string{}
 	}
 	if unread == nil {
 		unread = []string{}
@@ -280,31 +363,32 @@ func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
 }
 
 func containsString(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, value)
 }
 
-// inspects reports what the table says about a CONNECT target. Hosts the
-// table reads are answered with the proxy's certificate on port 443 only.
-func (g *leakGuard) inspects(host string, port int) *leakHostMatch {
+// inspects reports what the table says about a CONNECT target for a flow.
+// Hosts the table reads are answered with the proxy's certificate on port 443
+// only.
+func (g *leakGuard) inspects(flow FlowContext, host string, port int) *leakHostMatch {
 	if g == nil || g.mode == leakModeOff || port != 443 {
 		return nil
 	}
+	// A tunnel's flow from a program that is not a listed tool is never read.
+	if flow.Tool == "" && flow.Capture == CaptureTunnel {
+		return nil
+	}
+	key := leakMatchKey{tool: flow.Tool, capture: flow.capture(), host: host}
 	g.matchMu.Lock()
-	match, known := g.matches[host]
+	match, known := g.matches[key]
 	g.matchMu.Unlock()
 	if !known {
-		match = g.hosts.lookup(host)
+		match = g.hosts.lookupFlow(flow, host)
 		if match != nil {
 			g.matchMu.Lock()
 			if g.matches == nil || len(g.matches) >= maxRememberedHosts {
-				g.matches = map[string]*leakHostMatch{}
+				g.matches = map[leakMatchKey]*leakHostMatch{}
 			}
-			g.matches[host] = match
+			g.matches[key] = match
 			g.matchMu.Unlock()
 		}
 	}
@@ -327,8 +411,9 @@ const maxRememberedHosts = 256
 //     certificate alert. A dropped connection, a reset, a timeout or bytes
 //     that are not TLS say nothing about the certificate, and any process
 //     could send them to open a window;
-//   - it is per host: the proxy serves one session, and one host's refusals
-//     say nothing about another's;
+//   - it is per tool and host: one host's refusals say nothing about
+//     another's, and one tool's refusals say nothing about another tool on
+//     the same host;
 //   - one refusal is not enough, because a client can give up on one
 //     connection for reasons of its own;
 //   - a handshake that succeeds clears it.
@@ -344,12 +429,12 @@ type handshakeState struct {
 
 type handshakeTracker struct {
 	mu    sync.Mutex
-	hosts map[string]*handshakeState
+	hosts map[leakStateKey]*handshakeState
 	now   func() time.Time
 }
 
 func newHandshakeTracker() *handshakeTracker {
-	return &handshakeTracker{hosts: map[string]*handshakeState{}}
+	return &handshakeTracker{hosts: map[leakStateKey]*handshakeState{}}
 }
 
 func (t *handshakeTracker) clock() time.Time {
@@ -361,17 +446,17 @@ func (t *handshakeTracker) clock() time.Time {
 
 // note records how a handshake went, and returns the length of the window it
 // opened, if it opened one.
-func (t *handshakeTracker) note(host string, ok bool) time.Duration {
+func (t *handshakeTracker) note(key leakStateKey, ok bool) time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if ok {
-		delete(t.hosts, host)
+		delete(t.hosts, key)
 		return 0
 	}
-	state := t.hosts[host]
+	state := t.hosts[key]
 	if state == nil {
 		state = &handshakeState{}
-		t.hosts[host] = state
+		t.hosts[key] = state
 	}
 	state.failures++
 	if state.failures < 2 {
@@ -385,21 +470,22 @@ func (t *handshakeTracker) note(host string, ok bool) time.Duration {
 	return pause
 }
 
-func (t *handshakeTracker) bypassed(host string) bool {
+func (t *handshakeTracker) bypassed(key leakStateKey) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	state := t.hosts[host]
+	state := t.hosts[key]
 	return state != nil && t.clock().Before(state.until)
 }
 
+// bypassedHosts names the hosts in a window for any tool.
 func (t *handshakeTracker) bypassedHosts() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.clock()
 	var hosts []string
-	for host, state := range t.hosts {
-		if now.Before(state.until) {
-			hosts = append(hosts, host)
+	for key, state := range t.hosts {
+		if now.Before(state.until) && !slices.Contains(hosts, key.host) {
+			hosts = append(hosts, key.host)
 		}
 	}
 	return hosts
