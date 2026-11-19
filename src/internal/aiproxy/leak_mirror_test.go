@@ -995,8 +995,9 @@ func TestMirrorPassesThroughWhenItsHandshakeFails(t *testing.T) {
 	}
 	rig.passedThroughOnce(t, leakReasonUpstreamHandshake)
 	// Nothing was terminated, so nothing was counted against the client.
+	key := refusalKey(rig.guard, hostKey(mirrorHost))
 	rig.guard.handshakes.mu.Lock()
-	counted := rig.guard.handshakes.hosts[hostKey(mirrorHost)]
+	counted := rig.guard.handshakes.hosts[key]
 	rig.guard.handshakes.mu.Unlock()
 	if counted != nil {
 		t.Fatalf("a connection passed through was counted as a handshake: %+v", counted)
@@ -1031,17 +1032,19 @@ func TestMirrorHostCountsARefusedCertificate(t *testing.T) {
 	now := time.Now()
 	var clockMu sync.Mutex
 	rig.guard.handshakes.now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
+	refused := func() leakStateKey { return refusalKey(rig.guard, hostKey(mirrorHost)) }
 	failures := func() int {
+		key := refused()
 		rig.guard.handshakes.mu.Lock()
 		defer rig.guard.handshakes.mu.Unlock()
-		if state := rig.guard.handshakes.hosts[hostKey(mirrorHost)]; state != nil {
+		if state := rig.guard.handshakes.hosts[key]; state != nil {
 			return state.failures
 		}
 		return 0
 	}
 	body := chatBody("the key is " + leakSecretOne)
 	for want := 1; want <= 2; want++ {
-		if rig.guard.handshakes.bypassed(hostKey(mirrorHost)) {
+		if rig.guard.handshakes.bypassed(refused()) {
 			t.Fatal("one refusal opened a window")
 		}
 		client, taps := rig.tappedClient(distinctiveTLS(rig.providerRoots))
@@ -1059,7 +1062,7 @@ func TestMirrorHostCountsARefusedCertificate(t *testing.T) {
 		sameHello(t, taps.hello(t, 0), rig.wire.hello(t, want-1))
 		rig.wire.closed(t, want-1)
 	}
-	if !rig.guard.handshakes.bypassed(hostKey(mirrorHost)) || rig.receivedCount() != 0 {
+	if !rig.guard.handshakes.bypassed(refused()) || rig.receivedCount() != 0 {
 		t.Fatal("two refusals in a row did not open a window, or a refused request went out")
 	}
 	// Inside the window the tunnel is raw.

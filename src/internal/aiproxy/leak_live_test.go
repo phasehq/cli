@@ -835,8 +835,9 @@ func liveScenario(t *testing.T, mode string) (printed []string, values []liveVal
 			t.Fatal("a client that does not trust Phase completed TLS with the proxy")
 		}
 		for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			key := refusalKey(rig.guard, hostKey("api.openai.com"))
 			rig.guard.handshakes.mu.Lock()
-			state := rig.guard.handshakes.hosts[hostKey("api.openai.com")]
+			state := rig.guard.handshakes.hosts[key]
 			counted := state != nil && state.failures >= refusals
 			rig.guard.handshakes.mu.Unlock()
 			if counted {

@@ -53,6 +53,20 @@ func hostKey(host string) leakStateKey {
 	return key
 }
 
+// refusalKey is what a client's refused handshakes are counted under once its
+// hello was read: key with that hello's fingerprint. While nothing is counted
+// for such a client it is key itself.
+func refusalKey(guard *leakGuard, key leakStateKey) leakStateKey {
+	guard.handshakes.mu.Lock()
+	defer guard.handshakes.mu.Unlock()
+	for counted := range guard.handshakes.hosts {
+		if counted.hello != "" && counted.perHost() == key {
+			return counted
+		}
+	}
+	return key
+}
+
 // registerLeakValues indexes values as the CLI would and adds them.
 func registerLeakValues(t *testing.T, guard *leakGuard, values map[string]string) {
 	t.Helper()

@@ -612,6 +612,14 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 	}
 	termination := &tls.Config{Certificates: []tls.Certificate{*certificate}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
 	terminated := withBuffered(client, buffered.Reader)
+	if leak != nil {
+		// A pass-through window is the client's that refused the certificate,
+		// so the hello is read first to tell whose connection this is.
+		var handedOver bool
+		if terminated, leak, handedOver = p.scopeToHello(tunnelContext, terminated, host, port, leak, authentication.connectionID); handedOver {
+			return
+		}
+	}
 	if leak != nil && leak.rule.MirrorHello {
 		// The client's hello is not answered until the upstream connection
 		// stands: up to then the tunnel can still be handed over unread.

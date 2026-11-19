@@ -227,7 +227,7 @@ func (p *httpProxy) mirroredHello(match *leakHostMatch, hello []byte) (mirrored 
 	}
 	// The hello this client sent when it had no session is its own in every
 	// part, padding included. The one made here is used when none was seen.
-	if seen := p.leak.mirrored.like(match.key, fresh); seen != nil {
+	if seen := p.leak.mirrored.like(match.key.perHost(), fresh); seen != nil {
 		return seen, true, false, ""
 	}
 	return fresh, true, true, ""
@@ -254,7 +254,7 @@ func (p *httpProxy) dialMirror(ctx context.Context, match *leakHostMatch, host s
 	}
 	if !offered {
 		// This is the hello the client sends without a session, as it sent it.
-		p.leak.mirrored.remember(match.key, hello)
+		p.leak.mirrored.remember(match.key.perHost(), hello)
 	}
 	tunnel := &mirrorTunnel{
 		proxy: p, host: host, address: net.JoinHostPort(host, strconv.Itoa(port)), hello: hello, roots: p.unboundRoots(),
@@ -416,7 +416,7 @@ func (p *httpProxy) noteUnreadTunnel(host string, port int, match *leakHostMatch
 // at the pace every unread report keeps: once for its tool, host and reason,
 // then at most once in unreadPeriod.
 func (p *httpProxy) reportUnreadTunnel(host string, port int, match *leakHostMatch, reason string) {
-	if p.events == nil || !p.leak.unread.fresh(match.key, reason) {
+	if p.events == nil || !p.leak.unread.fresh(match.key.perHost(), reason) {
 		return
 	}
 	event := newRequestEvent(nil, http.MethodConnect, host, port, "/", "allow", outcomeUnread, reason, 0, 0, "")

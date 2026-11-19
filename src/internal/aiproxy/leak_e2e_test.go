@@ -514,8 +514,9 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(2 * time.Second)
 		for {
+			key := refusalKey(rig.guard, hostKey(host))
 			rig.guard.handshakes.mu.Lock()
-			state := rig.guard.handshakes.hosts[hostKey(host)]
+			state := rig.guard.handshakes.hosts[key]
 			got := 0
 			if state != nil {
 				got = state.failures
@@ -532,12 +533,13 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 	}
 	refuse()
 	waitFailures(1)
-	if rig.guard.handshakes.bypassed(hostKey(host)) {
-		t.Fatal("one refusal opened a window")
+	refused := refusalKey(rig.guard, hostKey(host))
+	if refused.hello == "" || rig.guard.handshakes.bypassed(refused) {
+		t.Fatal("one refusal was not counted for the client that refused, or opened a window")
 	}
 	refuse()
 	waitFailures(2)
-	if !rig.guard.handshakes.bypassed(hostKey(host)) {
+	if !rig.guard.handshakes.bypassed(refused) {
 		t.Fatal("two refusals in a row did not open a window")
 	}
 	// Inside the window the client is passed through unread.
@@ -562,14 +564,14 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 		t.Fatal("the host was not read after the window")
 	}
 	rig.guard.handshakes.mu.Lock()
-	cleared := rig.guard.handshakes.hosts[hostKey(host)] == nil
+	cleared := rig.guard.handshakes.hosts[refused] == nil
 	rig.guard.handshakes.mu.Unlock()
 	if !cleared {
 		t.Fatal("a successful handshake did not clear the count")
 	}
 	refuse()
 	waitFailures(1)
-	if rig.guard.handshakes.bypassed(hostKey(host)) {
+	if rig.guard.handshakes.bypassed(refused) {
 		t.Fatal("one refusal after a success opened a window")
 	}
 }

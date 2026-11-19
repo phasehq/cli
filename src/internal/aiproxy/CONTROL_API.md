@@ -246,8 +246,9 @@ Content-Type: application/json
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
 - A host the table reads is listed under `unreadHosts`, and not under
-  `inspectedHosts`, while it is not being read, for any tool: in a
-  pass-through window; while a tunnel opened in a window is still open, which
+  `inspectedHosts`, while it is not being read, for any tool or any one
+  client of a tool: in a pass-through window (which is for the client that
+  refused, see below); while a tunnel opened in a window is still open, which
   can be long after the window ended; and while a connection to it that was
   handed to the service unread (below) is open, and for a minute after such a
   connection was opened. `unreadReasons` says why, by host:
@@ -343,6 +344,21 @@ pass-through windows, the once-a-minute limit on unread reports and the
 placeholders already reported. The tool is the one the flow is named as
 (`harness` in its events). One tool's refused handshakes never open a window
 for another tool on the same host.
+
+A pass-through window is narrower still: it is for the client that refused.
+Every program started in a session is named as the session's tool, so a
+program the harness runs that does not trust the proxy's certificate would
+otherwise open the window for the harness's own traffic to that host. The
+proxy tells clients apart by the TLS hello each opens its tunnel with: the
+cipher suites, groups, versions, signature schemes and application protocols
+it offers, whatever their order and without GREASE values. A window passes
+through the connections whose hello offers the same as the one that was
+refused, and every other client of the tool is still read on that host. No
+process is looked up, so two programs that offer the same (two programs on
+one TLS library with the same settings) share a window. A client whose hello
+cannot be read, one that sends it late or split over several records, is
+counted per tool and host as before, and a window opened that way is for
+every client of the tool on that host.
 
 #### What is read, and what happens to it
 
@@ -441,8 +457,9 @@ An event's `protocol` is `http`, `http2` when the request reached the proxy
 over HTTP/2, or `websocket` for a message of one.
 
 A pass-through window opens only when a client answers the proxy's
-certificate with a TLS certificate alert twice in a row for a tool and host. A
-client that drops the connection without an alert keeps failing on that host;
+certificate with a TLS certificate alert twice in a row for a tool and host,
+and it is for that client alone (see above). A client that drops the
+connection without an alert keeps failing on that host;
 `PHASE_AI_LEAK_PROTECTION=off` is the way out. The host is the name the
 client connected to, not the table's entry: under a domain entry, refusals on
 one name open a window for that name and leave every other name of the

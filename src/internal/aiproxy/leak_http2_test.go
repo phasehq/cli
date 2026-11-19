@@ -1041,6 +1041,7 @@ func TestRefusalsOnOneCursorHostLeaveItsOtherHostsRead(t *testing.T) {
 			t.Fatal("a client that does not trust Phase completed TLS with the proxy")
 		}
 		for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			refused = refusalKey(rig.guard, refused.perHost())
 			rig.guard.handshakes.mu.Lock()
 			state := rig.guard.handshakes.hosts[refused]
 			counted := state != nil && state.failures >= refusals
@@ -1064,8 +1065,8 @@ func TestRefusalsOnOneCursorHostLeaveItsOtherHostsRead(t *testing.T) {
 	if got := service.stream(t, "read", 1).envelopes[0]; bytes.Contains(got, []byte(leakSecretOne)) {
 		t.Fatal("a refusal on one name stopped another name of the domain being read")
 	}
-	// The refused name is passed through meanwhile, to the process that
-	// refuses and to any other.
+	// The refused name is passed through meanwhile, to the client that
+	// refuses.
 	postConnect(t, rig.clientOffering(rig.providerRoots, true, false), "https://"+cursorAPIHost+cursorUnaryPath, "application/proto", message, nil)
 	if !bytes.Equal(service.last(t).body, message) {
 		t.Fatal("the name in a window was read")

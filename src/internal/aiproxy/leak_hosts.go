@@ -105,6 +105,17 @@ var defaultLeakHosts = leakHostTable{
 // what one tool does on a host says nothing about another tool there.
 type leakStateKey struct {
 	tool, host string
+	// hello is the fingerprint of the TLS hello a connection opened with
+	// (helloFingerprint). Only the key of one connection's own match holds it,
+	// so that connection's refused handshakes count for its client alone.
+	hello string
+}
+
+// perHost is the key without a client's hello: what is remembered for every
+// client of the tool on the host.
+func (k leakStateKey) perHost() leakStateKey {
+	k.hello = ""
+	return k
 }
 
 // leakHostMatch is what the table says about one host for one flow.

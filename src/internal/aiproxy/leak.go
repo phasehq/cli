@@ -515,6 +515,9 @@ const maxRememberedHosts = 256
 //   - it is per tool and host: one host's refusals say nothing about
 //     another's, and one tool's refusals say nothing about another tool on
 //     the same host;
+//   - it is the client's that refused, told apart by its TLS hello (see
+//     leak_hello.go): the key of a connection whose hello was read holds the
+//     hello's fingerprint, and the tool's other clients are still read;
 //   - one refusal is not enough, because a client can give up on one
 //     connection for reasons of its own;
 //   - a handshake that succeeds clears it.
@@ -598,7 +601,7 @@ func (t *handshakeTracker) bypassed(key leakStateKey) bool {
 	return state != nil && t.clock().Before(state.until)
 }
 
-// bypassedHosts names the hosts in a window for any tool.
+// bypassedHosts names the hosts in a window for any tool or client.
 func (t *handshakeTracker) bypassedHosts() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()

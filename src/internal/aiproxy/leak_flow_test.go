@@ -825,13 +825,15 @@ func TestAToolsWindowLeavesOtherToolsRead(t *testing.T) {
 	opencode, claude := tunnelFlow("opencode"), tunnelFlow("claude")
 	key := leakStateKey{tool: "opencode", host: host}
 	for want := 1; want <= 2; want++ {
-		// OpenCode's client does not trust Phase and says so.
+		// OpenCode's client does not trust Phase and says so. Its hello is the
+		// one sendOver sends: a window is for the client that refused.
 		raw := rig.connectAs(t, host, &opencode)
-		if err := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: rig.providerRoots}).Handshake(); err == nil {
+		if err := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: rig.providerRoots, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}).Handshake(); err == nil {
 			t.Fatal("a client that does not trust Phase completed TLS with the proxy")
 		}
 		_ = raw.Close()
 		for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			key = refusalKey(rig.guard, key.perHost())
 			rig.guard.handshakes.mu.Lock()
 			state := rig.guard.handshakes.hosts[key]
 			counted := state != nil && state.failures >= want
@@ -880,11 +882,12 @@ func TestAWindowIsKeptUnderTheToolTheFlowIsNamedAs(t *testing.T) {
 	key := leakStateKey{tool: "opencode", host: host}
 	for want := 1; want <= 2; want++ {
 		raw := rig.connectAs(t, host, nil)
-		if err := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: rig.providerRoots}).Handshake(); err == nil {
+		if err := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: rig.providerRoots, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}).Handshake(); err == nil {
 			t.Fatal("a client that does not trust Phase completed TLS with the proxy")
 		}
 		_ = raw.Close()
 		for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			key = refusalKey(rig.guard, key.perHost())
 			rig.guard.handshakes.mu.Lock()
 			state := rig.guard.handshakes.hosts[key]
 			counted := state != nil && state.failures >= want
