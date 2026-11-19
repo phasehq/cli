@@ -579,12 +579,13 @@ func inflate(data []byte, st *scanState) ([]byte, string, bool) {
 	var kind string
 	switch {
 	case len(data) >= 18 && data[0] == 0x1f && data[1] == 0x8b && data[2] == 8:
-		gz, err := gzip.NewReader(bytes.NewReader(data))
+		source := bytes.NewReader(data)
+		gz, err := gzip.NewReader(source)
 		if err != nil {
 			return nil, "", false
 		}
 		gz.Multistream(false)
-		reader, kind = gz, "gzip"
+		reader, kind = &gzipMembers{source: source, gz: gz}, "gzip"
 	case len(data) >= 6 && data[0]&0x0f == 8 && data[0]>>4 <= 7 && data[1]&0x20 == 0 && (uint16(data[0])<<8|uint16(data[1]))%31 == 0:
 		zr, err := zlib.NewReader(bytes.NewReader(data))
 		if err != nil {
@@ -609,6 +610,29 @@ func inflate(data []byte, st *scanState) ([]byte, string, bool) {
 		return nil, "", false
 	}
 	return out, kind, true
+}
+
+// gzipMembers reads every member of gzip data in turn, as gunzip does, and ends
+// quietly at bytes after a member that begin no other.
+type gzipMembers struct {
+	source *bytes.Reader
+	gz     *gzip.Reader
+}
+
+func (m *gzipMembers) Read(p []byte) (int, error) {
+	for {
+		n, err := m.gz.Read(p)
+		if n > 0 || err != io.EOF {
+			if err == io.EOF {
+				err = nil
+			}
+			return n, err
+		}
+		if m.gz.Reset(m.source) != nil {
+			return 0, io.EOF
+		}
+		m.gz.Multistream(false)
+	}
 }
 
 // scanBlock runs the inventory and then the pattern rules over one block. keyName

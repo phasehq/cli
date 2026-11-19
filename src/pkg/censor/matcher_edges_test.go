@@ -264,3 +264,31 @@ func TestAScanThatRanOutOfInflateBudgetIsNotCached(t *testing.T) {
 		t.Errorf("a third request: %d hits, %d from the cache", len(r.Hits), r.Report.CacheHits)
 	}
 }
+
+// gzip data can be several members one after another, as cat a.gz b.gz makes
+// it and gunzip reads it. Every member is inflated and scanned, and bytes after
+// the last that begin no member do not spoil what was read.
+func TestEveryGzipMemberIsRead(t *testing.T) {
+	password := randomString(t, alnum, 24)
+	ix := build(t, secret{ID: "pw", Value: password})
+	filler := strings.Repeat("ordinary log line number seven\n", 40)
+	clean := gzipped(t, []byte(filler))
+	secret := gzipped(t, []byte(filler+"login with password "+password+"\n"+filler))
+	join := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+	for name, data := range map[string][]byte{
+		"the second of two members":  join(clean, secret),
+		"the last of three members":  join(clean, clean, secret),
+		"a member and other bytes":   join(secret, []byte("bytes that begin no member")),
+		"two members and such bytes": join(clean, secret, []byte{0, 1, 2, 3}),
+	} {
+		out, report := ix.Redact([]byte("log: " + base64.StdEncoding.EncodeToString(data) + "\n"))
+		if string(out) != "log: ph:secret:pw\n" || report.Inventory != 1 || report.Findings[0].Form != "base64>gzip>raw" {
+			t.Errorf("%s: %+v\n%.80s", name, report.Findings, out)
+		}
+	}
+	// Members that hold nothing are still nothing.
+	text := "log: " + base64.StdEncoding.EncodeToString(join(clean, clean)) + "\n"
+	if out, report := ix.Redact([]byte(text)); string(out) != text || report.Inventory != 0 {
+		t.Errorf("clean members: %+v", report.Findings)
+	}
+}
