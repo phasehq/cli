@@ -313,3 +313,37 @@ func signForTest(frontmatter, kind, body string) string {
 	owner := skillOwnerHeaderPrefix + kind + skillOwnerHeaderHashMarker + hex.EncodeToString(digest[:]) + skillHeaderSuffix
 	return frontmatter + versionHeader() + "\n" + owner + "\n" + body
 }
+
+func TestUninstallSkillsLeavesALinkedSkillDirectory(t *testing.T) {
+	home := useSkillTestHome(t)
+	shared := filepath.Join(home, "dotfiles", "phase-cli")
+	if err := os.MkdirAll(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := installSkillForTest(t, filepath.Join(shared, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(home, "harness", "skills")
+	if err := os.MkdirAll(skills, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(skills, "phase-cli")
+	if err := os.Symlink(shared, link); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	removed, err := UninstallSkills(filepath.Join(link, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range removed {
+		if strings.HasPrefix(path, skills) {
+			t.Fatalf("uninstall removed %s through a linked directory", path)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(shared, "SKILL.md")); err != nil {
+		t.Fatalf("the skill in the link target was removed: %v", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link itself was removed: %v", err)
+	}
+}

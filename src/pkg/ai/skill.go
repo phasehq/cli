@@ -289,6 +289,11 @@ func removeFormerSkills(skillPath string) ([]string, error) {
 // removeRecognizedSkill removes path when Phase recognises it as its own, and
 // its directory when that leaves it empty.
 func removeRecognizedSkill(path string) (bool, error) {
+	// A linked skill directory belongs to whoever made the link, often a
+	// dotfiles checkout that other machines share.
+	if info, err := os.Lstat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		return false, nil
+	}
 	payload, _, err := readBoundedRegularFile(path)
 	if err != nil {
 		// Missing, not a regular file, or too large: not a skill Phase wrote.
