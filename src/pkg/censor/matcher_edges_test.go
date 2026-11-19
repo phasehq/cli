@@ -313,3 +313,32 @@ func TestPercentEscapesInEitherCaseAreFound(t *testing.T) {
 		t.Errorf("lowerEscapes: %s", got)
 	}
 }
+
+// Find lists MaxFindings matches at most. A crowd of matches that only alert
+// does not keep an indexed value, or one of Phase's own tokens, that comes
+// after them off the list: the first of every kind is always on it, in its
+// place.
+func TestTheFindingsCapNeverHidesAKindOfFinding(t *testing.T) {
+	password := randomString(t, alnum, 24)
+	ix := build(t, secret{ID: "pw", Value: password})
+	token := "pss_user:v1:" + randomHex(t, 32) + ":" + randomHex(t, 32) + ":" + randomHex(t, 32) + ":" + randomHex(t, 32)
+	for _, headers := range []int{10, MaxFindings + 100} {
+		text := strings.Repeat("-----BEGIN PRIVATE KEY-----\n", headers) + "pw " + password + "\ntoken " + token + "\n"
+		matches := ix.Find([]byte(text))
+		if want := min(headers+2, MaxFindings); len(matches) != want {
+			t.Fatalf("%d headers: %d matches, want %d", headers, len(matches), want)
+		}
+		found := map[string]string{}
+		for i, m := range matches {
+			if i > 0 && m.Start < matches[i-1].Start {
+				t.Fatalf("%d headers: the matches are out of order at %d", headers, i)
+			}
+			if m.Kind == kindInventory || m.Label == "phase_pat" {
+				found[m.Kind+m.Label] = text[m.Start:m.End]
+			}
+		}
+		if found[kindInventory] != password || found[kindRule+"phase_pat"] != token {
+			t.Errorf("%d headers: the value or the token is not listed", headers)
+		}
+	}
+}

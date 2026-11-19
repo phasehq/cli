@@ -105,7 +105,10 @@ func (ix *Index) RedactWith(data []byte, opts ScanOptions) ([]byte, *Report) {
 // Find scans bytes that cannot be rewritten, such as a URL or a header value,
 // and says where each finding sits and what would replace it. Ranges are
 // sorted by start; a rule match that spans an indexed value contains its range.
-// A finding inside a decoded run covers the whole run.
+// A finding inside a decoded run covers the whole run. At most MaxFindings are
+// returned, and when there are more the first indexed value and the first match
+// of every rule label are among them: a caller that acts on a kind of finding
+// is never kept from seeing one by a crowd of others before it.
 func (ix *Index) Find(data []byte) []Match {
 	return ix.FindWith(data, ScanOptions{})
 }
@@ -118,8 +121,27 @@ func (ix *Index) FindWith(data []byte, opts ScanOptions) []Match {
 	if len(reps) == 0 {
 		return nil
 	}
+	// Past the cap the first of each kind is kept, and the rest of the room
+	// goes to the others in order.
+	var first map[int]bool
+	if len(reps) > MaxFindings {
+		first = map[int]bool{}
+		seen := map[[2]string]bool{}
+		for i, r := range reps {
+			if kind := [2]string{r.hit.kind, r.hit.label}; !seen[kind] {
+				seen[kind], first[i] = true, true
+			}
+		}
+	}
 	matches := make([]Match, 0, min(len(reps), MaxFindings))
-	for _, r := range reps[:min(len(reps), MaxFindings)] {
+	room := MaxFindings - len(first)
+	for i, r := range reps {
+		if !first[i] {
+			if room <= 0 {
+				continue
+			}
+			room--
+		}
 		matches = append(matches, Match{Finding: r.hit.finding(), Start: r.start, End: r.end})
 	}
 	return matches
