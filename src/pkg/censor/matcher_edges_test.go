@@ -435,8 +435,8 @@ func TestAURLWithAnEscapedPasswordKeepsItsHostAsStructure(t *testing.T) {
 		"p%2fss%3aW0rd%40XYZ9": "p/ss:W0rd@XYZ9",
 	} {
 		value := "postgres://app:" + written + host
-		if from, to, ok := passwordSpan(value); !ok || value[from:to] != written {
-			t.Errorf("%s: the password is not where passwordSpan says", written)
+		if from, to, ok := credentialSpan(value); !ok || value[from:to] != written {
+			t.Errorf("%s: the password is not where credentialSpan says", written)
 		}
 		ix := build(t, secret{ID: "db", Value: value})
 		other := "postgres://reader" + host + "?sslmode=require and postgres://app" + host
@@ -450,7 +450,7 @@ func TestAURLWithAnEscapedPasswordKeepsItsHostAsStructure(t *testing.T) {
 		}
 	}
 	for _, value := range []string{"postgres://app@db.internal/app", "https://example.com/a:b@c", "not a url at all"} {
-		if _, _, ok := passwordSpan(value); ok {
+		if _, _, ok := credentialSpan(value); ok {
 			t.Errorf("%s has no password", value)
 		}
 	}
@@ -727,6 +727,60 @@ func TestPathsAreBuiltOnlyForListedFindings(t *testing.T) {
 			t.Errorf("%s: 10,000 findings past the cap cost %d MB", name, more)
 		} else {
 			t.Logf("%s: 10,000 findings past the cap cost %d MB", name, more)
+		}
+	}
+}
+
+// A URL whose user is a token, with no password, is a credential like one with
+// a password: it is not left out as public, the token is protected on its own,
+// and the rest of the URL is structure.
+func TestAURLWithATokenForItsUserIsProtected(t *testing.T) {
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redact := func(ix *Index, text string) (string, *Report) {
+		out, report := ix.RedactWith([]byte(text), ScanOptions{Rules: only})
+		return string(out), report
+	}
+	token := "ghp_" + randomString(t, alnum, 36)
+	remote := "https://" + token + "@github.com/acme/orders.git"
+	public := "see https://github.com/acme/orders.git and https://git@github.com/acme/orders.git"
+	document := `{"docs":"https://docs.internal/deploy/runbook","mirror":"https://git@github.com/acme/orders.git","origin":"` + remote + `"}`
+	for name, tc := range map[string]struct{ value, part string }{
+		"a leaf of a JSON value":      {document, "leaf:2"},
+		"a value on its own":          {remote, partURLPassword},
+		"with an empty password":      {"https://" + token + ":@github.com/acme/orders.git", partURLPassword},
+		"with an escape in the token": {"https://" + token + "%2Fx@github.com/acme/orders.git", ""},
+	} {
+		ix, entries := buildWithEntries(t, newKey(t), secret{ID: "git", Value: tc.value})
+		if !entries["git"].Protected() {
+			t.Fatalf("%s: nothing was indexed", name)
+		}
+		if out, report := redact(ix, "token "+token+" is set"); strings.Contains(out, token) || report.Inventory != 1 || (tc.part != "" && report.Findings[0].Part != tc.part) || (tc.part != "" && report.Findings[0].Partial) {
+			t.Errorf("%s: the token alone: %+v\n%s", name, report.Findings, out)
+		}
+		if out, _ := redact(ix, "origin\t"+remote+" (fetch)"); strings.Contains(out, token) {
+			t.Errorf("%s: the URL: %s", name, out)
+		}
+		if out, report := redact(ix, public); out != public || report.Inventory != 0 {
+			t.Errorf("%s: a URL without the token was changed: %s", name, out)
+		}
+	}
+	// A short user is a name, and such a URL in a document is still public.
+	_, entries := buildWithEntries(t, newKey(t), secret{ID: "git", Value: document})
+	if got := entries["git"].Unprotected; len(got) != 2 || got[0] != (Unprotected{Part: "leaf:0", Reason: ReasonPublicLeaf}) || got[1] != (Unprotected{Part: "leaf:1", Reason: ReasonPublicLeaf}) {
+		t.Errorf("unprotected: %+v", got)
+	}
+	for value, want := range map[string]string{
+		remote:                               token,
+		"https://git@github.com/acme/orders": "",
+		"https://deploy:" + token + "@git.internal/repo": token,
+		"https://github.com/acme/orders":                 "",
+		"not a url " + token + "@host":                   "",
+	} {
+		if got := urlCredential(value); got != want {
+			t.Errorf("the credential of %s is %q", value, got)
 		}
 	}
 }

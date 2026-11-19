@@ -71,8 +71,9 @@ type Entries struct {
 // Form is one encoded form of a value (or of one part of it), cut into
 // non-overlapping chunks of 12 bytes.
 type Form struct {
-	// Part is empty for the value itself, "url-password" for a URL's password and
-	// "leaf:<n>" for the n-th string leaf of a JSON value.
+	// Part is empty for the value itself, "url-password" for a URL's password or
+	// the token that is its user, and "leaf:<n>" for the n-th string leaf of a
+	// JSON value.
 	Part   string `json:"part,omitempty"`
 	Form   string `json:"form"`
 	Length int    `json:"len"`
@@ -129,16 +130,17 @@ func IndexValue(key *Key, typ, id, value string) (*Entries, error) {
 				continue
 			}
 			b.addValue(part, l.value)
-			if password := urlPassword(l.value); password != "" {
-				b.addValue(part, password)
+			if credential := urlCredential(l.value); credential != "" {
+				b.addValue(part, credential)
 			}
 		}
 		return b.finish()
 	}
 	b.addValue("", value)
-	// A URL's password is also protected on its own, in every encoding.
-	if password := urlPassword(value); password != "" {
-		b.addValue(partURLPassword, password)
+	// A URL's password, or the token that is its user, is also protected on its
+	// own, in every encoding.
+	if credential := urlCredential(value); credential != "" {
+		b.addValue(partURLPassword, credential)
 	}
 	return b.finish()
 }

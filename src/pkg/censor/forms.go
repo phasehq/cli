@@ -161,7 +161,7 @@ func weakMask(value string) []bool {
 		}
 		offset += len(line)
 	}
-	if from, to, ok := passwordSpan(value); ok {
+	if from, to, ok := credentialSpan(value); ok {
 		mark(0, from)
 		mark(to, len(value))
 	}
@@ -205,10 +205,26 @@ func urlPassword(value string) string {
 	return password
 }
 
-// passwordSpan is where a URL's password sits in the URL as it is written,
-// which is not the password itself when it holds an escape such as %40.
-func passwordSpan(value string) (from, to int, ok bool) {
-	if urlPassword(value) == "" {
+// urlCredential is what in a URL's userinfo is a secret: its password, or with
+// no password a user long enough to be a token, as in https://<token>@host.
+func urlCredential(value string) string {
+	if password := urlPassword(value); password != "" {
+		return password
+	}
+	if !strings.Contains(value, "://") || strings.ContainsAny(value, " \n") {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User == nil || len(parsed.User.Username()) < minValueLength {
+		return ""
+	}
+	return parsed.User.Username()
+}
+
+// credentialSpan is where a URL's credential sits in the URL as it is written,
+// which is not the credential itself when it holds an escape such as %40.
+func credentialSpan(value string) (from, to int, ok bool) {
+	if urlCredential(value) == "" {
 		return 0, 0, false
 	}
 	// The authority ends at the first '/', '?' or '#', its user and password
@@ -219,8 +235,16 @@ func passwordSpan(value string) (from, to int, ok bool) {
 		end = host + i
 	}
 	at := strings.LastIndexByte(value[host:end], '@')
-	colon := strings.IndexByte(value[host:end], ':')
-	if at < 0 || colon < 0 || colon > at {
+	if at < 0 {
+		return 0, 0, false
+	}
+	colon := strings.IndexByte(value[host:host+at], ':')
+	switch {
+	case urlPassword(value) == "" && colon < 0:
+		return host, host + at, true
+	case urlPassword(value) == "":
+		return host, host + colon, true
+	case colon < 0:
 		return 0, 0, false
 	}
 	return host + colon + 1, host + at, true
@@ -320,10 +344,10 @@ func jsonLeaves(value string) []leaf {
 
 // looksPublic keeps a key file's URLs and identity out of the index: redacting them
 // would hide ordinary text without protecting anything. A URL with a password in
-// it is a credential.
+// it, or a token for its user, is a credential.
 func looksPublic(value string) bool {
 	if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
-		return !strings.ContainsAny(value, " \n") && urlPassword(value) == ""
+		return !strings.ContainsAny(value, " \n") && urlCredential(value) == ""
 	}
 	if at := strings.IndexByte(value, '@'); at > 0 && !strings.ContainsAny(value, " \n:/") && strings.Contains(value[at:], ".") {
 		return true
