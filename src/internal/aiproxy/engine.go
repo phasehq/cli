@@ -290,10 +290,15 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	leak, err := e.leakGuard()
+	if err != nil {
+		return err
+	}
 	events, err := newEventBuffer(state, e.EventFlushInterval, e.EventSpoolDirectory, e.EventSpoolMaxBytes)
 	if err != nil {
 		return err
 	}
+	events.leak = leak
 	defer events.Stop()
 	adapters, err := e.startProtocolAdapters(ctx, state, events, session.CA, dial)
 	if err != nil {
@@ -364,10 +369,6 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		processEnvironment = selected.ProcessEnvironment
 		endpoints.ProcessEnvironment = processEnvironment
 		manifest.processEnvironment = processEnvironment
-	}
-	leak, err := e.leakGuard()
-	if err != nil {
-		return err
 	}
 	// A proxy started for one harness names its clients' flows as that tool's
 	// wherever the tool's own list reads the host. Every host a list reads is

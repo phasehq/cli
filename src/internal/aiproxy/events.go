@@ -32,7 +32,10 @@ var eventIdentifier = regexp.MustCompile(`^[A-Za-z0-9._:/-]+$`)
 var credentialShape = regexp.MustCompile(`(?i)(?:pss_(?:user|service|agent):v\d+:[^\s]+|psx_sess_[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-(?:proj-|admin-)?[A-Za-z0-9_-]{16,})`)
 
 type eventBuffer struct {
-	state    *runtimeState
+	state *runtimeState
+	// leak, when set, is the leak protection inventory: a value registered
+	// there is kept out of the request-derived fields like a session secret.
+	leak     *leakGuard
 	interval time.Duration
 	input    chan agentapi.Event
 	stop     chan struct{}
@@ -75,13 +78,16 @@ func (b *eventBuffer) Emit(event agentapi.Event) {
 	if event.EventID == "" {
 		return
 	}
-	redactRequestFields(&event, b.state.eventSecrets())
+	redactRequestFields(&event, b.state.eventSecrets(), b.leak.holdsRegistered)
 	durable := durableAuditEvent(event)
 	if !b.safe(&event) {
 		if durable {
 			b.state.fail(errors.New("Agent denial/error audit event failed redaction validation"))
 		}
 		return
+	}
+	if path, ok := event.Detail["path"].(string); ok && b.leak.holdsRegistered(path) {
+		delete(event.Detail, "path")
 	}
 	if durable {
 		if err := b.spool.Persist(event); err != nil {
@@ -131,17 +137,17 @@ func (b *eventBuffer) safe(event *agentapi.Event) bool {
 // denial still has to be recorded, so an unsafe value is replaced instead of
 // treated as a redaction failure; every other field is written by the proxy,
 // and an unsafe value there still fails closed in safe().
-func redactRequestFields(event *agentapi.Event, secrets []string) {
+func redactRequestFields(event *agentapi.Event, secrets []string, registered func(string) bool) {
 	if event.Method == "" || len(event.Method) > maxEventMethodLength ||
-		!eventIdentifier.MatchString(event.Method) || !safeEventText(event.Method, secrets) {
+		!eventIdentifier.MatchString(event.Method) || !safeEventText(event.Method, secrets) || registered(event.Method) {
 		event.Method = "UNKNOWN"
 	}
 	if event.Host == "" || len(event.Host) > maxEventHostLength ||
-		containsControlCharacter(event.Host) || !safeEventText(event.Host, secrets) {
+		containsControlCharacter(event.Host) || !safeEventText(event.Host, secrets) || registered(event.Host) {
 		event.Host = "redacted.invalid"
 	}
 	if len(event.Path) > maxEventPathLength || containsControlCharacter(event.Path) ||
-		!safeEventText(event.Path, secrets) {
+		!safeEventText(event.Path, secrets) || registered(event.Path) {
 		event.Path = "/redacted"
 	}
 }

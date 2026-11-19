@@ -318,6 +318,27 @@ func (g *leakGuard) findInURL(target *url.URL, opts censor.ScanOptions) []censor
 	return g.index.FindWith(buffer.Bytes(), opts)
 }
 
+// holdsRegistered reports whether text holds a value registered for leak
+// protection, so an event field that carries one can be replaced. A request's
+// path is cut from the wire form, so its decoded form is read too.
+func (g *leakGuard) holdsRegistered(text string) bool {
+	if g == nil || text == "" {
+		return false
+	}
+	forms := []string{text}
+	if decoded, err := url.PathUnescape(text); err == nil && decoded != text {
+		forms = append(forms, decoded)
+	}
+	for _, form := range forms {
+		for _, match := range g.index.Find([]byte(form)) {
+			if match.Kind == "inventory" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // scanHeaders looks at every header but the login headers, for the report
 // only: rewriting a header could change what it means, and blocking on one
 // could stop every request of the session.

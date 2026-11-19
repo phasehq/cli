@@ -105,7 +105,7 @@ func TestEventChecksStillCoverAgentTextAndIssuedSecrets(t *testing.T) {
 	// fail an event by naming a value: the denial is recorded without it.
 	named := event()
 	named.Path, named.Method = "/v1/"+live, live
-	redactRequestFields(&named, state.eventSecrets())
+	redactRequestFields(&named, state.eventSecrets(), (*leakGuard)(nil).holdsRegistered)
 	if named.Path != "/redacted" || named.Method != "UNKNOWN" || !events.safe(&named) {
 		t.Fatalf("redacted event = %+v", named)
 	}

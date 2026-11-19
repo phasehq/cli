@@ -354,7 +354,7 @@ func TestRedactRequestFieldsMirrorsConsoleFieldRules(t *testing.T) {
 		},
 	} {
 		event := tc.in
-		redactRequestFields(&event, secrets)
+		redactRequestFields(&event, secrets, (*leakGuard)(nil).holdsRegistered)
 		if event.Method != tc.want.Method || event.Host != tc.want.Host || event.Path != tc.want.Path {
 			t.Fatalf("%s: got method=%q host=%q path=%q, want method=%q host=%q path=%q", name, event.Method, event.Host, event.Path, tc.want.Method, tc.want.Host, tc.want.Path)
 		}

@@ -153,6 +153,7 @@ func newLeakRigWith(t *testing.T, mode string, configure func(provider *httptest
 	if err != nil {
 		t.Fatal(err)
 	}
+	rig.events.leak = rig.guard
 	transport := &http.Transport{DialContext: dial, TLSClientConfig: &tls.Config{RootCAs: rig.providerRoots, MinVersion: tls.VersionTLS12}}
 	t.Cleanup(transport.CloseIdleConnections)
 	rig.proxy = &httpProxy{
@@ -821,6 +822,44 @@ func TestLeakProtectionRefusesWebSocketExtensionItDidNotOffer(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusBadGateway || response.Header.Get("Sec-WebSocket-Extensions") != "" {
 		t.Fatalf("the client got %d with extensions %q", response.StatusCode, response.Header.Get("Sec-WebSocket-Extensions"))
+	}
+}
+
+// A registered value in a request's method, host or path never reaches the
+// Console in an event: neither through a refusal nor through an ordinary allow.
+func TestLeakProtectionKeepsRegisteredValuesOutOfEventFields(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"three": leakSecretThree, "four": leakSecretFour, "db": leakSecretTwo})
+	conn := connectThroughProxy(t, rig, "chatgpt.com", rig.phaseRoots)
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// A body shorter than its stated length cannot be read, and is refused.
+	_, _ = fmt.Fprintf(conn, "POST /backend-api/x/%s HTTP/1.1\r\nHost: chatgpt.com\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\nabc", leakSecretThree)
+	_ = conn.CloseWrite()
+	if response, err := http.ReadResponse(bufio.NewReader(conn), nil); err != nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("the short body: %v %v", response, err)
+	}
+	allow := makeEvent(nil, &http.Request{Method: "POST", URL: &url.URL{Scheme: "https", Host: "chatgpt.com", Path: "/v/" + leakSecretFour}, Host: "chatgpt.com"}, "allow", "ok", "x", 200, 0, "")
+	rig.events.Emit(allow)
+	// An event's path is in its escaped form, and the value is read decoded.
+	escaped := &url.URL{Scheme: "https", Host: "chatgpt.com", Path: "/v/" + leakSecretTwo, RawPath: "/v/" + url.PathEscape(leakSecretTwo)}
+	encoded := makeEvent(nil, &http.Request{Method: "GET", URL: escaped, Host: "chatgpt.com"}, "allow", "ok", "x", 200, 0, "")
+	if !strings.Contains(encoded.Path, "%2F") {
+		t.Fatalf("the path is not in its escaped form: %q", encoded.Path)
+	}
+	rig.events.Emit(encoded)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(string(rig.shippedPayloads()), "/redacted") < 3 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	shipped := rig.shippedPayloads()
+	if count := strings.Count(string(shipped), `"/redacted"`); count < 3 {
+		t.Fatalf("%d events with the path replaced: %s", count, shipped)
+	}
+	for _, value := range []string{leakSecretThree, leakSecretFour, "Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3"} {
+		if bytes.Contains(shipped, []byte(value)) {
+			t.Fatalf("a registered value reached the Console: %s", shipped)
+		}
 	}
 }
 
