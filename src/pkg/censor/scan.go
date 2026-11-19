@@ -116,7 +116,13 @@ func (ix *Index) findSpans(data []byte) []span {
 					}
 					if found, ok := ix.try(data, p, ref, tried); ok {
 						spans = append(spans, found)
-						covered[ref.form] = max(covered[ref.form], found.checked)
+						reach := found.checked
+						// A base64 or hex match took its whole run, and another
+						// copy further on in the run would take the same.
+						if ix.forms[ref.form].wholeRun {
+							reach = found.end
+						}
+						covered[ref.form] = max(covered[ref.form], reach)
 					}
 				}
 			}

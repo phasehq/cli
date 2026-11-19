@@ -3,12 +3,14 @@ package censor
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A value that is JSON with no string in it, as a Solana keypair file is, is
@@ -582,5 +584,33 @@ func TestAPhaseTokenInUpperCaseHexIsReplacedWhole(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A base64 or hex match takes the whole run it sits in. A run made of one
+// value written over and over is taken once, not once for each copy: the cost
+// stays linear in the run.
+func TestARunOfRepeatedCopiesIsTakenOnce(t *testing.T) {
+	limit := 100 * time.Millisecond
+	if raceEnabled {
+		limit *= 10
+	}
+	value := randomString(t, alnum, 24)
+	ix := build(t, secret{ID: "v", Value: value})
+	text := []byte("x " + strings.Repeat(hex.EncodeToString([]byte(value)), 4000) + " y")
+	best := time.Hour
+	var out []byte
+	var report *Report
+	for i := 0; i < 3; i++ {
+		started := time.Now()
+		out, report = ix.Redact(text)
+		best = min(best, time.Since(started))
+	}
+	t.Logf("%d KB of copies scanned in %v", len(text)>>10, best)
+	if string(out) != "x ph:secret:v y" || report.Inventory != 1 {
+		t.Fatalf("%d found: %.60s", report.Inventory, out)
+	}
+	if best > limit {
+		t.Fatalf("scanning took %v, over %v", best, limit)
 	}
 }
