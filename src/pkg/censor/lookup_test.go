@@ -142,3 +142,66 @@ func TestSchemeTwoFindsEveryWholeValueSchemeOneFinds(t *testing.T) {
 		}
 	}
 }
+
+// A value's lookup values tell a guess together. Each is 24 bits of one chunk
+// of one form, and many wrong guesses fit one; but the same 12 bytes stand in
+// several forms, and a guess that fits one form's value by chance does not
+// fit the next. Limits says what that leaves a holder of the lookup key.
+func TestLookupValuesOfSeveralFormsTellAGuessTogether(t *testing.T) {
+	// A fixed key and value: the same guesses fit on every run.
+	key, err := KeyFromBytes(bytes.Repeat([]byte{0x5a}, KeySize), bytes.Repeat([]byte{0xa5}, KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const value = "Tg5Wq2Nc8Jv4Ks7Lp1Zd6Mb3Xr9Fh0YeQw7Er2Ty"
+	e, err := IndexValue(key, "secret", "id", value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plain, inHex *Form
+	for i := range e.Forms {
+		switch f := &e.Forms[i]; {
+		case f.Form == formRaw && plain == nil:
+			plain = f
+		case f.Form == formHex && inHex == nil:
+			inHex = f
+		}
+	}
+	s := schemes[e.Version]
+	fits := func(guess []byte) (asItIs, hexed bool) {
+		asItIs = s.lookup(key.roll(guess)) == s.lookupAt(plain, 0)
+		// The hex is hashed only for the few guesses that fit as they are.
+		return asItIs, asItIs && s.lookup(key.roll([]byte(hex.EncodeToString(guess)))) == s.lookupAt(inHex, 0)
+	}
+	right := []byte(value[:chunkSize])
+	if asItIs, hexed := fits(right); !asItIs || !hexed || !inHex.Wide {
+		t.Fatal("the value's first 12 bytes are not one chunk of its plain form and one of its hex")
+	}
+	// A run of guesses in which, under this key, some fit as they are.
+	const first = 36 << 20
+	guesses := 1 << 24
+	if raceEnabled {
+		guesses = 1 << 21
+	}
+	guess, fitOne, fitBoth := append([]byte{}, right...), 0, 0
+	for n := first; n < first+guesses; n++ {
+		for i, v := 0, n; i < 5; i, v = i+1, v/len(alnum) {
+			guess[i] = alnum[v%len(alnum)]
+		}
+		if bytes.Equal(guess, right) {
+			continue
+		}
+		asItIs, hexed := fits(guess)
+		if asItIs {
+			fitOne++
+		}
+		if hexed {
+			fitBoth++
+		}
+	}
+	// About one wrong guess in 2^24 fits one lookup value, and none of those
+	// the other: the two together leave the right guess.
+	if fitOne == 0 || fitOne > guesses>>20 || fitBoth != 0 {
+		t.Fatalf("of %d wrong guesses, %d fit the chunk's lookup value as it is and %d its hex's too", guesses, fitOne, fitBoth)
+	}
+}
