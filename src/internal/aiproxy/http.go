@@ -767,7 +767,13 @@ func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clien
 	if result.snapshot.binding == nil {
 		check = p.state.availability
 	}
-	if !validWebSocketResponse(request, result.response) || !writable || check() != nil {
+	host, port, _ := requestAuthority(request)
+	match := p.leak.inspects(flow, host, port)
+	inspected := match.inspectsPath(request.URL.Path)
+	// The proxy took the extension offer out to keep frames readable, so a
+	// server that selects one anyway would carry compressed frames past it.
+	extended := inspected && len(result.response.Header.Values("Sec-WebSocket-Extensions")) > 0
+	if !validWebSocketResponse(request, result.response) || extended || !writable || check() != nil {
 		failure := &requestFailure{status: http.StatusBadGateway, code: "invalid_websocket_upgrade", message: "The upstream WebSocket handshake was invalid.", decision: "error", reason: "upstream_error"}
 		if result.snapshot.binding != nil {
 			failure.binding = result.snapshot.binding
@@ -793,8 +799,7 @@ func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clien
 	stop := make(chan struct{})
 	defer close(stop)
 	go p.watchWebSocket(ctx, client, upstream, check, stop)
-	host, port, _ := requestAuthority(request)
-	if match := p.leak.inspects(flow, host, port); match.inspectsPath(request.URL.Path) {
+	if inspected {
 		p.relayInspectedWebSocket(clientReader, client, upstream, request, host, port, match)
 		return
 	}

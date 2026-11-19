@@ -791,6 +791,39 @@ func TestLeakProtectionRewritesCodexWebSocketMessages(t *testing.T) {
 	}
 }
 
+// A server that selects compression the proxy never offered would carry
+// frames the proxy cannot read, so its handshake is refused.
+func TestLeakProtectionRefusesWebSocketExtensionItDidNotOffer(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	offered := make(chan string, 1)
+	rig.upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offered <- r.Header.Get("Sec-WebSocket-Extensions")
+		connection, buffered, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		_, _ = fmt.Fprintf(buffered, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Extensions: permessage-deflate\r\nSec-WebSocket-Accept: %s\r\n\r\n", webSocketAccept(r.Header.Get("Sec-WebSocket-Key")))
+		_ = buffered.Flush()
+		_, _ = io.Copy(io.Discard, buffered)
+	})
+	conn := connectThroughProxy(t, rig, "chatgpt.com", rig.phaseRoots)
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef"))
+	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: chatgpt.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\nSec-WebSocket-Key: %s\r\n\r\n", codexSocketPath, key)
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := <-offered; got != "" {
+		t.Fatalf("the compression offer reached the provider: %q", got)
+	}
+	if response.StatusCode != http.StatusBadGateway || response.Header.Get("Sec-WebSocket-Extensions") != "" {
+		t.Fatalf("the client got %d with extensions %q", response.StatusCode, response.Header.Get("Sec-WebSocket-Extensions"))
+	}
+}
+
 func connectThroughProxy(t *testing.T, rig *leakRig, host string, roots *x509.CertPool) *tls.Conn {
 	t.Helper()
 	raw, err := net.Dial("tcp", rig.proxyURL.Host)
