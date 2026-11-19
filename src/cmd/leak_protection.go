@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/phasehq/cli/internal/leakguard"
+	"github.com/phasehq/cli/internal/tunnel/engine"
 	"github.com/phasehq/cli/pkg/phase"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
 )
@@ -33,6 +34,12 @@ const (
 	// the line names this one and speaks of the model traffic it reads only.
 	leakHookProxyWarning     = "Phase: the hook-managed Phase AI proxy could not be reached, so values from this command are not removed from the model traffic it reads. Run phase ai status to see why."
 	leakHookProxyFullWarning = "Phase: the leak protection inventory of the hook-managed Phase AI proxy is full, so values from this command are not removed from the model traffic it reads. Restarting the Phase AI proxy clears it."
+	// The same four for the proxy of a phase up engine, which phase ai status
+	// does not show and phase ai does not restart.
+	leakTunnelWarning          = "Phase: leak protection could not be reached, so values from this command are not removed from model traffic. Run phase status to see why."
+	leakTunnelFullWarning      = "Phase: the leak protection inventory is full, so values from this command are not removed from model traffic. Running phase down and then phase up clears it."
+	leakTunnelProxyWarning     = "Phase: the phase up engine could not be reached, so values from this command are not removed from the model traffic it reads. Run phase status to see why."
+	leakTunnelProxyFullWarning = "Phase: the leak protection inventory of the phase up engine is full, so values from this command are not removed from the model traffic it reads. Running phase down and then phase up clears it."
 )
 
 // unprotectedWarning says how many of a command's values leak protection
@@ -46,8 +53,12 @@ func unprotectedWarning(count int) string {
 }
 
 // leakRuntimeSource names the source that finds the hook-managed proxy from
-// the runtime state on disk.
-const leakRuntimeSource = "runtime"
+// the runtime state on disk, and leakTunnelSource the one that finds the proxy
+// of a running phase up engine from the engine's.
+const (
+	leakRuntimeSource = "runtime"
+	leakTunnelSource  = "up"
+)
 
 // leakProxyWarning is what a failed registration says of a proxy that is not
 // the session's own: unreachable and full when it is the only proxy the
@@ -61,6 +72,7 @@ type leakProxyWarning struct {
 // source that is not here speaks as the hook-managed proxy does on its own.
 var leakProxyWarnings = map[string]leakProxyWarning{
 	leakRuntimeSource: {leakProtectionWarning, leakInventoryFullWarning, leakHookProxyWarning, leakHookProxyFullWarning},
+	leakTunnelSource:  {leakTunnelWarning, leakTunnelFullWarning, leakTunnelProxyWarning, leakTunnelProxyFullWarning},
 }
 
 // The session's own environment is leakguard's first source. The proxy the
@@ -68,10 +80,12 @@ var leakProxyWarnings = map[string]leakProxyWarning{
 // not load the Phase environment (Codex's and Cursor's shells, another
 // terminal) still hands out values a harness on this machine can read. So
 // can a command inside a session, which is why every source is asked and
-// every proxy found is registered with. A later source, such as the phase up
-// engine, is one more AddSource and one more entry in leakProxyWarnings.
+// every proxy found is registered with. The proxy of a running phase up
+// engine is the third: it is the one that reads the model traffic of the
+// tools on this machine through the tunnel, whatever else runs.
 func init() {
 	leakguard.AddSource(leakguard.Source{Name: leakRuntimeSource, Find: hookRuntimeProxy, Restarting: hookRuntimeRestarting})
+	leakguard.AddSource(leakguard.Source{Name: leakTunnelSource, Find: tunnelEngineProxy})
 }
 
 // leakRuntimeStat is the file check a command pays when no proxy runs, once
@@ -130,6 +144,30 @@ func hookRuntimeRestarting() bool {
 	}
 	state, err := readHookRuntimeState(filepath.Join(directory, hookRuntimeStateFile))
 	return err == nil && lock.PID > 0 && state.PID == lock.PID && state.Generation == lock.Generation && processIsAlive(lock.PID)
+}
+
+// leakTunnelStat is the one file check a command pays for phase up when no
+// engine runs; tests count it.
+var leakTunnelStat = os.Lstat
+
+// tunnelEngineProxy finds the proxy of a running phase up engine from the
+// state the engine keeps while its proxy serves a session, when the process
+// that wrote it is alive. With no engine it costs one stat, and it never
+// touches the network. State that is not the owner's alone, is not a regular
+// file or is of another version is not used.
+func tunnelEngineProxy() (string, bool) {
+	directory, err := tunnelStateDirectory()
+	if err != nil {
+		return "", false
+	}
+	if _, err := leakTunnelStat(engine.ProxyStatePath(directory)); err != nil {
+		return "", false
+	}
+	state, err := engine.ReadProxyState(directory)
+	if err != nil || !processIsAlive(state.PID) {
+		return "", false
+	}
+	return state.ProxyURL, true
 }
 
 // leakLocate finds the proxies to register with, and leakRegister registers

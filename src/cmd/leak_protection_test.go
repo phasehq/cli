@@ -21,6 +21,7 @@ import (
 
 	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/internal/remoteapi"
+	"github.com/phasehq/cli/internal/tunnel/engine"
 	"github.com/phasehq/cli/pkg/censor"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/phase"
@@ -1193,5 +1194,391 @@ func TestALockThatSaysNothingIsOnItsWayCostsNoWait(t *testing.T) {
 				t.Fatalf("the commands said %q", got)
 			}
 		})
+	}
+}
+
+// withTunnelStateDirectory gives the test a phase up state directory of its
+// own, with no engine's state in it.
+func withTunnelStateDirectory(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	original := tunnelStateDirectory
+	tunnelStateDirectory = func() (string, error) { return directory, nil }
+	t.Cleanup(func() { tunnelStateDirectory = original })
+	return directory
+}
+
+// engineProxyState writes the state a phase up engine keeps while its proxy
+// serves a session: where the proxy listens, and the process that runs it.
+func engineProxyState(t *testing.T, directory, proxyURL string, pid int) {
+	t.Helper()
+	state := engine.ProxyState{Version: engine.ProxyStateVersion, PID: pid, Started: time.Now().UTC(), ProxyURL: proxyURL}
+	if err := writeOwnerOnlyJSON(engine.ProxyStatePath(directory), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With only phase up running there is no session and no hook-managed proxy.
+// A command still registers what it hands out, with the engine's proxy: that
+// is the proxy that reads the model traffic of the tools on this machine.
+func TestValuesAreRegisteredWithThePhaseUpEngine(t *testing.T) {
+	withHookRuntimeDirectory(t)
+	directory := withTunnelStateDirectory(t)
+	noSession(t)
+	fake, proxyURL := newLeakControlProxy(t)
+	engineProxyState(t, directory, proxyURL, os.Getpid())
+	warnings := captureLeakWarnings(t)
+
+	found := leakguard.Locate()
+	if len(found) != 1 || found[0].InSession() || found[0].Source != leakTunnelSource || found[0].URL != proxyURL {
+		t.Fatalf("the engine's proxy was not found: %+v", found)
+	}
+	if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+		t.Fatal(err)
+	}
+	if err := protectSecrets(context.Background(), &phase.AgentBackend{}, leakTestSecrets); err != nil {
+		t.Fatal(err)
+	}
+	lease := []byte(`[{"id":"ds-1","lease":{"id":"lease-123","credentials":[{"key":"DB_PASSWORD","value":"Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3"}]}}]`)
+	if err := protectLeaseCredentials(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	posts, ids, kinds := fake.registered()
+	if posts != 3 || !reflect.DeepEqual(ids, []string{"secret:STRIPE_KEY", "secret:STRIPE_KEY", "dynamic:lease-123"}) ||
+		!reflect.DeepEqual(kinds, []string{remoteapi.InventoryIDKeyName, remoteapi.InventoryIDKeyName, remoteapi.InventoryIDPhase}) {
+		t.Fatalf("%d registrations of %v as %v", posts, ids, kinds)
+	}
+	if fake.keyCalls != 1 {
+		t.Fatalf("the key was fetched %d times in one process", fake.keyCalls)
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("a registration that worked warned: %q", warnings.String())
+	}
+}
+
+// With no engine running, a command that hands out values pays one check of
+// the engine's one file on top of the hook proxy's two: nothing is read, and
+// nothing is called. Nor is state used that names no running engine, or that
+// is not an engine's own file.
+func TestWithNoEngineRunningACommandPaysOneFileCheckForPhaseUp(t *testing.T) {
+	hookDirectory := withHookRuntimeDirectory(t)
+	directory := withTunnelStateDirectory(t)
+	noSession(t)
+	statePath := engine.ProxyStatePath(directory)
+	checks, hookChecks := 0, 0
+	previousStat, previousHookStat := leakTunnelStat, leakRuntimeStat
+	leakTunnelStat = func(path string) (os.FileInfo, error) {
+		checks++
+		if path != statePath {
+			t.Errorf("%s was looked at", path)
+		}
+		return previousStat(path)
+	}
+	leakRuntimeStat = func(path string) (os.FileInfo, error) {
+		hookChecks++
+		if path != filepath.Join(hookDirectory, hookRuntimeStateFile) && path != filepath.Join(hookDirectory, hookRuntimeLockFile) {
+			t.Errorf("%s was looked at", path)
+		}
+		return previousHookStat(path)
+	}
+	t.Cleanup(func() { leakTunnelStat, leakRuntimeStat = previousStat, previousHookStat })
+	calls := 0
+	previousRegister := leakRegister
+	leakRegister = func(ctx context.Context, proxy leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
+		calls++
+		return previousRegister(ctx, proxy, values)
+	}
+	t.Cleanup(func() { leakRegister = previousRegister })
+	warnings := captureLeakWarnings(t)
+
+	const commands = 200
+	started := time.Now()
+	for i := 0; i < commands; i++ {
+		if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if elapsed := time.Since(started); checks != commands || hookChecks != 2*commands || calls != 0 || elapsed > 2*time.Second {
+		t.Fatalf("%d commands made %d and %d file checks and %d registrations in %v", commands, checks, hookChecks, calls, elapsed)
+	}
+	if found := leakguard.Locate(); len(found) != 0 {
+		t.Fatalf("a proxy was found where none runs: %+v", found)
+	}
+
+	// State left behind by an engine that is gone names an address. Nothing is
+	// sent there: the process that wrote it is not alive.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	var connections atomic.Int64
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connections.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	proxyURL := "http://phase:" + leakTestCapability + "@" + listener.Addr().String()
+	const deadPID = 1 << 30
+	engineProxyState(t, directory, proxyURL, deadPID)
+	for _, backend := range []phase.SecretsBackend{nil, &phase.AgentBackend{}} {
+		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A version this build does not read, and a state that names no proxy.
+	for _, state := range []map[string]any{
+		{"version": engine.ProxyStateVersion + 1, "pid": os.Getpid(), "proxyUrl": proxyURL},
+		{"version": engine.ProxyStateVersion, "pid": os.Getpid()},
+	} {
+		if err := writeOwnerOnlyJSON(statePath, state); err != nil {
+			t.Fatal(err)
+		}
+		if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		// A file others can read, and a link to a state kept somewhere else.
+		engineProxyState(t, directory, proxyURL, os.Getpid())
+		if err := os.Chmod(statePath, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+		elsewhere := t.TempDir()
+		engineProxyState(t, elsewhere, proxyURL, os.Getpid())
+		if err := os.Remove(statePath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(engine.ProxyStatePath(elsewhere), statePath); err != nil {
+			t.Fatal(err)
+		}
+		if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if calls != 0 || connections.Load() != 0 {
+		t.Fatalf("%d registrations and %d connections to a proxy that is not running", calls, connections.Load())
+	}
+	// An Agent login with no proxy anywhere is told once, as before; nobody
+	// else is told anything.
+	if got := warnings.String(); got != leakProtectionInactiveMsg+"\n" {
+		t.Fatalf("warnings: %q", got)
+	}
+}
+
+// The engine's state can name an address nothing listens at: an engine that
+// was killed left it behind, and its process id went to another program. That
+// is no proxy running, as with the hook proxy: a human login hears nothing,
+// and an Agent login is told once that nothing is protected.
+func TestStalePhaseUpStateIsNoProxyRunning(t *testing.T) {
+	withHookRuntimeDirectory(t)
+	directory := withTunnelStateDirectory(t)
+	noSession(t)
+	stale := "http://phase:" + leakTestCapability + "@" + closedAddress(t)
+	engineProxyState(t, directory, stale, os.Getpid())
+	warnings := captureLeakWarnings(t)
+	if found := leakguard.Locate(); len(found) != 1 || found[0].URL != stale || found[0].Source != leakTunnelSource {
+		t.Fatalf("the state was not read: %+v", found)
+	}
+	for i := 0; i < 3; i++ {
+		if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+			t.Fatalf("a human login was refused: %v", err)
+		}
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("a human login was warned about a proxy that is not running: %q", warnings.String())
+	}
+	for i := 0; i < 2; i++ {
+		if err := protectSecrets(context.Background(), &phase.AgentBackend{}, leakTestSecrets); err != nil {
+			t.Fatalf("an Agent login was refused: %v", err)
+		}
+	}
+	if got := warnings.String(); got != leakProtectionInactiveMsg+"\n" {
+		t.Fatalf("warnings: %q", got)
+	}
+}
+
+// Any other failure of the engine's proxy warns once and never refuses the
+// command, whoever is logged in.
+func TestAFailedRegistrationWithThePhaseUpEngineWarnsOnceAndCarriesOn(t *testing.T) {
+	for name, c := range map[string]struct {
+		fail    func(*leakControlProxy)
+		warning string
+	}{
+		"an HTTP error":              {func(f *leakControlProxy) { f.keyStatus = http.StatusInternalServerError }, leakTunnelWarning},
+		"a capability it refuses":    {func(f *leakControlProxy) { f.keyStatus = http.StatusProxyAuthRequired }, leakTunnelWarning},
+		"an answer that is not JSON": {func(f *leakControlProxy) { f.keyBody = "<html>not the proxy</html>" }, leakTunnelWarning},
+		"a full inventory":           {func(f *leakControlProxy) { f.full = true }, leakTunnelFullWarning},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withHookRuntimeDirectory(t)
+			directory := withTunnelStateDirectory(t)
+			noSession(t)
+			fake, proxyURL := newLeakControlProxy(t)
+			c.fail(fake)
+			engineProxyState(t, directory, proxyURL, os.Getpid())
+			warnings := captureLeakWarnings(t)
+			for _, backend := range []phase.SecretsBackend{nil, &phase.AgentBackend{}, nil, &phase.AgentBackend{}} {
+				if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+					t.Fatalf("a command outside a session was refused: %v", err)
+				}
+			}
+			// The warning points at phase up's own commands: phase ai status
+			// shows nothing of this proxy.
+			if got := warnings.String(); got != c.warning+"\n" || strings.Contains(got, "sk_live") || strings.Contains(got, "phase ai") {
+				t.Fatalf("four failed registrations warned %q", got)
+			}
+			fake.mu.Lock()
+			reached := fake.requests
+			fake.mu.Unlock()
+			if reached == 0 {
+				t.Fatal("the proxy was never asked: the test shows nothing")
+			}
+		})
+	}
+}
+
+// The engine's proxy is the one that reads what the tools on this machine
+// send through the tunnel, so it is told of a value whatever else runs: with
+// the proxy the harness hooks keep running, and inside a session with that
+// session's proxy too. Before, the first proxy found was the only one told,
+// and with the hook proxy running the engine never learnt a value.
+func TestThePhaseUpEngineIsRegisteredWithWhateverElseRuns(t *testing.T) {
+	hookDirectory := withHookRuntimeDirectory(t)
+	directory := withTunnelStateDirectory(t)
+	noSession(t)
+	up, upURL := newLeakControlProxy(t)
+	engineProxyState(t, directory, upURL, os.Getpid())
+	hook, hookURL := newLeakControlProxy(t)
+	hookProxyState(t, hookDirectory, hookURL, os.Getpid())
+	warnings := captureLeakWarnings(t)
+	registrations := func(fake *leakControlProxy) int {
+		posts, _, _ := fake.registered()
+		return posts
+	}
+	said := func() string {
+		got := warnings.String()
+		warnings.Reset()
+		inactiveNotice, proxyWarning = sync.Once{}, oncePerSource{}
+		return got
+	}
+	fill := func(fake *leakControlProxy, full bool) {
+		fake.mu.Lock()
+		fake.full = full
+		fake.mu.Unlock()
+	}
+	agent, human := phase.SecretsBackend(&phase.AgentBackend{}), phase.SecretsBackend(nil)
+
+	// The hook proxy and the engine both run: both are told, in the order of
+	// the sources and under the same placeholder.
+	found := leakguard.Locate()
+	if len(found) != 2 || found[0].Source != leakRuntimeSource || found[1].Source != leakTunnelSource || found[1].URL != upURL || found[1].InSession() {
+		t.Fatalf("with the hook proxy and the engine running: %+v", found)
+	}
+	for _, backend := range []phase.SecretsBackend{human, agent} {
+		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, hookIDs, _ := hook.registered()
+	_, upIDs, _ := up.registered()
+	if want := []string{"secret:STRIPE_KEY", "secret:STRIPE_KEY"}; !reflect.DeepEqual(hookIDs, want) || !reflect.DeepEqual(upIDs, want) {
+		t.Fatalf("the hook proxy was told of %v and the engine of %v", hookIDs, upIDs)
+	}
+	if got := said(); got != "" {
+		t.Fatalf("registrations that worked said %q", got)
+	}
+	// The hook proxy's state is stale. Before, the command stopped at it.
+	hookProxyState(t, hookDirectory, "http://phase:"+leakTestCapability+"@"+closedAddress(t), os.Getpid())
+	for _, backend := range []phase.SecretsBackend{human, agent} {
+		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := said(); got != "" || registrations(up) != 4 {
+		t.Fatalf("with the hook proxy gone: %q, %d registrations with the engine", got, registrations(up))
+	}
+	hookProxyState(t, hookDirectory, hookURL, os.Getpid())
+
+	// Inside a session all three are told, the session's own first.
+	session, sessionURL := newLeakControlProxy(t)
+	environment := map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": sessionURL}
+	leakguard.Environment = func(key string) string { return environment[key] }
+	if found := leakguard.Locate(); len(found) != 3 || !found[0].InSession() || found[1].Source != leakRuntimeSource || found[2].Source != leakTunnelSource {
+		t.Fatalf("inside a session: %+v", found)
+	}
+	for _, backend := range []phase.SecretsBackend{human, agent} {
+		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := said(); got != "" || registrations(session) != 2 || registrations(hook) != 4 || registrations(up) != 6 {
+		t.Fatalf("inside a session: %q, and %d, %d and %d registrations", got, registrations(session), registrations(hook), registrations(up))
+	}
+	// The engine's proxy fails there: one line that names it and points at
+	// phase up's own commands, and no refusal, for an Agent login either.
+	fill(up, true)
+	for _, backend := range []phase.SecretsBackend{agent, human} {
+		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+			t.Fatalf("a failure of the engine's proxy refused a command inside a session: %v", err)
+		}
+	}
+	if got := said(); got != leakTunnelProxyFullWarning+"\n" || !strings.Contains(got, "phase up engine") || strings.Contains(got, "phase ai") {
+		t.Fatalf("with the engine's inventory full, inside a session: %q", got)
+	}
+	// Both fail: a line for each, since each reads traffic of its own.
+	fill(hook, true)
+	if err := protectSecrets(context.Background(), agent, leakTestSecrets); err != nil {
+		t.Fatal(err)
+	}
+	if got := said(); got != leakHookProxyFullWarning+"\n"+leakTunnelProxyFullWarning+"\n" {
+		t.Fatalf("with both inventories full, inside a session: %q", got)
+	}
+	// The session's proxy stops answering: an Agent login is refused before
+	// either of the others is spoken to.
+	fill(hook, false)
+	fill(up, false)
+	environment["HTTPS_PROXY"] = "http://phase:" + leakTestCapability + "@" + closedAddress(t)
+	toldHook, toldUp := registrations(hook), registrations(up)
+	if err := protectSecrets(context.Background(), agent, leakTestSecrets); !errors.Is(err, errLeakProtectionUnreachable) {
+		t.Fatalf("an Agent login inside a session carried on without leak protection: %v", err)
+	}
+	if got := said(); got != "" || registrations(hook) != toldHook || registrations(up) != toldUp {
+		t.Fatalf("a refused command said %q and registered with another proxy", got)
+	}
+
+	// Outside a session again, the engine's proxy cannot be reached while the
+	// hook proxy takes the values: it is named there too.
+	leakguard.Environment = func(string) string { return "" }
+	broken, brokenURL := newLeakControlProxy(t)
+	broken.keyStatus = http.StatusInternalServerError
+	engineProxyState(t, directory, brokenURL, os.Getpid())
+	for _, backend := range []phase.SecretsBackend{human, agent} {
+		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+			t.Fatalf("a command outside a session was refused: %v", err)
+		}
+	}
+	if got := said(); got != leakTunnelProxyWarning+"\n" || registrations(hook) != toldHook+2 {
+		t.Fatalf("with the engine unreachable and the hook proxy running: %q, %d registrations with the hook proxy", got, registrations(hook)-toldHook)
+	}
+	// Neither runs: no proxy, as with none found.
+	hookProxyState(t, hookDirectory, "http://phase:"+leakTestCapability+"@"+closedAddress(t), os.Getpid())
+	engineProxyState(t, directory, "http://phase:"+leakTestCapability+"@"+closedAddress(t), os.Getpid())
+	for _, backend := range []phase.SecretsBackend{human, agent, agent} {
+		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := said(); got != leakProtectionInactiveMsg+"\n" {
+		t.Fatalf("with neither proxy running: %q", got)
 	}
 }

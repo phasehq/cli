@@ -387,6 +387,8 @@ type running struct {
 	// helper is sent after it attached.
 	refreshed *atomic.Pointer[map[string]any]
 	updates   chan []string
+	// stop ends the engine and waits for it to have gone. The test's end does it too.
+	stop func()
 }
 
 // startEngine runs the engine as phase up does, capturing routes, or everything when
@@ -476,14 +478,15 @@ func startEngineWith(t *testing.T, setup engineSetup) *running {
 	done := make(chan error, 1)
 	// The engine has let go of its state directory before the test takes it away.
 	stopped := make(chan struct{})
-	t.Cleanup(func() {
+	stop := func() {
 		cancel()
 		select {
 		case <-stopped:
 		case <-time.After(30 * time.Second):
 			t.Error("the engine didn't stop")
 		}
-	})
+	}
+	t.Cleanup(stop)
 	go func() {
 		defer close(stopped)
 		done <- Run(ctx, Config{
@@ -529,7 +532,7 @@ func startEngineWith(t *testing.T, setup engineSetup) *running {
 	return &running{
 		ctx: ctx, directory: directory, attach: attach, program: program,
 		proxyCert: proxyCert, providerRoots: roots, reader: reader, owners: owners,
-		refreshed: refreshed, updates: updates,
+		refreshed: refreshed, updates: updates, stop: stop,
 	}
 }
 

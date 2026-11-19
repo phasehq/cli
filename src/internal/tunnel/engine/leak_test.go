@@ -284,7 +284,9 @@ func TestModelTrafficIsReadForItsOwnToolOnly(t *testing.T) {
 	e, provider := startLeakEngine(t, nil)
 	proxyRoots := x509.NewCertPool()
 	proxyRoots.AppendCertsFromPEM(e.proxyCert)
-	e.registerHandedOut(t, "deploy-key", handedOut)
+	// The value is registered as a secrets command registers one with only phase up
+	// running: with the proxy the engine's state names.
+	e.registerAsACommandDoes(t, "deploy-key", handedOut)
 
 	t.Run("Claude Code's flow to its own model host is read", func(t *testing.T) {
 		e.owners.next(claudeCode, nil)

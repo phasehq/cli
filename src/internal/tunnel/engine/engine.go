@@ -141,6 +141,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(cfg.StateDirectory, 0o700); err != nil {
 		return err
 	}
+	// An engine that was killed leaves its proxy's state behind. It names no proxy
+	// of this engine's.
+	_ = os.Remove(ProxyStatePath(cfg.StateDirectory))
 	// Before anything dials out: once everything is captured, a socket that isn't
 	// pinned to the real interface would come straight back into the tunnel.
 	tunnel.Physical.Refresh()
@@ -276,9 +279,17 @@ func (s *sessionEngine) Serve(ctx context.Context, session *airuntime.ProxySessi
 			s.engine.setError(err)
 			return
 		}
+		// From here a command on this machine can register a secret value it hands
+		// out with the proxy's leak protection. Without the state the tunnel works
+		// as before, and such a value isn't known to the proxy.
+		if err := s.engine.publishProxy(endpoints.ProxyURL.Reveal()); err != nil {
+			s.engine.cfg.Logf("couldn't write the proxy's state, so secret values handed out on this machine aren't registered with leak protection: %v", err)
+		}
 		s.engine.serving(names)
 	}
 	s.inner.OnConnectionsChanged = s.connectionsChanged
+	// The state goes when the proxy stops serving this session, however that ends.
+	defer s.engine.withdrawProxy()
 	return s.inner.Serve(ctx, session)
 }
 

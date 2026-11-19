@@ -354,6 +354,11 @@ func stopTunnel(directory string) (steppedAside, stoppedEngine bool) {
 		stoppedEngine = true
 	}
 	_ = os.Remove(tunnelEnginePIDPath(directory))
+	// An engine that stops when asked takes its proxy's state with it. One that had
+	// to be killed leaves the state behind, naming a proxy that is gone.
+	if state, err := engine.ReadProxyState(directory); err != nil || !processIsAlive(state.PID) {
+		_ = os.Remove(engine.ProxyStatePath(directory))
+	}
 	return steppedAside, stoppedEngine
 }
 
