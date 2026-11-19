@@ -69,13 +69,14 @@ func (r *fakeReader) ShouldRead(tool, host string) bool { return tool == "claude
 func (r *fakeReader) ToolHosts() map[string][]string {
 	return map[string][]string{"claude": {modelHost}}
 }
-func (r *fakeReader) NoteFlow(connectFrom, tool string) {
+func (r *fakeReader) NoteFlow(connectFrom, tool string) (func(), error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if address, err := netip.ParseAddrPort(connectFrom); err != nil || !address.Addr().IsLoopback() {
 		tool = "from " + connectFrom
 	}
 	r.notes = append(r.notes, tool)
+	return func() {}, nil
 }
 
 // noted returns the tools noted so far, and forgets them.
@@ -122,7 +123,13 @@ func (r fakeRuntime) ServeManaged(ctx context.Context, engine airuntime.Engine) 
 
 func testSession(t *testing.T) *agentapi.OpenSessionResponse {
 	t.Helper()
-	payload, err := json.Marshal(testSessionPayload())
+	return sessionFrom(t, testSessionPayload())
+}
+
+// sessionFrom is a session as the engine gets it from Console.
+func sessionFrom(t *testing.T, config map[string]any) *agentapi.OpenSessionResponse {
+	t.Helper()
+	payload, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +238,11 @@ func startConsole(t *testing.T) string {
 // the session as it was opened. The proxy asks every few seconds, and stops serving a
 // session it can't refresh.
 func unchangedSession() *atomic.Pointer[map[string]any] {
-	config := testSessionPayload()
+	return unchanged(testSessionPayload())
+}
+
+// unchanged is unchangedSession for a session of the test's own.
+func unchanged(config map[string]any) *atomic.Pointer[map[string]any] {
 	delete(config, "sessionCredential")
 	refreshed := &atomic.Pointer[map[string]any]{}
 	refreshed.Store(&config)
@@ -369,8 +380,9 @@ type running struct {
 	// what they'd trust anyway: an unread flow shows the provider's own certificate.
 	proxyCert     []byte
 	providerRoots *x509.CertPool
-	reader        *fakeReader
-	owners        *fakeOwners
+	// reader is the stand-in reader. It's nil when the test set a reader of its own.
+	reader *fakeReader
+	owners *fakeOwners
 	// refreshed is what Console answers a refresh with, and updates are the names the
 	// helper is sent after it attached.
 	refreshed *atomic.Pointer[map[string]any]
@@ -378,9 +390,34 @@ type running struct {
 }
 
 // startEngine runs the engine as phase up does, capturing routes, or everything when
-// there are none.
+// there are none. A stand-in reads modelHost for Claude Code.
 func startEngine(t *testing.T, routes []string) *running {
 	t.Helper()
+	return startEngineWith(t, engineSetup{routes: routes})
+}
+
+// engineSetup is what a test changes about the engine it starts.
+type engineSetup struct {
+	routes []string
+	// reader replaces the stand-in reader, and noReader leaves the engine without one.
+	reader   func(*aiproxy.Engine) tunnel.Reader
+	noReader bool
+	// session is the session Console opens, and answers every refresh with.
+	session func() map[string]any
+	// standIns answers for more addresses, each with the stand-in that takes it. The
+	// certificate authority is the providers' own.
+	standIns func(t *testing.T, providers *phaseproxy.CA) map[string]string
+	// sealed refuses every address that has no stand-in, for a test that uses the
+	// names of real hosts.
+	sealed bool
+}
+
+func startEngineWith(t *testing.T, setup engineSetup) *running {
+	t.Helper()
+	routes := setup.routes
+	if setup.session == nil {
+		setup.session = testSessionPayload
+	}
 	proxyCA, proxyCert, _, err := phaseproxy.GenerateCA(24 * time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -399,7 +436,7 @@ func startEngine(t *testing.T, routes []string) *running {
 	}
 	provider := startProvider(t, providerCA)
 	echoTCP, echoUDP := startEcho(t)
-	refreshed := unchangedSession()
+	refreshed := unchanged(setup.session())
 	client, err := agentapi.NewClient(startConsoleWith(t, refreshed), "pss_user:v1:"+strings.Repeat("a", 64)+":"+strings.Repeat("b", 64)+":"+strings.Repeat("c", 64)+":"+strings.Repeat("d", 64), &http.Client{Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -417,14 +454,24 @@ func startEngine(t *testing.T, routes []string) *running {
 
 	// The model host answers differently by its address and by its name: an unread
 	// flow goes to the address the program dialled, and the proxy reaches it by name.
-	upstream := &tunnel.Upstream{Servers: []string{"127.0.0.1"}, Override: map[string]string{
+	upstream := &tunnel.Upstream{Servers: []string{"127.0.0.1"}, OnlyOverrides: setup.sealed, Override: map[string]string{
 		apiHost + ":443": provider, addedHost + ":443": provider, realAPI: provider, realEchoTCP: echoTCP, realEchoUDP: echoUDP,
 		realClosed: fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 		realModel:  startLabelled(t, providerCA, "by address"), modelHost + ":443": startLabelled(t, providerCA, "by name"),
 	}}
+	if setup.standIns != nil {
+		for address, standIn := range setup.standIns(t, providerCA) {
+			upstream.Override[address] = standIn
+		}
+	}
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(providerCert)
 	reader, owners := &fakeReader{}, &fakeOwners{process: browser}
+	readWith := func(*aiproxy.Engine) tunnel.Reader { return reader }
+	if setup.reader != nil || setup.noReader {
+		reader, readWith = nil, setup.reader
+	}
+	session := sessionFrom(t, setup.session())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	// The engine has let go of its state directory before the test takes it away.
@@ -440,12 +487,12 @@ func startEngine(t *testing.T, routes []string) *running {
 	go func() {
 		defer close(stopped)
 		done <- Run(ctx, Config{
-			Runtime:    fakeRuntime{session: testSession(t), client: client, ca: proxyCA, paths: phaseproxy.CAPaths{Certificate: certificatePath, Bundle: bundlePath}},
+			Runtime:    fakeRuntime{session: session, client: client, ca: proxyCA, paths: phaseproxy.CAPaths{Certificate: certificatePath, Bundle: bundlePath}},
 			SocketPath: filepath.Join(socketDirectory, "s"), StateDirectory: directory,
 			ProxyAddress:    fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 			PostgresAddress: fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 			WireGuardPort:   freePort(t, "udp"), Upstream: upstream, UpstreamRootCAs: roots, Logf: t.Logf,
-			Routes: routes, Reader: func(*aiproxy.Engine) tunnel.Reader { return reader }, Owner: owners.find,
+			Routes: routes, Reader: readWith, Owner: owners.find,
 		})
 	}()
 	var attach control.Attach
@@ -657,6 +704,15 @@ func TestEngineEndToEnd(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"api"`) {
 			t.Fatalf("%d: %.200s", response.StatusCode, body)
+		}
+	})
+
+	// Every flow handed to the proxy so far was a Connection's, and the proxy was told
+	// of each that it isn't to be read.
+	t.Run("the proxy is told of every flow it is handed", func(t *testing.T) {
+		noted := e.reader.noted()
+		if len(noted) < 3 || strings.Join(noted, "") != "" {
+			t.Fatalf("the proxy was told %q", noted)
 		}
 	})
 

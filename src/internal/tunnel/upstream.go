@@ -22,7 +22,11 @@ type Upstream struct {
 	Servers []string
 	// Override sends an address somewhere else. Tests use it to reach stand-ins.
 	Override map[string]string
-	next     atomic.Uint32
+	// OnlyOverrides refuses every address Override doesn't hold, and asks no DNS
+	// server anything. A test that uses real host names sets it, so that nothing it
+	// does can leave the machine.
+	OnlyOverrides bool
+	next          atomic.Uint32
 }
 
 // NewUpstream reads the network's DNS servers, ignoring the tunnel's own.
@@ -51,6 +55,8 @@ func (u *Upstream) Resolver() *net.Resolver {
 func (u *Upstream) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if override, ok := u.Override[address]; ok {
 		address = override
+	} else if u.OnlyOverrides {
+		return nil, fmt.Errorf("%s isn't one of the addresses this run may reach", address)
 	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -105,6 +111,9 @@ func (u *Upstream) Transport() *http.Transport {
 // Forward asks the network's DNS servers a raw query, for names under a Connection's
 // domain that aren't themselves captured.
 func (u *Upstream) Forward(query []byte) []byte {
+	if u.OnlyOverrides {
+		return refused(query)
+	}
 	for _, server := range u.Servers {
 		conn, err := Physical.Dialer(2*time.Second).Dial("udp", net.JoinHostPort(server, "53"))
 		if err != nil {

@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"sort"
 	"strings"
@@ -27,7 +28,13 @@ type Reader interface {
 	// the router's own loopback address for it. tool is the tool the flow is read
 	// for, or "" when it isn't to be read: a Connection's host goes to the proxy for
 	// its credential whoever opened the flow.
-	NoteFlow(connectFrom, tool string)
+	//
+	// The router calls it for every CONNECT it sends. One the proxy was told nothing
+	// about would be taken for a program that was given the proxy through its
+	// environment, where any model host is read. An error means the proxy couldn't
+	// keep what it was told. closed is never nil, and is called once the connection
+	// from connectFrom is closed, whatever became of it.
+	NoteFlow(connectFrom, tool string) (closed func(), err error)
 	// ToolHosts lists the hosts read for each tool, for status and for capturing them
 	// by name. A host that covers its subdomains is written "*.name".
 	ToolHosts() map[string][]string
@@ -96,23 +103,31 @@ func (r *Router) readByName(name string) bool {
 	return byName && reader != nil && reader.ReadsHost(name)
 }
 
-// handOver decides whether the proxy takes a TLS flow to host. A Connection's host
-// goes to it whoever opened the flow. A model host goes only when the program that
-// opened the flow is the tool that host is read for, and read says that it is.
-//
-// note, when it isn't nil, is to be called with the address the CONNECT leaves from,
-// before the CONNECT is sent.
-func (r *Router) handOver(flow Flow, host string, connection bool) (toProxy, read bool, note func(connectFrom string)) {
+// handOver decides whether the proxy takes a TLS flow to host, and what the proxy is
+// told of it: tool is the tool the flow is read for, or "" when it isn't to be read.
+// A Connection's host goes to the proxy whoever opened the flow. A model host goes
+// only when the program that opened the flow is the tool that host is read for.
+func (r *Router) handOver(flow Flow, host string, connection bool) (toProxy bool, tool string) {
 	reader, _ := r.reading()
 	// Nearly all traffic stops here, having cost one question about its host.
 	if host == "" || reader == nil || !reader.ReadsHost(host) {
-		return connection, false, nil
+		return connection, ""
 	}
-	tool := r.toolFor(flow, host, reader)
-	if tool == "" && !connection {
-		return false, false, nil
+	tool = r.toolFor(flow, host, reader)
+	return connection || tool != "", tool
+}
+
+// errNotNoted means the proxy couldn't keep what it was told about a flow, so the
+// flow wasn't handed to it.
+var errNotNoted = errors.New("the proxy couldn't be told whose flow this is")
+
+// unreadBecause names the count for a model flow that went on unread because the
+// proxy didn't take it.
+func unreadBecause(err error) string {
+	if errors.Is(err, errNotNoted) {
+		return "unread_not_noted"
 	}
-	return true, tool != "", func(connectFrom string) { reader.NoteFlow(connectFrom, tool) }
+	return "unread_no_proxy"
 }
 
 // toolFor names the tool a flow to host is read for. It's "" when the program that

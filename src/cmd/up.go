@@ -31,6 +31,8 @@ var upCmd = &cobra.Command{
 	Short: "🚇 Send this machine's traffic through Phase",
 	Long: "Send this machine's traffic through Phase, with no proxy settings in any program. " +
 		"Traffic for your Connections' hosts goes to the Phase credential proxy, which swaps decoys for real credentials. " +
+		"The model traffic of the AI coding tools Phase knows is read for those tools' own processes, " +
+		"so that a secret value Phase handed out is replaced before it reaches a model. " +
 		"Everything else passes through unread. Your local network and other VPNs, such as Tailscale, keep their own routes. " +
 		"The first run installs a small helper, which asks for your password once.",
 	Args: cobra.NoArgs,
@@ -485,7 +487,8 @@ func printModelTraffic(out io.Writer, status *engine.Status) {
 	fmt.Fprintf(out, "   Model traffic is read for each tool's own processes: %s\n", strings.Join(tools, "; "))
 	fmt.Fprintf(out, "   Model flows: %d read, %d left unread for other programs, %d left unread because the program wasn't found in time.\n",
 		status.Counts["read"], status.Counts["unread_not_tool"], status.Counts["owner_lookup_failed"])
-	if missed := status.Counts["unread_no_proxy"]; missed > 0 {
+	// The proxy turned the flow away, or couldn't keep what it was told about it.
+	if missed := status.Counts["unread_no_proxy"] + status.Counts["unread_not_noted"]; missed > 0 {
 		fmt.Fprintf(out, "   %d more went on unread because Phase's proxy couldn't take them.\n", missed)
 	}
 }

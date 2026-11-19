@@ -325,12 +325,11 @@ func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
 	connection := r.capturedName(name)
 	reader, _ := r.reading()
 	reads := reader != nil && reader.ReadsHost(name)
-	var note func(string)
-	read := false
+	tool := ""
 	if reads {
 		toProxy := connection
 		if port == 443 {
-			toProxy, read, note = r.handOver(flow, name, connection)
+			toProxy, tool = r.handOver(flow, name, connection)
 		}
 		if !toProxy {
 			// A model host, and not its own tool's flow: it leaves from here unread.
@@ -338,19 +337,21 @@ func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
 			return
 		}
 	}
-	if connection || !reads {
+	// A model host's flow is at the proxy only to be read, and works without it.
+	needed := connection || !reads
+	if needed {
 		r.count("proxy")
 	}
-	upstream, err := r.connect(authority, note)
+	upstream, noted, err := r.connect(authority, tool, needed)
 	if err != nil {
-		if reads && !connection {
-			r.count("unread_no_proxy")
+		if !needed {
+			r.count(unreadBecause(err))
 			r.relayOut(client, authority)
 		}
 		return
 	}
 	defer upstream.Close()
-	if read {
+	if tool != "" && noted {
 		r.count("read")
 	}
 	relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
@@ -381,15 +382,15 @@ func (r *Router) passThrough(client, upstream net.Conn, flow Flow) {
 		name, head = peekClientHello(client)
 		captured, protocol := r.captured(name, 443)
 		connection := captured && protocol != "postgres" && protocol != "control"
-		if toProxy, read, note := r.handOver(flow, name, connection); toProxy {
+		if toProxy, tool := r.handOver(flow, name, connection); toProxy {
 			if connection {
 				r.count("proxy_by_tls_name")
 			}
-			proxied, err := r.connect(net.JoinHostPort(name, "443"), note)
+			proxied, noted, err := r.connect(net.JoinHostPort(name, "443"), tool, connection)
 			if err == nil {
 				_ = upstream.Close()
 				defer proxied.Close()
-				if read {
+				if tool != "" && noted {
 					r.count("read")
 				}
 				if _, err := proxied.Write(head); err != nil {
@@ -403,8 +404,9 @@ func (r *Router) passThrough(client, upstream net.Conn, flow Flow) {
 				return
 			}
 			// A model host needs nothing from the proxy to work. When the proxy can't
-			// take the flow, it goes on unread rather than fail.
-			r.count("unread_no_proxy")
+			// take the flow, or can't be told whose it is, it goes on unread rather
+			// than fail.
+			r.count(unreadBecause(err))
 		}
 	}
 	r.relayUnread(client, upstream, head)
@@ -462,39 +464,61 @@ func (r *Router) Echo(dest netip.Addr, sequence uint16, payload []byte) bool {
 // would. The proxy's password is presented here on the program's behalf, so behind a
 // tunnel the decoy is the only thing a program has to hold.
 //
-// note, when it isn't nil, is told the address the CONNECT leaves from before it is
-// sent, so the proxy knows who opened the flow by the time the CONNECT arrives.
-func (r *Router) connect(authority string, note func(connectFrom string)) (net.Conn, error) {
+// The proxy is told whose flow it is before the CONNECT is sent: tool is the tool it
+// is read for, or "" when it isn't to be read. That is done for every CONNECT sent
+// from here, because one the proxy knows nothing about is taken for a program that
+// was given the proxy through its environment, for which any model host is read.
+//
+// When the proxy can't keep what it was told, a flow that is only there to be read
+// isn't handed over, and the error is errNotNoted. A flow that needs the proxy, for
+// a Connection's credential, still goes, with noted false: the proxy takes it as the
+// tunnel's, from no known tool, and reads nothing of it.
+func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn, noted bool, err error) {
 	r.mu.RLock()
-	address, auth := r.proxyAddress, r.proxyAuth
+	address, auth, reader := r.proxyAddress, r.proxyAuth, r.reader
 	r.mu.RUnlock()
 	if address == "" {
-		return nil, fmt.Errorf("the proxy isn't ready")
+		return nil, false, fmt.Errorf("the proxy isn't ready")
 	}
 	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if note != nil {
-		note(conn.LocalAddr().String())
+	closed := func() {}
+	if reader != nil {
+		forget, noteErr := reader.NoteFlow(conn.LocalAddr().String(), tool)
+		if forget != nil {
+			closed = forget
+		}
+		noted = noteErr == nil
+		if !noted && !needed {
+			_ = conn.Close()
+			closed()
+			return nil, false, errNotNoted
+		}
+		if !noted {
+			r.count("proxy_not_noted")
+		}
+	}
+	fail := func(err error) (net.Conn, bool, error) {
+		_ = conn.Close()
+		closed()
+		return nil, false, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", authority, authority, auth); err != nil {
-		conn.Close()
-		return nil, err
+		return fail(err)
 	}
-	reader := bufio.NewReader(conn)
-	response, err := http.ReadResponse(reader, nil)
+	buffered := bufio.NewReader(conn)
+	response, err := http.ReadResponse(buffered, nil)
 	if err != nil {
-		conn.Close()
-		return nil, err
+		return fail(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		conn.Close()
-		return nil, fmt.Errorf("the proxy answered %s", response.Status)
+		return fail(fmt.Errorf("the proxy answered %s", response.Status))
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &bufferedConn{Conn: conn, reader: reader}, nil
+	return &bufferedConn{Conn: conn, reader: buffered, closed: closed}, noted, nil
 }
 
 // serveControl makes http://phase.invalid work with no proxy settings.
@@ -528,13 +552,22 @@ func (r *Router) serveControl(client net.Conn) {
 	<-listener.closed
 }
 
-// bufferedConn keeps bytes the CONNECT reader already buffered.
+// bufferedConn keeps bytes the CONNECT reader already buffered, and says when the
+// connection to the proxy has closed.
 type bufferedConn struct {
 	net.Conn
 	reader *bufio.Reader
+	closed func()
+	once   sync.Once
 }
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+func (c *bufferedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.closed)
+	return err
+}
 
 func (c *bufferedConn) CloseWrite() error {
 	if closer, ok := c.Conn.(interface{ CloseWrite() error }); ok {

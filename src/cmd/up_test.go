@@ -129,10 +129,10 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 
 	t.Run("flows the proxy couldn't take", func(t *testing.T) {
 		missed := *running
-		missed.Counts = map[string]int{"read": 1, "unread_no_proxy": 3}
+		missed.Counts = map[string]int{"read": 1, "unread_no_proxy": 3, "unread_not_noted": 2}
 		got := print(capturing(nil), &missed)
 		if !strings.HasSuffix(got, "   Model flows: 1 read, 0 left unread for other programs, 0 left unread because the program wasn't found in time.\n"+
-			"   3 more went on unread because Phase's proxy couldn't take them.\n") {
+			"   5 more went on unread because Phase's proxy couldn't take them.\n") {
 			t.Fatalf("got:\n%s", got)
 		}
 	})

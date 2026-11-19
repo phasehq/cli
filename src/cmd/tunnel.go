@@ -71,11 +71,11 @@ var tunnelEngineCmd = &cobra.Command{
 		logger := log.New(os.Stderr, "", log.LstdFlags)
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		// Reader is where the proxy's say on model traffic comes in. Until it's set, the
-		// tunnel reads no model host for any program.
+		// The proxy's leak protection says which model hosts are read, each for its own
+		// tool's processes only. Every other program's traffic to them passes unread.
 		return engine.Run(ctx, engine.Config{
 			Runtime: runtimeInstance, SocketPath: tunnelHelperSocket, StateDirectory: directory, Logf: logger.Printf,
-			Routes: routes,
+			Routes: routes, Reader: engine.ProxyReader,
 		})
 	},
 }

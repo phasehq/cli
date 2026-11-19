@@ -46,6 +46,11 @@ type fakeReader struct {
 	notes []flowNote
 	// before runs at the start of NoteFlow, to check what has happened by then.
 	before func(connectFrom string)
+	// refuse makes NoteFlow fail, as the proxy does when it can't keep a note.
+	refuse error
+	// refused are the addresses a note was refused for, and closed the ones the
+	// router said it had closed its connection from.
+	refused, closed []string
 }
 
 func (f *fakeReader) covers(listed, host string) bool {
@@ -76,13 +81,46 @@ func (f *fakeReader) ShouldRead(tool, host string) bool {
 	return false
 }
 
-func (f *fakeReader) NoteFlow(connectFrom, tool string) {
+func (f *fakeReader) NoteFlow(connectFrom, tool string) (func(), error) {
 	if f.before != nil {
 		f.before(connectFrom)
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	closed := func() {
+		f.mu.Lock()
+		f.closed = append(f.closed, connectFrom)
+		f.mu.Unlock()
+	}
+	if f.refuse != nil {
+		f.refused = append(f.refused, connectFrom)
+		return closed, f.refuse
+	}
 	f.notes = append(f.notes, flowNote{connectFrom, tool})
-	f.mu.Unlock()
+	return closed, nil
+}
+
+// closedOnce reports whether the router said, exactly once, that it had closed its
+// connection from each address it told the reader about, and how many those were.
+func (f *fakeReader) closedOnce() (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	told := map[string]int{}
+	for _, note := range f.notes {
+		told[note.from]++
+	}
+	for _, from := range f.refused {
+		told[from]++
+	}
+	for _, from := range f.closed {
+		told[from]--
+	}
+	for _, left := range told {
+		if left != 0 {
+			return len(told), false
+		}
+	}
+	return len(told), true
 }
 
 func (f *fakeReader) ToolHosts() map[string][]string { return f.hosts }
@@ -263,8 +301,23 @@ func (s *readSetup) open(host string) Flow {
 	return flow
 }
 
-// run plays a program opening flow and sending a TLS hello for host.
-func (s *readSetup) run(host string, flow Flow) {
+// openHeld is open, and returns the program's end of the flow for the test to close.
+func (s *readSetup) openHeld(host string) net.Conn {
+	s.t.Helper()
+	upstream, err := net.Dial("tcp", s.ends.destination)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return s.run(host, Flow{
+		Source:   netip.AddrPortFrom(LocalAddress, uint16(50000+nextSourcePort.Add(1))),
+		Dest:     netip.MustParseAddrPort("203.0.113.7:443"),
+		Prepared: upstream,
+	})
+}
+
+// run plays a program opening flow and sending a TLS hello for host. It returns the
+// program's end, which is closed when the test ends if not before.
+func (s *readSetup) run(host string, flow Flow) net.Conn {
 	s.t.Helper()
 	program, routerEnd := net.Pipe()
 	finished := make(chan struct{})
@@ -284,6 +337,7 @@ func (s *readSetup) run(host string, flow Flow) {
 			s.t.Error("the router never let go of the flow")
 		}
 	})
+	return program
 }
 
 func (s *readSetup) arrives(where chan arrival) arrival {
@@ -621,17 +675,174 @@ func TestAConnectionHostThatIsAlsoAModelHostAlwaysGoesToTheProxy(t *testing.T) {
 	}
 }
 
+// The proxy is told it isn't to be read all the same: a CONNECT it knew nothing about
+// would be taken for one of its own clients.
 func TestAConnectionHostNobodyReadsNeedsNoLookup(t *testing.T) {
 	setup := newReadSetup(t, Rule{ConnectionID: "api", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: plainHost, Port: 443}})
 	setup.open(plainHost)
 	seen := setup.arrives(setup.ends.atProxy)
-	if seen.authority != plainHost+":443" || seen.noted {
+	if seen.authority != plainHost+":443" || !seen.noted || seen.tool != "" {
 		t.Fatalf("CONNECT %s, noted %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
 	}
 	if asked := setup.owners.lookups(); len(asked) != 0 {
 		t.Fatalf("the flow's program was looked up: %v", asked)
 	}
 	setup.counts(map[string]int{"proxy_by_tls_name": 1})
+}
+
+// Every CONNECT the router sends is told of first, whatever the flow is: a
+// Connection's host by its name or by its TLS name, on any port, a model host for its
+// own tool, and a name the tunnel once handed an address out for.
+func TestEveryConnectIsNotedBeforeItIsSent(t *testing.T) {
+	plain := Rule{ConnectionID: "api", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: plainHost}}
+	for name, test := range map[string]struct {
+		rules   []Rule
+		process owner.Process
+		open    func(*readSetup)
+		tool    string
+	}{
+		"a Connection's host by its TLS name":       {[]Rule{plain}, browser, func(s *readSetup) { s.open(plainHost) }, ""},
+		"a Connection's host by its name":           {[]Rule{plain}, browser, func(s *readSetup) { s.openByName(plainHost, 443) }, ""},
+		"a Connection's host on another port":       {[]Rule{plain}, claudeCode, func(s *readSetup) { s.openByName(plainHost, 8443) }, ""},
+		"a model host for its own tool":             {nil, claudeCode, func(s *readSetup) { s.open(modelHost) }, "claude"},
+		"a model host that is a Connection's, too":  {[]Rule{modelConnection()}, browser, func(s *readSetup) { s.open(modelHost) }, ""},
+		"a Connection's model host on another port": {[]Rule{{ConnectionID: "model", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: modelHost}}}, claudeCode, func(s *readSetup) { s.openByName(modelHost, 8443) }, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setup := newReadSetup(t, test.rules...)
+			setup.owners.process = test.process
+			setup.reader.before = func(connectFrom string) {
+				if setup.ends.connected(connectFrom) {
+					t.Error("the CONNECT was sent before the proxy was told whose flow it is")
+				}
+			}
+			test.open(setup)
+			seen := setup.arrives(setup.ends.atProxy)
+			if !seen.noted || seen.tool != test.tool {
+				t.Fatalf("CONNECT %s: the proxy had been told %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
+			}
+			if address, err := netip.ParseAddrPort(seen.from); err != nil || !address.Addr().IsLoopback() {
+				t.Fatalf("the CONNECT came from %s", seen.from)
+			}
+		})
+	}
+	t.Run("a name that is no longer anyone's", func(t *testing.T) {
+		setup := newReadSetup(t, plain)
+		address, ok := setup.address(plainHost)
+		if !ok {
+			t.Fatal("the name didn't resolve into the tunnel")
+		}
+		// Its Connection goes, and a program still holds the address.
+		setup.router.SetRules(nil)
+		setup.run(plainHost, Flow{Source: netip.AddrPortFrom(LocalAddress, 50999), Dest: netip.AddrPortFrom(address, 443)})
+		if seen := setup.arrives(setup.ends.atProxy); !seen.noted || seen.tool != "" {
+			t.Fatalf("CONNECT %s: the proxy had been told %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
+		}
+	})
+}
+
+// The proxy keeps only so many notes. A flow it couldn't be told about isn't handed
+// over to be read: it would be taken for one of the proxy's own clients. A flow that
+// needs a Connection's credential still goes, and counts as read for nobody.
+func TestAFlowTheProxyCannotBeToldAbout(t *testing.T) {
+	full := errors.New("too many flows are waiting for their CONNECT")
+	t.Run("a tool's model flow goes on unread", func(t *testing.T) {
+		setup := newReadSetup(t)
+		setup.owners.process, setup.reader.refuse = claudeCode, full
+		setup.open(modelHost)
+		wholeHello(t, setup.arrives(setup.ends.atDestination).hello, modelHost)
+		select {
+		case seen := <-setup.ends.atProxy:
+			t.Fatalf("the flow went to the proxy with nothing said of it: CONNECT %s", seen.authority)
+		case <-time.After(200 * time.Millisecond):
+		}
+		setup.counts(map[string]int{"tcp": 1, "unread_not_noted": 1})
+	})
+	t.Run("captured by name", func(t *testing.T) {
+		setup := newReadSetup(t)
+		setup.router.Read(setup.reader, true)
+		setup.owners.process, setup.reader.refuse = claudeCode, full
+		setup.openByName(modelHost, 443)
+		wholeHello(t, setup.arrives(setup.ends.atDestination).hello, modelHost)
+		select {
+		case seen := <-setup.ends.atProxy:
+			t.Fatalf("the flow went to the proxy with nothing said of it: CONNECT %s", seen.authority)
+		case <-time.After(200 * time.Millisecond):
+		}
+		setup.counts(map[string]int{"tcp": 1, "unread_not_noted": 1})
+	})
+	t.Run("a Connection's flow still goes to the proxy", func(t *testing.T) {
+		setup := newReadSetup(t, Rule{ConnectionID: "api", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: plainHost, Port: 443}})
+		setup.reader.refuse = full
+		setup.open(plainHost)
+		seen := setup.arrives(setup.ends.atProxy)
+		if seen.authority != plainHost+":443" || seen.noted {
+			t.Fatalf("CONNECT %s, noted %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
+		}
+		wholeHello(t, seen.hello, plainHost)
+		setup.counts(map[string]int{"proxy_by_tls_name": 1, "proxy_not_noted": 1})
+	})
+	// Even its own tool's flow isn't counted as read: the proxy was never told.
+	t.Run("a Connection's model host still goes, and is read for nobody", func(t *testing.T) {
+		setup := newReadSetup(t, modelConnection())
+		setup.owners.process, setup.reader.refuse = claudeCode, full
+		setup.open(modelHost)
+		if seen := setup.arrives(setup.ends.atProxy); seen.authority != modelHost+":443" || seen.noted {
+			t.Fatalf("CONNECT %s, noted %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
+		}
+		setup.counts(map[string]int{"proxy_by_tls_name": 1, "proxy_not_noted": 1})
+	})
+	t.Run("a Connection's host captured by name", func(t *testing.T) {
+		setup := newReadSetup(t, modelConnection())
+		setup.router.Read(setup.reader, true)
+		setup.owners.process, setup.reader.refuse = claudeCode, full
+		setup.openByName(modelHost, 443)
+		if seen := setup.arrives(setup.ends.atProxy); seen.authority != modelHost+":443" || seen.noted {
+			t.Fatalf("CONNECT %s, noted %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
+		}
+		setup.counts(map[string]int{"proxy": 1, "proxy_not_noted": 1})
+	})
+}
+
+// The reader is told when the router closes each connection it told it about,
+// whether the flow ran its course, the proxy turned it away, or it was never sent.
+func TestTheReaderIsToldWhenAConnectionToTheProxyCloses(t *testing.T) {
+	for name, test := range map[string]struct {
+		rules  []Rule
+		refuse error
+		turn   bool
+	}{
+		"a flow that ran its course":      {nil, nil, false},
+		"a flow the proxy turned away":    {nil, nil, true},
+		"a flow that was never sent":      {nil, errors.New("full"), false},
+		"a Connection's flow, never told": {[]Rule{modelConnection()}, errors.New("full"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setup := newReadSetup(t, test.rules...)
+			setup.owners.process, setup.reader.refuse = claudeCode, test.refuse
+			setup.ends.refuse.Store(test.turn)
+			program := setup.openHeld(modelHost)
+			// The flow is under way before the program goes: at the proxy, or, when
+			// it was never sent there, at its destination.
+			if test.refuse == nil || len(test.rules) > 0 {
+				setup.arrives(setup.ends.atProxy)
+			} else {
+				wholeHello(t, setup.arrives(setup.ends.atDestination).hello, modelHost)
+			}
+			program.Close()
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				told, closed := setup.reader.closedOnce()
+				if told == 1 && closed {
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the reader was told of %d connections, and not that each had closed (all closed: %v)", told, closed)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
 }
 
 // address asks the router's resolver for a name, as the system would.

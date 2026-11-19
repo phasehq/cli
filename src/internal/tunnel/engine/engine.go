@@ -62,7 +62,9 @@ type Config struct {
 	// they would never reach the tunnel.
 	Routes []string
 	// Reader gives the tunnel the proxy's say on model traffic: which hosts are read,
-	// and for which tool. Without one, no model host is read.
+	// and for which tool. ProxyReader is the proxy's own. Without one, no model host
+	// is read, and the proxy is still told that every flow the tunnel hands it is the
+	// tunnel's, from no known tool.
 	Reader func(*aiproxy.Engine) tunnel.Reader
 	// Owner finds the program that opened a flow. Tests replace it.
 	Owner tunnel.OwnerFunc
@@ -88,9 +90,11 @@ type Status struct {
 	// It's the proxy's own table, and says nothing about what any program did. What
 	// programs did is in Counts, as numbers only: a flow to a model host is counted
 	// as "read" for the host's own tool, "unread_not_tool" for any other program,
-	// "owner_lookup_failed" when the program couldn't be found in time, and
-	// "unread_no_proxy" when the proxy couldn't take it. All but the first leave the
-	// flow unread.
+	// "owner_lookup_failed" when the program couldn't be found in time,
+	// "unread_no_proxy" when the proxy couldn't take it, and "unread_not_noted" when
+	// the proxy couldn't be told whose it was. All but the first leave the flow
+	// unread. "proxy_not_noted" is a Connection's flow that went to the proxy for its
+	// credential without that word, and was read for nobody.
 	ReadTools map[string][]string `json:"readTools,omitempty"`
 }
 
@@ -155,11 +159,16 @@ func Run(ctx context.Context, cfg Config) error {
 	if len(routes) == 0 {
 		routes = tunnel.FullRoutes
 	}
+	// The router always has someone to tell the proxy whose flow a CONNECT carries.
+	// The proxy takes a CONNECT it was told nothing about for a program that was
+	// given the proxy through its environment, and reads any model host for it.
+	reader := tunnel.Reader(proxyReader{proxy: proxy})
 	if cfg.Reader != nil {
-		// With everything captured, a model host is caught by the name in its TLS
-		// hello. With less, it only reaches the tunnel if it's captured by name.
-		router.Read(cfg.Reader(proxy), len(cfg.Routes) > 0)
+		reader = cfg.Reader(proxy)
 	}
+	// With everything captured, a model host is caught by the name in its TLS hello.
+	// With less, it only reaches the tunnel if it's captured by name.
+	router.Read(reader, len(cfg.Routes) > 0)
 	stack, err := tunnel.NewStack(tunnel.Hooks{
 		Prepare: router.Prepare, TCP: router.HandleTCP, UDP: router.HandleUDP,
 		DNSAddr: tunnel.DNSAddress, DNS: router.AnswerDNS, Echo: router.Echo,
