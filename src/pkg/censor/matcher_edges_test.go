@@ -375,7 +375,12 @@ func TestAPieceAfterARejectedOneIsFound(t *testing.T) {
 // chunks is the chunk cut short at each end: eleven bytes at most on each side.
 // Text that merely stands next to a piece of a long value stays.
 func TestAPartialMatchIsWidenedByLessThanAChunk(t *testing.T) {
+	// The first chunk is found alone below, so it must not be one of the few
+	// that are too plain to count.
 	value := randomString(t, alnum, 256)
+	for entropy(value[:chunkSize]) < weakChunkEntropy {
+		value = randomString(t, alnum, 256)
+	}
 	ix := build(t, secret{ID: "big", Value: value})
 	link := "https://example.com/some/long/path/with/many/segments/and/query?x=1&y=2"
 	for name, tc := range map[string]struct{ text, want string }{
