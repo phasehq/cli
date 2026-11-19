@@ -5,6 +5,10 @@ package helper
 import (
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -66,5 +70,46 @@ func TestRouteDestination(t *testing.T) {
 		if got, ok := routeDestination(message); ok {
 			t.Errorf("%s was read as %s", name, got)
 		}
+	}
+}
+
+// The entries are read back from the directory, so what is reported is what is
+// there: the ones written before an entry of someone else's stopped the rest, and any
+// of Phase's that were there already.
+func TestInstallResolversReportsTheEntriesInPlace(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "resolver")
+	if err := installResolvers(dir, []string{"a.example.com", "b.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := phaseResolvers(dir); !reflect.DeepEqual(got, []string{"a.example.com", "b.example.com"}) {
+		t.Fatalf("in place: %v", got)
+	}
+	// Another VPN's entry for a name Phase is asked to take.
+	theirs := filepath.Join(dir, "c.example.com")
+	if err := os.WriteFile(theirs, []byte("nameserver 10.8.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := installResolvers(dir, []string{"a.example.com", "c.example.com", "d.example.com"})
+	if err == nil || !strings.Contains(err.Error(), "c.example.com already exists and isn't Phase's") {
+		t.Fatalf("writing over another VPN's entry: %v", err)
+	}
+	if got := phaseResolvers(dir); !reflect.DeepEqual(got, []string{"a.example.com", "b.example.com"}) {
+		t.Fatalf("in place after stopping at another VPN's entry: %v", got)
+	}
+	if content, _ := os.ReadFile(theirs); string(content) != "nameserver 10.8.0.53\n" {
+		t.Fatalf("another VPN's entry was changed: %q", content)
+	}
+	// A list that can be written whole drops Phase's entries for every other name.
+	if err := installResolvers(dir, []string{"d.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := phaseResolvers(dir); !reflect.DeepEqual(got, []string{"d.example.com"}) {
+		t.Fatalf("in place: %v", got)
+	}
+	if _, err := os.Stat(theirs); err != nil {
+		t.Fatalf("another VPN's entry was removed: %v", err)
+	}
+	if got := phaseResolvers(filepath.Join(dir, "none")); len(got) != 0 {
+		t.Fatalf("a directory that isn't there holds %v", got)
 	}
 }

@@ -40,6 +40,8 @@ type fakeSystem struct {
 	// counts the times it was asked to remove any.
 	stuck    map[string]bool
 	removals int
+	// taken are domains that already have a DNS entry of someone else's.
+	taken map[string]bool
 }
 
 func (f *fakeSystem) note(entry string) { f.log = append(f.log, entry) }
@@ -111,11 +113,20 @@ func (f *fakeSystem) routeState() (ours, lost []string) {
 	sort.Strings(ours)
 	return ours, append([]string(nil), f.lost...)
 }
-func (f *fakeSystem) InstallResolvers(domains []string) error {
+
+// InstallResolvers stops at the first domain that already has an entry of someone
+// else's, as the system does, with the entries before it written.
+func (f *fakeSystem) InstallResolvers(domains []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.resolvers = append([]string(nil), domains...)
-	return nil
+	f.resolvers = nil
+	for _, domain := range domains {
+		if f.taken[domain] {
+			return append([]string(nil), f.resolvers...), errors.New("/etc/resolver/" + domain + " already exists and isn't Phase's, so it was left alone")
+		}
+		f.resolvers = append(f.resolvers, domain)
+	}
+	return append([]string(nil), f.resolvers...), nil
 }
 func (f *fakeSystem) RemoveResolvers() {
 	f.mu.Lock()
@@ -655,4 +666,94 @@ func TestARouteThatCouldNotBeRemovedIsNotForgotten(t *testing.T) {
 			t.Fatalf("status after down: %+v", status)
 		}
 	})
+}
+
+// attachTalking plays an engine that goes on to say more: it returns how to send the
+// helper a message on the engine's own connection.
+func (h *harness) attachTalking(domains []string) (send func(control.Request) error, stop func()) {
+	h.t.Helper()
+	_, public, _ := tunnel.NewKeyPair()
+	conn, err := control.Dial(h.socket)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if _, err := conn.Call(control.Request{Op: control.OpAttach, Attach: &control.Attach{
+		EnginePublicKey: public, EnginePort: 40000, Domains: domains, Routes: []string{"0.0.0.0/1", "128.0.0.0/1"},
+	}}, 15*time.Second); err != nil {
+		h.t.Fatal(err)
+	}
+	var sending sync.Mutex
+	send = func(request control.Request) error {
+		sending.Lock()
+		defer sending.Unlock()
+		return conn.Send(request)
+	}
+	quit := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-quit:
+				conn.Close()
+				return
+			case <-ticker.C:
+				if send(control.Request{Op: control.OpPing}) != nil {
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return send, func() { once.Do(func() { close(quit) }) }
+}
+
+// The helper says which names it sends to the tunnel by the entries that are in
+// place. When an engine asks for more while it runs and one of them can't be written,
+// the names that weren't aren't reported as captured.
+func TestStatusNamesOnlyTheDomainsThatWereWritten(t *testing.T) {
+	system := &fakeSystem{internetUp: true, tunnelWorks: true, taken: map[string]bool{"b.example.com": true}}
+	h := start(t, system, true)
+	send, stop := h.attachTalking([]string{"a.example.com"})
+	defer stop()
+	h.waitFor("capture", h.captured)
+	if status := h.status(); !reflect.DeepEqual(status.Domains, []string{"a.example.com"}) {
+		t.Fatalf("status names %v", status.Domains)
+	}
+	asked := []string{"a.example.com", "b.example.com", "c.example.com"}
+	if err := send(control.Request{Op: control.OpUpdate, Domains: asked}); err != nil {
+		t.Fatal(err)
+	}
+	// The update has been handled once the helper has asked for the entries again.
+	time.Sleep(500 * time.Millisecond)
+	status := h.status()
+	_, _, resolvers := system.state()
+	if !status.Capturing || !reflect.DeepEqual(resolvers, []string{"a.example.com"}) || !reflect.DeepEqual(status.Domains, resolvers) {
+		t.Fatalf("the entries in place are %v, and status names %v (capturing %v)", resolvers, status.Domains, status.Capturing)
+	}
+	// Once nothing is in the way, the next update is written whole, and said so.
+	system.set(func(f *fakeSystem) { f.taken = nil })
+	if err := send(control.Request{Op: control.OpUpdate, Domains: asked}); err != nil {
+		t.Fatal(err)
+	}
+	h.waitFor("all three names", func() bool { return reflect.DeepEqual(h.status().Domains, asked) })
+	// Stepped aside, it sends no name anywhere, and says none.
+	stop()
+	h.waitFor("stepping aside after the engine left", h.clean)
+	if status := h.status(); len(status.Domains) != 0 {
+		t.Fatalf("after stepping aside, status still names %v", status.Domains)
+	}
+}
+
+// An attach is all of its names or none: one that can't be written keeps the helper
+// from capturing, as before, and nothing of it is left or reported.
+func TestAnAttachWhoseNamesCannotAllBeWrittenCapturesNothing(t *testing.T) {
+	system := &fakeSystem{internetUp: true, tunnelWorks: true, taken: map[string]bool{"b.example.com": true}}
+	h := start(t, system, true)
+	defer h.attach([]string{"a.example.com", "b.example.com"})()
+	h.waitFor("the attempt to be given up", func() bool { return !h.status().Retry.IsZero() })
+	status := h.status()
+	if status.Capturing || len(status.Domains) != 0 || !h.clean() || !strings.Contains(status.Reason, "couldn't capture") {
+		t.Fatalf("status: %+v", status)
+	}
 }

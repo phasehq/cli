@@ -172,9 +172,17 @@ func routeDestination(entry *route.RouteMessage) (netip.Prefix, bool) {
 
 // InstallResolvers writes scoped resolver files. They sit beside other VPNs' DNS
 // settings, and a longer domain match wins, so Tailscale keeps answering for
-// everything else.
-func (Darwin) InstallResolvers(domains []string) error {
-	if err := os.MkdirAll(resolverDir, 0o755); err != nil {
+// everything else. It stops at the first entry it can't write, and what it returns
+// is read back from the directory: the entries that are there, however far it got.
+func (Darwin) InstallResolvers(domains []string) ([]string, error) {
+	err := installResolvers(resolverDir, domains)
+	return phaseResolvers(resolverDir), err
+}
+
+// installResolvers writes the entries for domains in dir, and drops Phase's entries
+// for any other domain.
+func installResolvers(dir string, domains []string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	content := fmt.Sprintf("%s\nnameserver %s\nport 53\ntimeout 2\n", resolverMarker, tunnel.DNSAddress)
@@ -184,7 +192,7 @@ func (Darwin) InstallResolvers(domains []string) error {
 			continue
 		}
 		wanted[domain] = true
-		path := filepath.Join(resolverDir, domain)
+		path := filepath.Join(dir, domain)
 		if existing, err := os.ReadFile(path); err == nil && !strings.Contains(string(existing), resolverMarker) {
 			return fmt.Errorf("%s already exists and isn't Phase's, so it was left alone", path)
 		}
@@ -193,17 +201,29 @@ func (Darwin) InstallResolvers(domains []string) error {
 		}
 	}
 	// Drop entries for domains no longer in the list.
-	entries, _ := os.ReadDir(resolverDir)
+	entries, _ := os.ReadDir(dir)
 	for _, entry := range entries {
 		if wanted[entry.Name()] {
 			continue
 		}
-		path := filepath.Join(resolverDir, entry.Name())
+		path := filepath.Join(dir, entry.Name())
 		if existing, err := os.ReadFile(path); err == nil && strings.Contains(string(existing), resolverMarker) {
 			_ = os.Remove(path)
 		}
 	}
 	return nil
+}
+
+// phaseResolvers lists the domains that have an entry of Phase's in dir.
+func phaseResolvers(dir string) []string {
+	var domains []string
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if existing, err := os.ReadFile(filepath.Join(dir, entry.Name())); err == nil && strings.Contains(string(existing), resolverMarker) {
+			domains = append(domains, entry.Name())
+		}
+	}
+	return domains
 }
 
 func (Darwin) RemoveResolvers() {

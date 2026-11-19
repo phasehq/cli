@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -671,6 +672,18 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 	}
 	if len(status.Domains) > 0 {
 		fmt.Fprintf(out, "   Names sent to Phase: %s\n", strings.Join(status.Domains, ", "))
+	}
+	// The engine asks for the names, and the helper says which have an entry in place.
+	if helperStatus != nil && helperStatus.Capturing {
+		var unwritten []string
+		for _, domain := range status.Domains {
+			if !slices.Contains(helperStatus.Domains, domain) {
+				unwritten = append(unwritten, domain)
+			}
+		}
+		if len(unwritten) > 0 {
+			fmt.Fprintf(out, "   ⚠️  No DNS entry is in place for %s, so they aren't captured by name: only by the name in a TLS hello, where their traffic goes through Phase.\n", strings.Join(unwritten, ", "))
+		}
 	}
 	switch skipped := status.SkippedNames; {
 	case skipped == 1:

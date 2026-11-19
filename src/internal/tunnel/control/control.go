@@ -62,9 +62,11 @@ type Status struct {
 	Reason    string    `json:"reason,omitempty"`
 	Since     time.Time `json:"since"`
 	Pinned    string    `json:"pinned,omitempty"`
-	Domains   []string  `json:"domains,omitempty"`
-	Routes    []string  `json:"routes,omitempty"`
-	Retry     time.Time `json:"retry,omitempty"`
+	// Domains are the names whose DNS is sent to the tunnel: the ones an entry is
+	// in place for, which may be fewer than the engine asked for.
+	Domains []string  `json:"domains,omitempty"`
+	Routes  []string  `json:"routes,omitempty"`
+	Retry   time.Time `json:"retry,omitempty"`
 	// RoutesLeft are capture routes the helper added and couldn't remove when it
 	// stepped aside. Until they go, what they cover is still sent into the tunnel.
 	RoutesLeft []string `json:"routesLeft,omitempty"`

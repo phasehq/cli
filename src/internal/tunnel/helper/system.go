@@ -20,8 +20,10 @@ type System interface {
 	// to, whoever put it there.
 	AddRoutes(device string, prefixes []string) (added []string, err error)
 	RemoveRoutes(device string, prefixes []string) (left []string)
-	// InstallResolvers sends DNS for exactly these domains to the tunnel.
-	InstallResolvers(domains []string) error
+	// InstallResolvers sends DNS for exactly these domains to the tunnel. It returns
+	// the domains that are sent there once it is done, which are fewer than it was
+	// asked for when it fails part of the way.
+	InstallResolvers(domains []string) (installed []string, err error)
 	// RemoveResolvers removes only what InstallResolvers wrote.
 	RemoveResolvers()
 	FlushDNS()

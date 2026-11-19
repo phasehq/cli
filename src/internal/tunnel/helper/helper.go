@@ -93,7 +93,9 @@ type Helper struct {
 	attach     control.Attach
 	// added are the capture routes this helper added and hasn't given back. They are
 	// the only routes it ever removes.
-	added     []string
+	added []string
+	// resolvers are the domains whose DNS entries are in place.
+	resolvers []string
 	captured  atomic.Bool
 	reason    string
 	since     time.Time
@@ -315,7 +317,11 @@ func (h *Helper) handle(event any) {
 			}
 			h.attach.Domains = valid
 			if h.captured.Load() {
-				if err := h.opts.System.InstallResolvers(valid); err != nil {
+				// What is in place is kept, not what was asked for: status says
+				// which names are captured, and one that couldn't be isn't.
+				installed, err := h.opts.System.InstallResolvers(valid)
+				h.resolvers = installed
+				if err != nil {
 					h.opts.Logf("couldn't update the DNS entries: %v", err)
 				}
 				h.opts.System.FlushDNS()
@@ -335,7 +341,7 @@ func (h *Helper) status() control.Status {
 	status := control.Status{
 		Protocol: control.ProtocolVersion, Version: h.opts.Version, Device: h.deviceName,
 		Attached: h.engine != nil, EnginePID: h.enginePID, Capturing: h.captured.Load(), Reason: h.reason, Since: h.since,
-		Pinned: h.pinned, Domains: h.attach.Domains, Routes: h.attach.Routes, Retry: h.heldUntil,
+		Pinned: h.pinned, Domains: h.resolvers, Routes: h.attach.Routes, Retry: h.heldUntil,
 	}
 	// While it isn't capturing, any route still on record is one it couldn't remove.
 	if !status.Capturing {
@@ -440,7 +446,9 @@ func (h *Helper) reconcile(reason string) {
 }
 
 func (h *Helper) engage() error {
-	if err := h.opts.System.InstallResolvers(h.attach.Domains); err != nil {
+	installed, err := h.opts.System.InstallResolvers(h.attach.Domains)
+	h.resolvers = installed
+	if err != nil {
 		return err
 	}
 	h.opts.System.FlushDNS()
@@ -493,6 +501,7 @@ func (h *Helper) stepAside(reason string) {
 	h.added = left
 	h.unpinNow()
 	h.opts.System.RemoveResolvers()
+	h.resolvers = nil
 	h.opts.System.FlushDNS()
 	wasCaptured := h.captured.Swap(false)
 	h.reason = reason

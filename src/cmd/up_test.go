@@ -87,7 +87,10 @@ func TestRoutesThatCaptureEverything(t *testing.T) {
 func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 	since := time.Date(2026, 11, 19, 15, 4, 0, 0, time.Local)
 	capturing := func(routes []string) *control.Status {
-		return &control.Status{Protocol: control.ProtocolVersion, Device: "utun7", Attached: true, Capturing: true, Since: since, Routes: routes}
+		return &control.Status{
+			Protocol: control.ProtocolVersion, Device: "utun7", Attached: true, Capturing: true, Since: since, Routes: routes,
+			Domains: []string{"api.github.com", "phase.invalid"},
+		}
 	}
 	running := &engine.Status{
 		PID: 4242, Ready: true, Interface: "en0", Connections: []string{"GitHub"}, Domains: []string{"api.github.com", "phase.invalid"},
@@ -215,6 +218,21 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 			t.Fatalf("got:\n%s", got)
 		}
 		if got := print(capturing(nil), running); strings.Contains(got, "HTTP/3") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
+	// The engine asks for names and the helper writes their entries. A name the
+	// helper has no entry for isn't said to be captured by name.
+	t.Run("names with no DNS entry in place", func(t *testing.T) {
+		more := *running
+		more.Domains = []string{"api.github.com", "b.example.com", "c.example.com", "phase.invalid"}
+		got := print(capturing(nil), &more)
+		if !strings.Contains(got, "   Names sent to Phase: api.github.com, b.example.com, c.example.com, phase.invalid\n"+
+			"   ⚠️  No DNS entry is in place for b.example.com, c.example.com, so they aren't captured by name: only by the name in a TLS hello, where their traffic goes through Phase.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "No DNS entry") {
 			t.Fatalf("got:\n%s", got)
 		}
 	})
