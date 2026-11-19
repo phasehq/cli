@@ -561,3 +561,26 @@ func TestAnAzureKeyUnderItsNameInJSONIsReplaced(t *testing.T) {
 		}
 	}
 }
+
+// Phase writes its tokens in lower-case hex. A token whose hex was put in
+// upper case on the way, all of it or some of its key shares, is the same
+// token and is replaced whole.
+func TestAPhaseTokenInUpperCaseHexIsReplacedWhole(t *testing.T) {
+	ix := build(t)
+	for kind, label := range map[string]string{"pss_user:v1:": "phase_pat", "pss_service:v2:": "phase_service_token", "pss_agent:v1:": "phase_agent_token"} {
+		parts := []string{randomHex(t, 32), randomHex(t, 32), randomHex(t, 32), randomHex(t, 32)}
+		lower := kind + strings.Join(parts, ":")
+		for name, token := range map[string]string{
+			"lower case":        lower,
+			"upper case":        kind + strings.ToUpper(strings.Join(parts, ":")),
+			"upper-case shares": kind + parts[0] + ":" + strings.ToUpper(parts[1]) + ":" + parts[2] + ":" + strings.ToUpper(parts[3]),
+		} {
+			for _, before := range []string{"here: ", "see the docs, then ", "export PHASE_SERVICE_TOKEN="} {
+				out, findings := scanned(t, ix, before+token+" ok")
+				if len(findings) != 1 || findings[0].Label != label || out != before+findings[0].Placeholder+" ok" {
+					t.Errorf("%s%s, %s: %+v\n%s", before, kind, name, findings, out)
+				}
+			}
+		}
+	}
+}

@@ -148,26 +148,27 @@ scoring:
 rules:
   # Phase tokens: pss_<kind>:v<version>:<64 hex>, followed by up to three more
   # 64-hex key shares (Personal Access and Agent tokens are v1, Service Account
-  # tokens v2; older service tokens are v1).
+  # tokens v2; older service tokens are v1). Phase writes the hex in lower case;
+  # a token whose hex was put in upper case on the way is taken all the same.
   - id: phase-user-token
     description: Phase personal access token
-    regex: '\bpss_user:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
+    regex: '\bpss_user:v\d+:[0-9a-fA-F]{64}(?::[0-9a-fA-F]{64}){0,3}'
     hints: ['pss_user:']
-    charset: '0-9a-f:'
+    charset: '0-9a-fA-F:'
     validator: phase-token
     label: phase_pat
   - id: phase-service-token
     description: Phase service or service account token
-    regex: '\bpss_service:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
+    regex: '\bpss_service:v\d+:[0-9a-fA-F]{64}(?::[0-9a-fA-F]{64}){0,3}'
     hints: ['pss_service:']
-    charset: '0-9a-f:'
+    charset: '0-9a-fA-F:'
     validator: phase-token
     label: phase_service_token
   - id: phase-agent-token
     description: Phase Agent token
-    regex: '\bpss_agent:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
+    regex: '\bpss_agent:v\d+:[0-9a-fA-F]{64}(?::[0-9a-fA-F]{64}){0,3}'
     hints: ['pss_agent:']
-    charset: '0-9a-f:'
+    charset: '0-9a-fA-F:'
     validator: phase-token
     label: phase_agent_token
 
