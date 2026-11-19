@@ -10,19 +10,21 @@ import (
 )
 
 // The inventory outlives the proxy process when there is a system keystore:
-// the key is kept there and the entries in a file beside the CA
+// the master key is kept there and the entries in a file beside the CA
 // (phaseproxy.InventoryStore). A proxy loads what the file holds when it
 // starts, so a conversation resumed after the hook-managed proxy's idle
 // exit, an upgrade or a reboot still has its values replaced, and it adds
 // what is registered with it. Every proxy of one user shares the store.
 //
+// A proxy hands out the confirming key of its own login alone, and matches
+// what every login stored, each record under its own principal's key.
+//
 // Entries are loaded as a registration's are taken: through the index's own
 // validation, so nothing in the file is trusted further than a client is.
 
-// newStoredLeakGuard makes the guard over a store. With no store, and on a
-// machine with no keystore, the inventory is in memory only, as it was before
-// there was a store.
-func newStoredLeakGuard(mode string, store *phaseproxy.InventoryStore) (*leakGuard, error) {
+// newStoredLeakGuard makes the guard over a store, for the login the session
+// acts as. With no store or no keystore the inventory is in memory only.
+func newStoredLeakGuard(mode string, store *phaseproxy.InventoryStore, login string) (*leakGuard, error) {
 	if store == nil {
 		return newLeakGuard(mode)
 	}
@@ -30,7 +32,7 @@ func newStoredLeakGuard(mode string, store *phaseproxy.InventoryStore) (*leakGua
 	if err != nil {
 		return nil, err
 	}
-	guard, err := newLeakGuardWithInventory(mode, censor.DefaultRules(), inventory)
+	guard, err := newLeakGuardWithInventory(mode, censor.DefaultRules(), inventory, login)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +44,7 @@ func newStoredLeakGuard(mode string, store *phaseproxy.InventoryStore) (*leakGua
 // out is then what was used longest ago, and it is counted.
 func (g *leakGuard) load(loaded []phaseproxy.StoredEntries) {
 	for at := len(loaded) - 1; at >= 0; at-- {
-		if _, err := g.addOne(loaded[at].Entries, loaded[at].KeyNamed); errors.Is(err, censor.ErrIndexFull) {
+		if _, err := g.addOne(loaded[at].Principal, loaded[at].Entries, loaded[at].KeyNamed); errors.Is(err, censor.ErrIndexFull) {
 			g.notLoaded++
 		}
 	}
@@ -54,7 +56,7 @@ func (g *leakGuard) inventoryStatus() *remoteapi.LeakInventoryStatus {
 	stored := g.inventory.Status()
 	status := &remoteapi.LeakInventoryStatus{
 		Storage: remoteapi.LeakInventoryMemory, Reason: stored.Reason, Loaded: g.loaded, NotLoaded: g.notLoaded,
-		UnmatchedScheme: stored.OtherScheme, UnmatchedKey: stored.OtherKey, Damaged: stored.Damaged,
+		UnmatchedScheme: stored.OtherScheme, UnmatchedKey: stored.OtherKey, OtherTenants: stored.OtherTenant, Damaged: stored.Damaged,
 	}
 	if stored.Durable {
 		status.Storage, status.Reason = remoteapi.LeakInventoryStored, ""

@@ -71,13 +71,17 @@ type StatusResponse struct {
 	LeakProtection *LeakProtectionStatus `json:"leakProtection,omitempty"`
 }
 
-// InventoryKeyResponse is GET /v1/inventory/key: the key a process of the
+// InventoryKeyResponse is GET /v1/inventory/key: what a process of the
 // session indexes values with before it registers them. Format is the version
 // of the entries the proxy reads.
 type InventoryKeyResponse struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Key           string `json:"key"`
-	Format        int    `json:"format"`
+	SchemaVersion int `json:"schemaVersion"`
+	// Key is the lookup key, the same for every client of the machine's proxies.
+	Key string `json:"key"`
+	// ConfirmKey is the confirming key of the login the proxy acts as, and
+	// of no other. A proxy that reads scheme 1 only sends none.
+	ConfirmKey string `json:"confirmKey,omitempty"`
+	Format     int    `json:"format"`
 }
 
 // InventoryRequest is POST /v1/inventory: entries built by censor.IndexValue
@@ -153,7 +157,7 @@ type LeakInventoryStatus struct {
 	Storage string `json:"storage"`
 	// Reason says why the inventory is in memory only: no_keystore,
 	// key_unreadable, key_replaced, newer_store_format, store_unreadable,
-	// store_busy, store_unusable or not_configured.
+	// store_busy, store_unusable, no_tenant or not_configured.
 	Reason string `json:"reason,omitempty"`
 	// Loaded counts the values the proxy knew from the store when it started.
 	Loaded int `json:"loaded"`
@@ -167,6 +171,9 @@ type LeakInventoryStatus struct {
 	// UnmatchedKey counts stored entries made under a key that has since been
 	// replaced. They are never matched and have been dropped.
 	UnmatchedKey int `json:"unmatchedKey"`
+	// OtherTenants counts stored records of other hosts or organisations.
+	// They are never opened or matched: this is all a session learns of them.
+	OtherTenants int `json:"otherTenants,omitempty"`
 	// Damaged counts stored entries that could not be read.
 	Damaged int `json:"damaged,omitempty"`
 }

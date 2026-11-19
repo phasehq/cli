@@ -29,6 +29,9 @@ type scheme struct {
 	// the bytes after it, so that it cannot be tested on fewer bytes than a
 	// chunk.
 	tailWithChunk bool
+	// sharedConfirm says the confirming hash is keyed from the lookup key, as
+	// when a client was handed one key: every client can then confirm a guess.
+	sharedConfirm bool
 	// lookupBits is how many top bits of a chunk's rolling hash the entries carry.
 	// 64 is the whole hash, which with the key gives a chunk away (see Limits).
 	lookupBits int
@@ -38,14 +41,15 @@ type scheme struct {
 
 var (
 	// scheme1 cuts every form into 12-byte chunks and hashes the tail alone.
-	scheme1 = &scheme{version: 1, chunk: chunkSize, lookupBits: 64, shapes: formShapes}
+	scheme1 = &scheme{version: 1, chunk: chunkSize, sharedConfirm: true, lookupBits: 64, shapes: formShapes}
 	// scheme2 stores the chunks of a form made of hex digits, and of the
 	// base64 of a value made of hex digits, in pairs: one hash over 24
 	// characters, where a 12-character chunk of such a form carries 48 bits of
 	// the value or fewer and could be found by trying them all, by someone
 	// who holds the key and the stored entries. The tail is hashed with the
 	// chunk before it for the same reason. It keeps 24 bits of a chunk's
-	// rolling hash, so a guess has to be tried against the confirming hash.
+	// rolling hash, so a guess has to be tried against the confirming hash,
+	// which is keyed with the confirming key of the principal that registered.
 	scheme2 = &scheme{version: 2, chunk: chunkSize, wide: 2 * chunkSize, tailWithChunk: true, lookupBits: lookupBits, shapes: formShapes}
 
 	// schemes are the schemes this build matches. Tests add to it.

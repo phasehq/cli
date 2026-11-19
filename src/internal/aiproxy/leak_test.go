@@ -5,7 +5,6 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -448,10 +447,9 @@ func TestInventoryControlRoutes(t *testing.T) {
 	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &keyAnswer) != nil || keyAnswer.SchemaVersion != 1 || keyAnswer.Format != censor.EntriesVersion {
 		t.Fatalf("key route: %d %s", recorder.Code, recorder.Body.String())
 	}
-	raw, _ := base64.StdEncoding.DecodeString(keyAnswer.Key)
-	key, err := censor.KeyFromBytes(raw)
-	if err != nil || recorder.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("the key does not rebuild or is cacheable: %v", err)
+	key := answeredKey(t, keyAnswer)
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("the key is cacheable")
 	}
 
 	entry := func(id, value string) json.RawMessage {

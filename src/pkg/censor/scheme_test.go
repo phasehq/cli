@@ -198,7 +198,7 @@ func TestAddingASchemeIsAddingAMatcher(t *testing.T) {
 // holdsHashOf reports whether the entries hold the rolling hash or the
 // confirming hash of data.
 func holdsHashOf(key *Key, e *Entries, data []byte) bool {
-	mac := key.mac(data)
+	mac := mac(key.macFor(schemes[e.Version]), data)
 	roll := binary.LittleEndian.AppendUint64(nil, key.roll(data))
 	for _, f := range e.Forms {
 		if bytes.Contains(f.MACs, mac[:]) || bytes.Equal(f.Tail, mac[:]) {

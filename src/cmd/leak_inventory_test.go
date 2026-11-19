@@ -52,18 +52,26 @@ func (k *deletingKeystore) Delete(service, user string) error {
 	return nil
 }
 
+// inventoryTestTenant is the tenant the tests' proxy would act for.
+const inventoryTestTenant = "https://console.test\norganisation\ntest-organisation"
+
 // storeAValue opens the inventory as a proxy does and registers one value.
 func storeAValue(t *testing.T, store phaseproxy.InventoryStore) {
 	t.Helper()
+	store.Tenant = inventoryTestTenant
 	inventory, _, err := store.Open()
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := censor.IndexValue(inventory.Key(), "secret", "one", "Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3Jw3Rk8Tn5Vb2")
+	principal, err := inventory.Principal("https://console.test\naccount\ntest-account")
 	if err != nil {
 		t.Fatal(err)
 	}
-	inventory.Add([]phaseproxy.StoredEntries{{Entries: entries}})
+	entries, err := censor.IndexValue(principal.Key(), "secret", "one", "Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3Jw3Rk8Tn5Vb2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory.Add([]phaseproxy.StoredEntries{{Entries: entries, Principal: principal}})
 	if status := inventory.Status(); !status.Durable {
 		t.Fatalf("the inventory is not stored: %+v", status)
 	}
@@ -144,8 +152,10 @@ func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 				t.Fatalf("the inventory key was neither deleted nor replaced: %v", err)
 			}
 			// The next proxy starts with nothing.
-			inventory, loaded, err := aiInventoryStore().Open()
-			if err != nil || len(loaded) != 0 || inventory.Status().OtherKey != 0 {
+			next := aiInventoryStore()
+			next.Tenant = inventoryTestTenant
+			inventory, loaded, err := next.Open()
+			if err != nil || len(loaded) != 0 || inventory.Status().OtherKey != 0 || inventory.Status().OtherTenant != 0 {
 				t.Fatalf("%d loaded, %v", len(loaded), err)
 			}
 			// Disabling again, with nothing left, is not an error.

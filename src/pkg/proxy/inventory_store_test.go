@@ -61,7 +61,7 @@ func init() {
 
 func newInventoryTestStore(t testing.TB) InventoryStore {
 	t.Helper()
-	return InventoryStore{Directory: t.TempDir(), Keyring: &lockedKeyring{memoryKeyring: memoryKeyring{values: map[string]string{}}}}
+	return InventoryStore{Directory: t.TempDir(), Keyring: &lockedKeyring{memoryKeyring: memoryKeyring{values: map[string]string{}}}, Tenant: inventoryTestTenant}
 }
 
 func openInventory(t testing.TB, store InventoryStore) (*Inventory, []StoredEntries) {
@@ -73,25 +73,53 @@ func openInventory(t testing.TB, store InventoryStore) (*Inventory, []StoredEntr
 	return inv, loaded
 }
 
+// inventoryTestTenant is the tenant the tests' stores are opened for.
+const inventoryTestTenant = "https://console.test\norganisation\ntest-organisation"
+
+// inventoryTestLogin is the login most tests register as.
+const inventoryTestLogin = "https://console.test\naccount\ntest-account"
+
+// testPrincipal is the principal of the tests' login in an inventory.
+func testPrincipal(t testing.TB, inv *Inventory) InventoryPrincipal {
+	t.Helper()
+	return principalOf(t, inv, inventoryTestLogin)
+}
+
+func principalOf(t testing.TB, inv *Inventory, login string) InventoryPrincipal {
+	t.Helper()
+	principal, err := inv.Principal(login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return principal
+}
+
+// inventoryKeyBytes is both parts of the key the tests' login is handed.
+func inventoryKeyBytes(t testing.TB, inv *Inventory) []byte {
+	t.Helper()
+	key := testPrincipal(t, inv).Key()
+	return append(key.LookupBytes(), key.ConfirmBytes()...)
+}
+
 func inventoryEntries(t testing.TB, inv *Inventory, scheme int, id, value string) *censor.Entries {
 	t.Helper()
-	entries, err := censor.IndexValueScheme(inv.Key(), scheme, "secret", id, value)
+	entries, err := censor.IndexValueScheme(testPrincipal(t, inv).Key(), scheme, "secret", id, value)
 	if err != nil || !entries.Protected() {
 		t.Fatalf("index %s: %v", id, err)
 	}
 	return entries
 }
 
-// finds reports whether an index of the loaded entries, under the
-// inventory's key, replaces value.
+// finds reports whether an index of the loaded entries, each under its own
+// principal's key, replaces value.
 func finds(t testing.TB, inv *Inventory, loaded []StoredEntries, value string) bool {
 	t.Helper()
-	index, err := censor.NewIndex(inv.Key(), censor.IndexOptions{})
+	index, err := censor.NewIndex(testPrincipal(t, inv).Key(), censor.IndexOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, stored := range loaded {
-		if err := index.Add(stored.Entries); err != nil {
+		if err := index.AddKeyed(stored.Principal.Key(), stored.Entries); err != nil {
 			t.Fatalf("a loaded entry was refused by the index: %v", err)
 		}
 	}
@@ -113,18 +141,18 @@ func TestInventorySurvivesARestart(t *testing.T) {
 	}
 	value, named := inventoryTestValue(t, inventoryTestAlphabet, 40), inventoryTestValue(t, inventoryTestAlphabet, 40)
 	first.Add([]StoredEntries{
-		{Entries: inventoryEntries(t, first, censor.EntriesVersion, "one", value)},
-		{Entries: inventoryEntries(t, first, censor.EntriesVersion, "DATABASE_PASSWORD", named), KeyNamed: true},
+		{Principal: testPrincipal(t, first), Entries: inventoryEntries(t, first, censor.EntriesVersion, "one", value)},
+		{Principal: testPrincipal(t, first), Entries: inventoryEntries(t, first, censor.EntriesVersion, "DATABASE_PASSWORD", named), KeyNamed: true},
 	})
 	// A value too short to protect has nothing to store.
-	short, err := censor.IndexValue(first.Key(), "secret", "short", "abc")
+	short, err := censor.IndexValue(testPrincipal(t, first).Key(), "secret", "short", "abc")
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.Add([]StoredEntries{{Entries: short}})
 
 	second, loaded := openInventory(t, store)
-	if !bytes.Equal(first.Key().Bytes(), second.Key().Bytes()) {
+	if !bytes.Equal(inventoryKeyBytes(t, first), inventoryKeyBytes(t, second)) {
 		t.Fatal("the second proxy has another key")
 	}
 	if status := second.Status(); !status.Durable || status.Loaded != 2 || len(loaded) != 2 || status.Damaged+status.OtherKey+status.OtherScheme+status.Expired != 0 {
@@ -159,22 +187,22 @@ func TestInventorySurvivesARestart(t *testing.T) {
 // directory, and the inventory works from memory as it always did.
 func TestInventoryWithoutAKeystoreIsMemoryOnly(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "ai")
-	store := InventoryStore{Directory: directory, Keyring: unusableKeyring{}}
+	store := InventoryStore{Directory: directory, Keyring: unusableKeyring{}, Tenant: inventoryTestTenant}
 	inv, loaded := openInventory(t, store)
 	if status := inv.Status(); status.Durable || status.Reason != InventoryReasonNoKeystore || len(loaded) != 0 {
 		t.Fatalf("%+v", status)
 	}
 	value := inventoryTestValue(t, inventoryTestAlphabet, 40)
 	entries := inventoryEntries(t, inv, censor.EntriesVersion, "one", value)
-	inv.Add([]StoredEntries{{Entries: entries}})
-	if !finds(t, inv, []StoredEntries{{Entries: entries}}, value) {
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: entries}})
+	if !finds(t, inv, []StoredEntries{{Principal: testPrincipal(t, inv), Entries: entries}}, value) {
 		t.Fatal("the memory inventory's key does not index")
 	}
 	if _, err := os.Lstat(directory); !os.IsNotExist(err) {
 		t.Fatalf("the directory was made without a keystore: %v", err)
 	}
 	again, _ := openInventory(t, store)
-	if bytes.Equal(inv.Key().Bytes(), again.Key().Bytes()) {
+	if bytes.Equal(inventoryKeyBytes(t, inv), inventoryKeyBytes(t, again)) {
 		t.Fatal("two memory inventories share a key")
 	}
 	if err := store.ReplaceKey(); err != nil {
@@ -184,7 +212,7 @@ func TestInventoryWithoutAKeystoreIsMemoryOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A keystore that reads and cannot be written is no keystore either.
-	readOnly := InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &memoryKeyring{values: map[string]string{}, setError: os.ErrPermission}}
+	readOnly := InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &memoryKeyring{values: map[string]string{}, setError: os.ErrPermission}, Tenant: inventoryTestTenant}
 	inv, _ = openInventory(t, readOnly)
 	if status := inv.Status(); status.Durable || status.Reason != InventoryReasonNoKeystore {
 		t.Fatalf("%+v", status)
@@ -223,12 +251,12 @@ func TestInventoryConcurrentWriters(t *testing.T) {
 				var batch []StoredEntries
 				for i := 0; i < perBatch; i++ {
 					at := b*perBatch + i
-					entries, err := censor.IndexValue(inv.Key(), "secret", fmt.Sprintf("p%d-%d", p, at), values[p][at])
+					entries, err := censor.IndexValue(testPrincipal(t, inv).Key(), "secret", fmt.Sprintf("p%d-%d", p, at), values[p][at])
 					if err != nil {
 						t.Error(err)
 						return
 					}
-					batch = append(batch, StoredEntries{Entries: entries})
+					batch = append(batch, StoredEntries{Principal: testPrincipal(t, inv), Entries: entries})
 				}
 				inv.Add(batch)
 			}
@@ -271,10 +299,11 @@ func TestInventoryEntriesExpire(t *testing.T) {
 	stale, kept := inventoryTestValue(t, inventoryTestAlphabet, 40), inventoryTestValue(t, inventoryTestAlphabet, 40)
 	staleEntries := inventoryEntries(t, inv, censor.EntriesVersion, "stale", stale)
 	keptEntries := inventoryEntries(t, inv, censor.EntriesVersion, "kept", kept)
-	inv.Add([]StoredEntries{{Entries: staleEntries}, {Entries: keptEntries}})
+	principal := testPrincipal(t, inv)
+	inv.Add([]StoredEntries{{Principal: principal, Entries: staleEntries}, {Principal: principal, Entries: keptEntries}})
 
 	now = now.Add(20 * 24 * time.Hour)
-	inv.Add([]StoredEntries{{Entries: keptEntries}})
+	inv.Add([]StoredEntries{{Principal: principal, Entries: keptEntries}})
 
 	now = now.Add(InventoryEntryLifetime - 20*24*time.Hour + time.Hour)
 	reopened, loaded := openInventory(t, store)
@@ -308,7 +337,7 @@ func TestInventoryLeavesANewerStoreFormatAlone(t *testing.T) {
 	store := newInventoryTestStore(t)
 	inv, _ := openInventory(t, store)
 	value := inventoryTestValue(t, inventoryTestAlphabet, 40)
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "one", value)}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "one", value)}})
 	newer, err := os.ReadFile(inventoryFilePath(store))
 	if err != nil {
 		t.Fatal(err)
@@ -323,13 +352,13 @@ func TestInventoryLeavesANewerStoreFormatAlone(t *testing.T) {
 	if status := reopened.Status(); status.Durable || status.Reason != InventoryReasonNewerFormat || len(loaded) != 0 {
 		t.Fatalf("%+v", status)
 	}
-	if !bytes.Equal(reopened.Key().Bytes(), inv.Key().Bytes()) {
+	if !bytes.Equal(inventoryKeyBytes(t, reopened), inventoryKeyBytes(t, inv)) {
 		t.Fatal("the key was replaced")
 	}
 	other := inventoryTestValue(t, inventoryTestAlphabet, 40)
-	reopened.Add([]StoredEntries{{Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "two", other)}})
+	reopened.Add([]StoredEntries{{Principal: testPrincipal(t, reopened), Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "two", other)}})
 	// The proxy that was running when the newer file appeared leaves it too.
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "three", other)}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "three", other)}})
 	if status := inv.Status(); status.Durable || status.Reason != InventoryReasonNewerFormat {
 		t.Fatalf("%+v", status)
 	}
@@ -342,10 +371,12 @@ func TestInventoryLeavesANewerStoreFormatAlone(t *testing.T) {
 // does not know, as a newer or an older build would have.
 func foreignSchemeRecord(t *testing.T, inv *Inventory, scheme uint32, id string, now time.Time) []byte {
 	t.Helper()
-	body := append([]byte{0}, `{"v":`+fmt.Sprint(scheme)+`,"type":"secret","id":"`+id+`","shape":"of another scheme"}`...)
+	principal := testPrincipal(t, inv)
+	wire := []byte(`{"v":` + fmt.Sprint(scheme) + `,"type":"secret","id":"` + id + `","shape":"of another scheme"}`)
+	body := append(append([]byte{0}, principal.id[:]...), wire...)
 	record, err := inv.sealBody(inventoryRecord{
-		scheme: scheme, registered: now.Unix(),
-		owner: inv.tag("owner", []byte("secret"), []byte(id)), content: inv.tag("content", body[1:]),
+		scheme: scheme, registered: now.Unix(), tenant: inv.tenant,
+		owner: inv.tag("owner", []byte("secret"), []byte(id)), content: inv.tag("content", principal.id[:], wire),
 	}, body)
 	if err != nil {
 		t.Fatal(err)
@@ -369,7 +400,7 @@ func TestInventoryKeepsEachEntrysScheme(t *testing.T) {
 	store.Now = func() time.Time { return now }
 	inv, _ := openInventory(t, store)
 	current := inventoryTestValue(t, inventoryTestAlphabet, 40)
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "current", current)}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "current", current)}})
 	records := map[string][]byte{
 		"a later scheme's":                    foreignSchemeRecord(t, inv, 99, "later", now),
 		"a retired scheme's":                  foreignSchemeRecord(t, inv, 0, "retired", now),
@@ -382,7 +413,7 @@ func TestInventoryKeepsEachEntrysScheme(t *testing.T) {
 	}
 	// The CLI registers a value under an id other schemes' records hold.
 	value := inventoryTestValue(t, inventoryTestAlphabet, 40)
-	reopened.Add([]StoredEntries{{Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "DATABASE_URL", value)}})
+	reopened.Add([]StoredEntries{{Principal: testPrincipal(t, reopened), Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "DATABASE_URL", value)}})
 	file, err := os.ReadFile(inventoryFilePath(store))
 	if err != nil {
 		t.Fatal(err)
@@ -414,8 +445,8 @@ func TestInventoryKeepsEveryValueOfAPlaceholder(t *testing.T) {
 	store.Now = func() time.Time { return now }
 	inv, _ := openInventory(t, store)
 	staging, production := inventoryTestValue(t, inventoryTestAlphabet, 40), inventoryTestValue(t, inventoryTestAlphabet, 40)
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", staging)}})
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", production)}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", staging)}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", production)}})
 	reopened, loaded := openInventory(t, store)
 	if len(loaded) != 2 || !finds(t, reopened, loaded, staging) || !finds(t, reopened, loaded, production) {
 		t.Fatalf("%d loaded: a value sharing a placeholder was dropped", len(loaded))
@@ -424,7 +455,7 @@ func TestInventoryKeepsEveryValueOfAPlaceholder(t *testing.T) {
 	if err := store.Remove(); err != nil {
 		t.Fatal(err)
 	}
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", staging)}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", staging)}})
 	if _, loaded := openInventory(t, store); len(loaded) != 1 {
 		t.Fatalf("%d loaded after the value was stored again", len(loaded))
 	}
@@ -436,13 +467,13 @@ func TestInventoryNeverStoresWholeRollingHashes(t *testing.T) {
 	store := newInventoryTestStore(t)
 	inv, _ := openInventory(t, store)
 	older, current := inventoryTestValue(t, inventoryTestAlphabet, 40), inventoryTestValue(t, inventoryTestAlphabet, 40)
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, 1, "older", older)}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, 1, "older", older)}})
 	if info, err := os.Stat(inventoryFilePath(store)); err != nil || info.Size() != int64(inventoryHeaderSize) {
 		t.Fatalf("scheme 1 entries were written: %v %v", info, err)
 	}
 	inv.Add([]StoredEntries{
-		{Entries: inventoryEntries(t, inv, 1, "older", older)},
-		{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "current", current)},
+		{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, 1, "older", older)},
+		{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "current", current)},
 	})
 	reopened, loaded := openInventory(t, store)
 	if status := reopened.Status(); len(loaded) != 1 || loaded[0].Entries.Version != censor.EntriesVersion || !status.Durable || status.Damaged != 0 {
@@ -465,14 +496,14 @@ func TestInventoryUnderAnotherKey(t *testing.T) {
 	running, _ := openInventory(t, store)
 	value := inventoryTestValue(t, inventoryTestAlphabet, 40)
 	running.Add([]StoredEntries{
-		{Entries: inventoryEntries(t, running, censor.EntriesVersion, "one", value)},
-		{Entries: inventoryEntries(t, running, censor.EntriesVersion, "two", inventoryTestValue(t, inventoryTestAlphabet, 40))},
+		{Principal: testPrincipal(t, running), Entries: inventoryEntries(t, running, censor.EntriesVersion, "one", value)},
+		{Principal: testPrincipal(t, running), Entries: inventoryEntries(t, running, censor.EntriesVersion, "two", inventoryTestValue(t, inventoryTestAlphabet, 40))},
 	})
 	if err := store.ReplaceKey(); err != nil {
 		t.Fatal(err)
 	}
 	fresh, loaded := openInventory(t, store)
-	if bytes.Equal(fresh.Key().Bytes(), running.Key().Bytes()) || fresh.keyID == running.keyID {
+	if bytes.Equal(inventoryKeyBytes(t, fresh), inventoryKeyBytes(t, running)) || fresh.keyID == running.keyID {
 		t.Fatal("the key was not replaced")
 	}
 	if status := fresh.Status(); !status.Durable || status.OtherKey != 2 || status.Loaded != 0 || len(loaded) != 0 {
@@ -482,13 +513,13 @@ func TestInventoryUnderAnotherKey(t *testing.T) {
 		t.Fatalf("the other key's entries were not dropped: %v %v", info, err)
 	}
 	// Entries hashed under the old key match nothing under the new one.
-	stale := []StoredEntries{{Entries: inventoryEntries(t, running, censor.EntriesVersion, "one", value)}}
+	stale := []StoredEntries{{Principal: testPrincipal(t, fresh), Entries: inventoryEntries(t, running, censor.EntriesVersion, "one", value)}}
 	if finds(t, fresh, stale, value) {
 		t.Fatal("entries of another key matched")
 	}
-	fresh.Add([]StoredEntries{{Entries: inventoryEntries(t, fresh, censor.EntriesVersion, "new", value)}})
+	fresh.Add([]StoredEntries{{Principal: testPrincipal(t, fresh), Entries: inventoryEntries(t, fresh, censor.EntriesVersion, "new", value)}})
 	before, _ := os.ReadFile(inventoryFilePath(store))
-	running.Add([]StoredEntries{{Entries: inventoryEntries(t, running, censor.EntriesVersion, "late", inventoryTestValue(t, inventoryTestAlphabet, 40))}})
+	running.Add([]StoredEntries{{Principal: testPrincipal(t, running), Entries: inventoryEntries(t, running, censor.EntriesVersion, "late", inventoryTestValue(t, inventoryTestAlphabet, 40))}})
 	if status := running.Status(); status.Durable || status.Reason != InventoryReasonKeyReplaced {
 		t.Fatalf("%+v", status)
 	}
@@ -501,7 +532,7 @@ func TestInventoryUnderAnotherKey(t *testing.T) {
 func TestInventoryRemove(t *testing.T) {
 	store := newInventoryTestStore(t)
 	inv, _ := openInventory(t, store)
-	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "one", inventoryTestValue(t, inventoryTestAlphabet, 40))}})
+	inv.Add([]StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, "one", inventoryTestValue(t, inventoryTestAlphabet, 40))}})
 	if err := os.WriteFile(filepath.Join(store.Directory, inventoryTempPrefix+"123"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +568,7 @@ func TestInventoryDamagedFiles(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		id := fmt.Sprintf("value-%d", i)
 		values[id] = inventoryTestValue(t, inventoryTestAlphabet, 24+7*i)
-		batch = append(batch, StoredEntries{Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, values[id]), KeyNamed: i%3 == 0})
+		batch = append(batch, StoredEntries{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, values[id]), KeyNamed: i%3 == 0})
 	}
 	inv.Add(batch)
 	good, err := os.ReadFile(inventoryFilePath(store))
@@ -609,7 +640,7 @@ func TestInventoryDamagedFiles(t *testing.T) {
 		if status.Reason == InventoryReasonNewerFormat || status.Reason == InventoryReasonUnreadable {
 			// A later format's file, or no inventory at all: left exactly as
 			// it is by the start and by a registration.
-			reopened.Add([]StoredEntries{{Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "after", inventoryTestValue(t, inventoryTestAlphabet, 40))}})
+			reopened.Add([]StoredEntries{{Principal: testPrincipal(t, reopened), Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "after", inventoryTestValue(t, inventoryTestAlphabet, 40))}})
 			after, _ := os.ReadFile(inventoryFilePath(store))
 			if status.Durable || len(loaded) != 0 || (!bytes.Equal(before, after) && name != "oversized") {
 				t.Fatalf("%s: %+v", name, status)
@@ -634,12 +665,13 @@ func TestInventoryDamagedFiles(t *testing.T) {
 				t.Fatalf("%s: a loaded entry does not match its value", name)
 			}
 		}
-		if len(loaded) < len(batch) && status.Damaged == 0 && status.OtherKey == 0 && !emptied {
+		// A record whose tenant tag was hit is another tenant's to this proxy.
+		if len(loaded) < len(batch) && status.Damaged == 0 && status.OtherKey == 0 && status.OtherTenant == 0 && !emptied {
 			t.Fatalf("%s: %d entries are missing and none is counted as damaged: %+v", name, len(batch)-len(loaded), status)
 		}
 		// The store works afterwards.
 		value := inventoryTestValue(t, inventoryTestAlphabet, 40)
-		reopened.Add([]StoredEntries{{Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "after", value)}})
+		reopened.Add([]StoredEntries{{Principal: testPrincipal(t, reopened), Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "after", value)}})
 		after, loaded := openInventory(t, store)
 		if status := after.Status(); !status.Durable || status.Damaged != 0 || !finds(t, after, loaded, value) {
 			t.Fatalf("%s: the store did not recover: %+v", name, status)
@@ -764,7 +796,7 @@ func TestInventoryFileHoldsNoPlaintext(t *testing.T) {
 	}
 	var batch []StoredEntries
 	for id, value := range values {
-		batch = append(batch, StoredEntries{Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, value), KeyNamed: true})
+		batch = append(batch, StoredEntries{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, value), KeyNamed: true})
 	}
 	inv.Add(batch)
 
@@ -817,8 +849,11 @@ func TestInventoryFileHoldsNoPlaintext(t *testing.T) {
 			}
 		}
 	}
-	holds("the inventory key", inv.Key().Bytes())
-	holds("half of the inventory key", inv.Key().Bytes()[:16])
+	handed := testPrincipal(t, inv).Key()
+	holds("the lookup key", handed.LookupBytes())
+	holds("half of the lookup key", handed.LookupBytes()[:16])
+	holds("the confirming key", handed.ConfirmBytes())
+	holds("half of the confirming key", handed.ConfirmBytes()[:16])
 	holds("the placeholder type and id as the entries name them", []byte(`"type":"secret"`))
 
 	// The keyed hashes themselves are sealed as well: no chunk hash of the
@@ -832,9 +867,16 @@ func TestInventoryFileHoldsNoPlaintext(t *testing.T) {
 			}
 		}
 	}
-	// And the key is in the keystore, where the next proxy finds it.
-	if stored, err := store.Keyring.Get(inventoryKeyringService, inventoryKeyringUser); err != nil || !strings.Contains(stored, base64.StdEncoding.EncodeToString(inv.Key().Bytes())) {
-		t.Fatalf("the key is not in the keystore: %v", err)
+	// And the master is in the keystore, where the next proxy finds it. It
+	// is neither key a client is handed.
+	stored, err := store.Keyring.Get(inventoryKeyringService, inventoryKeyringUser)
+	if err != nil || len(strings.Split(stored, ":")) != 3 {
+		t.Fatalf("the master is not in the keystore: %v", err)
+	}
+	for name, part := range map[string][]byte{"lookup": handed.LookupBytes(), "confirming": handed.ConfirmBytes()} {
+		if strings.Contains(stored, base64.StdEncoding.EncodeToString(part)) {
+			t.Fatalf("the keystore holds the %s key as it is handed out", name)
+		}
 	}
 	if again, loaded := openInventory(t, store); len(loaded) != len(batch) || again.Status().Damaged != 0 {
 		t.Fatalf("%+v", again.Status())

@@ -377,7 +377,7 @@ func newLeakControlProxy(t *testing.T) (*leakControlProxy, string) {
 				_, _ = w.Write([]byte(fake.keyBody))
 				return
 			}
-			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.Bytes()), Format: censor.EntriesVersion})
+			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.LookupBytes()), ConfirmKey: base64.StdEncoding.EncodeToString(key.ConfirmBytes()), Format: censor.EntriesVersion})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory":
 			fake.posts++
 			if fake.full {

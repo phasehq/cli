@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -53,6 +54,9 @@ type fakeProxy struct {
 	// format is the matching scheme the proxy says it reads; 0 is this
 	// build's own.
 	format int
+	// lookupOnly makes it a proxy that hands out one key, as one that reads
+	// scheme 1 only does.
+	lookupOnly bool
 }
 
 func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
@@ -80,7 +84,11 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 			if fake.format != 0 {
 				format = fake.format
 			}
-			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.Bytes()), Format: format})
+			answer := remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.LookupBytes()), Format: format}
+			if !fake.lookupOnly {
+				answer.ConfirmKey = base64.StdEncoding.EncodeToString(key.ConfirmBytes())
+			}
+			_ = json.NewEncoder(w).Encode(answer)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory":
 			body, _ := io.ReadAll(r.Body)
 			fake.posts++
@@ -261,6 +269,44 @@ func TestRegisterUsesTheSchemeTheProxyReads(t *testing.T) {
 	_, err := Register(context.Background(), []Value{{Type: "secret", ID: "one", Value: value}})
 	if err == nil || !strings.Contains(err.Error(), "does not read") || fake.posts != 0 {
 		t.Fatalf("a proxy that reads a scheme this build does not know: %v, %d registrations", err, fake.posts)
+	}
+}
+
+// What a client registers is confirmed with the confirming key it was
+// handed. A proxy that hands out one key is served under scheme 1 alone.
+func TestRegisterConfirmsWithTheKeyOfItsOwnLogin(t *testing.T) {
+	// No pattern rule knows this value: only the index can find it.
+	value := "Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aSxW3e"
+	fake, server := newFakeProxy(t)
+	withEnvironment(t, sessionEnvironment(server))
+	if result, err := Register(context.Background(), []Value{{Type: "secret", ID: "one", Value: value}}); err != nil || result.Added != 1 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	other, err := fake.key.WithConfirm(bytes.Repeat([]byte{7}, censor.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]*censor.Key{"its own login's": fake.key, "another login's": other} {
+		index, _ := censor.NewIndex(fake.key, censor.IndexOptions{})
+		if err := index.AddKeyed(key, fake.entries[0]); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := index.Redact([]byte("the value is " + value))
+		if matched := !strings.Contains(string(out), value); matched != (key == fake.key) {
+			t.Fatalf("under %s confirming key the value matched: %v", name, matched)
+		}
+	}
+	for scheme, served := range map[int]bool{1: true, censor.EntriesVersion: false} {
+		fake, server := newFakeProxy(t)
+		fake.format, fake.lookupOnly = scheme, true
+		withEnvironment(t, sessionEnvironment(server))
+		result, err := Register(context.Background(), []Value{{Type: "secret", ID: "one", Value: value}})
+		if served && (err != nil || result.Added != 1 || fake.entries[0].Version != 1) {
+			t.Fatalf("a proxy of scheme 1 that hands out one key: %+v %v", result, err)
+		}
+		if !served && (err == nil || !strings.Contains(err.Error(), "does not read") || fake.posts != 0) {
+			t.Fatalf("scheme %d with no confirming key: %v, %d registrations", scheme, err, fake.posts)
+		}
 	}
 }
 

@@ -31,6 +31,8 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 			why = "the system keystore did not give its key; the key and the stored inventory are left as they are"
 		case phaseproxy.InventoryReasonUnreadable:
 			why = "the inventory file could not be read and is left as it is; phase ai disable removes it"
+		case phaseproxy.InventoryReasonNoTenant:
+			why = "this login names no organisation or account to keep it for"
 		case phaseproxy.InventoryReasonBusy:
 			why = "another process held the inventory file; the next proxy start stores again"
 		}
@@ -45,6 +47,9 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 	}
 	if inventory.UnmatchedKey > 0 {
 		line += fmt.Sprintf(", %d stored under a replaced key and dropped", inventory.UnmatchedKey)
+	}
+	if inventory.OtherTenants > 0 {
+		line += fmt.Sprintf(", %d of other hosts or organisations left unopened", inventory.OtherTenants)
 	}
 	if inventory.Damaged > 0 {
 		line += fmt.Sprintf(", %d unreadable and dropped", inventory.Damaged)

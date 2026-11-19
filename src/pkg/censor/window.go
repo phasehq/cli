@@ -157,15 +157,17 @@ func (ix *Index) roll(w *window, search *spanSearch, from, to int) {
 	for p := from; ; p++ {
 		if bit := h >> shift; bloom[bit/64]&(1<<(bit%64)) != 0 {
 			if refs, ok := w.chunks[h>>drop]; ok {
+				// One confirming hash per key the candidates here were made
+				// under: nearly always one, and one per principal otherwise.
 				var here [macSize]byte
-				hashed := false
+				hashed := int32(-1)
 				for _, ref := range refs {
 					f := &ix.forms[ref.form]
 					if end, ok := search.covered[ref.form]; ok && p+c <= end {
 						continue
 					}
-					if !hashed {
-						here, hashed = k.mac(data[p:p+c]), true
+					if hashed != f.macKey {
+						here, hashed = mac(&ix.macKeys[f.macKey], data[p:p+c]), f.macKey
 					}
 					if here != f.macs[ref.idx] {
 						continue

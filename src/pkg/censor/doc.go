@@ -15,11 +15,30 @@
 // the base64 of a value made of hex digits, is cut into 24-byte chunks instead
 // (see Matching schemes). The
 // resulting Entries carry no plaintext and nothing derived from the value but
-// keyed hashes and lengths. The daemon that scans holds the Key, hands its bytes
-// to the indexing client, and adds the Entries it gets back to its Index, which
-// validates them as untrusted input. The daemon may keep the Key and the
-// Entries for the daemon that starts after it: what that changes is under
-// Limits.
+// keyed hashes and lengths.
+//
+// A Key is two secrets with two roles. The lookup key keys the rolling hash,
+// and is one for every client of one tenant (for the Phase AI proxy, a Phase
+// host and an organisation), so a scan rolls one hash per position whoever
+// of the tenant registered what. The confirming key keys the SHA-256 that
+// confirms a chunk and the tail hash, and is one per principal: the login a
+// registering daemon acts as. The daemon that scans holds the confirming key
+// of every principal of its tenant, hands a client the lookup key and the
+// confirming key of its own principal only, and adds the Entries it gets back
+// to its Index under that principal (Index.AddKeyed), which validates them as
+// untrusted input. A candidate is confirmed with the key of the principal
+// whose entries it is from, so one Index matches the values of every login
+// of the tenant. Nothing is shared between tenants: an Index has one lookup
+// key and refuses entries made under another, and the same value indexed in
+// two tenants gives unrelated lookup values and hashes.
+//
+// Entries of another login than the one a scan is for are added with
+// Index.AddWithheld: the value is replaced all the same, by ph:<type> with no
+// id, and no finding names the id, which that login may not be allowed to
+// see. Where the same value is also held with its id, the id is written.
+//
+// The daemon may keep the keys and the Entries for the daemon that starts
+// after it: what that changes, and what each party can do, is under Limits.
 //
 // A document is indexed by what it holds, not as text. A JSON value is indexed
 // string by string. So is text of two or more lines of which at least half are
@@ -52,9 +71,10 @@
 // another:
 //
 //   - the chunk sizes, and which forms are cut at which;
-//   - the hash construction: how the confirming hash's key and the rolling
-//     hash's table and base are derived from the Key, the rolling polynomial,
-//     the confirming hash and its truncation, and what the tail hash covers;
+//   - the hash construction: which of the Key's two parts the confirming
+//     hash is keyed from and how, how the rolling hash's table and base are
+//     derived from the lookup key, the rolling polynomial, the confirming
+//     hash and its truncation, and what the tail hash covers;
 //   - the set of encoded forms, their names, and how each is built from a
 //     value (alignments, trimming, escaping, case), with how a value is split
 //     into parts (JSON leaves, a URL's password, lines);
@@ -71,9 +91,11 @@
 // The schemes so far:
 //
 //   - 1: every form in 12-byte chunks, each with its whole 64-bit rolling
-//     hash; the tail hash covers the bytes after the last whole chunk. No
-//     build writes it any more, and no entries of it are ever stored: an
-//     older client may still register them with a running daemon.
+//     hash; the tail hash covers the bytes after the last whole chunk. Its
+//     confirming hash is keyed from the lookup key, the one key a client of
+//     that time was handed, so every client can compute it. No build writes
+//     it any more, and no entries of it are ever stored: an older client may
+//     still register them with a running daemon.
 //   - 2: as 1, but a form made of hex digits (the hex of any value, and a
 //     value that is itself hex digits), and the base64 of a value made of hex
 //     digits, are cut into 24-byte chunks, marked Wide; and the tail hash
@@ -82,7 +104,10 @@
 //     fewer than 12 bytes of any form. A form too short for one 24-byte chunk
 //     keeps a 12-byte one, so a short value is still found. Of a chunk's
 //     rolling hash the entries carry the top 24 bits (Form.Lookups) and never
-//     the whole. Entries made by this build are scheme 2.
+//     the whole. The confirming hash and the tail hash are keyed from the
+//     confirming key of the principal that registered, which IndexValue
+//     requires: a lookup key alone indexes nothing under this scheme. Entries
+//     made by this build are scheme 2.
 //
 // An Index matches every scheme in SupportedSchemes side by side, each as it
 // was made, so a client of an older version is still served. Nothing converts
@@ -171,7 +196,8 @@
 // rule may read from those places is bounded by the block, so the rules add a
 // cost that is linear too, and nearly none on text that holds no prefix.
 //
-// An indexed value is replaced by ph:<type>:<id>, as given when it was indexed;
+// An indexed value is replaced by ph:<type>:<id>, as given when it was indexed
+// (ph:<type> alone when its id is withheld);
 // a rule match by ph:<label>:<n>, where n is the same for the same value for
 // the life of the Index. Reports hold counts, placeholders, labels, form names
 // and JSON pointers, never matched content.
@@ -295,35 +321,64 @@
 //     was at times found by the lines around it, and nothing in a comment is.
 //   - Pattern rules see a format only when it is written plainly; a random value
 //     with no known format is found by them only next to a keyword.
-//   - Whoever holds the Key and the Entries can confirm a guessed chunk: hash
-//     the guess and compare. Without the Key the Entries say nothing that a
-//     guess can be tested against, and without the Entries the Key says
-//     nothing at all. So the Key must stay with the daemon and the clients it
-//     trusts to index values, and a daemon that keeps both across restarts
-//     must keep the Key apart from the Entries (the Phase AI proxy keeps it in
-//     the system keystore and the Entries, sealed under a key derived from
-//     it, in a file).
-//   - What someone who gets both can do is bounded by what a chunk's entry
-//     holds, which in scheme 2 is 24 bits of its rolling hash and a keyed
-//     SHA-256 truncated to 128 bits. The rolling hash is a polynomial in the
-//     chunk's bytes, and with the Key it can be split in the middle: the
-//     guesses that fit its 24 bits can be listed without trying the others.
-//     So the 24 bits come off whatever the chunk holds, and each guess that
-//     is left costs one confirming hash. A chunk of b unknown bits costs
-//     about 2^(b-24) of them (and a table of 2^(b/2)), not 2^b:
+//   - Entries are tested against with keys, and who holds which decides what
+//     a party can do. A chunk's entry in scheme 2 is 24 bits of its rolling
+//     hash, under the lookup key, and a keyed SHA-256 truncated to 128 bits,
+//     under the confirming key of the principal that registered it. The
+//     Phase AI proxy derives every key from one master in the system
+//     keystore, which it hands to no one, by way of a root per tenant, and
+//     keeps the Entries in a file, each record sealed under its tenant's
+//     key. A proxy derives its own tenant's keys and no other's. Then:
+//   - Between tenants nothing can be tested at all, by a client or by a
+//     proxy: a session of one tenant holds no key of another, does not
+//     open, load or match its records, and writes nothing of them anywhere
+//     but a count of records. A value of another tenant in a request goes
+//     through as it is.
+//   - The file alone says nothing a guess can be tested against. It shows
+//     how many values are stored, about how long each is, when each was
+//     last registered and which share a placeholder, and no hash.
+//   - A client of a session (any process holding the proxy's capability, an
+//     AI Agent included) is handed the lookup key and its own principal's
+//     confirming key. With the file as well it is where the file alone is:
+//     neither key opens the seal. If it had its tenant's Entries out of
+//     their seal, it could confirm a guessed chunk of its own principal's
+//     values, which it could read anyway, and none of another principal's:
+//     of those it would have the 24 bits a chunk, which list the guesses that fit them
+//     (one in 2^24) and say nothing of which is right. A chunk of b unknown
+//     bits is left with 2^(b-24) guesses that all fit; one the client knows
+//     but 24 bits of is found. It would also have what Entries state
+//     openly: each form's length and which chunks are structure.
+//   - Such a client can still put guesses in a request and see whether the
+//     proxy replaces them, as with any value of its tenant the proxy knows:
+//     one guess a chunk's bytes of traffic, at the speed of a scan, with
+//     nothing stored to narrow them by. That is the proxy doing its work,
+//     and is not what the keys are for. What comes back for another login's
+//     value is ph:<type>, never its id.
+//   - A process of the same user that reads the keystore has the master, so
+//     every key of every tenant, and the file opens to it. It confirms a
+//     guessed chunk of any principal's value by hashing it, and the 24 bits come off the work:
+//     the rolling hash is a polynomial in the chunk's bytes, and with the
+//     lookup key it can be split in the middle, so the guesses that fit are
+//     listed without trying the others. A chunk of b unknown bits costs
+//     about 2^(b-24) confirming hashes (and a table of 2^(b/2)), not 2^b:
 //     24 hex digits of a value that is hex, 96 bits, about 2^72; 12
 //     characters of a value made of letters and digits, 71 bits, about 2^47;
 //     12 characters of the base64 of random bytes, 24 hex digits of the hex
 //     of text, and 24 characters of the base64 of a hex value, 72 bits
 //     each, about 2^48. 2^47 hashes are days of work for hardware built for
-//     it, so such a value is not safe from someone who holds both for long.
-//     A chunk that holds few bits is found whatever is stored: 24 digits of
-//     the hex of a hex value hold 48 bits, a 12-digit chunk of a hex value
-//     shorter than 24 digits 48, a 12-byte chunk of a value made of decimal
-//     digits 40, and a chunk of a value the holder mostly knows very few.
+//     it, so such a value is not safe from that process for long. A chunk
+//     that holds few bits is found whatever is stored: 24 digits of the hex
+//     of a hex value hold 48 bits (2^24 hashes), a 12-digit chunk of a hex
+//     value shorter than 24 digits 48, a 12-byte chunk of a value made of
+//     decimal digits 40, and a chunk of a value the holder mostly knows very
+//     few. Such a process can also read the logins the keystore holds.
+//   - So the master must stay with the daemon, a confirming key with its
+//     own principal's clients, and a daemon that keeps Entries across
+//     restarts must keep the master apart from them.
 //   - Entries of scheme 1 hold the whole rolling hash, from which a
 //     12-character chunk is found in about 2^36 steps and a 12-digit hex one
-//     in 2^24, whatever the confirming hash is. They are therefore never
+//     in 2^24, whatever the confirming hash is, and their confirming hash is
+//     keyed from the lookup key every client holds. They are therefore never
 //     stored. A daemon holds them in memory while it runs, when a client of
 //     an older version registers them, and no build writes them now.
 package censor

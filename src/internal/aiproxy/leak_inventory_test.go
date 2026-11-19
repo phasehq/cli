@@ -3,6 +3,7 @@ package aiproxy
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -57,19 +58,48 @@ func (k *testKeystore) Set(service, user, value string) error {
 
 func newTestInventoryStore(t *testing.T) *phaseproxy.InventoryStore {
 	t.Helper()
-	return &phaseproxy.InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &testKeystore{values: map[string]string{}}}
+	return &phaseproxy.InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &testKeystore{values: map[string]string{}}, Tenant: leakTestTenant}
 }
+
+// leakTestTenant is the host and organisation the tests' proxies act for.
+const leakTestTenant = "https://console.test\norganisation\ntest-organisation"
+
+// leakTestLogin is the login the tests' proxies act as unless they say.
+const leakTestLogin = "https://console.test\naccount\ntest-account"
 
 // newStoredLeakRig is a proxy that starts with what the store holds.
 func newStoredLeakRig(t *testing.T, store *phaseproxy.InventoryStore) *leakRig {
 	t.Helper()
+	return newStoredLeakRigAs(t, store, leakTestLogin)
+}
+
+// newStoredLeakRigAs is newStoredLeakRig for a proxy acting as login.
+func newStoredLeakRigAs(t *testing.T, store *phaseproxy.InventoryStore, login string) *leakRig {
+	t.Helper()
 	rig := newLeakRig(t, leakModeCensor)
-	guard, err := newStoredLeakGuard(leakModeCensor, store)
+	guard, err := newStoredLeakGuard(leakModeCensor, store, login)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rig.guard, rig.proxy.leak, rig.proxy.control.leak = guard, guard, guard
 	return rig
+}
+
+// guardKeyBytes is both parts of the key a guard hands its clients.
+func guardKeyBytes(guard *leakGuard) []byte {
+	return append(guard.key.LookupBytes(), guard.key.ConfirmBytes()...)
+}
+
+// answeredKey rebuilds the key a client makes of the key route's answer.
+func answeredKey(t testing.TB, answer remoteapi.InventoryKeyResponse) *censor.Key {
+	t.Helper()
+	lookup, _ := base64.StdEncoding.DecodeString(answer.Key)
+	confirm, _ := base64.StdEncoding.DecodeString(answer.ConfirmKey)
+	key, err := censor.KeyFromBytes(lookup, confirm)
+	if err != nil {
+		t.Fatalf("the answered key does not rebuild: %v", err)
+	}
+	return key
 }
 
 func rawStatus(t *testing.T, rig *leakRig) (*remoteapi.LeakProtectionStatus, string) {
@@ -114,12 +144,12 @@ func TestLeakInventoryOutlivesTheProxy(t *testing.T) {
 	if !strings.Contains(body, `"inventory":{"storage":"stored","loaded":2,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`) {
 		t.Fatalf("status: %s", body)
 	}
-	for _, private := range []string{"secret-id-1", "DATABASE_URL", leakSecretOne, hex.EncodeToString(second.guard.key.Bytes())} {
+	for _, private := range []string{"secret-id-1", "DATABASE_URL", leakSecretOne, hex.EncodeToString(second.guard.key.LookupBytes()), hex.EncodeToString(second.guard.key.ConfirmBytes())} {
 		if strings.Contains(body, private) {
 			t.Fatalf("status names %q", private)
 		}
 	}
-	if !bytes.Equal(first.guard.key.Bytes(), second.guard.key.Bytes()) {
+	if !bytes.Equal(guardKeyBytes(first.guard), guardKeyBytes(second.guard)) {
 		t.Fatal("the second proxy hashes with another key")
 	}
 	// The resumed conversation: the value itself, and its hex.
@@ -151,7 +181,7 @@ func TestLeakInventoryOutlivesTheProxy(t *testing.T) {
 // never stored (they carry whole rolling hashes), and replace nothing.
 func TestLeakInventoryMatchesSchemeOneEntriesFromMemoryOnly(t *testing.T) {
 	store := newTestInventoryStore(t)
-	first, err := newStoredLeakGuard(leakModeCensor, store)
+	first, err := newStoredLeakGuard(leakModeCensor, store, leakTestLogin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +199,7 @@ func TestLeakInventoryMatchesSchemeOneEntriesFromMemoryOnly(t *testing.T) {
 	if out, _ := first.index.Redact([]byte(leakSecretOne + " " + leakSecretTwo)); string(out) != "ph:secret:one ph:secret:two" {
 		t.Fatalf("%q", out)
 	}
-	second, err := newStoredLeakGuard(leakModeCensor, store)
+	second, err := newStoredLeakGuard(leakModeCensor, store, leakTestLogin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +235,7 @@ func TestLeakInventoryLoadsTheNewestIntoAFullIndex(t *testing.T) {
 	store := newTestInventoryStore(t)
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	store.Now = func() time.Time { return now }
-	first, err := newStoredLeakGuard(leakModeCensor, store)
+	first, err := newStoredLeakGuard(leakModeCensor, store, leakTestLogin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +260,7 @@ func TestLeakInventoryLoadsTheNewestIntoAFullIndex(t *testing.T) {
 	}
 	// What was left out is still in the store, for an index with room.
 	leakIndexMaxSecrets = 0
-	if all, err := newStoredLeakGuard(leakModeCensor, store); err != nil || all.loaded != 5 || all.notLoaded != 0 {
+	if all, err := newStoredLeakGuard(leakModeCensor, store, leakTestLogin); err != nil || all.loaded != 5 || all.notLoaded != 0 {
 		t.Fatalf("%v", err)
 	}
 }
@@ -238,7 +268,7 @@ func TestLeakInventoryLoadsTheNewestIntoAFullIndex(t *testing.T) {
 // On a machine with no keystore nothing is stored and nothing changed: the
 // inventory is in memory, a second proxy knows nothing, and status says why.
 func TestLeakInventoryWithoutAKeystoreIsMemoryOnly(t *testing.T) {
-	store := &phaseproxy.InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &testKeystore{absent: true}}
+	store := &phaseproxy.InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &testKeystore{absent: true}, Tenant: leakTestTenant}
 	first := newStoredLeakRig(t, store)
 	registerLeakValues(t, first.guard, map[string]string{"one": leakSecretOne})
 	status, body := rawStatus(t, first)
@@ -259,7 +289,7 @@ func TestLeakInventoryWithoutAKeystoreIsMemoryOnly(t *testing.T) {
 	if status, _ := rawStatus(t, second); status.SecretsKnown != 0 || status.Inventory.Loaded != 0 {
 		t.Fatalf("%+v", status)
 	}
-	if bytes.Equal(first.guard.key.Bytes(), second.guard.key.Bytes()) {
+	if bytes.Equal(guardKeyBytes(first.guard), guardKeyBytes(second.guard)) {
 		t.Fatal("two memory inventories share a key")
 	}
 	// A proxy that was given no store says that.
@@ -327,7 +357,7 @@ func TestEngineOpensTheInventoryStoreOnce(t *testing.T) {
 	if !engine.ShouldRead("claude", "api.anthropic.com") || len(engine.ReadHosts("claude")) == 0 {
 		t.Fatal("the host table was not answered before a session")
 	}
-	guard, err := engine.leakGuard(store)
+	guard, err := engine.leakGuard(store, leakTestLogin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +367,7 @@ func TestEngineOpensTheInventoryStoreOnce(t *testing.T) {
 	registerLeakValues(t, guard, map[string]string{"one": leakSecretOne})
 	// A recycled session, and one that names no store, get the same guard.
 	for _, next := range []*phaseproxy.InventoryStore{store, nil} {
-		if again, err := engine.leakGuard(next); err != nil || again != guard {
+		if again, err := engine.leakGuard(next, leakTestLogin); err != nil || again != guard {
 			t.Fatalf("the engine made another guard: %v", err)
 		}
 	}
@@ -345,13 +375,226 @@ func TestEngineOpensTheInventoryStoreOnce(t *testing.T) {
 		t.Fatal("ShouldRead")
 	}
 	// Another process of the same user.
-	other, err := (&Engine{}).leakGuard(store)
+	other, err := (&Engine{}).leakGuard(store, leakTestLogin)
 	if err != nil || other.status().SecretsKnown != 1 || other.status().Inventory.Loaded != 1 {
 		t.Fatalf("%v", err)
 	}
 	// With no store the engine keeps the inventory in memory.
-	plain, err := (&Engine{}).leakGuard(nil)
+	plain, err := (&Engine{}).leakGuard(nil, leakTestLogin)
 	if err != nil || plain.status().Inventory.Reason != phaseproxy.InventoryReasonNotConfigured {
 		t.Fatalf("%v", err)
+	}
+}
+
+const (
+	leakLoginA = "https://console.test\naccount\naccount-a"
+	leakLoginB = "https://console.test\nagent\nagent-b"
+)
+
+// keyAnswer is the key route's answer of a proxy, parsed and as it was sent.
+func keyAnswer(t *testing.T, rig *leakRig) (remoteapi.InventoryKeyResponse, []byte) {
+	t.Helper()
+	recorder := controlCall(rig.proxy, http.MethodGet, "/v1/inventory/key", "", nil)
+	var answer remoteapi.InventoryKeyResponse
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil {
+		t.Fatalf("key: %d", recorder.Code)
+	}
+	return answer, recorder.Body.Bytes()
+}
+
+// phaseIDs says every id of a registration is one the Console issued.
+func phaseIDs(n int) []string {
+	kinds := make([]string, n)
+	for i := range kinds {
+		kinds[i] = remoteapi.InventoryIDPhase
+	}
+	return kinds
+}
+
+// A proxy started again replaces what its own login registered, by id, and
+// what another login of its organisation did, by type alone: never that id.
+func TestRestartedProxyReplacesItsTenantsValues(t *testing.T) {
+	store := newTestInventoryStore(t)
+	const shared, idOfB = "Hd6Fs1Gp0YaJw3Rk8Tn5Vb2Xq7Zc4Lm9", "9f1c2d3e-id-only-b-may-see"
+	asA := newStoredLeakRigAs(t, store, leakLoginA)
+	if answer := registerThroughControl(t, asA.proxy, []leakguard.Value{
+		{Type: "secret", ID: "from-a", Value: leakSecretOne}, {Type: "secret", ID: "shared-a", Value: shared},
+	}, phaseIDs(2)); answer == nil || answer.Added != 2 {
+		t.Fatalf("A's registration: %+v", answer)
+	}
+	asB := newStoredLeakRigAs(t, store, leakLoginB)
+	if answer := registerThroughControl(t, asB.proxy, []leakguard.Value{
+		{Type: "secret", ID: idOfB, Value: leakSecretTwo}, {Type: "secret", ID: "shared-b", Value: shared},
+	}, phaseIDs(2)); answer == nil || answer.Added != 2 {
+		t.Fatalf("B's registration: %+v", answer)
+	}
+	asA.proxy.CloseHijacked()
+	asB.proxy.CloseHijacked()
+
+	restarted := newStoredLeakRigAs(t, store, leakLoginA)
+	status, statusBody := rawStatus(t, restarted)
+	if status.SecretsKnown != 4 || status.Inventory.Loaded != 4 || status.Inventory.Damaged != 0 || status.Inventory.OtherTenants != 0 {
+		t.Fatalf("the restarted proxy: %+v %+v", status, status.Inventory)
+	}
+	content := leakSecretOne + " and " + leakSecretTwo + " and " + shared + " and " + hex.EncodeToString([]byte(leakSecretTwo))
+	postMessages(t, restarted.client(restarted.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(content), "")
+	received := restarted.lastReceived()
+	for name, value := range map[string]string{"A's": leakSecretOne, "B's": "Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3", "the shared": shared, "the hex of B's": hex.EncodeToString([]byte(leakSecretTwo))} {
+		if bytes.Contains(received.body, []byte(value)) {
+			t.Fatalf("%s value reached the provider: %s", name, received.body)
+		}
+	}
+	// A's own ids are written, the shared value under A's; B's value is
+	// ph:secret and nothing more.
+	if !bytes.Contains(received.body, []byte("ph:secret:from-a and ph:secret and ph:secret:shared-a and ph:secret\"")) {
+		t.Fatalf("what the provider received: %s", received.body)
+	}
+	events := restarted.distinctLeakEvents(t, 1)
+	detail := events[0].Detail
+	if sortedList(detail["placeholders"]) != "ph:secret,ph:secret:from-a,ph:secret:shared-a" || detail["inventoryHits"] != float64(4) {
+		t.Fatalf("event detail: %+v", detail)
+	}
+	shipped, _ := json.Marshal(events)
+	for name, text := range map[string][]byte{"the request": received.body, "the event": shipped, "status": []byte(statusBody)} {
+		for _, id := range []string{idOfB, "shared-b"} {
+			if bytes.Contains(text, []byte(id)) {
+				t.Fatalf("%s names %q, an id of another login", name, id)
+			}
+		}
+	}
+	// And a proxy acting as B writes its own ids and withholds A's.
+	other := newStoredLeakRigAs(t, store, leakLoginB)
+	if out, _ := other.guard.index.Redact([]byte(leakSecretOne + " " + shared + " " + leakSecretTwo)); string(out) != "ph:secret ph:secret:shared-b ph:secret:"+idOfB {
+		t.Fatalf("B's proxy: %q", out)
+	}
+}
+
+// otherTenantStore is the same directory and keystore, for another tenant.
+func otherTenantStore(store *phaseproxy.InventoryStore, tenant string) *phaseproxy.InventoryStore {
+	other := *store
+	other.Tenant = tenant
+	return &other
+}
+
+// A session of one organisation never matches, loads or names what another's
+// registered: the value goes through as it is, and only records are counted.
+func TestAnotherTenantsValuesAreNeverMatched(t *testing.T) {
+	storeB := newTestInventoryStore(t)
+	storeA := otherTenantStore(storeB, "https://console.test\norganisation\nanother-organisation")
+	const idOfB = "7a2b-id-of-tenant-b"
+	asB := newStoredLeakRigAs(t, storeB, leakLoginB)
+	if answer := registerThroughControl(t, asB.proxy, []leakguard.Value{{Type: "sealed", ID: idOfB, Value: leakSecretTwo}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatalf("B's registration: %+v", answer)
+	}
+	asB.proxy.CloseHijacked()
+
+	// The same login string in another tenant is another login altogether.
+	asA := newStoredLeakRigAs(t, storeA, leakLoginB)
+	status, statusBody := rawStatus(t, asA)
+	if status.SecretsKnown != 0 || status.Inventory.Storage != remoteapi.LeakInventoryStored || status.Inventory.Loaded != 0 ||
+		status.Inventory.OtherTenants != 1 || status.Inventory.Damaged != 0 || status.Inventory.UnmatchedKey != 0 {
+		t.Fatalf("A's proxy: %+v %+v", status, status.Inventory)
+	}
+	if strings.Contains(statusBody, idOfB) || strings.Contains(statusBody, "sealed") {
+		t.Fatalf("status says something of another tenant's record: %s", statusBody)
+	}
+	answerA, _ := keyAnswer(t, asA)
+	answerB, _ := keyAnswer(t, asB)
+	if answerA.Key == answerB.Key || answerA.ConfirmKey == answerB.ConfirmKey {
+		t.Fatal("two tenants were handed a key in common")
+	}
+	content := "the value is " + leakSecretTwo + " and " + hex.EncodeToString([]byte(leakSecretTwo))
+	body := anthropicBody(content)
+	postMessages(t, asA.client(asA.phaseRoots), "https://api.anthropic.com/v1/messages", body, "")
+	if received := asA.lastReceived(); !bytes.Equal(received.body, []byte(body)) {
+		t.Fatalf("a request holding another tenant's value was changed: %s", received.body)
+	}
+	if events := asA.leakEventsNow(); len(events) != 0 {
+		t.Fatalf("A's proxy reported on another tenant's value: %+v", events)
+	}
+	// A registers the same value itself: its own record, its own id, and
+	// B's record is still there, unopened, for B's next proxy.
+	if answer := registerThroughControl(t, asA.proxy, []leakguard.Value{{Type: "secret", ID: "from-a", Value: leakSecretTwo}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatalf("A's registration: %+v", answer)
+	}
+	if out, _ := asA.guard.index.Redact([]byte(leakSecretTwo)); string(out) != "ph:secret:from-a" {
+		t.Fatalf("A's own registration: %q", out)
+	}
+	asA.proxy.CloseHijacked()
+	again := newStoredLeakRigAs(t, storeB, leakLoginB)
+	if status, _ := rawStatus(t, again); status.SecretsKnown != 1 || status.Inventory.Loaded != 1 || status.Inventory.OtherTenants != 1 {
+		t.Fatalf("B's next proxy: %+v %+v", status, status.Inventory)
+	}
+	if out, _ := again.guard.index.Redact([]byte(leakSecretTwo)); string(out) != "ph:sealed:"+idOfB {
+		t.Fatalf("B's next proxy: %q", out)
+	}
+	// A login that names no tenant keeps nothing and loads nothing.
+	nobody := newStoredLeakRigAs(t, otherTenantStore(storeB, ""), leakLoginB)
+	if status, _ := rawStatus(t, nobody); status.SecretsKnown != 0 || status.Inventory.Storage != remoteapi.LeakInventoryMemory || status.Inventory.Reason != phaseproxy.InventoryReasonNoTenant {
+		t.Fatalf("a login with no tenant: %+v %+v", status, status.Inventory)
+	}
+}
+
+// The key route hands out the lookup key and the proxy's own principal's
+// confirming key: never the master, never another login's confirming key.
+func TestKeyAnswerHoldsOnlyItsOwnPrincipalsKeys(t *testing.T) {
+	store := newTestInventoryStore(t)
+	asB := newStoredLeakRigAs(t, store, leakLoginB)
+	if answer := registerThroughControl(t, asB.proxy, []leakguard.Value{{Type: "secret", ID: "from-b", Value: leakSecretTwo}}, nil); answer == nil || answer.Added != 1 {
+		t.Fatalf("B's registration: %+v", answer)
+	}
+	// A's proxy holds B's confirming key, to match B's record with.
+	asA := newStoredLeakRigAs(t, store, leakLoginA)
+	if out, _ := asA.guard.index.Redact([]byte(leakSecretTwo)); string(out) != "ph:secret" {
+		t.Fatalf("A's proxy does not match B's value by type alone: %q", out)
+	}
+	answer, sent := keyAnswer(t, asA)
+	answerB, _ := keyAnswer(t, asB)
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(sent, &fields) != nil || len(fields) != 4 || fields["schemaVersion"] == nil || fields["key"] == nil || fields["confirmKey"] == nil || fields["format"] == nil {
+		t.Fatalf("the answer's fields: %s", sent)
+	}
+	if answer.Format != censor.EntriesVersion || answer.Key != answerB.Key || answer.ConfirmKey == answerB.ConfirmKey || answer.ConfirmKey == answer.Key {
+		t.Fatal("the answers do not share a lookup key and differ by confirming key")
+	}
+	if answer.Key != base64.StdEncoding.EncodeToString(asA.guard.key.LookupBytes()) || answer.ConfirmKey != base64.StdEncoding.EncodeToString(asA.guard.key.ConfirmBytes()) {
+		t.Fatal("the answer is not the proxy's own principal's key")
+	}
+	stored, err := store.Keyring.Get("phase-cli-ai-leak-inventory", "key-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	master, err := base64.StdEncoding.DecodeString(stored[strings.LastIndexByte(stored, ':')+1:])
+	if err != nil || len(master) != censor.KeySize {
+		t.Fatalf("the keystore holds no master: %v", err)
+	}
+	// The bytes sent, and the bytes they decode to, hold neither secret in
+	// any spelling, whole or by half.
+	decoded := append([]byte{}, sent...)
+	for _, field := range []string{answer.Key, answer.ConfirmKey} {
+		raw, err := base64.StdEncoding.DecodeString(field)
+		if err != nil || len(raw) != censor.KeySize {
+			t.Fatalf("a key in the answer is not %d bytes: %v", censor.KeySize, err)
+		}
+		decoded = append(append(decoded, 0), raw...)
+	}
+	for name, secret := range map[string][]byte{"the master": master, "B's confirming key": asB.guard.key.ConfirmBytes()} {
+		for _, part := range [][]byte{secret, secret[:16], secret[16:]} {
+			spellings := [][]byte{part, []byte(hex.EncodeToString(part)), []byte(base64.StdEncoding.EncodeToString(part)), []byte(base64.RawURLEncoding.EncodeToString(part))}
+			for _, spelling := range spellings {
+				if bytes.Contains(decoded, spelling) {
+					t.Fatalf("the key answer holds %s", name)
+				}
+			}
+		}
+	}
+	// A client of A, with what it was handed, indexes B's value to hashes
+	// that are not the ones B's record holds: the registration adds a record.
+	before := asA.guard.index.Stats()
+	if answer := registerThroughControl(t, asA.proxy, []leakguard.Value{{Type: "secret", ID: "from-b", Value: leakSecretTwo}}, nil); answer == nil || answer.Added != 1 {
+		t.Fatalf("A's registration: %+v", answer)
+	}
+	if after := asA.guard.index.Stats(); after.Forms != 2*before.Forms {
+		t.Fatalf("A's entries for B's value were B's own: %+v then %+v", before, after)
 	}
 }

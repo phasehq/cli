@@ -149,8 +149,10 @@ revision.
 
 Used by the CLI itself (`internal/leakguard`), never by the Agent's own tools.
 Before a command hands out secret values it looks for a running proxy, fetches
-that proxy's key, indexes each value locally with `pkg/censor`, and registers
-the entries. The entries carry keyed hashes and lengths, never a value.
+the keys that proxy hands it (the lookup key, and the confirming key of the
+login the proxy acts as), indexes each value locally with `pkg/censor`, and
+registers the entries. The entries carry keyed hashes and lengths, never a
+value.
 
 The proxy is looked for through an ordered list of sources, and the first one
 that finds a proxy is used (`leakguard.AddSource` adds another):
@@ -213,21 +215,66 @@ The inventory outlives the proxy process (`phaseproxy.InventoryStore`), so a
 conversation resumed after the hook-managed proxy's idle exit, an upgrade or
 a reboot still has its values replaced before anything registers them again:
 
-- The key is kept in the system keystore, beside the CA key (service
-  `phase-cli-ai-leak-inventory`), one per user, made on first use and never
-  written to disk. It carries an id. A key is made only when the keystore
-  says it holds none. If the keystore cannot be read for any other reason (a
-  locked keychain, a refused prompt, a value this version cannot parse), the
-  proxy runs from memory (`key_unreadable`) and writes neither the keystore
-  nor the file.
+- One master key is kept in the system keystore, beside the CA key (service
+  `phase-cli-ai-leak-inventory`), one per user, made on first use, never
+  written to disk and never handed out by any route. It carries an id. A
+  master is made only when the keystore says it holds none. If the keystore
+  cannot be read for any other reason (a locked keychain, a refused prompt, a
+  value this version cannot parse), the proxy runs from memory
+  (`key_unreadable`) and writes neither the keystore nor the file.
+- Everything is kept apart by tenant. A tenant is the Phase host and the
+  organisation the session's login belongs to, as the saved login holds them
+  (the host and its organisation id). A saved login with no organisation id
+  is a tenant of its own, the host and its own account or Agent id, and
+  shares with nobody. A session whose login is not a saved one (a token from
+  the environment) has no tenant: its inventory is in memory only
+  (`no_tenant`), and nothing is read from or written to the store for it.
+  One account never matches what another account's organisation registered:
+  - a proxy derives its own tenant's keys from the master and no other
+    tenant's. The lookup key, the confirming keys, and the keys records are
+    sealed and tagged with all differ by tenant, so the same value
+    registered in two tenants gives unrelated lookup values and hashes;
+  - a record carries a keyed tag of its tenant. A proxy opens, loads and
+    matches the records of its own tenant alone. Another tenant's records
+    are left in the file as they are until they expire, and all a session
+    learns of them is their number (`otherTenants`): no id, no type, no size;
+  - a request that holds a value another tenant registered is sent on
+    unchanged, and no event or status says anything of it;
+  - the key route hands out nothing derived for another tenant.
+- Within a tenant, every key is derived from the tenant's root with
+  HKDF-SHA-256, each under its own label, so none gives the master or
+  another back:
+  - the lookup key, which keys the rolling hash a chunk is found by. It is
+    the same for every proxy and login of the tenant, so a scan rolls one
+    hash per position however many logins registered values;
+  - a confirming key per principal, which keys the SHA-256 that confirms a
+    chunk and the tail hashes. A principal is the login a proxy acts as: the
+    Phase host, the kind of login and its account or Agent id, as the
+    proxy's own session knows them (never a token, and never anything a
+    client sends). It is named by a keyed tag of that login, and its
+    confirming key is expanded from that tag. A proxy whose login is not a
+    saved one (a token from the environment) uses a principal of its own
+    that no later proxy hands out;
+  - the keys the file is sealed and tagged with.
 - The entries are kept in `leak-inventory.bin` in the Phase AI directory,
   owner-only, replaced whole through a temporary file, sync and rename, and
   read only as a regular owner-only file of this user that is not a symlink.
   Each record is one registered value: its entries as they came over this
-  API and whether its id is a key name, sealed (AES-256-GCM) under a key
-  derived from the inventory key, with the matching scheme and the time it
-  was last registered beside it. The file's header names its store format and
-  the key's id.
+  API, whether its id is a key name and the id of the principal that
+  registered it, sealed (AES-256-GCM) under its tenant's sealing key, with
+  the tenant's tag, the matching scheme and the time it was last registered
+  beside it. The file's header names its store format and the master's id.
+- A proxy acts as one principal and hands out that principal's confirming
+  key alone, and it matches the records of every principal of its tenant:
+  each candidate is confirmed with the confirming key of the principal its
+  record names. A value a person's own login registered is therefore still
+  replaced when their Agent's tool reads it, and the same value registered
+  by two logins is a record each, matched through either.
+- A value registered by another login than the session's is replaced by
+  `ph:<type>` with no id, in the request and in events alike: the id (a
+  secret's id or key name) may be one the session's login cannot see.
+  Counts are whole. When the session's own login registered the same value,
+  its own placeholder with its id is written.
 - Every proxy of the user loads the file when it starts and writes what is
   registered with it, under `leak-inventory.lock`: the file is read again
   under the lock and written whole, so nothing another proxy stored is lost.
@@ -261,30 +308,53 @@ a reboot still has its values replaced before anything registers them again:
   from memory (`store_unreadable`) until `phase ai disable` removes it.
 - On a machine with no system keystore nothing is stored: no key, no file,
   and the inventory is in memory as before.
-- `phase ai disable` removes the key, then the file, and `phase auth logout
-  --purge` removes the key with the CA key and the file with `~/.phase`. A
+- `phase ai disable` removes the master, then the file, and `phase auth logout
+  --purge` removes the master with the CA key and the file with `~/.phase`.
+  Every derived key goes with it. A
   proxy still running says `key_replaced` the next time its status is asked
   (the keystore is asked at most once a second) and stores nothing more.
 
-What this changes for the key: it is no longer new with every proxy process,
-and a process that was given it once (this route gives it to any process
-holding the proxy capability) can use it for as long as it is the user's
-key. The file without the key says nothing that a guess can be tested
-against. Someone who holds both the key and the file can confirm a guessed
-chunk of a value by hashing it. What is stored per chunk is 24 bits of its
-keyed rolling hash and a keyed SHA-256 truncated to 128 bits; the smallest
-chunk is 12 bytes of a value's form, and 24 characters where the form is hex
-digits or the base64 of a hex value. The 24 bits let the holder skip all but
-one guess in 2^24 without hashing, so a chunk of b unknown bits costs about
-2^(b-24) confirming hashes: about 2^72 for 24 digits of a hex value (96
-bits), and about 2^47 for 12 characters of a value made of letters and
-digits (71 bits), which is days of work for hardware built for it. Chunks
-that hold few bits are found whatever is stored; `pkg/censor`'s Limits list
-them (the hex of a hex value, hex values under 24 digits, values made of
-digits) and give every figure. Entries made by this version are scheme 2.
-Scheme 1 entries hold the whole rolling hash, from which a 12-character
-chunk is found in about 2^36 steps: they exist only in the memory of a
-running proxy that an older client registered with, and are never stored.
+What each party can do with this. What is stored per chunk is 24 bits of its
+rolling hash, under the lookup key, and a SHA-256 truncated to 128 bits, under
+the confirming key of the principal that registered it; the smallest chunk is
+12 bytes of a value's form, and 24 characters where the form is hex digits or
+the base64 of a hex value.
+
+- **A session of another tenant**, client or proxy, can test nothing: it
+  holds no key of this tenant, opens none of its records, and sees a count.
+- **The file alone** says nothing a guess can be tested against: every
+  record is sealed under a key derived from the master. It shows how many
+  values are stored, about how long each is, when each was last registered
+  and which share a placeholder.
+- **A client of a session with the file.** Any process that holds a proxy's
+  capability, an AI Agent included, is handed the lookup key and its own
+  principal's confirming key, for as long as the master lasts. Neither opens
+  the file, so with the file it is where the file alone is. Were its
+  tenant's entries out of their seal, it could confirm a guessed chunk only of its own
+  principal's values, which it can read anyway. Of another principal's (the
+  developer's own login, another Agent) it would hold the 24 lookup bits a
+  chunk and no hash it can compute: the bits list the guesses that fit, one
+  in 2^24, and nothing says which is right, so a chunk of b unknown bits
+  keeps 2^(b-24) candidates. A client can still send guesses through the
+  proxy and see whether they are replaced, as with any value of its tenant
+  the proxy knows: a chunk's bytes of traffic a guess, with nothing stored to narrow
+  them.
+- **A process of the same user with the keystore and the file** has the
+  master, hence every key of every tenant, and confirms a guessed chunk of any principal's
+  value by hashing it. The 24 bits let it skip all but one guess in 2^24
+  without hashing, so a chunk of b unknown bits costs about 2^(b-24)
+  confirming hashes: about 2^72 for 24 digits of a hex value (96 bits), and
+  about 2^47 for 12 characters of a value made of letters and digits (71
+  bits), which is days of work for hardware built for it. Chunks that hold
+  few bits are found whatever is stored (2^24 hashes for 24 digits of the hex
+  of a hex value); `pkg/censor`'s Limits list them and give every figure.
+  Such a process can read the saved logins from the same keystore.
+
+Entries made by this version are scheme 2. Scheme 1 entries hold the whole
+rolling hash, from which a 12-character chunk is found in about 2^36 steps,
+and their confirming hash is keyed from the lookup key: they exist only in
+the memory of a running proxy that an older client registered with, and are
+never stored.
 
 Every caller reaches the control API through one client,
 `phaseproxy.ControlClient`: `phase ai status`, the hooks and this registration.
@@ -292,8 +362,14 @@ Every caller reaches the control API through one client,
 ```http
 GET http://phase.invalid/v1/inventory/key
 
-200 {"schemaVersion":1,"key":"<base64, 32 bytes>","format":2}
+200 {"schemaVersion":1,"key":"<base64, 32 bytes>","confirmKey":"<base64, 32 bytes>","format":2}
 ```
+
+`key` is the lookup key of the proxy's tenant and `confirmKey` the confirming
+key of the proxy's own principal. The answer never holds the master, another
+principal's confirming key or anything derived for another tenant, and no request says which principal a client is: the proxy
+knows that from its own session. A client indexes with both keys; `confirmKey`
+is left out only by a proxy that reads scheme 1 alone, whose one key did both.
 
 `format` is the matching scheme the proxy's own version indexes under
 (`censor.EntriesVersion`). The proxy takes entries of every scheme it still
@@ -335,7 +411,9 @@ Content-Type: application/json
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
 - `inventory` says whether the values outlive the proxy, in counts:
-  `{"storage":"stored","loaded":9,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`.
+  `{"storage":"stored","loaded":9,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`,
+  with `otherTenants` when the file holds records of other hosts or
+  organisations (a count, and all that is said of them).
   `storage` is `stored` or `memory`, and `reason` says why it is `memory`:
   `no_keystore` (the machine has no system keystore), `key_unreadable` (the
   keystore did not give the key; nothing is written), `newer_store_format`
@@ -344,7 +422,8 @@ Content-Type: application/json
   and is left as it is), `key_replaced` (the key was replaced or removed
   while this proxy ran), `store_busy` (another process held the store's lock
   for two seconds), `store_unusable` (the directory or file could not be
-  written) or `not_configured`. `loaded` is how many values the proxy knew
+  written), `no_tenant` (the session's login is not a saved one, so nothing
+  is kept for it) or `not_configured`. `loaded` is how many values the proxy knew
   from the store when it started, and `notLoaded` how many more the store
   held that a full index had no room for. `unmatchedScheme` counts stored entries of a matching
   scheme this version does not match: they are kept and need registering

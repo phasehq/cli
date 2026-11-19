@@ -1,6 +1,7 @@
 package censor
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -40,15 +41,21 @@ type IndexOptions struct {
 // Index finds indexed values and pattern rule matches in requests. It holds keyed
 // hashes only, never a value. It is safe for concurrent Add and scans.
 type Index struct {
-	key        *Key
+	key *Key
+	// ruleKey keys the hashes rule matches are numbered by. It is the
+	// index's own and goes with it.
+	ruleKey    [32]byte
 	rules      *Rules
 	maxSecrets int
 	maxChunks  int
 
 	mu sync.RWMutex
 	// windows hold the chunks, by chunk size: see window.
-	windows      []*window
-	chunkCount   int
+	windows    []*window
+	chunkCount int
+	// macKeys are the confirming keys entries were added under: one per
+	// principal, and scheme 1's. A form names its own by position.
+	macKeys      [][32]byte
 	forms        []form
 	owners       []owner
 	ownerIndex   map[ownerKey]int32
@@ -78,11 +85,16 @@ type IndexStats struct {
 
 type secretKey struct{ typ, id string }
 
-type ownerKey struct{ typ, id, part string }
+type ownerKey struct {
+	typ, id, part string
+	withheld      bool
+}
 
 type owner struct {
 	typ, id, part string
 	placeholder   string
+	// withheld says the id is in no placeholder or finding: see AddWithheld.
+	withheld bool
 }
 
 type form struct {
@@ -92,6 +104,8 @@ type form struct {
 	macs    [][macSize]byte
 	tailLen int
 	tail    [macSize]byte
+	// macKey is which of the index's confirming keys the hashes were made under.
+	macKey int32
 	formShape
 	// chunk is the size of the form's chunks, and tailBack how far before the
 	// tail its hash begins: both are fixed by the entries' scheme.
@@ -108,8 +122,8 @@ type chunkRef struct {
 	idx  int32
 }
 
-// NewIndex makes an empty index whose hashes are keyed with key. Entries added to
-// it must have been built with the same key.
+// NewIndex makes an empty index under key's lookup key. Entries added must
+// share it, with key's confirming key (Add) or another principal's (AddKeyed).
 func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 	if key == nil {
 		return nil, errors.New("an index needs a key")
@@ -131,6 +145,9 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 		ruleNext:     map[string]int{},
 		cache:        newBlockCache(),
 	}
+	if _, err := rand.Read(ix.ruleKey[:]); err != nil {
+		return nil, err
+	}
 	if ix.maxSecrets <= 0 {
 		ix.maxSecrets = DefaultMaxSecrets
 	}
@@ -147,13 +164,38 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 //
 // Entries of every supported scheme are matched side by side and none replaces
 // another: an id may name several values, and nothing held tells them apart.
-func (ix *Index) Add(e *Entries) error {
+func (ix *Index) Add(e *Entries) error { return ix.add(ix.key, e, false) }
+
+// AddKeyed is Add for entries built under key: this index's lookup key and
+// another principal's confirming key, which a scan confirms their chunks with.
+func (ix *Index) AddKeyed(key *Key, e *Entries) error { return ix.add(key, e, false) }
+
+// AddWithheld is AddKeyed for entries whose id the reader of a scan may not
+// see: the value is replaced by ph:<type>, and no finding names the id.
+func (ix *Index) AddWithheld(key *Key, e *Entries) error { return ix.add(key, e, true) }
+
+func (ix *Index) add(key *Key, e *Entries, withheld bool) error {
 	if err := e.validate(); err != nil {
 		return err
 	}
+	if key == nil || key.lookup != ix.key.lookup {
+		return errors.New("the entries' key does not share the index's lookup key")
+	}
 	s := schemes[e.Version]
+	confirming := key.macFor(s)
+	if confirming == nil {
+		return errors.New("entries of this scheme need a confirming key")
+	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
+	// The keys are few: one per principal that ever registered here.
+	macKey := int32(len(ix.macKeys))
+	for at := range ix.macKeys {
+		if ix.macKeys[at] == *confirming {
+			macKey = int32(at)
+			break
+		}
+	}
 
 	type pending struct {
 		form        *Form
@@ -164,7 +206,7 @@ func (ix *Index) Add(e *Entries) error {
 	seen := map[[32]byte]bool{}
 	for i := range e.Forms {
 		f := &e.Forms[i]
-		fp := fingerprint(e.Version, e.Type, e.ID, f)
+		fp := fingerprint(e.Version, macKey, withheld, e.Type, e.ID, f)
 		if _, dup := ix.fingerprints[fp]; dup || seen[fp] {
 			continue
 		}
@@ -185,8 +227,11 @@ func (ix *Index) Add(e *Entries) error {
 	}
 	ix.secrets[secret] = struct{}{}
 	ix.types[e.Type] = struct{}{}
+	if int(macKey) == len(ix.macKeys) {
+		ix.macKeys = append(ix.macKeys, *confirming)
+	}
 	for _, p := range fresh {
-		ix.addForm(s, e.Type, e.ID, p.form)
+		ix.addForm(s, macKey, withheld, e.Type, e.ID, p.form)
 		ix.fingerprints[p.fingerprint] = struct{}{}
 	}
 	for _, w := range ix.windows {
@@ -197,12 +242,16 @@ func (ix *Index) Add(e *Entries) error {
 	return nil
 }
 
-func (ix *Index) addForm(s *scheme, typ, id string, f *Form) {
-	ok := ownerKey{typ, id, f.Part}
+func (ix *Index) addForm(s *scheme, macKey int32, withheld bool, typ, id string, f *Form) {
+	ok := ownerKey{typ, id, f.Part, withheld}
 	ownerIdx, exists := ix.ownerIndex[ok]
 	if !exists {
 		ownerIdx = int32(len(ix.owners))
-		ix.owners = append(ix.owners, owner{typ: typ, id: id, part: f.Part, placeholder: "ph:" + typ + ":" + id})
+		placeholder := "ph:" + typ
+		if !withheld {
+			placeholder += ":" + id
+		}
+		ix.owners = append(ix.owners, owner{typ: typ, id: id, part: f.Part, placeholder: placeholder, withheld: withheld})
 		ix.ownerIndex[ok] = ownerIdx
 	}
 	c, _ := s.chunkOf(f)
@@ -215,6 +264,7 @@ func (ix *Index) addForm(s *scheme, typ, id string, f *Form) {
 		macs:      make([][macSize]byte, n),
 		weak:      make([]bool, n),
 		tailLen:   f.Length - n*c,
+		macKey:    macKey,
 		formShape: s.shapes[f.Form],
 		chunk:     c,
 		tailBack:  s.tailBack(c),
@@ -242,11 +292,15 @@ func (ix *Index) addForm(s *scheme, typ, id string, f *Form) {
 	ix.chunkCount += n
 }
 
-// fingerprint identifies a form of a value under its owner and scheme, so
-// adding the same value twice adds nothing.
-func fingerprint(version int, typ, id string, f *Form) [32]byte {
+// fingerprint identifies a form of a value under its owner, scheme and
+// confirming key, so adding the same value twice adds nothing.
+func fingerprint(version int, macKey int32, withheld bool, typ, id string, f *Form) [32]byte {
 	h := sha256.New()
+	if withheld {
+		h.Write([]byte{1})
+	}
 	h.Write([]byte{byte(version), byte(version >> 8), byte(version >> 16), byte(version >> 24)})
+	h.Write([]byte{byte(macKey), byte(macKey >> 8), byte(macKey >> 16), byte(macKey >> 24)})
 	for _, s := range []string{typ, id, f.Part, f.Form} {
 		h.Write([]byte(s))
 		h.Write([]byte{0})

@@ -73,6 +73,8 @@ type span struct {
 	full       bool
 	verified   int
 	checked    int // where the verified chunks end
+	// named says the span's placeholder carries its id.
+	named bool
 }
 
 type tryKey struct {
@@ -100,17 +102,18 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 	}
 	// The caller has confirmed the chunk at p.
 	n := len(f.macs)
+	macKey := &ix.macKeys[f.macKey]
 	lo, hi := int(ref.idx), int(ref.idx)
 	for j := lo - 1; j >= 0; j-- {
 		pos := start + j*c
-		if pos < 0 || ix.key.mac(data[pos:pos+c]) != f.macs[j] {
+		if pos < 0 || mac(macKey, data[pos:pos+c]) != f.macs[j] {
 			break
 		}
 		lo = j
 	}
 	for j := hi + 1; j < n; j++ {
 		pos := start + j*c
-		if pos+c > len(data) || ix.key.mac(data[pos:pos+c]) != f.macs[j] {
+		if pos+c > len(data) || mac(macKey, data[pos:pos+c]) != f.macs[j] {
 			break
 		}
 		hi = j
@@ -122,7 +125,7 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 		switch {
 		case f.tailLen == 0:
 			full = true
-		case e+f.tailLen <= len(data) && ix.key.mac(data[e-f.tailBack:e+f.tailLen]) == f.tail:
+		case e+f.tailLen <= len(data) && mac(macKey, data[e-f.tailBack:e+f.tailLen]) == f.tail:
 			e += f.tailLen
 			full = true
 		}
@@ -180,7 +183,7 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 			e++
 		}
 	}
-	return span{start: s, end: e, form: ref.form, full: full, verified: hi - lo + 1, checked: start + (hi+1)*c}, true
+	return span{start: s, end: e, form: ref.form, full: full, verified: hi - lo + 1, checked: start + (hi+1)*c, named: !ix.owners[f.owner].withheld}, true
 }
 
 // minPartialBits is the least a single verified chunk of a base64 or hex form
@@ -328,7 +331,11 @@ func better(a, b span) bool {
 	if a.verified != b.verified {
 		return a.verified > b.verified
 	}
-	return a.end-a.start > b.end-b.start
+	if a.end-a.start != b.end-b.start {
+		return a.end-a.start > b.end-b.start
+	}
+	// The same value held with its id and without: the id may be shown.
+	return a.named && !b.named
 }
 
 func (ix *Index) hitFor(s span) hit {

@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/proxy"
 )
 
@@ -52,11 +55,62 @@ func TestSessionCarriesTheInventoryStoreBesideTheCA(t *testing.T) {
 	directory := t.TempDir()
 	var session *ProxySession
 	var calls atomic.Int32
-	runtime := &Runtime{Client: client, WorkflowID: "workflow-1", CAStore: proxy.CAStore{Directory: directory, Keyring: keystore}}
+	runtime := &Runtime{Client: client, WorkflowID: "workflow-1", CAStore: proxy.CAStore{Directory: directory, Keyring: keystore}, Tenant: "https://console.test\norganisation\norg-1", Principal: "https://console.test\naccount\naccount-1"}
 	if err := runtime.ServeManaged(context.Background(), sessionCapturingEngine{countingServeEngine{calls: &calls}, &session}); err != nil {
 		t.Fatal(err)
 	}
 	if session == nil || session.Inventory == nil || session.Inventory.Directory != directory || session.Inventory.Keyring != proxy.PrivateKeyStore(keystore) {
 		t.Fatalf("the session's inventory store is not beside its CA: %+v", session)
+	}
+	if session.Principal != runtime.Principal || session.Inventory.Tenant != runtime.Tenant {
+		t.Fatalf("the session does not carry the runtime's login: %q", session.Principal)
+	}
+}
+
+// A saved login's tenant is its host and organisation, and its own id when
+// it saved none. A token from the environment has neither: nothing is kept.
+func TestSavedLoginNamesItsTenantAndPrincipal(t *testing.T) {
+	previous := config.ConfigFilePath
+	config.ConfigFilePath = filepath.Join(t.TempDir(), "config.json")
+	t.Cleanup(func() { config.ConfigFilePath = previous })
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
+	write := func(user config.UserConfig) {
+		t.Helper()
+		user.Token = "not-in-any-name"
+		data, err := json.Marshal(config.Config{DefaultUser: user.ID, PhaseUsers: []config.UserConfig{user}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(config.ConfigFilePath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tenant, principal := savedLogin("https://console.test"); tenant != "" || principal != "" {
+		t.Fatalf("no saved login: %q %q", tenant, principal)
+	}
+	organisation, blank := "org-1", " "
+	const host = "https://console.test"
+	for name, c := range map[string]struct {
+		user              config.UserConfig
+		tenant, principal string
+	}{
+		"a member":                      {config.UserConfig{ID: "account-1", OrganizationID: &organisation}, host + "\norganisation\norg-1", host + "\naccount\naccount-1"},
+		"an Agent":                      {config.UserConfig{ID: "account-2", PrincipalType: config.PrincipalAgent, PrincipalID: "agent-9", OrganizationID: &organisation}, host + "\norganisation\norg-1", host + "\nagent\nagent-9"},
+		"no organisation":               {config.UserConfig{ID: "account-3"}, host + "\naccount\naccount-3", host + "\naccount\naccount-3"},
+		"a blank organisation":          {config.UserConfig{ID: "account-4", OrganizationID: &blank}, host + "\naccount\naccount-4", host + "\naccount\naccount-4"},
+		"an Agent with no organisation": {config.UserConfig{ID: "account-5", PrincipalType: config.PrincipalAgent, PrincipalID: "agent-5"}, host + "\nagent\nagent-5", host + "\nagent\nagent-5"},
+	} {
+		write(c.user)
+		tenant, principal := savedLogin("https://Console.test/")
+		if tenant != c.tenant || principal != c.principal || strings.Contains(tenant+principal, "not-in-any-name") {
+			t.Fatalf("%s: tenant %q, principal %q", name, tenant, principal)
+		}
+		if other, _ := savedLogin("https://other.test"); other == tenant {
+			t.Fatalf("%s: another host is the same tenant", name)
+		}
+	}
+	t.Setenv("PHASE_SERVICE_TOKEN", "a-token-from-the-environment")
+	if tenant, principal := savedLogin(host); tenant != "" || principal != "" {
+		t.Fatalf("a token from the environment named a saved login: %q %q", tenant, principal)
 	}
 }

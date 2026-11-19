@@ -19,26 +19,38 @@ import (
 
 func TestKeyBytesRoundTrip(t *testing.T) {
 	key := newKey(t)
-	again, err := KeyFromBytes(key.Bytes())
+	again, err := KeyFromBytes(key.LookupBytes(), key.ConfirmBytes())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if *again != *key {
 		t.Fatal("a key rebuilt from its bytes differs")
 	}
-	exported := key.Bytes()
-	exported[0] ^= 1
-	if bytes.Equal(exported, key.Bytes()) {
-		t.Fatal("Bytes should return a copy")
-	}
-	for _, bad := range [][]byte{nil, make([]byte, 31), make([]byte, 33), make([]byte, 64), make([]byte, KeySize)} {
-		if _, err := KeyFromBytes(bad); err == nil {
-			t.Fatalf("a %d-byte key was accepted", len(bad))
+	for name, export := range map[string]func() []byte{"LookupBytes": key.LookupBytes, "ConfirmBytes": key.ConfirmBytes} {
+		exported := export()
+		exported[0] ^= 1
+		if bytes.Equal(exported, export()) {
+			t.Fatalf("%s should return a copy", name)
 		}
 	}
+	if bytes.Equal(key.LookupBytes(), key.ConfirmBytes()) {
+		t.Fatal("a key's two parts are equal")
+	}
+	for _, bad := range [][]byte{nil, make([]byte, 31), make([]byte, 33), make([]byte, 64), make([]byte, KeySize)} {
+		if _, err := KeyFromBytes(bad, key.ConfirmBytes()); err == nil {
+			t.Fatalf("a %d-byte lookup key was accepted", len(bad))
+		}
+		if _, err := KeyFromBytes(key.LookupBytes(), bad); err == nil {
+			t.Fatalf("a %d-byte confirming key was accepted", len(bad))
+		}
+	}
+	// One secret in both roles is the shape the split exists to end.
+	if _, err := KeyFromBytes(key.LookupBytes(), key.LookupBytes()); err == nil {
+		t.Fatal("the lookup key was accepted as the confirming key")
+	}
 	other := newKey(t)
-	if bytes.Equal(other.Bytes(), key.Bytes()) {
-		t.Fatal("two random keys are equal")
+	if bytes.Equal(other.LookupBytes(), key.LookupBytes()) || bytes.Equal(other.ConfirmBytes(), key.ConfirmBytes()) {
+		t.Fatal("two random keys share a part")
 	}
 }
 
@@ -105,7 +117,7 @@ func TestClientEntriesMatchDirectIndexing(t *testing.T) {
 	daemonKey := newKey(t)
 	direct, _ := buildWithEntries(t, daemonKey, secrets...)
 
-	clientKey, err := KeyFromBytes(daemonKey.Bytes())
+	clientKey, err := KeyFromBytes(daemonKey.LookupBytes(), daemonKey.ConfirmBytes())
 	if err != nil {
 		t.Fatal(err)
 	}

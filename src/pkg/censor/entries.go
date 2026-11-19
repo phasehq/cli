@@ -112,7 +112,8 @@ func (e *Entries) Protected() bool { return e != nil && len(e.Forms) > 0 }
 // Placeholder is what replaces the value in a request.
 func (e *Entries) Placeholder() string { return "ph:" + e.Type + ":" + e.ID }
 
-// IndexValue indexes a value under key. typ is a short word such as "secret" and
+// IndexValue indexes a value under key: its lookup key for the lookup values,
+// its confirming key for the hashes that confirm. typ is a short word such as "secret" and
 // id an opaque identifier; both become the placeholder ph:<typ>:<id> and must
 // match [A-Za-z0-9_.-]{1,64}. Nothing in the result is derived from the value
 // except keyed hashes and lengths. A value too short, too plain or too long to
@@ -128,7 +129,11 @@ func indexValue(key *Key, s *scheme, typ, id, value string) (*Entries, error) {
 	if err := checkIdentifiers(typ, id); err != nil {
 		return nil, err
 	}
-	b := &entriesBuilder{key: key, scheme: s, entries: &Entries{Version: s.version, Type: typ, ID: id}}
+	macKey := key.macFor(s)
+	if macKey == nil {
+		return nil, errors.New("indexing a value under this scheme needs a confirming key")
+	}
+	b := &entriesBuilder{key: key, macKey: macKey, scheme: s, entries: &Entries{Version: s.version, Type: typ, ID: id}}
 	value = strings.TrimSpace(value)
 	if len(value) > MaxValueLength {
 		b.skip("", ReasonTooLong)
@@ -165,6 +170,7 @@ func indexValue(key *Key, s *scheme, typ, id, value string) (*Entries, error) {
 
 type entriesBuilder struct {
 	key     *Key
+	macKey  *[32]byte
 	scheme  *scheme
 	entries *Entries
 	chunks  int
@@ -254,11 +260,11 @@ func (b *entriesBuilder) addForm(part, value string, candidate rawForm, decoy []
 			f.Weak[i/8] |= 1 << (i % 8)
 		}
 		b.scheme.appendLookup(&f, b.key.roll(chunk))
-		mac := b.key.mac(chunk)
+		mac := mac(b.macKey, chunk)
 		f.MACs = append(f.MACs, mac[:]...)
 	}
 	if tail := candidate.bytes[n*c:]; len(tail) > 0 {
-		mac := b.key.mac(candidate.bytes[n*c-b.scheme.tailBack(c):])
+		mac := mac(b.macKey, candidate.bytes[n*c-b.scheme.tailBack(c):])
 		f.Tail = mac[:]
 	}
 	b.chunks += n

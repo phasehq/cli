@@ -787,11 +787,7 @@ func registerThroughControl(t *testing.T, proxy *httpProxy, values []leakguard.V
 	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &keyAnswer) != nil {
 		t.Fatalf("key: %d", recorder.Code)
 	}
-	raw, _ := base64.StdEncoding.DecodeString(keyAnswer.Key)
-	key, err := censor.KeyFromBytes(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := answeredKey(t, keyAnswer)
 	request := remoteapi.InventoryRequest{SchemaVersion: 1, IDKinds: kinds}
 	for _, value := range values {
 		entry, err := censor.IndexValue(key, value.Type, value.ID, value.Value)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -28,27 +29,35 @@ import (
 // The leak protection inventory is kept in two places, so that a proxy that
 // starts again still knows the values registered with the one before it:
 //
-//   - the key every hash is keyed with, in the system keystore beside the CA
-//     key, one per user, made on first use and never written to disk;
+//   - one master key, in the system keystore beside the CA key, one per
+//     user, made on first use, never written to disk and never handed out;
 //   - the entries, in one owner-only file in the Phase AI directory.
 //
+// Everything is partitioned by tenant: the Phase host and the organisation a
+// login belongs to. From the master a proxy derives its own tenant's root and
+// nothing of another's (HKDF-SHA-256), and from that root, a label each: the
+// lookup key, which the tenant's clients are handed; a confirming key per
+// principal (a login, named by a keyed tag of it), which that login's clients
+// are handed; and the keys records are sealed and tagged with, which no one is.
+//
 // The file holds what censor.Entries hold (keyed hashes, lengths, weak flags,
-// a placeholder's type and id) and whether an id is a key name, each record
-// sealed under a key derived from the inventory key. Without the keystore the
-// file is opaque. With both, a guessed chunk of a value can be confirmed: see
-// the Limits in package censor.
+// a placeholder's type and id), whether an id is a key name and the record's
+// principal, each record sealed under its tenant's key. A proxy opens its own
+// tenant's records only: another's are kept as they are and counted.
+// What each party can test a guess against is in the Limits of package censor.
 //
 // File layout, store format 1 (integers big-endian):
 //
 //	magic "PHLKINV1" | format uint32 | key id [8]
 //	then records: length uint32 | scheme uint32 | registered int64 (Unix seconds)
-//	              | owner tag [16] | content tag [16] | nonce [12] | sealed body
+//	              | tenant tag [16] | owner tag [16] | content tag [16] | nonce [12] | sealed body
 //
-// The sealed body is one flag byte (1: the id is a key name) and the entries
-// as censor.Entries.Marshal writes them, under AES-256-GCM with the file
-// header and the record's fields before the nonce as additional data. The
-// tags are keyed too: the owner tag is the same for every record of one
-// placeholder, and the content tag for the same entries.
+// The sealed body is one flag byte (1: the id is a key name), the principal's
+// id [16] and the entries as censor.Entries.Marshal writes them, under
+// AES-256-GCM with the file header and the record's fields before the nonce
+// as additional data. The tags are keyed too: the owner tag is the same for
+// every record of one placeholder, and the content tag for the same entries
+// of the same principal.
 //
 // Two numbers version what is stored. The store format is the layout above:
 // a build reads every format up to its own, and leaves a file of a newer
@@ -77,8 +86,17 @@ const (
 	inventoryHeaderSize     = len(inventoryMagic) + 4 + inventoryKeyIDSize
 	inventoryTagSize        = 16
 	inventoryNonceSize      = 12
+	// inventoryBodyFixed is a sealed body before its entries: the flag byte
+	// and the principal's id.
+	inventoryBodyFixed = 1 + inventoryTagSize
+
+	inventoryTenantLabel  = "phase-leak-inventory-tenant-v1"
+	inventoryLookupLabel  = "phase-leak-inventory-lookup-v1"
+	inventoryConfirmLabel = "phase-leak-inventory-confirm-v1"
+	inventorySealLabel    = "phase-leak-inventory-seal-v1"
+	inventoryTagLabel     = "phase-leak-inventory-tag-v1"
 	// inventoryRecordFixed is a record after its length and before its body.
-	inventoryRecordFixed = 4 + 8 + 2*inventoryTagSize + inventoryNonceSize
+	inventoryRecordFixed = 4 + 8 + 3*inventoryTagSize + inventoryNonceSize
 
 	// inventoryRefreshAfter is how stale a stored entry's time may get before
 	// a registration of the same value writes the file again. Registrations
@@ -133,6 +151,9 @@ const (
 	InventoryReasonBusy = "store_busy"
 	// InventoryReasonNotConfigured: the proxy was started without a store.
 	InventoryReasonNotConfigured = "not_configured"
+	// InventoryReasonNoTenant: the session's login names no host and
+	// organisation or account to keep the inventory for.
+	InventoryReasonNoTenant = "no_tenant"
 )
 
 // NoKeystoreInventoryNotice is what status says of the inventory on a machine
@@ -145,15 +166,35 @@ const NoKeystoreInventoryNotice = "kept in memory only (no system keystore): a r
 type InventoryStore struct {
 	Directory string
 	Keyring   PrivateKeyStore
+	// Tenant names whose inventory this is: the Phase host and the login's
+	// organisation. Empty shares with nobody: memory only, nothing stored.
+	Tenant string
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 }
 
-// StoredEntries is one registered value: its entries, and whether its id is a
-// secret's key name.
+// StoredEntries is one registered value: its entries, whether its id is a
+// secret's key name, and the principal whose confirming key made them.
 type StoredEntries struct {
-	Entries  *censor.Entries
-	KeyNamed bool
+	Entries   *censor.Entries
+	KeyNamed  bool
+	Principal InventoryPrincipal
+}
+
+// InventoryPrincipal is one login's place in an inventory: an opaque id and
+// the key its entries are indexed and confirmed with.
+type InventoryPrincipal struct {
+	id  [inventoryTagSize]byte
+	key *censor.Key
+}
+
+// Key is the lookup key with this principal's confirming key: what a client
+// of the principal is handed, and what the index confirms its entries with.
+func (p InventoryPrincipal) Key() *censor.Key { return p.key }
+
+// Is reports whether two principals are the same login of the same tenant.
+func (p InventoryPrincipal) Is(other InventoryPrincipal) bool {
+	return p.key != nil && p.id == other.id
 }
 
 // InventoryStatus is what an opened inventory says of itself: counts only.
@@ -170,6 +211,9 @@ type InventoryStatus struct {
 	// OtherKey counts stored entries made under another key: never matched,
 	// and dropped when the file is next written.
 	OtherKey int
+	// OtherTenant counts stored records of other tenants: never opened,
+	// never matched, and kept as they are.
+	OtherTenant int
 	// Damaged counts stored entries that could not be read or validated.
 	Damaged int
 	// Expired counts stored entries dropped for their age when the store was
@@ -177,15 +221,23 @@ type InventoryStatus struct {
 	Expired int
 }
 
-// Inventory is an opened store: the key, and the file being added to. Each
-// proxy process opens one.
+// Inventory is an opened store: the keys derived from the master, and the
+// file being added to. Each proxy process opens one. It keeps no master.
 type Inventory struct {
 	store     InventoryStore
 	directory string
-	key       *censor.Key
-	keyID     [inventoryKeyIDSize]byte
-	seal      cipher.AEAD
-	tagKey    [32]byte
+	// lookup is the lookup key alone, and confirmRoot what every principal's
+	// confirming key is expanded from.
+	lookup      *censor.Key
+	confirmRoot []byte
+	keyID       [inventoryKeyIDSize]byte
+	// tenant is the tag this tenant's records carry in the file.
+	tenant [inventoryTagSize]byte
+	seal   cipher.AEAD
+	tagKey [32]byte
+	// principals are the keys already expanded, by principal id.
+	principalMu sync.Mutex
+	principals  map[[inventoryTagSize]byte]*censor.Key
 
 	// adding lets one Add at a time through. mu guards what follows it and
 	// is never held across the keystore or the store's lock.
@@ -204,8 +256,10 @@ type Inventory struct {
 type inventoryRecord struct {
 	scheme     uint32
 	registered int64
-	owner      [inventoryTagSize]byte
-	content    [inventoryTagSize]byte
+	// tenant is whose record it is. Another tenant's is never opened.
+	tenant  [inventoryTagSize]byte
+	owner   [inventoryTagSize]byte
+	content [inventoryTagSize]byte
 	// raw is the whole record as it is in the file, its length included.
 	raw []byte
 }
@@ -238,13 +292,20 @@ func (s InventoryStore) KeystoreAvailable() bool {
 }
 
 // memoryInventory is an inventory that stores nothing: today's behaviour
-// before there was a store, with a key that goes with the process.
+// before there was a store, with a master that goes with the process.
 func memoryInventory(reason string) (*Inventory, error) {
-	key, err := censor.NewKey()
+	master := make([]byte, censor.KeySize)
+	if _, err := rand.Read(master); err != nil {
+		return nil, err
+	}
+	defer clear(master)
+	// The master is this process's alone, so whatever names the tenant will do.
+	inv, err := newInventory(InventoryStore{}, "", [inventoryKeyIDSize]byte{}, master, "memory")
 	if err != nil {
 		return nil, err
 	}
-	return &Inventory{key: key, status: InventoryStatus{Reason: reason}}, nil
+	inv.status.Reason = reason
+	return inv, nil
 }
 
 // MemoryInventory is the inventory of a proxy started without a store.
@@ -252,8 +313,40 @@ func MemoryInventory() (*Inventory, error) {
 	return memoryInventory(InventoryReasonNotConfigured)
 }
 
-// Key is the key the inventory's hashes are keyed with.
-func (inv *Inventory) Key() *censor.Key { return inv.key }
+// Principal is a login's place in the inventory, the same from every proxy
+// while the master lasts. An empty login gets one this process alone holds.
+func (inv *Inventory) Principal(login string) (InventoryPrincipal, error) {
+	var id [inventoryTagSize]byte
+	if login == "" {
+		if _, err := rand.Read(id[:]); err != nil {
+			return InventoryPrincipal{}, err
+		}
+	} else {
+		id = inv.tag("principal", []byte(login))
+	}
+	return inv.principal(id)
+}
+
+// principal expands the confirming key of a principal id. Only the id goes
+// in, so a stored record's principal is rebuilt without knowing its login.
+func (inv *Inventory) principal(id [inventoryTagSize]byte) (InventoryPrincipal, error) {
+	inv.principalMu.Lock()
+	defer inv.principalMu.Unlock()
+	if key, ok := inv.principals[id]; ok {
+		return InventoryPrincipal{id: id, key: key}, nil
+	}
+	confirm, err := hkdf.Expand(sha256.New, inv.confirmRoot, inventoryConfirmLabel+":"+hex.EncodeToString(id[:]), censor.KeySize)
+	if err != nil {
+		return InventoryPrincipal{}, err
+	}
+	defer clear(confirm)
+	key, err := inv.lookup.WithConfirm(confirm)
+	if err != nil {
+		return InventoryPrincipal{}, err
+	}
+	inv.principals[id] = key
+	return InventoryPrincipal{id: id, key: key}, nil
+}
 
 // Status reports how the inventory is kept and what opening it found. It asks
 // the keystore, at most once a second, whether the key is still this one.
@@ -304,6 +397,12 @@ func (inv *Inventory) keyCurrent() (bool, error) {
 // keystore, the directory or the file leaves an inventory that works from
 // memory, or with what could be read, and says so in its status.
 func (s InventoryStore) Open() (*Inventory, []StoredEntries, error) {
+	// A login that names no tenant shares with nobody: nothing is derived
+	// from the user's master for it, and nothing is stored.
+	if s.Tenant == "" {
+		inv, err := memoryInventory(InventoryReasonNoTenant)
+		return inv, nil, err
+	}
 	// A machine with no keystore keeps nothing: no key on disk, no file.
 	if !s.KeystoreAvailable() {
 		inv, err := memoryInventory(InventoryReasonNoKeystore)
@@ -339,7 +438,7 @@ func (s InventoryStore) Open() (*Inventory, []StoredEntries, error) {
 		inv, err := memoryInventory(InventoryReasonKeyUnreadable)
 		return inv, nil, err
 	}
-	inv, err := newInventory(s, directory, id, raw)
+	inv, err := newInventory(s, directory, id, raw, s.Tenant)
 	clear(raw)
 	if err != nil {
 		inv, err := memoryInventory(InventoryReasonKeyUnreadable)
@@ -389,6 +488,14 @@ func (inv *Inventory) load(keyConfirmed bool) (loaded []StoredEntries, reason st
 	var kept []inventoryRecord
 	inv.status.Damaged, inv.status.OtherKey = file.damaged, file.otherKey
 	for _, record := range file.records {
+		// Another tenant's record is carried over unopened, while it lasts.
+		if record.tenant != inv.tenant {
+			if now.Unix()-record.registered <= int64(InventoryEntryLifetime/time.Second) {
+				inv.status.OtherTenant++
+				kept = append(kept, record)
+			}
+			continue
+		}
 		switch stored, verdict := inv.open(record, now); verdict {
 		case recordExpired:
 			inv.status.Expired++
@@ -443,16 +550,41 @@ func lockFailure(err error) string {
 	return InventoryReasonUnusable
 }
 
-func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byte, raw []byte) (*Inventory, error) {
-	key, err := censor.KeyFromBytes(raw)
+// newInventory derives one tenant's keys from the master, each under its
+// own label. Neither the master nor anything of another tenant is kept.
+func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byte, master []byte, tenant string) (*Inventory, error) {
+	if len(master) != censor.KeySize || tenant == "" {
+		return nil, errors.New("the inventory master key or tenant is not valid")
+	}
+	// The tenant's tag is keyed, so the file names no host or organisation,
+	// and the tenant's root is derived from the master under the tag.
+	tagging, err := hkdf.Key(sha256.New, master, nil, inventoryTenantLabel+"-tag", censor.KeySize)
 	if err != nil {
 		return nil, err
 	}
-	// The sealing key and the tag key are derived from the inventory key
-	// under their own labels, so neither is the key a client is handed's
-	// hashing material.
-	sealKey := sha256.Sum256(append([]byte("phase-leak-inventory-seal-v1"), raw...))
-	block, err := aes.NewCipher(sealKey[:])
+	defer clear(tagging)
+	named := hmac.New(sha256.New, tagging)
+	named.Write([]byte(tenant))
+	var tag [inventoryTagSize]byte
+	copy(tag[:], named.Sum(nil))
+	root, err := hkdf.Key(sha256.New, master, nil, inventoryTenantLabel+":"+hex.EncodeToString(tag[:]), censor.KeySize)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(root)
+	derived := make(map[string][]byte, 4)
+	for _, label := range []string{inventoryLookupLabel, inventoryConfirmLabel, inventorySealLabel, inventoryTagLabel} {
+		key, err := hkdf.Expand(sha256.New, root, label, censor.KeySize)
+		if err != nil {
+			return nil, err
+		}
+		derived[label] = key
+	}
+	lookup, err := censor.LookupKeyFromBytes(derived[inventoryLookupLabel])
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(derived[inventorySealLabel])
 	if err != nil {
 		return nil, err
 	}
@@ -460,18 +592,23 @@ func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byt
 	if err != nil {
 		return nil, err
 	}
-	return &Inventory{
-		store: s, directory: directory, key: key, keyID: id, seal: seal,
-		tagKey: sha256.Sum256(append([]byte("phase-leak-inventory-tag-v1"), raw...)),
-		known:  map[[inventoryTagSize]byte]int64{},
-	}, nil
+	inv := &Inventory{
+		store: s, directory: directory, lookup: lookup, confirmRoot: derived[inventoryConfirmLabel], keyID: id, tenant: tag, seal: seal,
+		principals: map[[inventoryTagSize]byte]*censor.Key{},
+		known:      map[[inventoryTagSize]byte]int64{},
+	}
+	copy(inv.tagKey[:], derived[inventoryTagLabel])
+	clear(derived[inventoryLookupLabel])
+	clear(derived[inventorySealLabel])
+	clear(derived[inventoryTagLabel])
+	return inv, nil
 }
 
 // errNoInventoryKey is the keystore saying it holds no inventory key: the
 // one answer after which a key is made.
 var errNoInventoryKey = errors.New("no leak protection inventory key is stored")
 
-// storedKey reads the key and its id from the keystore.
+// storedKey reads the master and its id from the keystore.
 func (s InventoryStore) storedKey() (id [inventoryKeyIDSize]byte, raw []byte, err error) {
 	value, err := s.keyring().Get(inventoryKeyringService, inventoryKeyringUser)
 	if errors.Is(err, gokeyring.ErrNotFound) {
@@ -496,16 +633,15 @@ func (s InventoryStore) storedKey() (id [inventoryKeyIDSize]byte, raw []byte, er
 	return id, raw, nil
 }
 
-// newKey makes a key with a new id and stores it.
+// newKey makes a master with a new id and stores it.
 func (s InventoryStore) newKey() (id [inventoryKeyIDSize]byte, raw []byte, err error) {
-	key, err := censor.NewKey()
-	if err != nil {
+	raw = make([]byte, censor.KeySize)
+	if _, err := rand.Read(raw); err != nil {
 		return id, nil, err
 	}
 	if _, err := rand.Read(id[:]); err != nil {
 		return id, nil, err
 	}
-	raw = key.Bytes()
 	value := "v1:" + hex.EncodeToString(id[:]) + ":" + base64.StdEncoding.EncodeToString(raw)
 	if err := s.keyring().Set(inventoryKeyringService, inventoryKeyringUser, value); err != nil {
 		return id, nil, err
@@ -513,8 +649,8 @@ func (s InventoryStore) newKey() (id [inventoryKeyIDSize]byte, raw []byte, err e
 	return id, raw, nil
 }
 
-// ReplaceKey puts a new key, with a new id, in the keystore. Entries stored
-// under the key before it are never matched again: the next proxy to start
+// ReplaceKey puts a new master, with a new id, in the keystore. Entries stored
+// under the one before it are never matched again: the next proxy to start
 // counts them and drops them. A proxy still running keeps what it holds in
 // memory and stops writing to the store. Purge uses it where a key cannot be
 // deleted; nothing else does, and there is no command for it.
@@ -668,7 +804,7 @@ func (inv *Inventory) read() inventoryFile {
 			break
 		}
 		length := int(binary.BigEndian.Uint32(rest))
-		if length < inventoryRecordFixed+inv.seal.Overhead()+1 || length > maxInventoryRecordBytes || length > len(rest)-4 {
+		if length < inventoryRecordFixed+inv.seal.Overhead()+inventoryBodyFixed || length > maxInventoryRecordBytes || length > len(rest)-4 {
 			file.damaged++
 			break
 		}
@@ -679,8 +815,9 @@ func (inv *Inventory) read() inventoryFile {
 			continue
 		}
 		record := inventoryRecord{raw: raw, scheme: binary.BigEndian.Uint32(raw[4:]), registered: int64(binary.BigEndian.Uint64(raw[8:]))}
-		copy(record.owner[:], raw[16:])
-		copy(record.content[:], raw[16+inventoryTagSize:])
+		copy(record.tenant[:], raw[16:])
+		copy(record.owner[:], raw[16+inventoryTagSize:])
+		copy(record.content[:], raw[16+2*inventoryTagSize:])
 		// No writer stores the same entries twice.
 		if _, twice := seen[record.content]; twice {
 			file.damaged++
@@ -716,9 +853,10 @@ func (inv *Inventory) open(record inventoryRecord, now time.Time) (StoredEntries
 	nonce := record.raw[fixed-inventoryNonceSize : fixed]
 	additional := append(inv.header(), record.raw[4:fixed-inventoryNonceSize]...)
 	body, err := inv.seal.Open(nil, nonce, record.raw[fixed:], additional)
-	if err != nil || len(body) < 1 {
+	if err != nil || len(body) < inventoryBodyFixed {
 		return StoredEntries{}, recordDamaged
 	}
+	wire := body[inventoryBodyFixed:]
 	if record.scheme > 1<<30 || !censor.SchemeSupported(int(record.scheme)) {
 		return StoredEntries{}, recordOtherScheme
 	}
@@ -726,12 +864,17 @@ func (inv *Inventory) open(record inventoryRecord, now time.Time) (StoredEntries
 	if !censor.SchemeStorable(int(record.scheme)) {
 		return StoredEntries{}, recordDamaged
 	}
-	entries, err := censor.ParseEntries(body[1:])
+	entries, err := censor.ParseEntries(wire)
 	if err != nil || entries.Version != int(record.scheme) || !entries.Protected() ||
-		inv.ownerTag(entries) != record.owner || inv.tag("content", body[1:]) != record.content {
+		inv.ownerTag(entries) != record.owner || inv.tag("content", body[1:inventoryBodyFixed], wire) != record.content {
 		return StoredEntries{}, recordDamaged
 	}
-	return StoredEntries{Entries: entries, KeyNamed: body[0]&1 != 0}, recordLoaded
+	// The record says whose confirming key its hashes were made under.
+	principal, err := inv.principal([inventoryTagSize]byte(body[1:inventoryBodyFixed]))
+	if err != nil {
+		return StoredEntries{}, recordDamaged
+	}
+	return StoredEntries{Entries: entries, KeyNamed: body[0]&1 != 0, Principal: principal}, recordLoaded
 }
 
 func (inv *Inventory) tag(label string, parts ...[]byte) [inventoryTagSize]byte {
@@ -752,17 +895,23 @@ func (inv *Inventory) ownerTag(entries *censor.Entries) [inventoryTagSize]byte {
 
 // sealRecord builds the record for one registered value.
 func (inv *Inventory) sealRecord(stored StoredEntries, wire []byte, now time.Time) (inventoryRecord, error) {
-	body := make([]byte, 0, 1+len(wire))
+	body := make([]byte, 0, inventoryBodyFixed+len(wire))
 	if stored.KeyNamed {
 		body = append(body, 1)
 	} else {
 		body = append(body, 0)
 	}
+	body = append(body, stored.Principal.id[:]...)
 	body = append(body, wire...)
 	return inv.sealBody(inventoryRecord{
-		scheme: uint32(stored.Entries.Version), registered: now.Unix(),
-		owner: inv.ownerTag(stored.Entries), content: inv.tag("content", wire),
+		scheme: uint32(stored.Entries.Version), registered: now.Unix(), tenant: inv.tenant,
+		owner: inv.ownerTag(stored.Entries), content: inv.contentTag(stored, wire),
 	}, body)
+}
+
+// contentTag is the same for the same entries of the same principal.
+func (inv *Inventory) contentTag(stored StoredEntries, wire []byte) [inventoryTagSize]byte {
+	return inv.tag("content", stored.Principal.id[:], wire)
 }
 
 // sealBody seals a record's body under its fields.
@@ -775,6 +924,7 @@ func (inv *Inventory) sealBody(record inventoryRecord, body []byte) (inventoryRe
 	raw = binary.BigEndian.AppendUint32(raw, uint32(length))
 	raw = binary.BigEndian.AppendUint32(raw, record.scheme)
 	raw = binary.BigEndian.AppendUint64(raw, uint64(record.registered))
+	raw = append(raw, record.tenant[:]...)
 	raw = append(raw, record.owner[:]...)
 	raw = append(raw, record.content[:]...)
 	additional := append(inv.header(), raw[4:]...)
@@ -852,14 +1002,14 @@ func (inv *Inventory) fresh(batch []StoredEntries, now time.Time) []pendingEntri
 	for _, stored := range batch {
 		// A value too short or plain to protect has nothing to store, and
 		// entries that carry whole rolling hashes never reach the disk.
-		if !stored.Entries.Protected() || !censor.SchemeStorable(stored.Entries.Version) {
+		if !stored.Entries.Protected() || !censor.SchemeStorable(stored.Entries.Version) || stored.Principal.key == nil {
 			continue
 		}
 		wire, err := stored.Entries.Marshal()
 		if err != nil {
 			continue
 		}
-		content := inv.tag("content", wire)
+		content := inv.contentTag(stored, wire)
 		if at, ok := inv.known[content]; ok && now.Unix()-at < int64(inventoryRefreshAfter/time.Second) && at <= now.Unix() {
 			continue
 		}

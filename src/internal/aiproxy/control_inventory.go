@@ -28,15 +28,17 @@ func (h *controlHandler) leakStatus() *remoteapi.LeakProtectionStatus {
 	return h.leak.status()
 }
 
-// inventoryKey hands the key to a process of this session that is about to
-// index values it decrypted. That process already holds the plaintext.
+// inventoryKey hands a client the lookup key and the confirming key of this
+// proxy's own principal: never another principal's, never the master.
 func (h *controlHandler) inventoryKey(w http.ResponseWriter) {
 	if h.leak == nil {
 		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection is not running in this proxy.", false)
 		return
 	}
 	h.writeForward(w, remoteapi.InventoryKeyResponse{
-		SchemaVersion: agentapi.SchemaVersion, Key: base64.StdEncoding.EncodeToString(h.leak.key.Bytes()), Format: censor.EntriesVersion,
+		SchemaVersion: agentapi.SchemaVersion, Format: censor.EntriesVersion,
+		Key:        base64.StdEncoding.EncodeToString(h.leak.key.LookupBytes()),
+		ConfirmKey: base64.StdEncoding.EncodeToString(h.leak.key.ConfirmBytes()),
 	}, nil)
 }
 

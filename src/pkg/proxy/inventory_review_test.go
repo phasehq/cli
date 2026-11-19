@@ -80,7 +80,7 @@ func storedInventoryKey(t testing.TB, store InventoryStore) string {
 
 func oneEntry(t testing.TB, inv *Inventory, id string) []StoredEntries {
 	t.Helper()
-	return []StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, inventoryTestValue(t, inventoryTestAlphabet, 40))}}
+	return []StoredEntries{{Principal: testPrincipal(t, inv), Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, inventoryTestValue(t, inventoryTestAlphabet, 40))}}
 }
 
 // A keystore read that fails for any reason but "there is none" (a locked
@@ -109,7 +109,7 @@ func TestInventoryKeystoreReadFailureKeepsTheKey(t *testing.T) {
 
 	keyring.failGet.Store(nil)
 	after, loaded := openInventory(t, store)
-	if status := after.Status(); !status.Durable || len(loaded) != 2 || !bytes.Equal(after.Key().Bytes(), first.Key().Bytes()) {
+	if status := after.Status(); !status.Durable || len(loaded) != 2 || !bytes.Equal(inventoryKeyBytes(t, after), inventoryKeyBytes(t, first)) {
 		t.Fatalf("%+v, %d loaded", status, len(loaded))
 	}
 }
@@ -333,7 +333,7 @@ func TestInventoryPurgeWhenDeleteIsRefused(t *testing.T) {
 	if _, err := os.Stat(inventoryFilePath(store)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("%v", err)
 	}
-	if again, loaded := openInventory(t, store); bytes.Equal(again.Key().Bytes(), inv.Key().Bytes()) || len(loaded) != 0 {
+	if again, loaded := openInventory(t, store); bytes.Equal(inventoryKeyBytes(t, again), inventoryKeyBytes(t, inv)) || len(loaded) != 0 {
 		t.Fatal("the key was not replaced")
 	}
 }
@@ -358,7 +358,7 @@ func TestInventoryLockHasADeadline(t *testing.T) {
 	if status := starting.Status(); status.Durable || status.Reason != InventoryReasonBusy || len(loaded) != 0 {
 		t.Fatalf("%+v", status)
 	}
-	if !bytes.Equal(starting.Key().Bytes(), running.Key().Bytes()) {
+	if !bytes.Equal(inventoryKeyBytes(t, starting), inventoryKeyBytes(t, running)) {
 		t.Fatal("a proxy that could not take the lock has another key")
 	}
 	running.Add(oneEntry(t, running, "two"))

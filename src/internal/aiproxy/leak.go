@@ -48,8 +48,11 @@ func leakModeFrom(value string) string {
 type leakGuard struct {
 	mode  string
 	hosts leakHostTable
-	key   *censor.Key
-	index *censor.Index
+	// principal is the login this proxy acts as: what is registered here is
+	// indexed under its confirming key, the only one a client is handed.
+	principal phaseproxy.InventoryPrincipal
+	key       *censor.Key
+	index     *censor.Index
 	// inventory is where registered values are stored, and loaded is how
 	// many values it held that this proxy knew from its start.
 	inventory *phaseproxy.Inventory
@@ -111,17 +114,21 @@ func newLeakGuardWithRules(mode string, rules *censor.Rules) (*leakGuard, error)
 	if err != nil {
 		return nil, err
 	}
-	return newLeakGuardWithInventory(mode, rules, inventory)
+	return newLeakGuardWithInventory(mode, rules, inventory, "")
 }
 
 // leakIndexMaxSecrets is how many values the guard's index holds; 0 is the
 // index's own default. Tests lower it.
 var leakIndexMaxSecrets = 0
 
-// newLeakGuardWithInventory makes the guard whose hashes are keyed with the
-// inventory's key, and which stores what is registered there.
-func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phaseproxy.Inventory) (*leakGuard, error) {
-	key := inventory.Key()
+// newLeakGuardWithInventory makes the guard for a login: what is registered
+// is hashed with, and stored under, that login's principal in the inventory.
+func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phaseproxy.Inventory, login string) (*leakGuard, error) {
+	principal, err := inventory.Principal(login)
+	if err != nil {
+		return nil, err
+	}
+	key := principal.Key()
 	index, err := censor.NewIndex(key, censor.IndexOptions{Rules: rules, MaxSecrets: leakIndexMaxSecrets})
 	if err != nil {
 		return nil, err
@@ -131,7 +138,7 @@ func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phas
 		return nil, err
 	}
 	return &leakGuard{
-		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, inventory: inventory, limitedRules: limited,
+		mode: leakModeFrom(mode), hosts: defaultLeakHosts, principal: principal, key: key, index: index, inventory: inventory, limitedRules: limited,
 		skipped:  append(rules.Skipped(), absent...),
 		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, keyNamed: map[string]struct{}{},
 		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(), connections: newConnectionLog(),
@@ -344,9 +351,10 @@ func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unpr
 	defer func() { g.inventory.Add(stored) }()
 	for i, entry := range entries {
 		named := i < len(keyNamed) && keyNamed[i]
-		protected, err := g.addOne(entry, named)
+		// The principal is this proxy's own: a client never says whose it is.
+		protected, err := g.addOne(g.principal, entry, named)
 		if err == nil && protected {
-			stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named})
+			stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named, Principal: g.principal})
 		}
 		switch {
 		case errors.Is(err, censor.ErrIndexFull):
@@ -366,10 +374,18 @@ func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unpr
 // lock is held over both. A request scanned between the two would find the
 // value and not know yet that its placeholder holds a key name, and its event
 // would carry the name; eventPlaceholders waits for the same lock.
-func (g *leakGuard) addOne(entry *censor.Entries, keyNamed bool) (protected bool, err error) {
+func (g *leakGuard) addOne(principal phaseproxy.InventoryPrincipal, entry *censor.Entries, keyNamed bool) (protected bool, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if err = g.index.Add(entry); err != nil {
+	if !principal.Is(g.principal) {
+		// Another login of the tenant registered it: its value is replaced,
+		// and its id, which this login may not see, is written nowhere.
+		if err = g.index.AddWithheld(principal.Key(), entry); err != nil {
+			return false, err
+		}
+		return entry.Protected(), nil
+	}
+	if err = g.index.AddKeyed(principal.Key(), entry); err != nil {
 		return false, err
 	}
 	name := entry.Type + ":" + entry.ID

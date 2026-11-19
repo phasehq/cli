@@ -924,6 +924,11 @@ func placeholders(data []byte, label, typed func(part []byte) bool) []placed {
 		from = at + len(placeholderPrefix)
 		colon := identifierRun(data, from)
 		if colon == from || colon >= len(data) || data[colon] != ':' {
+			// ph:<type> alone stands for a value whose id is withheld.
+			if colon > from && typed(data[from:colon]) {
+				found = append(found, placed{start: at, end: colon})
+				from = colon
+			}
 			continue
 		}
 		part, end := data[from:colon], colon+1
@@ -1368,7 +1373,7 @@ func holdsAlphanumeric(text []byte) bool {
 // so the same token gets the same placeholder in every request.
 func (ix *Index) ruleNumber(label string, value []byte) int {
 	hash := sha256.New()
-	hash.Write(ix.key.ruleKey[:])
+	hash.Write(ix.ruleKey[:])
 	hash.Write([]byte(label))
 	hash.Write([]byte{0})
 	hash.Write(value)

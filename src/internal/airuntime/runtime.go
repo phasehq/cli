@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -55,6 +56,10 @@ type Runtime struct {
 	WorkflowID   string
 	HarnessLabel string
 	CAStore      proxy.CAStore
+	// Tenant and Principal name the login for the leak protection inventory:
+	// see savedLogin. Tenant goes to the session's inventory store.
+	Tenant    string
+	Principal string
 }
 
 type ProxySession struct {
@@ -65,6 +70,9 @@ type ProxySession struct {
 	// Inventory is where the proxy keeps its leak protection inventory
 	// across restarts: beside the CA. Nil keeps it in memory.
 	Inventory *proxy.InventoryStore
+	// Principal names the login the session acts as, for the inventory: host,
+	// kind and account or Agent id, never a token. Empty if no saved login.
+	Principal string
 	// HarnessLabel names the one AI tool this session's proxy serves, as
 	// phase ai run and phase ai exec resolve it. It is empty for a proxy that
 	// serves whatever harness reaches it, such as the hook-managed daemon.
@@ -101,7 +109,31 @@ func New(workflowOverride string) (*Runtime, error) {
 	} else if workflowID == "" {
 		workflowID = aiConfig.DefaultWorkflowID
 	}
-	return &Runtime{Client: client, WorkflowID: workflowID}, nil
+	tenant, principal := savedLogin(host)
+	return &Runtime{Client: client, WorkflowID: workflowID, Tenant: tenant, Principal: principal}, nil
+}
+
+// savedLogin names the saved login for the inventory: its tenant (host and
+// organisation id, or its own id when it saved none) and the login itself.
+func savedLogin(host string) (tenant, principal string) {
+	// A token from the environment has no saved login: nothing is kept.
+	if os.Getenv("PHASE_SERVICE_TOKEN") != "" {
+		return "", ""
+	}
+	user, err := config.GetDefaultUser()
+	if err != nil || user.ID == "" {
+		return "", ""
+	}
+	host = strings.ToLower(strings.TrimRight(strings.TrimSpace(host), "/"))
+	kind, id := "account", user.ID
+	if user.IsAgentPrincipal() && user.PrincipalID != "" {
+		kind, id = config.PrincipalAgent, user.PrincipalID
+	}
+	principal = strings.Join([]string{host, kind, id}, "\n")
+	if user.OrganizationID != nil && strings.TrimSpace(*user.OrganizationID) != "" {
+		return strings.Join([]string{host, "organisation", strings.TrimSpace(*user.OrganizationID)}, "\n"), principal
+	}
+	return principal, principal
 }
 
 func clientForSavedLogin(host, token string) (*agentapi.Client, error) {
@@ -246,7 +278,7 @@ func (r *Runtime) withSession(ctx context.Context, engine Engine, command []stri
 		return err
 	}
 	proxySession := &ProxySession{Config: session, Client: r.Client, CA: ca, CAPaths: paths,
-		Inventory: &proxy.InventoryStore{Directory: caStore.Directory, Keyring: caStore.Keyring}}
+		Inventory: &proxy.InventoryStore{Directory: caStore.Directory, Keyring: caStore.Keyring, Tenant: r.Tenant}, Principal: r.Principal}
 	if command == nil {
 		return engine.Serve(ctx, proxySession)
 	}

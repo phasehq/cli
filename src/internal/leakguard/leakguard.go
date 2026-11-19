@@ -439,8 +439,8 @@ func protectable(values []Value) []Value {
 	return kept
 }
 
-// proxyKey fetches a proxy's key, and the matching scheme the proxy reads,
-// once per process and proxy.
+// proxyKey fetches a proxy's lookup key and this login's confirming key, and
+// the matching scheme the proxy reads, once per process and proxy.
 func proxyKey(ctx context.Context, client *http.Client, current string) (*censor.Key, int, error) {
 	keyMu.Lock()
 	defer keyMu.Unlock()
@@ -464,13 +464,25 @@ func proxyKey(ctx context.Context, client *http.Client, current string) (*censor
 		answer.SchemaVersion != agentapi.SchemaVersion || !censor.SchemeSupported(answer.Format) {
 		return nil, 0, errors.New("the Phase AI proxy sent a key this version of Phase does not read")
 	}
-	raw, err := base64.StdEncoding.DecodeString(answer.Key)
+	lookup, err := base64.StdEncoding.DecodeString(answer.Key)
 	if err != nil {
 		return nil, 0, errors.New("the Phase AI proxy sent an invalid key")
 	}
-	key, err := censor.KeyFromBytes(raw)
+	// The confirming key is this login's own. A proxy that reads scheme 1
+	// only sends the one key, which is all that scheme uses.
+	var key *censor.Key
+	if answer.ConfirmKey == "" {
+		key, err = censor.LookupKeyFromBytes(lookup)
+	} else if confirm, decodeErr := base64.StdEncoding.DecodeString(answer.ConfirmKey); decodeErr == nil {
+		key, err = censor.KeyFromBytes(lookup, confirm)
+	} else {
+		err = decodeErr
+	}
 	if err != nil {
 		return nil, 0, errors.New("the Phase AI proxy sent an invalid key")
+	}
+	if !key.Supports(answer.Format) {
+		return nil, 0, errors.New("the Phase AI proxy sent a key this version of Phase does not read")
 	}
 	cachedKey, keyProxy, keyScheme = key, current, answer.Format
 	return key, keyScheme, nil
