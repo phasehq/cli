@@ -517,3 +517,27 @@ func TestArmourConstantsInSourceAreNotAKeyBlock(t *testing.T) {
 		}
 	}
 }
+
+// A JSON value under a secret-sounding key is held to what a value written
+// after such a name in text is: a path or a word with no digit in it is no
+// secret in either place.
+func TestAPathUnderAKeywordKeyIsNotASecret(t *testing.T) {
+	ix := build(t)
+	path := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	for _, text := range []string{
+		`{"token":"` + path + `"}`,
+		`{"auth":{"bearer_token":"` + path + `","password":"correct-horse-battery-staple"}}`,
+		"token: " + path + "\npassword: correct-horse-battery-staple\n",
+	} {
+		if r := apply(ix, modelRequest(text)); r.Changed || len(r.Rules) != 0 {
+			t.Errorf("%s: %+v", text, r.Rules)
+		}
+	}
+	value := opaque(t, 32)
+	for _, text := range []string{`{"token":"` + value + `"}`, "token: " + value} {
+		r := apply(ix, modelRequest(text))
+		if bytes.Contains(r.Out, []byte(value)) || len(r.Rules) != 1 || r.Rules[0].Rule != "keyword-high-entropy" {
+			t.Errorf("%s: %+v", text, r.Rules)
+		}
+	}
+}

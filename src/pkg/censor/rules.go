@@ -1171,6 +1171,11 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 				if !ok || (onlyPWD && looksLikePath(data[s:e])) || (other && urlPassword(string(data[s:e])) == "") {
 					continue
 				}
+				// A word, a name or a path with no digit in it is no value here
+				// either: {"token": "/var/run/secrets/token"}.
+				if !plausibleSecret(data[s:e]) {
+					continue
+				}
 				if s, e, ok = rule.shaped(data, s, e); ok {
 					consider(rule, s, e, true)
 				}
