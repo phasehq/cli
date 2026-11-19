@@ -267,13 +267,42 @@ func (s *sessionEngine) Serve(ctx context.Context, session *airuntime.ProxySessi
 			s.engine.setError(err)
 			return
 		}
-		domains := s.engine.router.CapturedDomains()
-		s.engine.mu.Lock()
-		s.engine.ready, s.engine.connections, s.engine.domains, s.engine.lastError = true, names, domains, ""
-		s.engine.mu.Unlock()
-		s.engine.link.setDomains(domains)
+		s.engine.serving(names)
 	}
+	s.inner.OnConnectionsChanged = s.connectionsChanged
 	return s.inner.Serve(ctx, session)
+}
+
+// connectionsChanged follows a session whose Connections changed while it ran: a
+// Connection added, given other hosts, or removed. Without it the tunnel would keep
+// the hosts the session started with, and a new Connection's traffic would pass
+// unread until the session was next reopened.
+func (s *sessionEngine) connectionsChanged(connections []aiproxy.ConnectionHosts) {
+	var rules []tunnel.Rule
+	names := make([]string, 0, len(connections))
+	for _, connection := range connections {
+		for _, host := range connection.Hosts {
+			rules = append(rules, tunnel.Rule{ConnectionID: connection.ConnectionID, Protocol: connection.Protocol, Host: host})
+		}
+		name := connection.Name
+		if name == "" {
+			name = connection.ConnectionID
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	s.engine.router.SetRules(rules)
+	s.engine.serving(names)
+}
+
+// serving records which Connections the tunnel now serves, and sends the names to
+// capture for them to the helper.
+func (e *engine) serving(connections []string) {
+	domains := e.router.CapturedDomains()
+	e.mu.Lock()
+	e.ready, e.connections, e.domains, e.lastError = true, connections, domains, ""
+	e.mu.Unlock()
+	e.link.setDomains(domains)
 }
 
 func connectionNames(connections []agentapi.Connection) []string {

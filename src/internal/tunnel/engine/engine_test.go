@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +38,9 @@ const (
 	live    = "ghp_live_0123456789abcdef0123"
 	// modelHost stands in for a tool's model host. It is no Connection's host.
 	modelHost = "model.example.test"
+	// addedHost belongs to a Connection that a session gains while it runs.
+	addedHost = "added.example.test"
+	liveAdded = "sk-live-added-0123456789abcdefgh"
 )
 
 // Real-looking addresses that the stand-ins answer for. A program reaching them
@@ -150,18 +154,45 @@ func testSessionPayload() map[string]any {
 	}
 }
 
+// addedConnectionPayload is a custom Connection that puts nothing in a program's
+// environment: its credential is only ever attached. A session can gain one while it
+// runs.
+func addedConnectionPayload() map[string]any {
+	return map[string]any{
+		"grantId": "grant-added", "connectionId": "added", "connectionName": "Added API",
+		"credentialId": "added", "credentialName": "Added API", "credentialProvider": "http",
+		"credentialRevision": "1", "materialGeneration": "1.1", "serviceType": "http", "protocol": "http",
+		"hosts":            []any{map[string]any{"match": "exact", "value": addedHost, "port": 443}},
+		"connectionConfig": map[string]any{"specVersion": 1, "preset": "bearer"},
+		"configEnv":        map[string]string{},
+		"injections": []any{map[string]any{
+			"action": "set_header", "name": "Authorization", "valueFormat": "Bearer {value}",
+			"valueFrom": map[string]any{"source": "credential", "field": "token"}, "whenAbsent": "attach",
+		}},
+		"identifiers": map[string]string{}, "decoyMaterial": map[string]string{"token": "sk-phx-decoy-added-0123456789abcdef"},
+		"agentEnv": map[string]string{}, "environmentBindings": []any{},
+		"secretMaterial": map[string]string{"token": liveAdded},
+		"authorization":  map[string]any{"version": 1, "mode": "connection", "accessMode": "allow", "state": "allowed"},
+	}
+}
+
 // provider answers with what it received, compared to the known values.
 func startProvider(t *testing.T, ca *phaseproxy.CA) string {
 	t.Helper()
 	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
 		MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"},
-		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return ca.CertificateForHost(apiHost) },
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.ServerName != "" {
+				return ca.CertificateForHost(hello.ServerName)
+			}
+			return ca.CertificateForHost(apiHost)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		saw := map[string]string{"Bearer " + live: "live", "Bearer " + decoy: "decoy", "": "none"}[r.Header.Get("Authorization")]
+		saw := map[string]string{"Bearer " + live: "live", "Bearer " + liveAdded: "live-added", "Bearer " + decoy: "decoy", "": "none"}[r.Header.Get("Authorization")]
 		if saw == "" {
 			saw = "other"
 		}
@@ -191,13 +222,25 @@ func startLabelled(t *testing.T, ca *phaseproxy.CA, label string) string {
 	return listener.Addr().String()
 }
 
-// startConsole is a Console that answers a session's refresh with the session as it
-// was opened. The proxy asks every few seconds, and stops serving a session it can't
-// refresh.
 func startConsole(t *testing.T) string {
 	t.Helper()
-	unchanged := testSessionPayload()
-	delete(unchanged, "sessionCredential")
+	return startConsoleWith(t, unchangedSession())
+}
+
+// unchangedSession is what Console answers a refresh with while nothing has changed:
+// the session as it was opened. The proxy asks every few seconds, and stops serving a
+// session it can't refresh.
+func unchangedSession() *atomic.Pointer[map[string]any] {
+	config := testSessionPayload()
+	delete(config, "sessionCredential")
+	refreshed := &atomic.Pointer[map[string]any]{}
+	refreshed.Store(&config)
+	return refreshed
+}
+
+// startConsoleWith is a Console that answers a session's refresh with refreshed.
+func startConsoleWith(t *testing.T, refreshed *atomic.Pointer[map[string]any]) string {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -209,8 +252,8 @@ func startConsole(t *testing.T) string {
 			_, _ = io.WriteString(w, `{"schemaVersion":1,"accepted":0,"duplicates":0}`)
 			return
 		}
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/config/") {
-			_ = json.NewEncoder(w).Encode(unchanged)
+		if config := refreshed.Load(); config != nil && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/config/") {
+			_ = json.NewEncoder(w).Encode(*config)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -328,6 +371,10 @@ type running struct {
 	providerRoots *x509.CertPool
 	reader        *fakeReader
 	owners        *fakeOwners
+	// refreshed is what Console answers a refresh with, and updates are the names the
+	// helper is sent after it attached.
+	refreshed *atomic.Pointer[map[string]any]
+	updates   chan []string
 }
 
 // startEngine runs the engine as phase up does, capturing routes, or everything when
@@ -352,7 +399,8 @@ func startEngine(t *testing.T, routes []string) *running {
 	}
 	provider := startProvider(t, providerCA)
 	echoTCP, echoUDP := startEcho(t)
-	client, err := agentapi.NewClient(startConsole(t), "pss_user:v1:"+strings.Repeat("a", 64)+":"+strings.Repeat("b", 64)+":"+strings.Repeat("c", 64)+":"+strings.Repeat("d", 64), &http.Client{Timeout: 10 * time.Second})
+	refreshed := unchangedSession()
+	client, err := agentapi.NewClient(startConsoleWith(t, refreshed), "pss_user:v1:"+strings.Repeat("a", 64)+":"+strings.Repeat("b", 64)+":"+strings.Repeat("c", 64)+":"+strings.Repeat("d", 64), &http.Client{Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +418,7 @@ func startEngine(t *testing.T, routes []string) *running {
 	// The model host answers differently by its address and by its name: an unread
 	// flow goes to the address the program dialled, and the proxy reaches it by name.
 	upstream := &tunnel.Upstream{Servers: []string{"127.0.0.1"}, Override: map[string]string{
-		apiHost + ":443": provider, realAPI: provider, realEchoTCP: echoTCP, realEchoUDP: echoUDP,
+		apiHost + ":443": provider, addedHost + ":443": provider, realAPI: provider, realEchoTCP: echoTCP, realEchoUDP: echoUDP,
 		realClosed: fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 		realModel:  startLabelled(t, providerCA, "by address"), modelHost + ":443": startLabelled(t, providerCA, "by name"),
 	}}
@@ -434,6 +482,7 @@ func startEngine(t *testing.T, routes []string) *running {
 	return &running{
 		ctx: ctx, directory: directory, attach: attach, program: program,
 		proxyCert: proxyCert, providerRoots: roots, reader: reader, owners: owners,
+		refreshed: refreshed, updates: updates,
 	}
 }
 
@@ -736,4 +785,79 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A Connection approved while phase up runs is served by the session it joins, with
+// no new one. The tunnel has to learn its host then, or its traffic would pass unread
+// until the session was next reopened.
+func TestAConnectionAddedWhileTheEngineRunsIsCaptured(t *testing.T) {
+	e := startEngine(t, nil)
+	if contains(e.attach.Domains, addedHost) {
+		t.Fatalf("the host was captured before its Connection existed: %v", e.attach.Domains)
+	}
+	proxyRoots := x509.NewCertPool()
+	proxyRoots.AppendCertsFromPEM(e.proxyCert)
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{
+		DialContext: e.program.DialContext, TLSClientConfig: &tls.Config{RootCAs: proxyRoots}, DisableKeepAlives: true,
+	}}
+
+	// Console now lists the new Connection, and the proxy is told to look.
+	config := testSessionPayload()
+	delete(config, "sessionCredential")
+	config["configGeneration"] = 2
+	config["connections"] = append(config["connections"].([]any), addedConnectionPayload())
+	e.refreshed.Store(&config)
+	response, err := client.Post("http://"+tunnel.ControlHost+"/v1/refresh", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"refreshed":true`) {
+		t.Fatalf("refresh: %d %.300s", response.StatusCode, body)
+	}
+
+	// The helper may first be sent the names the session started with again.
+	for sent, deadline := false, time.After(10*time.Second); !sent; {
+		select {
+		case domains := <-e.updates:
+			sent = contains(domains, addedHost)
+			if !contains(domains, apiHost) {
+				t.Fatalf("the helper was sent %v", domains)
+			}
+		case <-deadline:
+			t.Fatal("the helper was never sent the new Connection's host")
+		}
+	}
+	addresses, err := e.program.LookupContextHost(e.ctx, addedHost)
+	if err != nil || len(addresses) == 0 || !tunnel.TunnelPrefix.Contains(netip.MustParseAddr(addresses[0])) {
+		t.Fatalf("the new host resolves to %v, %v", addresses, err)
+	}
+	for name, dial := range map[string]func(context.Context, string, string) (net.Conn, error){
+		"by its name": e.program.DialContext,
+		"by an address, as a program with its own DNS would": func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return e.program.DialContext(ctx, network, realAPI)
+		},
+	} {
+		client.Transport.(*http.Transport).DialContext = dial
+		response, err := client.Get("https://" + addedHost + "/whoami")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var parsed struct {
+			Saw string `json:"saw"`
+		}
+		_ = json.NewDecoder(response.Body).Decode(&parsed)
+		response.Body.Close()
+		if parsed.Saw != "live-added" {
+			t.Fatalf("%s: the provider saw %q", name, parsed.Saw)
+		}
+	}
+	status := e.status(t, func(status Status) bool { return contains(status.Connections, "Added API") })
+	if !contains(status.Domains, addedHost) || !contains(status.Connections, "Test API") || status.LastError != "" {
+		t.Fatalf("status: %+v", status)
+	}
+	if content, _ := os.ReadFile(StatusPath(e.directory)); strings.Contains(string(content), liveAdded) {
+		t.Fatal("the status file holds a credential")
+	}
 }

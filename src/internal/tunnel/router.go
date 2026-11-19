@@ -125,6 +125,13 @@ func (r *Router) Update(proxyURL, postgresAddress string, rules []Rule) error {
 	return nil
 }
 
+// SetRules replaces the Connections' hosts, for a session that changed while it ran.
+func (r *Router) SetRules(rules []Rule) {
+	r.mu.Lock()
+	r.rules = append([]Rule(nil), rules...)
+	r.mu.Unlock()
+}
+
 // CapturedDomains are the names the helper sends to the tunnel's resolver: the
 // Connections' hosts and, when model hosts are captured by name, those as well.
 func (r *Router) CapturedDomains() []string {
