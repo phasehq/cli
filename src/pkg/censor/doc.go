@@ -9,10 +9,11 @@
 // forms (raw; base64 and base64url at all three alignments; hex in both cases;
 // URL-encoded, with %XX in either case; JSON-escaped; newlines as a literal \n;
 // each line that is one run of base64 or hex characters, as those of a PEM body
-// are) into non-overlapping 12-byte chunks and keeps, per chunk, a keyed rolling
-// hash and a keyed SHA-256, with the chunk's index and the form's length. A
-// form made of hex digits, and the base64 of a value made of hex digits, is cut
-// into 24-byte chunks instead (see Matching schemes). The
+// are) into non-overlapping 12-byte chunks and keeps, per chunk, 24 bits of a
+// keyed rolling hash to look the chunk up by and a keyed SHA-256 to confirm it,
+// with the chunk's index and the form's length. A form made of hex digits, and
+// the base64 of a value made of hex digits, is cut into 24-byte chunks instead
+// (see Matching schemes). The
 // resulting Entries carry no plaintext and nothing derived from the value but
 // keyed hashes and lengths. The daemon that scans holds the Key, hands its bytes
 // to the indexing client, and adds the Entries it gets back to its Index, which
@@ -69,24 +70,30 @@
 //
 // The schemes so far:
 //
-//   - 1: every form in 12-byte chunks; the tail hash covers the bytes after
-//     the last whole chunk.
+//   - 1: every form in 12-byte chunks, each with its whole 64-bit rolling
+//     hash; the tail hash covers the bytes after the last whole chunk. No
+//     build writes it any more, and no entries of it are ever stored: an
+//     older client may still register them with a running daemon.
 //   - 2: as 1, but a form made of hex digits (the hex of any value, and a
 //     value that is itself hex digits), and the base64 of a value made of hex
 //     digits, are cut into 24-byte chunks, marked Wide; and the tail hash
 //     covers the last whole chunk as well as the bytes after it. Nothing in
 //     such entries is a hash of fewer than 24 characters of those forms, or of
 //     fewer than 12 bytes of any form. A form too short for one 24-byte chunk
-//     keeps a 12-byte one, so a short value is still found.
+//     keeps a 12-byte one, so a short value is still found. Of a chunk's
+//     rolling hash the entries carry the top 24 bits (Form.Lookups) and never
+//     the whole. Entries made by this build are scheme 2.
 //
 // An Index matches every scheme in SupportedSchemes side by side, each as it
-// was made, so entries a daemon stored under an older scheme go on working
-// after an upgrade. Nothing converts them: when the value is next indexed, by
-// IndexValue under the current scheme, adding those entries replaces the
-// older-scheme entries held for the same type and id. Entries of a scheme a
-// build does not match are refused by ParseEntries and Add; a store keeps
-// them as they are for the build that does, and reports them as needing to
-// be registered again.
+// was made, so a client of an older version is still served. Nothing converts
+// entries and none replaces another: a type and id may name several values (a
+// key name is shared across apps and environments), and nothing in entries of
+// two schemes says they are the same value, so a value indexed again under
+// the current scheme is held under both until the older entries go with
+// their index or their age. Entries of a scheme a build does not match are
+// refused by ParseEntries and Add; a store keeps them as they are for the
+// build that does, and reports them as needing to be registered again. Only
+// schemes that carry no whole rolling hash may be stored (SchemeStorable).
 //
 // A scheme is a value in scheme.go, and a later one is added beside the
 // others: one that changes chunk sizes or the tail needs nothing else, and
@@ -154,8 +161,12 @@
 // rolling hash leads to a bounded number of chunks across the index, and a
 // match already extended over a stretch is not tried again inside it, so a
 // scan stays linear in the body whatever has been indexed. The scan makes one
-// pass per chunk size that is indexed, and looks for 24-byte chunks only
-// inside runs of letters and digits, which is all they can hold. One pass over a
+// pass per chunk size that is indexed (and one more while scheme 1 entries
+// are held), and looks for 24-byte chunks only inside runs of letters and
+// digits, which is all they can hold. It keeps the whole rolling hash of the
+// text and compares 24 bits of it, so a position whose 24 bits fit a chunk by
+// chance costs one confirming hash: about one position in 700 with 23000
+// chunks indexed (300 values), one in 16 at the index's cap. One pass over a
 // block finds every keyword and every place a rule's prefix begins, and what a
 // rule may read from those places is bounded by the block, so the rules add a
 // cost that is linear too, and nearly none on text that holds no prefix.
@@ -291,15 +302,28 @@
 //     trusts to index values, and a daemon that keeps both across restarts
 //     must keep the Key apart from the Entries (the Phase AI proxy keeps it in
 //     the system keystore and the Entries, sealed under a key derived from
-//     it, in a file). Someone who gets both can try every value of a chunk
-//     that holds few bits: 12 hex digits are 48 bits, which is within reach.
-//     Scheme 2 therefore stores no hash of fewer than 24 hex digits (96 bits,
-//     when the digits are the value's own). What stays within reach is a
-//     chunk whose bytes are more predictable than that: 24 digits of the hex
-//     of text carry about 72 bits, 24 characters of the base64 of a hex value
-//     72, 24 digits of the hex of a hex value 48, a 12-byte chunk of a value
-//     made of decimal digits 40, and a chunk of a value an attacker mostly
-//     knows already very few. A hex value shorter than 24 digits keeps a
-//     12-digit chunk, and entries stored under scheme 1 keep theirs until
-//     the value is indexed again.
+//     it, in a file).
+//   - What someone who gets both can do is bounded by what a chunk's entry
+//     holds, which in scheme 2 is 24 bits of its rolling hash and a keyed
+//     SHA-256 truncated to 128 bits. The rolling hash is a polynomial in the
+//     chunk's bytes, and with the Key it can be split in the middle: the
+//     guesses that fit its 24 bits can be listed without trying the others.
+//     So the 24 bits come off whatever the chunk holds, and each guess that
+//     is left costs one confirming hash. A chunk of b unknown bits costs
+//     about 2^(b-24) of them (and a table of 2^(b/2)), not 2^b:
+//     24 hex digits of a value that is hex, 96 bits, about 2^72; 12
+//     characters of a value made of letters and digits, 71 bits, about 2^47;
+//     12 characters of the base64 of random bytes, 24 hex digits of the hex
+//     of text, and 24 characters of the base64 of a hex value, 72 bits
+//     each, about 2^48. 2^47 hashes are days of work for hardware built for
+//     it, so such a value is not safe from someone who holds both for long.
+//     A chunk that holds few bits is found whatever is stored: 24 digits of
+//     the hex of a hex value hold 48 bits, a 12-digit chunk of a hex value
+//     shorter than 24 digits 48, a 12-byte chunk of a value made of decimal
+//     digits 40, and a chunk of a value the holder mostly knows very few.
+//   - Entries of scheme 1 hold the whole rolling hash, from which a
+//     12-character chunk is found in about 2^36 steps and a 12-digit hex one
+//     in 2^24, whatever the confirming hash is. They are therefore never
+//     stored. A daemon holds them in memory while it runs, when a client of
+//     an older version registers them, and no build writes them now.
 package censor

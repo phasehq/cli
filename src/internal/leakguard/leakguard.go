@@ -272,6 +272,7 @@ var (
 	keyMu     sync.Mutex
 	cachedKey *censor.Key
 	keyProxy  string
+	keyScheme int // the matching scheme the proxy reads: this build's or an older one
 )
 
 // Register protects values with the leak protection of the proxy Locate
@@ -365,7 +366,7 @@ func register(ctx context.Context, address string, values []Value, dial time.Dur
 		return result, err
 	}
 	keyContext, cancelKey := context.WithTimeout(ctx, Timeout)
-	key, err := proxyKey(keyContext, client, address)
+	key, scheme, err := proxyKey(keyContext, client, address)
 	cancelKey()
 	if err != nil {
 		return result, err
@@ -376,7 +377,7 @@ func register(ctx context.Context, address string, values []Value, dial time.Dur
 	var batch registration
 	size := 0
 	for _, value := range values {
-		entries, err := censor.IndexValue(key, value.Type, value.ID, value.Value)
+		entries, err := censor.IndexValueScheme(key, scheme, value.Type, value.ID, value.Value)
 		if err != nil {
 			return result, errors.New("a value could not be indexed for leak protection")
 		}
@@ -386,7 +387,7 @@ func register(ctx context.Context, address string, values []Value, dial time.Dur
 		}
 		if len(encoded) > maxEntryBytes {
 			// Too large to register: the proxy counts it as unprotected.
-			tooLong := &censor.Entries{Version: censor.EntriesVersion, Type: value.Type, ID: value.ID,
+			tooLong := &censor.Entries{Version: scheme, Type: value.Type, ID: value.ID,
 				Forms: []censor.Form{}, Unprotected: []censor.Unprotected{{Reason: censor.ReasonTooLong}}}
 			if encoded, err = tooLong.Marshal(); err != nil {
 				return result, errors.New("a value could not be indexed for leak protection")
@@ -438,40 +439,41 @@ func protectable(values []Value) []Value {
 	return kept
 }
 
-// proxyKey fetches a proxy's key once per process and proxy.
-func proxyKey(ctx context.Context, client *http.Client, current string) (*censor.Key, error) {
+// proxyKey fetches a proxy's key, and the matching scheme the proxy reads,
+// once per process and proxy.
+func proxyKey(ctx context.Context, client *http.Client, current string) (*censor.Key, int, error) {
 	keyMu.Lock()
 	defer keyMu.Unlock()
 	if cachedKey != nil && keyProxy == current {
-		return cachedKey, nil
+		return cachedKey, keyScheme, nil
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, phaseproxy.ControlURL+"/v1/inventory/key", nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, unanswered(err)
+		return nil, 0, unanswered(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the Phase AI proxy refused the key request (HTTP %d)", response.StatusCode)
+		return nil, 0, fmt.Errorf("the Phase AI proxy refused the key request (HTTP %d)", response.StatusCode)
 	}
 	var answer remoteapi.InventoryKeyResponse
 	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&answer) != nil ||
-		answer.SchemaVersion != agentapi.SchemaVersion || answer.Format != censor.EntriesVersion {
-		return nil, errors.New("the Phase AI proxy sent a key this version of Phase does not read")
+		answer.SchemaVersion != agentapi.SchemaVersion || !censor.SchemeSupported(answer.Format) {
+		return nil, 0, errors.New("the Phase AI proxy sent a key this version of Phase does not read")
 	}
 	raw, err := base64.StdEncoding.DecodeString(answer.Key)
 	if err != nil {
-		return nil, errors.New("the Phase AI proxy sent an invalid key")
+		return nil, 0, errors.New("the Phase AI proxy sent an invalid key")
 	}
 	key, err := censor.KeyFromBytes(raw)
 	if err != nil {
-		return nil, errors.New("the Phase AI proxy sent an invalid key")
+		return nil, 0, errors.New("the Phase AI proxy sent an invalid key")
 	}
-	cachedKey, keyProxy = key, current
-	return key, nil
+	cachedKey, keyProxy, keyScheme = key, current, answer.Format
+	return key, keyScheme, nil
 }
 
 func post(ctx context.Context, client *http.Client, batch registration) (Result, error) {

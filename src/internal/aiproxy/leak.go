@@ -54,6 +54,8 @@ type leakGuard struct {
 	// many values it held that this proxy knew from its start.
 	inventory *phaseproxy.Inventory
 	loaded    int
+	// notLoaded counts stored entries a full index had no room for at start.
+	notLoaded int
 	// limitedRules are the rules applied off the conversation paths: only
 	// Phase's own token formats. Elsewhere a pattern rule could fire on the
 	// harness's own login or telemetry token and break it.
@@ -112,11 +114,15 @@ func newLeakGuardWithRules(mode string, rules *censor.Rules) (*leakGuard, error)
 	return newLeakGuardWithInventory(mode, rules, inventory)
 }
 
+// leakIndexMaxSecrets is how many values the guard's index holds; 0 is the
+// index's own default. Tests lower it.
+var leakIndexMaxSecrets = 0
+
 // newLeakGuardWithInventory makes the guard whose hashes are keyed with the
 // inventory's key, and which stores what is registered there.
 func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phaseproxy.Inventory) (*leakGuard, error) {
 	key := inventory.Key()
-	index, err := censor.NewIndex(key, censor.IndexOptions{Rules: rules})
+	index, err := censor.NewIndex(key, censor.IndexOptions{Rules: rules, MaxSecrets: leakIndexMaxSecrets})
 	if err != nil {
 		return nil, err
 	}

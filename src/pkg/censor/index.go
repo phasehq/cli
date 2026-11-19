@@ -47,15 +47,12 @@ type Index struct {
 
 	mu sync.RWMutex
 	// windows hold the chunks, by chunk size: see window.
-	windows    []*window
-	chunkCount int
-	forms      []form
-	// liveForms counts the forms a scan still matches: all but those a newer
-	// scheme's entries replaced.
-	liveForms    int
+	windows      []*window
+	chunkCount   int
+	forms        []form
 	owners       []owner
 	ownerIndex   map[ownerKey]int32
-	secrets      map[secretKey]*secretForms
+	secrets      map[secretKey]struct{}
 	types        map[string]struct{} // the types of the values indexed: the middle of their placeholders
 	fingerprints map[[32]byte]struct{}
 
@@ -81,13 +78,6 @@ type IndexStats struct {
 
 type secretKey struct{ typ, id string }
 
-// secretForms is what is indexed for one placeholder: its forms, and the
-// newest matching scheme among them.
-type secretForms struct {
-	scheme int
-	forms  []int32
-}
-
 type ownerKey struct{ typ, id, part string }
 
 type owner struct {
@@ -107,9 +97,6 @@ type form struct {
 	// tail its hash begins: both are fixed by the entries' scheme.
 	chunk    int
 	tailBack int
-	// dead marks a form that entries of a newer scheme replaced. Its chunks
-	// stay filed until the index goes, and match nothing.
-	dead bool
 
 	// weak marks chunks that are structure, such as PEM armour, a token's type
 	// prefix or a URL's host. A partial match needs at least one chunk that isn't.
@@ -137,7 +124,7 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 		maxSecrets:   opts.MaxSecrets,
 		maxChunks:    opts.MaxChunks,
 		ownerIndex:   map[ownerKey]int32{},
-		secrets:      map[secretKey]*secretForms{},
+		secrets:      map[secretKey]struct{}{},
 		types:        map[string]struct{}{},
 		fingerprints: map[[32]byte]struct{}{},
 		ruleNums:     map[[macSize]byte]int{},
@@ -158,9 +145,8 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 // changes nothing; adding another value under the same type and id protects
 // both. Entries with no forms are accepted and do nothing.
 //
-// Entries of every supported scheme are matched side by side. Entries of a
-// newer scheme than those held for the same type and id replace them: the
-// value was indexed again, and the older entries are no longer needed.
+// Entries of every supported scheme are matched side by side and none replaces
+// another: an id may name several values, and nothing held tells them apart.
 func (ix *Index) Add(e *Entries) error {
 	if err := e.validate(); err != nil {
 		return err
@@ -191,34 +177,15 @@ func (ix *Index) Add(e *Entries) error {
 		return nil
 	}
 	secret := secretKey{e.Type, e.ID}
-	held := ix.secrets[secret]
-	if held == nil && len(ix.secrets) >= ix.maxSecrets {
+	if _, held := ix.secrets[secret]; !held && len(ix.secrets) >= ix.maxSecrets {
 		return fmt.Errorf("%w: it holds %d values already", ErrIndexFull, ix.maxSecrets)
 	}
-	// What these entries replace is not counted against them.
-	replaced := 0
-	if held != nil && held.scheme < e.Version {
-		for _, at := range held.forms {
-			if !ix.forms[at].dead {
-				replaced += len(ix.forms[at].macs)
-			}
-		}
-	}
-	if ix.chunkCount-replaced+newChunks > ix.maxChunks {
+	if ix.chunkCount+newChunks > ix.maxChunks {
 		return fmt.Errorf("%w: %d more chunks would pass the limit of %d", ErrIndexFull, newChunks, ix.maxChunks)
 	}
-
-	if held == nil {
-		held = &secretForms{scheme: e.Version}
-		ix.secrets[secret] = held
-	}
-	if held.scheme < e.Version {
-		ix.retire(held)
-		held.scheme = e.Version
-	}
+	ix.secrets[secret] = struct{}{}
 	ix.types[e.Type] = struct{}{}
 	for _, p := range fresh {
-		held.forms = append(held.forms, int32(len(ix.forms)))
 		ix.addForm(s, e.Type, e.ID, p.form)
 		ix.fingerprints[p.fingerprint] = struct{}{}
 	}
@@ -228,21 +195,6 @@ func (ix *Index) Add(e *Entries) error {
 	// Strings scanned before this value was known may have been cached as clean.
 	ix.cache.reset()
 	return nil
-}
-
-// retire stops matching the forms held for a placeholder, when entries of a
-// newer scheme arrive for it.
-func (ix *Index) retire(held *secretForms) {
-	for _, at := range held.forms {
-		f := &ix.forms[at]
-		if f.dead {
-			continue
-		}
-		ix.chunkCount -= len(f.macs)
-		ix.liveForms--
-		f.dead, f.macs, f.weak = true, nil, nil
-	}
-	held.forms = nil
 }
 
 func (ix *Index) addForm(s *scheme, typ, id string, f *Form) {
@@ -255,7 +207,7 @@ func (ix *Index) addForm(s *scheme, typ, id string, f *Form) {
 	}
 	c, _ := s.chunkOf(f)
 	n := f.Length / c
-	w := ix.windowFor(c, f.Wide)
+	w := ix.windowFor(c, f.Wide, s.lookupBits)
 	stored := form{
 		owner:     ownerIdx,
 		name:      f.Form,
@@ -271,26 +223,22 @@ func (ix *Index) addForm(s *scheme, typ, id string, f *Form) {
 	// A chunk that repeats within a form is looked up through its first place
 	// only: a match found there is extended over the rest, and indexing every
 	// repeat would make a value of one repeated block cost a scan its length at
-	// every position.
-	var seen map[uint64]struct{}
+	// every position. A repeat is told by the confirming hash: two chunks may
+	// share a short lookup value by chance.
+	seen := make(map[[macSize]byte]struct{}, n)
 	for i := 0; i < n; i++ {
 		copy(stored.macs[i][:], f.MACs[i*macSize:])
 		stored.weak[i] = f.Weak[i/8]&(1<<(i%8)) != 0
-		h := binary.LittleEndian.Uint64(f.Rolls[i*8:])
-		if seen == nil {
-			seen = make(map[uint64]struct{}, n)
-		}
-		if _, repeat := seen[h]; repeat {
+		if _, repeat := seen[stored.macs[i]]; repeat {
 			continue
 		}
-		seen[h] = struct{}{}
-		w.add(h, chunkRef{form: formIdx, idx: int32(i)})
+		seen[stored.macs[i]] = struct{}{}
+		w.add(s.lookupAt(f, i), chunkRef{form: formIdx, idx: int32(i)})
 	}
 	if stored.tailLen > 0 {
 		copy(stored.tail[:], f.Tail)
 	}
 	ix.forms = append(ix.forms, stored)
-	ix.liveForms++
 	ix.chunkCount += n
 }
 
@@ -317,5 +265,5 @@ func fingerprint(version int, typ, id string, f *Form) [32]byte {
 func (ix *Index) Stats() IndexStats {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
-	return IndexStats{Secrets: len(ix.secrets), Owners: len(ix.owners), Forms: ix.liveForms, Chunks: ix.chunkCount}
+	return IndexStats{Secrets: len(ix.secrets), Owners: len(ix.owners), Forms: len(ix.forms), Chunks: ix.chunkCount}
 }

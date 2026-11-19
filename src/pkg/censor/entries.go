@@ -2,7 +2,6 @@ package censor
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +25,9 @@ const (
 	minValueEntropy  = 2.5 // bits per byte
 	weakChunkEntropy = 2.8
 	leafMinLength    = 20
+	// lookupBits is how much of a chunk's rolling hash scheme 2 keeps: a bit more
+	// is one a holder of the key need not guess, a bit less doubles wasted hashes.
+	lookupBits = 24
 
 	// MaxValueLength is the longest value IndexValue indexes. Every form of a
 	// value is indexed, so a value costs about thirty times its length in chunks.
@@ -86,11 +88,16 @@ type Form struct {
 	Length int    `json:"len"`
 	// Wide says the chunks are 24 bytes, as scheme 2 cuts a form made of hex
 	// digits and the base64 of a value made of hex digits.
-	Wide  bool   `json:"wide,omitempty"`
-	Rolls []byte `json:"rolls"`          // the keyed rolling hash of each chunk, 8 bytes little-endian each
-	MACs  []byte `json:"macs"`           // the keyed SHA-256 of each chunk, truncated to 16 bytes each
-	Weak  []byte `json:"weak"`           // a bit per chunk, low bit first: structure, never a partial hit alone
-	Tail  []byte `json:"tail,omitempty"` // the keyed SHA-256 of the bytes after the last whole chunk; from scheme 2, of that chunk and them
+	Wide bool `json:"wide,omitempty"`
+	// Rolls is scheme 1's keyed rolling hash of each chunk, whole: 8 bytes
+	// little-endian each. Later schemes leave it empty and fill Lookups.
+	Rolls []byte `json:"rolls,omitempty"`
+	// Lookups is the top 24 bits of each chunk's rolling hash, 3 bytes
+	// big-endian each: enough to find a chunk by, not enough to work it out.
+	Lookups []byte `json:"lookups,omitempty"`
+	MACs    []byte `json:"macs"`           // the keyed SHA-256 of each chunk, truncated to 16 bytes each
+	Weak    []byte `json:"weak"`           // a bit per chunk, low bit first: structure, never a partial hit alone
+	Tail    []byte `json:"tail,omitempty"` // the keyed SHA-256 of the bytes after the last whole chunk; from scheme 2, of that chunk and them
 }
 
 // Unprotected is a value, or part of one, that was not indexed.
@@ -238,7 +245,6 @@ func (b *entriesBuilder) addForm(part, value string, candidate rawForm, decoy []
 		Form:   candidate.name,
 		Length: len(candidate.bytes),
 		Wide:   wide,
-		Rolls:  make([]byte, 0, 8*n),
 		MACs:   make([]byte, 0, macSize*n),
 		Weak:   make([]byte, (n+7)/8),
 	}
@@ -247,7 +253,7 @@ func (b *entriesBuilder) addForm(part, value string, candidate rawForm, decoy []
 		if entropy(string(chunk)) < weakChunkEntropy || (decoy != nil && string(decoy[i*c:(i+1)*c]) == string(chunk)) {
 			f.Weak[i/8] |= 1 << (i % 8)
 		}
-		f.Rolls = binary.LittleEndian.AppendUint64(f.Rolls, b.key.roll(chunk))
+		b.scheme.appendLookup(&f, b.key.roll(chunk))
 		mac := b.key.mac(chunk)
 		f.MACs = append(f.MACs, mac[:]...)
 	}
@@ -341,7 +347,7 @@ func (e *Entries) validate() error {
 			return fmt.Errorf("form %d: length %d is out of bounds", i, f.Length)
 		}
 		n := f.Length / c
-		if len(f.Rolls) != 8*n || len(f.MACs) != macSize*n || len(f.Weak) != (n+7)/8 {
+		if held, other := s.lookups(f); len(held) != s.lookupSize()*n || len(other) != 0 || len(f.MACs) != macSize*n || len(f.Weak) != (n+7)/8 {
 			return fmt.Errorf("form %d: chunk data does not match its length", i)
 		}
 		if n%8 != 0 && f.Weak[len(f.Weak)-1]>>(n%8) != 0 {

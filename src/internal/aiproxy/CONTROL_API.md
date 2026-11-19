@@ -215,7 +215,11 @@ a reboot still has its values replaced before anything registers them again:
 
 - The key is kept in the system keystore, beside the CA key (service
   `phase-cli-ai-leak-inventory`), one per user, made on first use and never
-  written to disk. It carries an id.
+  written to disk. It carries an id. A key is made only when the keystore
+  says it holds none. If the keystore cannot be read for any other reason (a
+  locked keychain, a refused prompt, a value this version cannot parse), the
+  proxy runs from memory (`key_unreadable`) and writes neither the keystore
+  nor the file.
 - The entries are kept in `leak-inventory.bin` in the Phase AI directory,
   owner-only, replaced whole through a temporary file, sync and rename, and
   read only as a regular owner-only file of this user that is not a symlink.
@@ -227,7 +231,18 @@ a reboot still has its values replaced before anything registers them again:
 - Every proxy of the user loads the file when it starts and writes what is
   registered with it, under `leak-inventory.lock`: the file is read again
   under the lock and written whole, so nothing another proxy stored is lost.
-  A proxy does not pick up what another registers while both run.
+  A proxy does not pick up what another registers while both run. The lock
+  file is never removed, the lock is waited for at most two seconds (after
+  which the proxy runs from memory, `store_busy`), and the keystore is never
+  asked while it is held.
+- Only entries of scheme 2 are stored. Scheme 1 entries, which an older
+  client may register, carry whole rolling hashes: they are matched while
+  the proxy runs and never written.
+- No record replaces another's. A `type` and `id` may name several values (a
+  key name is shared across apps and environments): each is its own record,
+  and a record goes only when it has not been registered for 30 days.
+- When the store holds more than the index has room for, the most recently
+  registered values are loaded and the rest are counted under `notLoaded`.
 - An entry not registered again for 30 days is dropped. The file is bounded
   at 64 MiB and 65536 records; past that the oldest registrations go.
 - Two versions are stored. The store format is the file's layout: a version
@@ -238,25 +253,38 @@ a reboot still has its values replaced before anything registers them again:
 - Entries under another key id are not matched, are counted under
   `unmatchedKey` and are dropped when the proxy that found them starts.
 - A file that is damaged, cut short, too large or not what it claims never
-  stops the proxy: what can be authenticated and passes the same validation
-  as a registration is loaded, and the rest is counted and dropped.
+  stops the proxy. Within a file this version can open, what can be
+  authenticated and passes the same validation as a registration is loaded,
+  and the rest is counted and dropped. A file that exists and cannot be
+  opened or understood at all (not an owner-only regular file of this user,
+  too large, no inventory header) is never written over: the proxy runs
+  from memory (`store_unreadable`) until `phase ai disable` removes it.
 - On a machine with no system keystore nothing is stored: no key, no file,
   and the inventory is in memory as before.
-- `phase ai disable` removes the file and the key, and `phase auth logout
-  --purge` removes the key with the CA key and the file with `~/.phase`.
+- `phase ai disable` removes the key, then the file, and `phase auth logout
+  --purge` removes the key with the CA key and the file with `~/.phase`. A
+  proxy still running says `key_replaced` the next time its status is asked
+  (the keystore is asked at most once a second) and stores nothing more.
 
 What this changes for the key: it is no longer new with every proxy process,
 and a process that was given it once (this route gives it to any process
 holding the proxy capability) can use it for as long as it is the user's
 key. The file without the key says nothing that a guess can be tested
 against. Someone who holds both the key and the file can confirm a guessed
-chunk of a value by hashing it, and can try every value of a chunk that
-holds few bits. The smallest chunk stored is 12 bytes of a value's form, and
-24 characters where the form is hex digits or the base64 of a hex value, so
-that such a chunk carries up to 96 bits instead of 48; `pkg/censor`'s Limits
-list what stays within reach (the hex of text, short hex values, values made
-of digits, and entries stored before this version until their value is read
-again).
+chunk of a value by hashing it. What is stored per chunk is 24 bits of its
+keyed rolling hash and a keyed SHA-256 truncated to 128 bits; the smallest
+chunk is 12 bytes of a value's form, and 24 characters where the form is hex
+digits or the base64 of a hex value. The 24 bits let the holder skip all but
+one guess in 2^24 without hashing, so a chunk of b unknown bits costs about
+2^(b-24) confirming hashes: about 2^72 for 24 digits of a hex value (96
+bits), and about 2^47 for 12 characters of a value made of letters and
+digits (71 bits), which is days of work for hardware built for it. Chunks
+that hold few bits are found whatever is stored; `pkg/censor`'s Limits list
+them (the hex of a hex value, hex values under 24 digits, values made of
+digits) and give every figure. Entries made by this version are scheme 2.
+Scheme 1 entries hold the whole rolling hash, from which a 12-character
+chunk is found in about 2^36 steps: they exist only in the memory of a
+running proxy that an older client registered with, and are never stored.
 
 Every caller reaches the control API through one client,
 `phaseproxy.ControlClient`: `phase ai status`, the hooks and this registration.
@@ -270,7 +298,10 @@ GET http://phase.invalid/v1/inventory/key
 `format` is the matching scheme the proxy's own version indexes under
 (`censor.EntriesVersion`). The proxy takes entries of every scheme it still
 matches (1 and 2), each as it was made; `pkg/censor`'s documentation says what
-a scheme covers.
+a scheme covers. A client indexes under `format` whenever its own version
+knows that scheme, so a client and a proxy of different versions still
+register; a `format` the client does not know is the warning of the table
+above.
 
 ```http
 POST http://phase.invalid/v1/inventory
@@ -296,22 +327,26 @@ Content-Type: application/json
 - A value too short or plain to protect is counted once for its type and id,
   however often it is registered, and at most 4096 such are remembered; past
   that the count stays where it is.
-- Entries of a newer scheme than those held for the same `type` and `id`
-  replace them, in the proxy and in its store: the value was indexed again.
+- Entries never replace those held for the same `type` and `id`, whatever
+  their schemes: another value may share the id, and both stay matched.
 - No route returns entries, hashes or the id of a secret. `GET /v1/status`
   adds `leakProtection` with counts, host names, reasons and rule ids only:
   `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...],"inventory":{...}}`.
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
 - `inventory` says whether the values outlive the proxy, in counts:
-  `{"storage":"stored","loaded":9,"unmatchedScheme":0,"unmatchedKey":0}`.
+  `{"storage":"stored","loaded":9,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`.
   `storage` is `stored` or `memory`, and `reason` says why it is `memory`:
-  `no_keystore` (the machine has no system keystore), `newer_store_format`
+  `no_keystore` (the machine has no system keystore), `key_unreadable` (the
+  keystore did not give the key; nothing is written), `newer_store_format`
   (the file was written by a newer version of Phase and is left as it is),
-  `key_replaced` (the key was replaced or removed while this proxy ran),
-  `store_unusable` (the directory or file could not be written) or
-  `not_configured`. `loaded` is how many values the proxy knew from the store
-  when it started. `unmatchedScheme` counts stored entries of a matching
+  `store_unreadable` (the file exists and could not be opened or understood,
+  and is left as it is), `key_replaced` (the key was replaced or removed
+  while this proxy ran), `store_busy` (another process held the store's lock
+  for two seconds), `store_unusable` (the directory or file could not be
+  written) or `not_configured`. `loaded` is how many values the proxy knew
+  from the store when it started, and `notLoaded` how many more the store
+  held that a full index had no room for. `unmatchedScheme` counts stored entries of a matching
   scheme this version does not match: they are kept and need registering
   again. `unmatchedKey` counts stored entries made under a key that has been
   replaced: they are never matched and were dropped. `damaged`, when

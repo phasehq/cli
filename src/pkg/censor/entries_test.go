@@ -392,7 +392,8 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 		"huge form":            func(e *Entries) { e.Forms[0].Length = 1 << 40 },
 		"negative length":      func(e *Entries) { e.Forms[0].Length = -12 },
 		"length and chunks":    func(e *Entries) { e.Forms[0].Length += chunkSize },
-		"missing roll":         func(e *Entries) { e.Forms[0].Rolls = e.Forms[0].Rolls[:len(e.Forms[0].Rolls)-8] },
+		"missing lookup":       func(e *Entries) { e.Forms[0].Lookups = e.Forms[0].Lookups[:len(e.Forms[0].Lookups)-3] },
+		"a whole rolling hash": func(e *Entries) { e.Forms[0].Rolls = make([]byte, 8*(e.Forms[0].Length/chunkSize)) },
 		"extra mac":            func(e *Entries) { e.Forms[0].MACs = append(e.Forms[0].MACs, make([]byte, macSize)...) },
 		"short mac":            func(e *Entries) { e.Forms[0].MACs = e.Forms[0].MACs[:len(e.Forms[0].MACs)-1] },
 		"weak too long":        func(e *Entries) { e.Forms[0].Weak = append(e.Forms[0].Weak, 0) },
@@ -445,7 +446,7 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 		"unknown field":  strings.Replace(string(wire), `"v":2`, `"v":2,"extra":true`, 1),
 		"trailing data":  string(wire) + `{}`,
 		"trailing text":  string(wire) + `x`,
-		"bad base64":     strings.Replace(string(wire), `"rolls":"`, `"rolls":"!`, 1),
+		"bad base64":     strings.Replace(string(wire), `"lookups":"`, `"lookups":"!`, 1),
 		"string version": strings.Replace(string(wire), `"v":2`, `"v":"2"`, 1),
 	} {
 		if _, err := ParseEntries([]byte(raw)); err == nil {
@@ -608,7 +609,7 @@ func narrowHexForm(t *testing.T, e *Entries) {
 			continue
 		}
 		n := f.Length / chunkSize
-		f.Wide, f.Rolls, f.MACs, f.Weak, f.Tail = false, make([]byte, 8*n), make([]byte, macSize*n), make([]byte, (n+7)/8), nil
+		f.Wide, f.Lookups, f.MACs, f.Weak, f.Tail = false, make([]byte, 3*n), make([]byte, macSize*n), make([]byte, (n+7)/8), nil
 		if f.Length%chunkSize != 0 {
 			f.Tail = make([]byte, macSize)
 		}

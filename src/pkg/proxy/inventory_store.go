@@ -55,8 +55,11 @@ import (
 // format alone, running from memory. The scheme of a record is the matching
 // scheme of its entries (censor.EntriesVersion): a record whose scheme this
 // build does not match is kept as it is, for the build that does, and
-// counted; entries registered under a newer scheme replace the records an
-// older scheme left for the same placeholder.
+// counted. No record replaces another's (a placeholder may name several
+// values): one goes after 30 days unregistered. Scheme 1 is never stored.
+//
+// A file or a key that exists and cannot be read is never written over: the
+// proxy runs from memory and says why. Only "there is none" makes either.
 const (
 	// InventoryStoreFormat is the store format this build writes.
 	InventoryStoreFormat = 1
@@ -94,6 +97,19 @@ const (
 	maxInventoryRecordBytes = 8 << 20
 )
 
+// Tests shorten these.
+var (
+	// inventoryLockWait is how long a process waits for the store's lock
+	// before it runs from memory: a writer holds it for one small file.
+	inventoryLockWait = 2 * time.Second
+	// inventoryKeySettle is how long the first start of all waits before it
+	// reads back the key it made, in case another process made one too.
+	inventoryKeySettle = 250 * time.Millisecond
+	// inventoryKeyCheckEvery is how often, at most, Status asks the keystore
+	// whether the key is still this process's.
+	inventoryKeyCheckEvery = time.Second
+)
+
 // Why an inventory is kept in memory only.
 const (
 	// InventoryReasonNoKeystore: no system keystore to hold the key.
@@ -107,6 +123,14 @@ const (
 	// InventoryReasonUnusable: the directory or the file could not be
 	// written.
 	InventoryReasonUnusable = "store_unusable"
+	// InventoryReasonKeyUnreadable: the keystore holds a key, or may hold
+	// one, that could not be read (locked, refused, or not this build's).
+	InventoryReasonKeyUnreadable = "key_unreadable"
+	// InventoryReasonUnreadable: the file exists and could not be opened or
+	// understood, and is left as it is.
+	InventoryReasonUnreadable = "store_unreadable"
+	// InventoryReasonBusy: another process held the store's lock too long.
+	InventoryReasonBusy = "store_busy"
 	// InventoryReasonNotConfigured: the proxy was started without a store.
 	InventoryReasonNotConfigured = "not_configured"
 )
@@ -163,11 +187,18 @@ type Inventory struct {
 	seal      cipher.AEAD
 	tagKey    [32]byte
 
-	mu     sync.Mutex
-	status InventoryStatus
+	// adding lets one Add at a time through. mu guards what follows it and
+	// is never held across the keystore or the store's lock.
+	adding     sync.Mutex
+	mu         sync.Mutex
+	status     InventoryStatus
+	keyChecked time.Time
 	// known is when each entry this process has seen stored was registered,
 	// by content tag, so a repeated registration costs no file access.
 	known map[[inventoryTagSize]byte]int64
+	// seen is the file known was read from. Another file in its place, or
+	// none, means known says nothing of what is stored now.
+	seen os.FileInfo
 }
 
 type inventoryRecord struct {
@@ -224,11 +255,47 @@ func MemoryInventory() (*Inventory, error) {
 // Key is the key the inventory's hashes are keyed with.
 func (inv *Inventory) Key() *censor.Key { return inv.key }
 
-// Status reports how the inventory is kept and what opening it found.
+// Status reports how the inventory is kept and what opening it found. It asks
+// the keystore, at most once a second, whether the key is still this one.
 func (inv *Inventory) Status() InventoryStatus {
 	inv.mu.Lock()
+	status := inv.status
+	due := status.Durable && time.Since(inv.keyChecked) >= inventoryKeyCheckEvery
+	if due {
+		inv.keyChecked = time.Now()
+	}
+	inv.mu.Unlock()
+	if due {
+		if current, err := inv.keyCurrent(); err == nil && !current {
+			inv.demote(InventoryReasonKeyReplaced)
+			status.Durable, status.Reason = false, InventoryReasonKeyReplaced
+		}
+	}
+	return status
+}
+
+// demote stops the inventory writing to the store, for the life of the
+// process, and records why.
+func (inv *Inventory) demote(reason string) {
+	inv.mu.Lock()
 	defer inv.mu.Unlock()
-	return inv.status
+	if inv.status.Durable || inv.status.Reason == "" {
+		inv.status.Durable, inv.status.Reason = false, reason
+	}
+}
+
+// keyCurrent asks the keystore whether it still names this process's key. An
+// error is a keystore that did not answer, which says nothing either way.
+func (inv *Inventory) keyCurrent() (bool, error) {
+	id, raw, err := inv.store.storedKey()
+	clear(raw)
+	if errors.Is(err, errNoInventoryKey) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return id == inv.keyID, nil
 }
 
 // Open loads the inventory, making the key on first use, and returns what
@@ -251,40 +318,74 @@ func (s InventoryStore) Open() (*Inventory, []StoredEntries, error) {
 		inv, err := memoryInventory(InventoryReasonUnusable)
 		return inv, nil, err
 	}
-	// Every proxy of this user opens and writes under one lock, so the key
-	// is made once and no write loses another's.
-	unlock, err := lockCAFile(filepath.Join(directory, inventoryLockName))
-	if err != nil {
-		inv, err := memoryInventory(InventoryReasonUnusable)
-		return inv, nil, err
-	}
-	defer unlock()
-
+	// Asked with no lock held: a keystore may wait on a person. A key is made
+	// only on "there is none"; any other answer may hide a key in use.
 	id, raw, err := s.storedKey()
-	if err != nil {
-		// No key yet, or one that cannot be read: a new key, under which
-		// whatever the file holds is not matched.
-		if id, raw, err = s.newKey(); err != nil {
+	switch {
+	case errors.Is(err, errNoInventoryKey):
+		if _, raw, err = s.newKey(); err != nil {
 			inv, err := memoryInventory(InventoryReasonNoKeystore)
 			return inv, nil, err
 		}
+		clear(raw)
+		// Proxies that start together may each make a key, and no lock is
+		// held to stop them: each takes the one the keystore settles on.
+		time.Sleep(inventoryKeySettle)
+		if id, raw, err = s.storedKey(); err != nil {
+			inv, err := memoryInventory(InventoryReasonKeyUnreadable)
+			return inv, nil, err
+		}
+	case err != nil:
+		inv, err := memoryInventory(InventoryReasonKeyUnreadable)
+		return inv, nil, err
 	}
 	inv, err := newInventory(s, directory, id, raw)
 	clear(raw)
 	if err != nil {
-		inv, err := memoryInventory(InventoryReasonUnusable)
+		inv, err := memoryInventory(InventoryReasonKeyUnreadable)
 		return inv, nil, err
 	}
-	inv.status.Durable = true
-	sweepInventoryTemporaries(directory)
-
-	file := inv.read()
-	if file.newer {
-		inv.status.Durable, inv.status.Reason = false, InventoryReasonNewerFormat
-		return inv, nil, nil
+	loaded, reason := inv.load(false)
+	if reason == inventoryForeign {
+		// The file is under another key, as when two first starts each made
+		// one: only the proxy whose key the keystore kept may replace it.
+		current, err := inv.keyCurrent()
+		switch {
+		case err != nil:
+			reason = InventoryReasonKeyUnreadable
+		case !current:
+			reason = InventoryReasonKeyReplaced
+		default:
+			loaded, reason = inv.load(true)
+		}
 	}
-	now := s.now()
-	var loaded []StoredEntries
+	inv.status.Durable, inv.status.Reason = reason == "", reason
+	return inv, loaded, nil
+}
+
+// inventoryForeign is load's and store's answer for a file that is missing
+// or under another key, when they were not told the keystore was asked.
+const inventoryForeign = "foreign"
+
+// load reads the file under the store's lock, drops what cannot be used and
+// returns the rest. It answers with why nothing may be stored, or "".
+func (inv *Inventory) load(keyConfirmed bool) (loaded []StoredEntries, reason string) {
+	unlock, err := lockInventory(inv.directory)
+	if err != nil {
+		return nil, lockFailure(err)
+	}
+	defer unlock()
+	file := inv.read()
+	switch {
+	case file.newer:
+		return nil, InventoryReasonNewerFormat
+	case file.unreadable:
+		return nil, InventoryReasonUnreadable
+	case file.foreign && !keyConfirmed:
+		return nil, inventoryForeign
+	}
+	sweepInventoryTemporaries(inv.directory)
+	now := inv.store.now()
 	var kept []inventoryRecord
 	inv.status.Damaged, inv.status.OtherKey = file.damaged, file.otherKey
 	for _, record := range file.records {
@@ -307,10 +408,39 @@ func (s InventoryStore) Open() (*Inventory, []StoredEntries, error) {
 	// file a later write expects to find.
 	if !file.present || len(kept) != len(file.records) || file.damaged > 0 || file.otherKey > 0 {
 		if err := inv.write(kept); err != nil {
-			inv.status.Durable, inv.status.Reason = false, InventoryReasonUnusable
+			return loaded, InventoryReasonUnusable
 		}
 	}
-	return inv, loaded, nil
+	inv.seen, _ = os.Stat(inv.path())
+	return loaded, ""
+}
+
+// errInventoryBusy is a lock another process held past inventoryLockWait.
+var errInventoryBusy = errors.New("the leak protection inventory is in use by another process")
+
+// lockInventory takes the store's lock within inventoryLockWait. The lock
+// file is never removed, and no keystore call is made while it is held.
+func lockInventory(directory string) (func(), error) {
+	path := filepath.Join(directory, inventoryLockName)
+	for deadline := time.Now().Add(inventoryLockWait); ; time.Sleep(2 * time.Millisecond) {
+		unlock, busy, err := tryLockFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if !busy {
+			return unlock, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, errInventoryBusy
+		}
+	}
+}
+
+func lockFailure(err error) string {
+	if errors.Is(err, errInventoryBusy) {
+		return InventoryReasonBusy
+	}
+	return InventoryReasonUnusable
 }
 
 func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byte, raw []byte) (*Inventory, error) {
@@ -337,9 +467,16 @@ func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byt
 	}, nil
 }
 
+// errNoInventoryKey is the keystore saying it holds no inventory key: the
+// one answer after which a key is made.
+var errNoInventoryKey = errors.New("no leak protection inventory key is stored")
+
 // storedKey reads the key and its id from the keystore.
 func (s InventoryStore) storedKey() (id [inventoryKeyIDSize]byte, raw []byte, err error) {
 	value, err := s.keyring().Get(inventoryKeyringService, inventoryKeyringUser)
+	if errors.Is(err, gokeyring.ErrNotFound) {
+		return id, nil, errNoInventoryKey
+	}
 	if err != nil {
 		return id, nil, err
 	}
@@ -385,25 +522,14 @@ func (s InventoryStore) ReplaceKey() error {
 	if !s.KeystoreAvailable() {
 		return nil
 	}
-	directory, err := s.directory()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return err
-	}
-	unlock, err := lockCAFile(filepath.Join(directory, inventoryLockName))
-	if err != nil {
-		return fmt.Errorf("lock leak protection inventory: %w", err)
-	}
-	defer unlock()
 	_, raw, err := s.newKey()
 	clear(raw)
 	return err
 }
 
 // Remove deletes the stored entries and what was written beside them, and
-// leaves the key. A missing file or directory is not an error.
+// leaves the key. A missing file or directory is not an error. The lock file
+// stays: a process waiting on it would otherwise hold a lock no one else sees.
 func (s InventoryStore) Remove() error {
 	directory, err := s.directory()
 	if err != nil {
@@ -412,20 +538,14 @@ func (s InventoryStore) Remove() error {
 	if info, err := os.Lstat(directory); err != nil || !info.IsDir() {
 		return nil
 	}
-	lockPath := filepath.Join(directory, inventoryLockName)
-	unlock, err := lockCAFile(lockPath)
+	unlock, err := lockInventory(directory)
 	if err != nil {
 		return fmt.Errorf("lock leak protection inventory: %w", err)
 	}
+	defer unlock()
 	sweepInventoryTemporaries(directory)
-	err = os.Remove(filepath.Join(directory, inventoryFileName))
-	// The lock file goes while it is held, so no other process is inside.
-	lockErr := os.Remove(lockPath)
-	unlock()
-	for _, err := range []error{err, lockErr} {
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+	if err := os.Remove(filepath.Join(directory, inventoryFileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -445,11 +565,14 @@ func DeleteStoredInventoryKey() error {
 	return err
 }
 
-// Purge removes the stored inventory: the entries, and the key from the
-// keystore. It is what phase ai disable does. A key the keystore cannot
+// Purge removes the stored inventory: the key from the keystore, then the
+// entries. It is what phase ai disable does. A key the keystore cannot
 // delete is replaced, so that nothing stored under it is matched again.
+//
+// The key goes first: a proxy registering meanwhile writes before the file
+// is removed, or finds the file gone and its key with it, and writes nothing.
 func (s InventoryStore) Purge() error {
-	return errors.Join(s.Remove(), s.deleteKey())
+	return errors.Join(s.deleteKey(), s.Remove())
 }
 
 func (s InventoryStore) deleteKey() error {
@@ -465,8 +588,8 @@ func (s InventoryStore) deleteKey() error {
 			return nil
 		}
 	}
-	// The proxy is stopped before a purge and the file is gone, so the new
-	// key needs no lock.
+	// A key that cannot be deleted is replaced: what is stored under it is
+	// then another key's, to every proxy.
 	_, raw, err := s.newKey()
 	clear(raw)
 	if err != nil {
@@ -509,6 +632,9 @@ type inventoryFile struct {
 	otherKey int
 	// foreign reports the file was written under another key.
 	foreign bool
+	// unreadable reports a file that exists and could not be opened or
+	// understood. It is never written over.
+	unreadable bool
 }
 
 // read parses the file without trusting it: a file that is not a regular
@@ -525,7 +651,7 @@ func (inv *Inventory) read() inventoryFile {
 		file.newer = true
 		return file
 	case err != nil:
-		file.damaged = 1
+		file.unreadable = true
 		return file
 	}
 	file.foreign = !bytes.Equal(data[len(inventoryMagic)+4:inventoryHeaderSize], inv.keyID[:])
@@ -596,6 +722,10 @@ func (inv *Inventory) open(record inventoryRecord, now time.Time) (StoredEntries
 	if record.scheme > 1<<30 || !censor.SchemeSupported(int(record.scheme)) {
 		return StoredEntries{}, recordOtherScheme
 	}
+	// No build stores a scheme whose entries carry whole rolling hashes.
+	if !censor.SchemeStorable(int(record.scheme)) {
+		return StoredEntries{}, recordDamaged
+	}
 	entries, err := censor.ParseEntries(body[1:])
 	if err != nil || entries.Version != int(record.scheme) || !entries.Protected() ||
 		inv.ownerTag(entries) != record.owner || inv.tag("content", body[1:]) != record.content {
@@ -662,25 +792,67 @@ func (inv *Inventory) sealBody(record inventoryRecord, body []byte) (inventoryRe
 // either way, and a store that cannot be written is reported by Status.
 //
 // The file is read again under the lock and written whole, so what another
-// proxy stored since is kept. Entries of a newer scheme replace the records
-// of an older one for the same placeholder; a value stored already only has
-// its time brought forward, and not more than once a day.
+// proxy stored since is kept. A value stored already only has its time
+// brought forward, and not more than once a day; nothing else is replaced.
 func (inv *Inventory) Add(batch []StoredEntries) {
+	inv.adding.Lock()
+	defer inv.adding.Unlock()
+	now := inv.store.now()
+	fresh := inv.fresh(batch, now)
+	if len(fresh) == 0 {
+		return
+	}
+	created, reason := inv.storeFresh(fresh, now, false)
+	if reason == inventoryForeign {
+		// A file gone or under another key means the key was replaced, unless
+		// the keystore still names this one: asked with the lock released.
+		current, err := inv.keyCurrent()
+		if err != nil {
+			return
+		}
+		if !current {
+			inv.demote(InventoryReasonKeyReplaced)
+			return
+		}
+		created, reason = inv.storeFresh(fresh, now, true)
+	}
+	if created && reason == "" {
+		// A purge that ran between the question and the write removed the
+		// file first: what was just written is taken back.
+		if current, err := inv.keyCurrent(); err == nil && !current {
+			inv.withdraw()
+			reason = InventoryReasonKeyReplaced
+		}
+	}
+	if reason != "" {
+		inv.demote(reason)
+	}
+}
+
+type pendingEntries struct {
+	stored  StoredEntries
+	wire    []byte
+	content [inventoryTagSize]byte
+}
+
+// fresh is what of a batch is not stored already, or was last stored long
+// enough ago to be worth a write. A stored inventory only.
+func (inv *Inventory) fresh(batch []StoredEntries, now time.Time) []pendingEntries {
 	inv.mu.Lock()
 	defer inv.mu.Unlock()
 	if !inv.status.Durable {
-		return
+		return nil
 	}
-	now := inv.store.now()
-	type pending struct {
-		stored  StoredEntries
-		wire    []byte
-		content [inventoryTagSize]byte
+	// What was stored is forgotten once the file is gone or another's: a
+	// value whose record went with it is stored again.
+	if info, err := os.Stat(inv.path()); err != nil || inv.seen == nil || !os.SameFile(info, inv.seen) {
+		clear(inv.known)
 	}
-	var fresh []pending
+	var fresh []pendingEntries
 	for _, stored := range batch {
-		// A value too short or plain to protect has nothing to store.
-		if !stored.Entries.Protected() {
+		// A value too short or plain to protect has nothing to store, and
+		// entries that carry whole rolling hashes never reach the disk.
+		if !stored.Entries.Protected() || !censor.SchemeStorable(stored.Entries.Version) {
 			continue
 		}
 		wire, err := stored.Entries.Marshal()
@@ -691,32 +863,27 @@ func (inv *Inventory) Add(batch []StoredEntries) {
 		if at, ok := inv.known[content]; ok && now.Unix()-at < int64(inventoryRefreshAfter/time.Second) && at <= now.Unix() {
 			continue
 		}
-		fresh = append(fresh, pending{stored: stored, wire: wire, content: content})
+		fresh = append(fresh, pendingEntries{stored: stored, wire: wire, content: content})
 	}
-	if len(fresh) == 0 {
-		return
-	}
-	unlock, err := lockCAFile(filepath.Join(inv.directory, inventoryLockName))
+	return fresh
+}
+
+// storeFresh merges fresh into the file under the store's lock, and answers
+// whether it made the file and why the store can no longer be written.
+func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfirmed bool) (created bool, reason string) {
+	unlock, err := lockInventory(inv.directory)
 	if err != nil {
-		inv.status.Durable, inv.status.Reason = false, InventoryReasonUnusable
-		return
+		return false, lockFailure(err)
 	}
 	defer unlock()
 	file := inv.read()
-	if file.newer {
-		inv.status.Durable, inv.status.Reason = false, InventoryReasonNewerFormat
-		return
-	}
-	// A file that is gone, or under another key, means the key was replaced
-	// or removed while this process ran, unless the keystore still names this
-	// process's key: then the file is what is stale.
-	if !file.present {
-		if id, raw, err := inv.store.storedKey(); err != nil || id != inv.keyID {
-			inv.status.Durable, inv.status.Reason = false, InventoryReasonKeyReplaced
-			return
-		} else {
-			clear(raw)
-		}
+	switch {
+	case file.newer:
+		return false, InventoryReasonNewerFormat
+	case file.unreadable:
+		return false, InventoryReasonUnreadable
+	case !file.present && !keyConfirmed:
+		return false, inventoryForeign
 	}
 	records := file.records[:0:0]
 	for _, record := range file.records {
@@ -724,29 +891,57 @@ func (inv *Inventory) Add(batch []StoredEntries) {
 			records = append(records, record)
 		}
 	}
+	held := make(map[[inventoryTagSize]byte]int64, len(records))
+	for _, record := range records {
+		held[record.content] = record.registered
+	}
+	changed := len(records) != len(file.records) || !file.present
 	for _, entry := range fresh {
+		// Another proxy may have stored the same entries since.
+		if at, ok := held[entry.content]; ok && now.Unix()-at < int64(inventoryRefreshAfter/time.Second) && at <= now.Unix() {
+			continue
+		}
 		record, err := inv.sealRecord(entry.stored, entry.wire, now)
 		if err != nil {
 			continue
 		}
+		changed = true
+		// Only the same entries, registered again, make way: another value
+		// under the same placeholder, in any scheme, stays.
 		kept := records[:0]
 		for _, existing := range records {
-			sameValue := existing.content == record.content
-			olderScheme := existing.owner == record.owner && existing.scheme < record.scheme
-			if !sameValue && !olderScheme {
+			if existing.content != record.content {
 				kept = append(kept, existing)
 			}
 		}
 		records = append(kept, record)
 	}
-	records = boundInventory(records)
-	if err := inv.write(records); err != nil {
-		inv.status.Durable, inv.status.Reason = false, InventoryReasonUnusable
-		return
+	if changed {
+		records = boundInventory(records)
+		if err := inv.write(records); err != nil {
+			return false, InventoryReasonUnusable
+		}
 	}
+	// What the file no longer holds is forgotten, so it can be stored again.
+	inv.mu.Lock()
 	inv.known = make(map[[inventoryTagSize]byte]int64, len(records))
 	for _, record := range records {
 		inv.known[record.content] = record.registered
+	}
+	inv.seen, _ = os.Stat(inv.path())
+	inv.mu.Unlock()
+	return !file.present, ""
+}
+
+// withdraw removes the file if it is still this key's.
+func (inv *Inventory) withdraw() {
+	unlock, err := lockInventory(inv.directory)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	if inv.read().present {
+		_ = os.Remove(inv.path())
 	}
 }
 

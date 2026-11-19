@@ -11,7 +11,10 @@ type window struct {
 	size int
 	// runs says every chunk here is made of letters and digits, so the pass
 	// only rolls inside runs of them that are at least a chunk long.
-	runs       bool
+	runs bool
+	// drop is how many low bits of a rolling hash chunks here are not filed
+	// under: 0 for a whole hash, 40 for 24 bits. Windows differ by it.
+	drop       uint
 	outPow     uint64
 	chunks     map[uint64][]chunkRef
 	bloom      []uint64
@@ -34,13 +37,14 @@ func init() {
 
 // windowFor returns the window for chunks of a size, making it when it is the
 // first of them. Called with the index's lock held.
-func (ix *Index) windowFor(size int, runs bool) *window {
+func (ix *Index) windowFor(size int, runs bool, lookupBits int) *window {
+	drop := uint(64 - lookupBits)
 	for _, w := range ix.windows {
-		if w.size == size && w.runs == runs {
+		if w.size == size && w.runs == runs && w.drop == drop {
 			return w
 		}
 	}
-	w := &window{size: size, runs: runs, outPow: 1, chunks: map[uint64][]chunkRef{}}
+	w := &window{size: size, runs: runs, drop: drop, outPow: 1, chunks: map[uint64][]chunkRef{}}
 	for i := 0; i < size-1; i++ {
 		w.outPow *= ix.key.base
 	}
@@ -49,8 +53,8 @@ func (ix *Index) windowFor(size int, runs bool) *window {
 	return w
 }
 
-// add files a chunk under its rolling hash, within the bound on how many
-// chunks one hash leads to.
+// add files a chunk under its lookup value (its rolling hash less the bits
+// the window drops), within the bound on how many chunks one value leads to.
 func (w *window) add(h uint64, ref chunkRef) {
 	refs, present := w.chunks[h]
 	if !present {
@@ -64,15 +68,19 @@ func (w *window) add(h uint64, ref chunkRef) {
 
 // grow keeps 64 bits of filter per distinct hash, which keeps lookups cheap.
 func (w *window) grow() {
-	if len(w.chunks) > len(w.bloom) {
+	if len(w.chunks) > len(w.bloom) && len(w.bloom)*64 < w.maxBloomBits() {
 		w.resizeBloom(len(w.chunks) * 64)
 	}
 }
 
+// maxBloomBits bounds the filter: it is read by the top bits of a hash, and
+// has no more of them than a lookup value holds.
+func (w *window) maxBloomBits() int { return 1 << min(64-w.drop, 30) }
+
 // resizeBloom rebuilds the filter with at least size bits, a power of two.
 func (w *window) resizeBloom(size int) {
 	bitsWanted := bloomMinBits
-	for bitsWanted < size {
+	for bitsWanted < size && bitsWanted < w.maxBloomBits() {
 		bitsWanted <<= 1
 	}
 	w.bloom = make([]uint64, bitsWanted/64)
@@ -83,7 +91,7 @@ func (w *window) resizeBloom(size int) {
 }
 
 func (w *window) setBloom(h uint64) {
-	bit := h >> w.bloomShift
+	bit := h >> (w.bloomShift - w.drop)
 	w.bloom[bit/64] |= 1 << (bit % 64)
 }
 
@@ -144,18 +152,15 @@ func (ix *Index) roll(w *window, search *spanSearch, from, to int) {
 	k := ix.key
 	data := search.data
 	// The loop reads these at every byte.
-	bloom, shift, outPow, base, table := w.bloom, w.bloomShift, w.outPow, k.base, &k.table
+	bloom, shift, drop, outPow, base, table := w.bloom, w.bloomShift, w.drop, w.outPow, k.base, &k.table
 	h := k.roll(data[from : from+c])
 	for p := from; ; p++ {
 		if bit := h >> shift; bloom[bit/64]&(1<<(bit%64)) != 0 {
-			if refs, ok := w.chunks[h]; ok {
+			if refs, ok := w.chunks[h>>drop]; ok {
 				var here [macSize]byte
 				hashed := false
 				for _, ref := range refs {
 					f := &ix.forms[ref.form]
-					if f.dead {
-						continue
-					}
 					if end, ok := search.covered[ref.form]; ok && p+c <= end {
 						continue
 					}

@@ -152,10 +152,14 @@ type LeakInventoryStatus struct {
 	// Storage is LeakInventoryStored or LeakInventoryMemory.
 	Storage string `json:"storage"`
 	// Reason says why the inventory is in memory only: no_keystore,
-	// newer_store_format, key_replaced, store_unusable or not_configured.
+	// key_unreadable, key_replaced, newer_store_format, store_unreadable,
+	// store_busy, store_unusable or not_configured.
 	Reason string `json:"reason,omitempty"`
 	// Loaded counts the values the proxy knew from the store when it started.
 	Loaded int `json:"loaded"`
+	// NotLoaded counts stored entries left out at start because the index
+	// was full: those registered longest ago. They stay in the store.
+	NotLoaded int `json:"notLoaded"`
 	// UnmatchedScheme counts stored entries this version cannot match,
 	// because they were made by a version that matches differently. They are
 	// kept, and matched again once a command reads their value.

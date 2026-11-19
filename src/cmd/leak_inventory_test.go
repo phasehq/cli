@@ -104,9 +104,8 @@ func TestLogoutPurgeRemovesTheLeakInventory(t *testing.T) {
 	}
 }
 
-// phase ai disable removes the inventory: the file, its lock and the key. A
-// keystore that cannot delete has the key replaced, so nothing that was
-// stored under it can be matched again.
+// phase ai disable removes the file and the key (replaced where it cannot be
+// deleted). The lock file stays: removed, two proxies could each hold it.
 func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 	for name, keystore := range map[string]phaseproxy.PrivateKeyStore{
 		"a keystore that deletes":       &deletingKeystore{memoryKeystore{values: map[string]string{}}},
@@ -130,10 +129,11 @@ func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 			if err := runAIDisableForTest(); err != nil {
 				t.Fatal(err)
 			}
-			for _, file := range []string{inventoryTestFile, "leak-inventory.lock"} {
-				if _, err := os.Lstat(filepath.Join(directory, file)); !os.IsNotExist(err) {
-					t.Fatalf("%s is still there after disable: %v", file, err)
-				}
+			if _, err := os.Lstat(filepath.Join(directory, inventoryTestFile)); !os.IsNotExist(err) {
+				t.Fatalf("%s is still there after disable: %v", inventoryTestFile, err)
+			}
+			if _, err := os.Lstat(filepath.Join(directory, "leak-inventory.lock")); err != nil {
+				t.Fatalf("the inventory lock was removed by disable: %v", err)
 			}
 			after, err := keystore.Get(inventoryTestKeyService, inventoryTestKeyUser)
 			if _, deletes := keystore.(*deletingKeystore); deletes {
@@ -185,6 +185,22 @@ func TestLeakProtectionSummarySaysHowTheInventoryIsKept(t *testing.T) {
 		"an unwritable file": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "store_unusable"},
 			"; inventory kept in memory only (the inventory file could not be written)",
+		},
+		"a keystore that did not give the key": {
+			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "key_unreadable"},
+			"; inventory kept in memory only (the system keystore did not give its key; the key and the stored inventory are left as they are)",
+		},
+		"a file that could not be read": {
+			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "store_unreadable"},
+			"; inventory kept in memory only (the inventory file could not be read and is left as it is; phase ai disable removes it)",
+		},
+		"a held lock": {
+			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "store_busy"},
+			"; inventory kept in memory only (another process held the inventory file; the next proxy start stores again)",
+		},
+		"a full index at start": {
+			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 10000, NotLoaded: 12},
+			"; inventory kept across restarts (10000 loaded at start), 12 more not loaded because the inventory is full",
 		},
 		"no store": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "not_configured"},

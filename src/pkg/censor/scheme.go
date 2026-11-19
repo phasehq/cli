@@ -1,6 +1,7 @@
 package censor
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -28,20 +29,24 @@ type scheme struct {
 	// the bytes after it, so that it cannot be tested on fewer bytes than a
 	// chunk.
 	tailWithChunk bool
+	// lookupBits is how many top bits of a chunk's rolling hash the entries carry.
+	// 64 is the whole hash, which with the key gives a chunk away (see Limits).
+	lookupBits int
 	// shapes are the encoded forms the scheme knows, and how each is matched.
 	shapes map[string]formShape
 }
 
 var (
 	// scheme1 cuts every form into 12-byte chunks and hashes the tail alone.
-	scheme1 = &scheme{version: 1, chunk: chunkSize, shapes: formShapes}
+	scheme1 = &scheme{version: 1, chunk: chunkSize, lookupBits: 64, shapes: formShapes}
 	// scheme2 stores the chunks of a form made of hex digits, and of the
 	// base64 of a value made of hex digits, in pairs: one hash over 24
 	// characters, where a 12-character chunk of such a form carries 48 bits of
 	// the value or fewer and could be found by trying them all, by someone
 	// who holds the key and the stored entries. The tail is hashed with the
-	// chunk before it for the same reason.
-	scheme2 = &scheme{version: 2, chunk: chunkSize, wide: 2 * chunkSize, tailWithChunk: true, shapes: formShapes}
+	// chunk before it for the same reason. It keeps 24 bits of a chunk's
+	// rolling hash, so a guess has to be tried against the confirming hash.
+	scheme2 = &scheme{version: 2, chunk: chunkSize, wide: 2 * chunkSize, tailWithChunk: true, lookupBits: lookupBits, shapes: formShapes}
 
 	// schemes are the schemes this build matches. Tests add to it.
 	schemes = map[int]*scheme{scheme1.version: scheme1, scheme2.version: scheme2}
@@ -62,6 +67,13 @@ func SupportedSchemes() []int {
 	}
 	sort.Ints(versions)
 	return versions
+}
+
+// SchemeStorable reports whether entries of a scheme may be kept on disk: only
+// those that carry no whole rolling hash, which the key would undo.
+func SchemeStorable(version int) bool {
+	s := schemes[version]
+	return s != nil && s.lookupBits < 64
 }
 
 // IndexValueScheme is IndexValue under a scheme this build still matches,
@@ -103,6 +115,45 @@ func (s *scheme) chunkOf(f *Form) (int, error) {
 		return 0, errors.New("this version has no wide chunks")
 	}
 	return s.wide, nil
+}
+
+// lookupSize is the bytes a chunk's lookup value takes in a Form.
+func (s *scheme) lookupSize() int { return (s.lookupBits + 7) / 8 }
+
+// lookup is the part of a chunk's rolling hash the scheme keeps.
+func (s *scheme) lookup(roll uint64) uint64 { return roll >> (64 - s.lookupBits) }
+
+// lookups is where a form carries its chunks' lookup values: the whole
+// rolling hashes of scheme 1 in Rolls, the short values after it in Lookups.
+func (s *scheme) lookups(f *Form) (held, other []byte) {
+	if s.lookupBits == 64 {
+		return f.Rolls, f.Lookups
+	}
+	return f.Lookups, f.Rolls
+}
+
+// lookupAt reads the lookup value of chunk i.
+func (s *scheme) lookupAt(f *Form, i int) uint64 {
+	if s.lookupBits == 64 {
+		return binary.LittleEndian.Uint64(f.Rolls[i*8:])
+	}
+	var v uint64
+	for _, b := range f.Lookups[i*s.lookupSize() : (i+1)*s.lookupSize()] {
+		v = v<<8 | uint64(b)
+	}
+	return v
+}
+
+// appendLookup writes the lookup value of a chunk whose rolling hash is roll.
+func (s *scheme) appendLookup(f *Form, roll uint64) {
+	if s.lookupBits == 64 {
+		f.Rolls = binary.LittleEndian.AppendUint64(f.Rolls, roll)
+		return
+	}
+	v := s.lookup(roll)
+	for at := s.lookupSize() - 1; at >= 0; at-- {
+		f.Lookups = append(f.Lookups, byte(v>>(8*at)))
+	}
 }
 
 // tailBack is how far before the tail its hash begins: over the last whole

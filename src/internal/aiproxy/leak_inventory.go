@@ -38,12 +38,12 @@ func newStoredLeakGuard(mode string, store *phaseproxy.InventoryStore) (*leakGua
 	return guard, nil
 }
 
-// load indexes what the store held. An entry the index refuses is left out,
-// and the rest still load; once the index is full nothing more fits.
+// load indexes what the store held, newest first: what a full index leaves
+// out is then what was used longest ago, and it is counted.
 func (g *leakGuard) load(loaded []phaseproxy.StoredEntries) {
-	for _, stored := range loaded {
-		if _, err := g.addOne(stored.Entries, stored.KeyNamed); errors.Is(err, censor.ErrIndexFull) {
-			break
+	for at := len(loaded) - 1; at >= 0; at-- {
+		if _, err := g.addOne(loaded[at].Entries, loaded[at].KeyNamed); errors.Is(err, censor.ErrIndexFull) {
+			g.notLoaded++
 		}
 	}
 	g.loaded = g.index.Stats().Secrets
@@ -53,7 +53,7 @@ func (g *leakGuard) load(loaded []phaseproxy.StoredEntries) {
 func (g *leakGuard) inventoryStatus() *remoteapi.LeakInventoryStatus {
 	stored := g.inventory.Status()
 	status := &remoteapi.LeakInventoryStatus{
-		Storage: remoteapi.LeakInventoryMemory, Reason: stored.Reason, Loaded: g.loaded,
+		Storage: remoteapi.LeakInventoryMemory, Reason: stored.Reason, Loaded: g.loaded, NotLoaded: g.notLoaded,
 		UnmatchedScheme: stored.OtherScheme, UnmatchedKey: stored.OtherKey, Damaged: stored.Damaged,
 	}
 	if stored.Durable {

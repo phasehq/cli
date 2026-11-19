@@ -55,6 +55,10 @@ func (k *lockedKeyring) Set(service, user, value string) error {
 	return k.memoryKeyring.Set(service, user, value)
 }
 
+func init() {
+	inventoryKeySettle, inventoryKeyCheckEvery = 5*time.Millisecond, 0
+}
+
 func newInventoryTestStore(t testing.TB) InventoryStore {
 	t.Helper()
 	return InventoryStore{Directory: t.TempDir(), Keyring: &lockedKeyring{memoryKeyring: memoryKeyring{values: map[string]string{}}}}
@@ -198,6 +202,9 @@ func TestInventoryConcurrentWriters(t *testing.T) {
 	values := make([][]string, proxies)
 	var wait sync.WaitGroup
 	start := make(chan struct{})
+	// The key exists: proxies that make the first key together are another
+	// test's (TestInventoryFirstStartsTogether).
+	openInventory(t, store)
 	for p := 0; p < proxies; p++ {
 		for i := 0; i < batches*perBatch; i++ {
 			values[p] = append(values[p], inventoryTestValue(t, inventoryTestAlphabet, 32))
@@ -206,8 +213,7 @@ func TestInventoryConcurrentWriters(t *testing.T) {
 		go func(p int) {
 			defer wait.Done()
 			<-start
-			// Each opens for itself, as a process would, the first of them
-			// making the key.
+			// Each opens for itself, as a process would.
 			inv, _, err := store.Open()
 			if err != nil {
 				t.Error(err)
@@ -355,74 +361,99 @@ func foreignSchemeRecord(t *testing.T, inv *Inventory, scheme uint32, id string,
 	return record.raw
 }
 
-// Entries in a scheme the build does not match stay in the file untouched,
-// so the build that matches them finds them again. They are not matched,
-// they are counted, and registering the value again under a newer scheme
-// replaces them. Entries of the two schemes this build matches are loaded
-// side by side, and the newer replace the older for the same placeholder.
+// Entries in a scheme the build does not match stay in the file, counted, for
+// the build that does. Nothing registered under their ids replaces them.
 func TestInventoryKeepsEachEntrysScheme(t *testing.T) {
 	store := newInventoryTestStore(t)
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	store.Now = func() time.Time { return now }
 	inv, _ := openInventory(t, store)
-	older, current, moved := inventoryTestValue(t, "0123456789abcdef", 64), inventoryTestValue(t, inventoryTestAlphabet, 40), inventoryTestValue(t, inventoryTestAlphabet, 40)
-	inv.Add([]StoredEntries{
-		{Entries: inventoryEntries(t, inv, 1, "older", older)},
-		{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "current", current)},
-		{Entries: inventoryEntries(t, inv, 1, "moved", moved)},
-	})
-	later := foreignSchemeRecord(t, inv, 99, "later", now)
-	retired := foreignSchemeRecord(t, inv, 0, "retired", now)
-	retiredAndMoved := foreignSchemeRecord(t, inv, 0, "moved", now)
-	laterAndMoved := foreignSchemeRecord(t, inv, 99, "moved", now)
-
+	current := inventoryTestValue(t, inventoryTestAlphabet, 40)
+	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "current", current)}})
+	records := map[string][]byte{
+		"a later scheme's":                    foreignSchemeRecord(t, inv, 99, "later", now),
+		"a retired scheme's":                  foreignSchemeRecord(t, inv, 0, "retired", now),
+		"a retired scheme's, under a used id": foreignSchemeRecord(t, inv, 0, "DATABASE_URL", now),
+		"a later scheme's, under a used id":   foreignSchemeRecord(t, inv, 99, "DATABASE_URL", now),
+	}
 	reopened, loaded := openInventory(t, store)
-	if status := reopened.Status(); !status.Durable || status.OtherScheme != 4 || status.Loaded != 3 || status.Damaged != 0 {
+	if status := reopened.Status(); !status.Durable || status.OtherScheme != 4 || status.Loaded != 1 || status.Damaged != 0 {
 		t.Fatalf("%+v", status)
 	}
-	schemes := map[string]int{}
-	for _, stored := range loaded {
-		schemes[stored.Entries.ID] = stored.Entries.Version
-	}
-	if schemes["older"] != 1 || schemes["current"] != censor.EntriesVersion || schemes["moved"] != 1 {
-		t.Fatalf("%v", schemes)
-	}
-	for _, value := range []string{older, current, moved} {
-		if !finds(t, reopened, loaded, value) {
-			t.Fatal("entries of both schemes are not matched side by side")
-		}
-	}
-
-	// The CLI decrypts "moved" again and registers it in the current scheme.
-	reopened.Add([]StoredEntries{{Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "moved", moved)}})
+	// The CLI registers a value under an id other schemes' records hold.
+	value := inventoryTestValue(t, inventoryTestAlphabet, 40)
+	reopened.Add([]StoredEntries{{Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "DATABASE_URL", value)}})
 	file, err := os.ReadFile(inventoryFilePath(store))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, record := range map[string][]byte{"a later scheme's": later, "a retired scheme's": retired, "a later scheme's, of a value registered again": laterAndMoved} {
+	for name, record := range records {
 		if !bytes.Contains(file, record) {
 			t.Errorf("%s record did not stay in the file as it was", name)
 		}
 	}
-	if bytes.Contains(file, retiredAndMoved) {
-		t.Error("an older scheme's record outlived the value's registration in the current one")
-	}
 	final, loaded := openInventory(t, store)
-	if status := final.Status(); status.OtherScheme != 3 || status.Loaded != 3 {
+	if status := final.Status(); status.OtherScheme != 4 || status.Loaded != 2 {
 		t.Fatalf("%+v", status)
 	}
-	for _, stored := range loaded {
-		if stored.Entries.ID == "moved" && stored.Entries.Version != censor.EntriesVersion {
-			t.Fatal("the scheme 1 entries of a value registered again were kept")
-		}
-	}
-	if !finds(t, final, loaded, moved) || !finds(t, final, loaded, older) {
+	if !finds(t, final, loaded, value) || !finds(t, final, loaded, current) {
 		t.Fatal("a value was lost")
 	}
 	// What no build registers again goes with its age, whatever its scheme.
 	now = now.Add(InventoryEntryLifetime + time.Hour)
 	if expired, _ := openInventory(t, store); expired.Status().Expired != 6 || expired.Status().OtherScheme != 0 {
 		t.Fatalf("%+v", expired.Status())
+	}
+}
+
+// Two values under one placeholder (a key name is shared across apps) are
+// both stored, and each is stored again once it has gone from the file.
+func TestInventoryKeepsEveryValueOfAPlaceholder(t *testing.T) {
+	store := newInventoryTestStore(t)
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	store.Now = func() time.Time { return now }
+	inv, _ := openInventory(t, store)
+	staging, production := inventoryTestValue(t, inventoryTestAlphabet, 40), inventoryTestValue(t, inventoryTestAlphabet, 40)
+	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", staging)}})
+	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", production)}})
+	reopened, loaded := openInventory(t, store)
+	if len(loaded) != 2 || !finds(t, reopened, loaded, staging) || !finds(t, reopened, loaded, production) {
+		t.Fatalf("%d loaded: a value sharing a placeholder was dropped", len(loaded))
+	}
+	// A value whose record is gone is not remembered as stored.
+	if err := store.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "DATABASE_URL", staging)}})
+	if _, loaded := openInventory(t, store); len(loaded) != 1 {
+		t.Fatalf("%d loaded after the value was stored again", len(loaded))
+	}
+}
+
+// Entries of scheme 1 carry whole rolling hashes, which the key undoes: they
+// are matched from memory and never written to the file.
+func TestInventoryNeverStoresWholeRollingHashes(t *testing.T) {
+	store := newInventoryTestStore(t)
+	inv, _ := openInventory(t, store)
+	older, current := inventoryTestValue(t, inventoryTestAlphabet, 40), inventoryTestValue(t, inventoryTestAlphabet, 40)
+	inv.Add([]StoredEntries{{Entries: inventoryEntries(t, inv, 1, "older", older)}})
+	if info, err := os.Stat(inventoryFilePath(store)); err != nil || info.Size() != int64(inventoryHeaderSize) {
+		t.Fatalf("scheme 1 entries were written: %v %v", info, err)
+	}
+	inv.Add([]StoredEntries{
+		{Entries: inventoryEntries(t, inv, 1, "older", older)},
+		{Entries: inventoryEntries(t, inv, censor.EntriesVersion, "current", current)},
+	})
+	reopened, loaded := openInventory(t, store)
+	if status := reopened.Status(); len(loaded) != 1 || loaded[0].Entries.Version != censor.EntriesVersion || !status.Durable || status.Damaged != 0 {
+		t.Fatalf("%d loaded, %+v", len(loaded), status)
+	}
+	for _, stored := range loaded {
+		for _, form := range stored.Entries.Forms {
+			if len(form.Rolls) != 0 {
+				t.Fatal("a stored form holds whole rolling hashes")
+			}
+		}
 	}
 }
 
@@ -464,14 +495,6 @@ func TestInventoryUnderAnotherKey(t *testing.T) {
 	if after, _ := os.ReadFile(inventoryFilePath(store)); !bytes.Equal(before, after) {
 		t.Fatal("a proxy holding a replaced key wrote to the store")
 	}
-	// A key in the keystore that cannot be read is replaced as well.
-	keyring := store.Keyring.(*lockedKeyring)
-	if err := keyring.Set(inventoryKeyringService, inventoryKeyringUser, "v1:nothex:AAAA"); err != nil {
-		t.Fatal(err)
-	}
-	if repaired, _ := openInventory(t, store); !repaired.Status().Durable || repaired.Status().OtherKey != 1 {
-		t.Fatalf("%+v", repaired.Status())
-	}
 }
 
 // Remove takes the file and everything written beside it.
@@ -488,8 +511,10 @@ func TestInventoryRemove(t *testing.T) {
 	if err := store.Remove(); err != nil {
 		t.Fatal(err)
 	}
+	// The lock file stays, for the processes that lock it (see
+	// TestInventoryRemoveLeavesTheLock).
 	entries, err := os.ReadDir(store.Directory)
-	if err != nil || len(entries) != 1 || entries[0].Name() != "ca.pem" {
+	if err != nil || len(entries) != 2 || entries[0].Name() != "ca.pem" || entries[1].Name() != inventoryLockName {
 		t.Fatalf("%v %v", entries, err)
 	}
 	if err := store.Remove(); err != nil {
@@ -512,7 +537,7 @@ func TestInventoryDamagedFiles(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		id := fmt.Sprintf("value-%d", i)
 		values[id] = inventoryTestValue(t, inventoryTestAlphabet, 24+7*i)
-		batch = append(batch, StoredEntries{Entries: inventoryEntries(t, inv, 1+i%2, id, values[id]), KeyNamed: i%3 == 0})
+		batch = append(batch, StoredEntries{Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, values[id]), KeyNamed: i%3 == 0})
 	}
 	inv.Add(batch)
 	good, err := os.ReadFile(inventoryFilePath(store))
@@ -567,7 +592,12 @@ func TestInventoryDamagedFiles(t *testing.T) {
 		at += 4 + length
 	}
 
-	// emptied says the file is a whole one that holds no entries.
+	// emptied says the file is a whole one that holds no entries, and
+	// unreadable that it is no inventory this build can open at all.
+	unreadable := map[string]bool{
+		"empty": true, "half a header": true, "another magic": true, "format zero": true,
+		"all zeros": true, "all ones": true, "text": true, "oversized": true,
+	}
 	check := func(name string, emptied bool) {
 		t.Helper()
 		before, _ := os.ReadFile(inventoryFilePath(store))
@@ -576,14 +606,21 @@ func TestInventoryDamagedFiles(t *testing.T) {
 			t.Fatalf("%s: the store did not open: %v", name, err)
 		}
 		status := reopened.Status()
-		if status.Reason == InventoryReasonNewerFormat {
-			// The damage made it a later format's file: left alone, and the
-			// proxy runs from memory.
+		if status.Reason == InventoryReasonNewerFormat || status.Reason == InventoryReasonUnreadable {
+			// A later format's file, or no inventory at all: left exactly as
+			// it is by the start and by a registration.
+			reopened.Add([]StoredEntries{{Entries: inventoryEntries(t, reopened, censor.EntriesVersion, "after", inventoryTestValue(t, inventoryTestAlphabet, 40))}})
 			after, _ := os.ReadFile(inventoryFilePath(store))
-			if status.Durable || len(loaded) != 0 || !bytes.Equal(before, after) {
+			if status.Durable || len(loaded) != 0 || (!bytes.Equal(before, after) && name != "oversized") {
 				t.Fatalf("%s: %+v", name, status)
 			}
+			if info, err := os.Stat(inventoryFilePath(store)); err != nil || info.Size() != int64(len(before)) && name != "oversized" {
+				t.Fatalf("%s: the file was written: %v", name, err)
+			}
 			return
+		}
+		if unreadable[name] || strings.HasPrefix(name, "header byte 0,") {
+			t.Fatalf("%s: a file that is no inventory was taken for one: %+v", name, status)
 		}
 		if !status.Durable || status.Loaded != len(loaded) || len(loaded) > len(batch) {
 			t.Fatalf("%s: %+v, %d loaded", name, status, len(loaded))
@@ -631,6 +668,9 @@ func TestInventoryDamagedFiles(t *testing.T) {
 		}
 	})
 	check("oversized", false)
+	if info, err := os.Stat(inventoryFilePath(store)); err != nil || info.Size() != maxInventoryFileBytes+1 {
+		t.Fatalf("the oversized file was written: %v", err)
+	}
 	if runtime.GOOS != "windows" {
 		outside := filepath.Join(t.TempDir(), "elsewhere")
 		if err := os.WriteFile(outside, good, 0o600); err != nil {
@@ -641,15 +681,17 @@ func TestInventoryDamagedFiles(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+		// What stands in the file's place and is not an owner-only file of
+		// this user is neither read nor replaced.
 		reopened, loaded := openInventory(t, store)
-		if status := reopened.Status(); len(loaded) != 0 || status.Damaged != 1 || !status.Durable {
+		if status := reopened.Status(); len(loaded) != 0 || status.Durable || status.Reason != InventoryReasonUnreadable {
 			t.Fatalf("a symlink was followed: %+v", status)
 		}
 		if after, err := os.ReadFile(outside); err != nil || !bytes.Equal(after, good) {
 			t.Fatal("the symlink's target was written")
 		}
-		if info, err := os.Lstat(inventoryFilePath(store)); err != nil || !info.Mode().IsRegular() {
-			t.Fatalf("the symlink was not replaced by a file: %v", err)
+		if info, err := os.Lstat(inventoryFilePath(store)); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("the symlink was replaced: %v", err)
 		}
 		replace(func(path string) {
 			if err := os.WriteFile(path, good, 0o644); err != nil {
@@ -660,18 +702,21 @@ func TestInventoryDamagedFiles(t *testing.T) {
 			}
 		})
 		reopened, loaded = openInventory(t, store)
-		if status := reopened.Status(); len(loaded) != 0 || status.Damaged != 1 {
+		if status := reopened.Status(); len(loaded) != 0 || status.Durable || status.Reason != InventoryReasonUnreadable {
 			t.Fatalf("a file others can read was trusted: %+v", status)
+		}
+		if after, err := os.ReadFile(inventoryFilePath(store)); err != nil || !bytes.Equal(after, good) {
+			t.Fatal("a file others can read was written over")
 		}
 		replace(func(path string) {
 			if err := os.Mkdir(path, 0o700); err != nil {
 				t.Fatal(err)
 			}
 		})
-		// A directory in the file's place cannot be replaced: the proxy runs
-		// from memory and says so.
+		// A directory in the file's place: the proxy runs from memory and
+		// says so.
 		reopened, loaded = openInventory(t, store)
-		if status := reopened.Status(); len(loaded) != 0 || status.Durable || status.Reason != InventoryReasonUnusable {
+		if status := reopened.Status(); len(loaded) != 0 || status.Durable || status.Reason != InventoryReasonUnreadable {
 			t.Fatalf("%+v", status)
 		}
 	}
@@ -720,7 +765,6 @@ func TestInventoryFileHoldsNoPlaintext(t *testing.T) {
 	var batch []StoredEntries
 	for id, value := range values {
 		batch = append(batch, StoredEntries{Entries: inventoryEntries(t, inv, censor.EntriesVersion, id, value), KeyNamed: true})
-		batch = append(batch, StoredEntries{Entries: inventoryEntries(t, inv, 1, id+"_V1", value), KeyNamed: true})
 	}
 	inv.Add(batch)
 

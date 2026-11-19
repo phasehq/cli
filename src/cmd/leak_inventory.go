@@ -27,10 +27,19 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 			why = "its key was replaced while the proxy ran; the next proxy start stores again"
 		case phaseproxy.InventoryReasonUnusable:
 			why = "the inventory file could not be written"
+		case phaseproxy.InventoryReasonKeyUnreadable:
+			why = "the system keystore did not give its key; the key and the stored inventory are left as they are"
+		case phaseproxy.InventoryReasonUnreadable:
+			why = "the inventory file could not be read and is left as it is; phase ai disable removes it"
+		case phaseproxy.InventoryReasonBusy:
+			why = "another process held the inventory file; the next proxy start stores again"
 		}
 		return "inventory kept in memory only (" + why + ")"
 	}
 	line := fmt.Sprintf("inventory kept across restarts (%d loaded at start)", inventory.Loaded)
+	if inventory.NotLoaded > 0 {
+		line += fmt.Sprintf(", %d more not loaded because the inventory is full", inventory.NotLoaded)
+	}
 	if inventory.UnmatchedScheme > 0 {
 		line += fmt.Sprintf(", %d stored by another version of Phase and not matched until read again", inventory.UnmatchedScheme)
 	}

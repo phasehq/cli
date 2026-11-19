@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	gokeyring "github.com/zalando/go-keyring"
 
@@ -109,7 +111,7 @@ func TestLeakInventoryOutlivesTheProxy(t *testing.T) {
 	if status.SecretsKnown != 2 || status.Unprotected != 0 || *status.Inventory != (remoteapi.LeakInventoryStatus{Storage: remoteapi.LeakInventoryStored, Loaded: 2}) {
 		t.Fatalf("the second proxy: %+v %+v", status, status.Inventory)
 	}
-	if !strings.Contains(body, `"inventory":{"storage":"stored","loaded":2,"unmatchedScheme":0,"unmatchedKey":0}`) {
+	if !strings.Contains(body, `"inventory":{"storage":"stored","loaded":2,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`) {
 		t.Fatalf("status: %s", body)
 	}
 	for _, private := range []string{"secret-id-1", "DATABASE_URL", leakSecretOne, hex.EncodeToString(second.guard.key.Bytes())} {
@@ -145,10 +147,9 @@ func TestLeakInventoryOutlivesTheProxy(t *testing.T) {
 	}
 }
 
-// Entries stored under scheme 1 are matched by this build beside its own,
-// and the next registration of the value replaces them, in the proxy and in
-// the store.
-func TestLeakInventoryMatchesStoredSchemeOneEntries(t *testing.T) {
+// Scheme 1 entries from an older client are matched while the proxy runs and
+// never stored (they carry whole rolling hashes), and replace nothing.
+func TestLeakInventoryMatchesSchemeOneEntriesFromMemoryOnly(t *testing.T) {
 	store := newTestInventoryStore(t)
 	first, err := newStoredLeakGuard(leakModeCensor, store)
 	if err != nil {
@@ -165,24 +166,27 @@ func TestLeakInventoryMatchesStoredSchemeOneEntries(t *testing.T) {
 	if added, _, err := first.add([]*censor.Entries{old, current}, []bool{false, false}); err != nil || added != 2 {
 		t.Fatalf("%d %v", added, err)
 	}
+	if out, _ := first.index.Redact([]byte(leakSecretOne + " " + leakSecretTwo)); string(out) != "ph:secret:one ph:secret:two" {
+		t.Fatalf("%q", out)
+	}
 	second, err := newStoredLeakGuard(leakModeCensor, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _ := second.index.Redact([]byte(leakSecretOne + " " + leakSecretTwo))
-	if string(out) != "ph:secret:one ph:secret:two" || second.loaded != 2 {
+	if out, _ := second.index.Redact([]byte(leakSecretTwo)); string(out) != "ph:secret:two" || second.loaded != 1 {
 		t.Fatalf("%q, %d loaded", out, second.loaded)
 	}
-	before := second.index.Stats()
-	again, err := censor.IndexValue(second.key, "secret", "one", leakSecretOne)
+	// Another value under the id the older client used: both stay matched.
+	other := "Hd6Fs1Gp0YaJw3Rk8Tn5Vb2Xq7Zc4Lm9"
+	again, err := censor.IndexValue(first.key, "secret", "one", other)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := second.add([]*censor.Entries{again}, []bool{false}); err != nil {
+	if _, _, err := first.add([]*censor.Entries{again}, []bool{false}); err != nil {
 		t.Fatal(err)
 	}
-	if after := second.index.Stats(); after.Secrets != 2 || after.Forms > before.Forms {
-		t.Fatalf("the scheme 1 entries were kept beside the new ones: %+v then %+v", before, after)
+	if out, _ := first.index.Redact([]byte(leakSecretOne + " " + other)); string(out) != "ph:secret:one ph:secret:one" {
+		t.Fatalf("a value sharing an id across schemes was dropped: %q", out)
 	}
 	inventory, loaded, err := store.Open()
 	if err != nil || len(loaded) != 2 || inventory.Status().OtherScheme != 0 {
@@ -190,8 +194,44 @@ func TestLeakInventoryMatchesStoredSchemeOneEntries(t *testing.T) {
 	}
 	for _, stored := range loaded {
 		if stored.Entries.Version != censor.EntriesVersion {
-			t.Fatalf("%s is still stored under scheme %d", stored.Entries.ID, stored.Entries.Version)
+			t.Fatalf("%s is stored under scheme %d", stored.Entries.ID, stored.Entries.Version)
 		}
+	}
+}
+
+// When the store holds more than the index has room for, the values
+// registered most recently are the ones loaded, and status counts the rest.
+func TestLeakInventoryLoadsTheNewestIntoAFullIndex(t *testing.T) {
+	store := newTestInventoryStore(t)
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	store.Now = func() time.Time { return now }
+	first, err := newStoredLeakGuard(leakModeCensor, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := []string{
+		"mQ4zT7wK2nB9xR5cV8pL1dH6", "Yg3Js6Uf9Ia2Oe5Pw8Ld1Kc4", "tN7bX2vM5qZ8rW3kG6hC9jF1",
+		"E4sA7dU1iO8pY5lT2gR9fK6h", "zC3vB6nM9xL2kJ5hG8fD1sQ4",
+	}
+	for i, value := range values {
+		registerLeakValues(t, first, map[string]string{fmt.Sprintf("value-%d", i): value})
+		now = now.Add(time.Hour)
+	}
+	leakIndexMaxSecrets = 3
+	t.Cleanup(func() { leakIndexMaxSecrets = 0 })
+	rig := newStoredLeakRig(t, store)
+	status, body := rawStatus(t, rig)
+	if status.SecretsKnown != 3 || status.Inventory.Loaded != 3 || status.Inventory.NotLoaded != 2 || !strings.Contains(body, `"notLoaded":2`) {
+		t.Fatalf("%+v: %s", status.Inventory, body)
+	}
+	out, _ := rig.guard.index.Redact([]byte(strings.Join(values, " ")))
+	if want := values[0] + " " + values[1] + " ph:secret:value-2 ph:secret:value-3 ph:secret:value-4"; string(out) != want {
+		t.Fatalf("the newest values were not the ones loaded: %s", out)
+	}
+	// What was left out is still in the store, for an index with room.
+	leakIndexMaxSecrets = 0
+	if all, err := newStoredLeakGuard(leakModeCensor, store); err != nil || all.loaded != 5 || all.notLoaded != 0 {
+		t.Fatalf("%v", err)
 	}
 }
 
@@ -205,7 +245,7 @@ func TestLeakInventoryWithoutAKeystoreIsMemoryOnly(t *testing.T) {
 	if status.SecretsKnown != 1 || *status.Inventory != (remoteapi.LeakInventoryStatus{Storage: remoteapi.LeakInventoryMemory, Reason: phaseproxy.InventoryReasonNoKeystore}) {
 		t.Fatalf("%+v", status.Inventory)
 	}
-	if !strings.Contains(body, `"inventory":{"storage":"memory","reason":"no_keystore","loaded":0,"unmatchedScheme":0,"unmatchedKey":0}`) {
+	if !strings.Contains(body, `"inventory":{"storage":"memory","reason":"no_keystore","loaded":0,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`) {
 		t.Fatalf("status: %s", body)
 	}
 	postMessages(t, first.client(first.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(leakSecretOne), "")

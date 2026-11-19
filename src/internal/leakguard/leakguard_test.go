@@ -50,6 +50,9 @@ type fakeProxy struct {
 	kinds     [][]string
 	keyStatus int
 	full      bool
+	// format is the matching scheme the proxy says it reads; 0 is this
+	// build's own.
+	format int
 }
 
 func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
@@ -73,7 +76,11 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 				w.WriteHeader(fake.keyStatus)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.Bytes()), Format: censor.EntriesVersion})
+			format := censor.EntriesVersion
+			if fake.format != 0 {
+				format = fake.format
+			}
+			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.Bytes()), Format: format})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory":
 			body, _ := io.ReadAll(r.Body)
 			fake.posts++
@@ -217,6 +224,43 @@ func TestRegisterSendsKeyedHashesOnlyAndFetchesTheKeyOnce(t *testing.T) {
 	out, report, err := index.RewriteJSON([]byte(`{"messages":["`+value+`"]}`), censor.ScanOptions{})
 	if err != nil || !report.Changed || strings.Contains(string(out), value) {
 		t.Fatalf("the registered value is not found: %s", out)
+	}
+}
+
+// A proxy of another version still gets its values: the client indexes in
+// the scheme the proxy reads, or says it cannot when it does not know it.
+func TestRegisterUsesTheSchemeTheProxyReads(t *testing.T) {
+	value := "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"
+	for _, scheme := range censor.SupportedSchemes() {
+		fake, server := newFakeProxy(t)
+		fake.format = scheme
+		withEnvironment(t, sessionEnvironment(server))
+		result, err := Register(context.Background(), []Value{
+			{Type: "secret", ID: "one", Value: value},
+			{Type: "secret", ID: "short", Value: "abc"},
+		})
+		if err != nil || result.Added != 1 || result.Unprotected != 1 {
+			t.Fatalf("a proxy that reads scheme %d: %+v %v", scheme, result, err)
+		}
+		index, _ := censor.NewIndex(fake.key, censor.IndexOptions{})
+		for _, entry := range fake.entries {
+			if entry.Version != scheme {
+				t.Fatalf("a proxy that reads scheme %d was sent scheme %d", scheme, entry.Version)
+			}
+			if err := index.Add(entry); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if out, _ := index.Redact([]byte("the value is " + value)); strings.Contains(string(out), value) {
+			t.Fatalf("scheme %d: the registered value is not found", scheme)
+		}
+	}
+	fake, server := newFakeProxy(t)
+	fake.format = 99
+	withEnvironment(t, sessionEnvironment(server))
+	_, err := Register(context.Background(), []Value{{Type: "secret", ID: "one", Value: value}})
+	if err == nil || !strings.Contains(err.Error(), "does not read") || fake.posts != 0 {
+		t.Fatalf("a proxy that reads a scheme this build does not know: %v, %d registrations", err, fake.posts)
 	}
 }
 

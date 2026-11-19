@@ -65,20 +65,17 @@ func TestSchemesMatchSideBySide(t *testing.T) {
 	}
 }
 
-// When a value is indexed again under a newer scheme, its entries replace
-// those the older scheme left for the same placeholder: what only the older
-// entries matched is no longer matched, the newer ones are, and the index
-// gives the older chunks' room back.
-func TestNewerSchemeEntriesReplaceOlderOnes(t *testing.T) {
+// Entries of a newer scheme never replace an older scheme's under the same
+// placeholder: a key name is shared, so they may be another value's.
+func TestSchemesNeverReplaceByPlaceholder(t *testing.T) {
 	key := newKey(t)
 	ix, err := NewIndex(key, IndexOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, other := randomString(t, lowerHex, 64), randomString(t, alnum, 50)
-	add := func(scheme int, id, value string) *Entries {
+	add := func(scheme int, value string) *Entries {
 		t.Helper()
-		e, err := IndexValueScheme(key, scheme, "secret", id, value)
+		e, err := IndexValueScheme(key, scheme, "secret", "DATABASE_URL", value)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,36 +84,26 @@ func TestNewerSchemeEntriesReplaceOlderOnes(t *testing.T) {
 		}
 		return e
 	}
-	oldEntries := add(1, "key", value)
-	add(1, "other", other)
-	before := ix.Stats()
-	// One 12-character chunk of a hex value is a match under scheme 1 only.
-	piece := "id " + value[12:24] + " end"
-	if entropy(value[12:24]) >= weakChunkEntropy && found(t, ix, piece) != "ph:secret:key" {
-		t.Fatal("scheme 1 did not match one chunk of the value")
-	}
-	add(2, "key", value)
-	after := ix.Stats()
-	if after.Secrets != 2 || after.Forms >= before.Forms+10 || after.Chunks >= before.Chunks {
-		t.Fatalf("the older entries were kept: before %+v, after %+v", before, after)
-	}
-	if got := found(t, ix, piece); got != "" {
-		t.Fatalf("the older scheme's chunk still matches: %q", got)
-	}
-	for _, text := range []string{"a " + value + " b", "a " + value[:48] + " b", "a " + hex.EncodeToString([]byte(value)) + " b"} {
-		if got := found(t, ix, text); got != "ph:secret:key" {
-			t.Fatalf("%q: found %q", text, got)
+	staging, production := randomString(t, alnum, 40), randomString(t, alnum, 40)
+	older := add(1, staging)
+	add(2, production)
+	for name, value := range map[string]string{"the older scheme's value": staging, "the newer scheme's value": production} {
+		if got := found(t, ix, "x "+value+" y"); got != "ph:secret:DATABASE_URL" {
+			t.Fatalf("%s is no longer matched: %q", name, got)
 		}
 	}
-	if got := found(t, ix, "a "+other+" b"); got != "ph:secret:other" {
-		t.Fatalf("another placeholder's older entries were dropped: %q", got)
+	// The same value under both schemes is matched once and held twice.
+	before := ix.Stats()
+	add(2, staging)
+	if after := ix.Stats(); after.Secrets != 1 || after.Chunks <= before.Chunks {
+		t.Fatalf("before %+v, after %+v", before, after)
 	}
-	// The older entries do not come back when something sends them again.
-	if err := ix.Add(oldEntries); err != nil {
+	held := ix.Stats()
+	if err := ix.Add(older); err != nil {
 		t.Fatal(err)
 	}
-	if got, stats := found(t, ix, piece), ix.Stats(); got != "" || stats != after {
-		t.Fatalf("the replaced entries came back: %q %+v", got, stats)
+	if got, stats := found(t, ix, "x "+staging+" y"), ix.Stats(); got != "ph:secret:DATABASE_URL" || stats != held {
+		t.Fatalf("adding the older entries again: %q, %+v then %+v", got, held, stats)
 	}
 }
 
@@ -146,10 +133,10 @@ func TestUnknownSchemeIsRefused(t *testing.T) {
 
 // A later scheme is a value beside the others: this one, known to the test
 // only, cuts 16-byte chunks. Its entries match beside those of the shipped
-// schemes, and replace them for the same placeholder.
+// schemes, and replace none of them.
 func TestAddingASchemeIsAddingAMatcher(t *testing.T) {
 	const version = 90
-	schemes[version] = &scheme{version: version, chunk: 16, tailWithChunk: true, shapes: formShapes}
+	schemes[version] = &scheme{version: version, chunk: 16, tailWithChunk: true, lookupBits: 20, shapes: formShapes}
 	t.Cleanup(func() { delete(schemes, version) })
 
 	key := newKey(t)
@@ -157,11 +144,11 @@ func TestAddingASchemeIsAddingAMatcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, later := everyChunkCounts(t, alnum, 64), everyChunkCounts(t, alnum, 64)
+	current, later, older := everyChunkCounts(t, alnum, 64), everyChunkCounts(t, alnum, 64), everyChunkCounts(t, alnum, 64)
 	for _, v := range []struct {
 		scheme    int
 		id, value string
-	}{{EntriesVersion, "current", current}, {version, "later", later}, {1, "moved", later + "x"}} {
+	}{{EntriesVersion, "current", current}, {version, "later", later}, {1, "moved", older}} {
 		e, err := IndexValueScheme(key, v.scheme, "secret", v.id, v.value)
 		if err != nil {
 			t.Fatal(err)
@@ -191,7 +178,8 @@ func TestAddingASchemeIsAddingAMatcher(t *testing.T) {
 			t.Errorf("%s: found %q", name, got)
 		}
 	}
-	moved, err := IndexValueScheme(key, version, "secret", "moved", later+"x")
+	// The value indexed again under the later scheme is held under both.
+	moved, err := IndexValueScheme(key, version, "secret", "moved", older)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,8 +187,11 @@ func TestAddingASchemeIsAddingAMatcher(t *testing.T) {
 	if err := ix.Add(moved); err != nil {
 		t.Fatal(err)
 	}
-	if after := ix.Stats(); after.Secrets != before.Secrets || after.Chunks >= before.Chunks {
+	if after := ix.Stats(); after.Secrets != before.Secrets || after.Chunks <= before.Chunks {
 		t.Fatalf("before %+v, after %+v", before, after)
+	}
+	if got := found(t, ix, "a "+older[12:24]+" b"); got != "ph:secret:moved" {
+		t.Fatalf("the older scheme's chunk is no longer matched: %q", got)
 	}
 }
 
@@ -212,6 +203,11 @@ func holdsHashOf(key *Key, e *Entries, data []byte) bool {
 	for _, f := range e.Forms {
 		if bytes.Contains(f.MACs, mac[:]) || bytes.Equal(f.Tail, mac[:]) {
 			return true
+		}
+		for at := 0; at+3 <= len(f.Lookups); at += 3 {
+			if schemes[e.Version].lookupAt(&f, at/3) == key.roll(data)>>40 {
+				return true
+			}
 		}
 		for at := 0; at+8 <= len(f.Rolls); at += 8 {
 			if bytes.Equal(f.Rolls[at:at+8], roll) {
