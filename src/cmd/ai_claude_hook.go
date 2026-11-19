@@ -40,7 +40,13 @@ type claudePromptSubmitOutput struct {
 
 // claudePhaseAIHarnessContext is the session context for Claude Code, whose
 // shell sources the Phase AI environment before every command.
-const claudePhaseAIHarnessContext = `Phase AI is enabled on this machine: the human chose Phase-managed execution by running phase ai enable. While the Phase proxy is running, every Bash command starts with the Phase AI environment, so provider CLIs and HTTP clients for this Workflow's Connections use Phase-managed credentials automatically, with no wrapper. http://phase.invalid/v1/status lists the Connections. If Phase is unavailable, Phase-managed commands fail with credential or connection errors while everything else is unaffected: tell the human and continue other work. Never unset, override, print, or copy PHASE_AI_*, HTTPS_PROXY, or provider credential variables, and never substitute other credentials. Values Phase shows masked are hidden on purpose: never try to recover, decode, or work around them, and tell the human if the task needs one. Load the phase-cli skill for Connections, access requests, and app secrets.`
+const claudePhaseAIHarnessContext = `Phase AI is enabled on this machine: the human chose Phase-managed execution by running phase ai enable. While the Phase proxy is running, every Bash command starts with the Phase AI environment, so provider CLIs and HTTP clients for this Workflow's Connections use Phase-managed credentials automatically, with no wrapper. http://phase.invalid/v1/status lists the Connections. If Phase is unavailable, Phase-managed commands fail with credential or connection errors while everything else is unaffected: tell the human and continue other work. ` + claudePhaseAIRules
+
+// claudeNoLoaderPhaseAIContext replaces it when the session's shell could not
+// be set up to load the Phase AI environment.
+const claudeNoLoaderPhaseAIContext = `Phase AI is enabled on this machine: the human chose Phase-managed execution by running phase ai enable. Phase could not set up this session's shell, so Bash commands here do not start with the Phase AI environment and use ambient credentials. For a command that needs this Workflow's Connections, run it as phase ai exec -- <command>. http://phase.invalid/v1/status lists the Connections. If Phase is unavailable, phase ai exec fails while everything else is unaffected: tell the human and continue other work. ` + claudePhaseAIRules
+
+const claudePhaseAIRules = `Never unset, override, print, or copy PHASE_AI_*, HTTPS_PROXY, or provider credential variables, and never substitute other credentials. Values Phase shows masked are hidden on purpose: never try to recover, decode, or work around them, and tell the human if the task needs one. Load the phase-cli skill for Connections, access requests, and app secrets.`
 
 const claudeInheritedPhaseAIContext = `Phase AI is active through the environment inherited from phase ai run: provider CLIs and HTTP clients for this Workflow's Connections already use Phase-managed credentials. http://phase.invalid/v1/status lists them. Never unset, override, print, or copy PHASE_AI_*, HTTPS_PROXY, or provider credential variables, and never substitute other credentials. Values Phase shows masked are hidden on purpose: never try to recover, decode, or work around them, and tell the human if the task needs one. Load the phase-cli skill for Connections, access requests, and app secrets.`
 
@@ -90,9 +96,13 @@ func runAIClaudeHook(cmd *cobra.Command, args []string) error {
 	// harness reads directly. Startup is bounded and best effort: a slow or
 	// unreachable Console must not delay ordinary work, and the next prompt
 	// retries.
-	_ = installClaudeEnvironmentLoader(os.Getenv("CLAUDE_ENV_FILE"), runtimeEnvironmentPath(directory))
+	loaderPath := strings.TrimSpace(os.Getenv("CLAUDE_ENV_FILE"))
+	sessionContext := claudePhaseAIHarnessContext
+	if loaderPath == "" || installClaudeEnvironmentLoader(loaderPath, runtimeEnvironmentPath(directory)) != nil {
+		sessionContext = claudeNoLoaderPhaseAIContext
+	}
 	health := kickClaudeRuntime(cmd.Context(), directory, hookInput.SessionID, hookKickBudget)
-	return emitClaudeHookContext(cmd, claudePhaseAIHarnessContext+"\n"+runtimeStatusLine(health))
+	return emitClaudeHookContext(cmd, sessionContext+"\n"+runtimeStatusLine(health))
 }
 
 // claudeLauncherEnvironment reports whether Claude inherited a complete Phase

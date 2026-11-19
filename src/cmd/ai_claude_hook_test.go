@@ -243,7 +243,8 @@ func TestClaudeHookSessionStartInstallsLoaderAndKicksRuntimeWithoutBlocking(t *t
 	}
 	additional := result.HookSpecificOutput.AdditionalContext
 	if result.HookSpecificOutput.HookEventName != "SessionStart" || !result.HookSpecificOutput.ReloadSkills ||
-		!strings.Contains(additional, "Phase AI is enabled on this machine") || !strings.Contains(additional, "Phase AI: proxy unavailable") {
+		!strings.Contains(additional, "Phase AI is enabled on this machine") || !strings.Contains(additional, "Phase AI: proxy unavailable") ||
+		!strings.Contains(additional, "every Bash command starts with the Phase AI environment") {
 		t.Fatalf("unexpected SessionStart output: %#v", result)
 	}
 	loader, err := os.ReadFile(loaderPath)
@@ -270,6 +271,45 @@ func TestClaudeHookSessionStartInstallsLoaderAndKicksRuntimeWithoutBlocking(t *t
 	}
 	if strings.Count(string(loader), claudeEnvironmentLoaderMark) != 1 {
 		t.Fatalf("repeated SessionStart duplicated the loader:\n%s", loader)
+	}
+}
+
+// Without a loader the shell never sources the Phase environment, so the
+// session context must not say it does.
+func TestClaudeHookSessionStartWithoutLoaderPointsAtPhaseAIExec(t *testing.T) {
+	withHookTestConfig(t, true)
+	withHookRuntimeDirectory(t)
+	withHookFingerprints(t)
+	t.Setenv("PHASE_AI_ENABLED", "")
+	originalEnsure := hookEnsureRuntime
+	t.Cleanup(func() { hookEnsureRuntime = originalEnsure })
+	hookEnsureRuntime = func(context.Context) (phaseproxy.ProcessEnvironmentPlan, error) {
+		return phaseproxy.ProcessEnvironmentPlan{}, errors.New("runtime unavailable")
+	}
+	for name, loaderPath := range map[string]string{
+		"no env file":         "",
+		"unwritable env file": t.TempDir(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CLAUDE_ENV_FILE", loaderPath)
+			command := &cobra.Command{}
+			setClaudeHookInput(command, "SessionStart")
+			var output bytes.Buffer
+			command.SetOut(&output)
+			if err := runAIClaudeHook(command, nil); err != nil {
+				t.Fatal(err)
+			}
+			var result claudeSessionStartOutput
+			if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			additional := result.HookSpecificOutput.AdditionalContext
+			if strings.Contains(additional, "every Bash command starts") ||
+				!strings.Contains(additional, "phase ai exec -- <command>") ||
+				!strings.Contains(additional, "Never unset, override, print, or copy PHASE_AI_*") {
+				t.Fatalf("SessionStart context without a loader:\n%s", additional)
+			}
+		})
 	}
 }
 
