@@ -161,12 +161,18 @@
 //
 // # Limits
 //
-//   - A fragment of an indexed value is only certain to be caught when it is at
-//     least 23 bytes long (twice the chunk, less one); a fragment of 12 to 22
-//     bytes is caught at some offsets only, and a shorter one never. Even at 23
-//     bytes it is not caught when the one chunk it holds whole is too plain to
-//     count (under 2.8 bits per byte, as about one chunk in 700 of a random
-//     value is): it then needs a second chunk, and is certain from 35 bytes.
+//   - A fragment of an indexed value is certain to be caught only when it
+//     holds, whole, one of the 12-byte chunks the value was cut into, and that
+//     chunk counts: 2.8 bits per byte or more, and not structure. A fragment
+//     of 23 bytes or more (twice the chunk, less one) always holds a chunk
+//     whole, one of 12 to 22 bytes at some offsets only, and a shorter one
+//     never. No length makes it certain, because every chunk a fragment holds
+//     whole may be too plain to count. Of random letters and digits about one
+//     chunk in 700 is, of hex digits one in 5 and of decimal digits two in 3:
+//     a fragment of a value of hex digits is missed about once in 5 with one
+//     chunk whole in it, once in 24 with two and once in 120 with three. The
+//     start of a token is missed while all it holds whole is the token's type
+//     prefix. The whole value is found whatever its chunks are.
 //   - A fragment of a base64 or hex form needs more when one chunk of the form
 //     carries under 48 bits of the value, because other text of the same kind
 //     then repeats such a chunk by chance. That is so for the base64 of a value
@@ -181,7 +187,10 @@
 //   - JSON object keys are not scanned, only values.
 //   - In a protobuf message a value is found inside one string or bytes field.
 //     One that a client splits over two fields is not, and neither is one
-//     under 12 bytes.
+//     under 12 bytes. A field that ends inside a value holds a fragment of it,
+//     which is caught or missed as any fragment is: RewriteBinary promises no
+//     more of a piece of a value than the first limit above does. What is
+//     missed stays as it was, and the report does not mention it.
 //   - A value under 12 bytes, or with little entropy, is not protected at all.
 //   - Pattern rules see a format only when it is written plainly; a random value
 //     with no known format is found by them only next to a keyword.

@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"os"
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,38 +70,112 @@ func (m *builtMessage) leaf(number int, kind string, payload []byte, planted ...
 	m.field(number, payload, []builtLeaf{{start: 0, end: len(payload), kind: kind, planted: planted}})
 }
 
-// planted is a value the fixture holds and a scan is meant to remove.
+// planted is a value a scan is meant to remove.
 type plantedValue struct{ id, value string }
 
-// binaryFixture indexes the fixture's values and returns those a scan removes.
-func binaryFixture(t testing.TB) (*Index, []plantedValue, *censortest.Verifier) {
+// testSeed is the seed of a generated test: the one CENSOR_TEST_SEED names, to
+// have a failed run again, or a new one.
+func testSeed(t testing.TB) int64 {
 	t.Helper()
-	fixture := censortest.NewFixture()
-	var secrets []secret
-	var candidates []plantedValue
-	for _, entry := range fixture.Entries {
-		if entry.Expect == "rule" {
-			continue
-		}
-		secrets = append(secrets, secret{ID: entry.ID, Type: entry.Type, Value: entry.Value})
-		if entry.Expect == "" || entry.Expect == "hit" {
-			candidates = append(candidates, plantedValue{id: entry.ID, value: entry.Value})
-		}
+	given := os.Getenv("CENSOR_TEST_SEED")
+	if given == "" {
+		return time.Now().UnixNano()
 	}
-	ix, verifier := build(t, secrets...), censortest.NewVerifier(fixture.Entries)
-	// The values are random, and now and then one has a part too plain to be
-	// indexed, which no scan removes: 21 digits fall under the entropy floor
-	// about once in 140. What is asked of the walk is what the matcher can do.
+	seed, err := strconv.ParseInt(given, 10, 64)
+	if err != nil {
+		t.Fatalf("CENSOR_TEST_SEED: %v", err)
+	}
+	return seed
+}
+
+// seededEntries makes values of the kinds the fixture holds out of the test's
+// own seed. The fixture's are new on every run, so no seed brings them back.
+func seededEntries(rng *rand.Rand) []censortest.Entry {
+	const hexDigits, digits, urlSafe = "0123456789abcdef", "0123456789", alnum + "-_"
+	of := func(alphabet string, n int) string {
+		out := make([]byte, n)
+		for i := range out {
+			out[i] = alphabet[rng.Intn(len(alphabet))]
+		}
+		return string(out)
+	}
+	random := func(n int) []byte {
+		out := make([]byte, n)
+		rng.Read(out)
+		return out
+	}
+	b64url := base64.RawURLEncoding.EncodeToString
+	body := base64.StdEncoding.EncodeToString(random(138))
+	armour := "PRIVATE " + "KEY-----"
+	pemLike := "-----BEGIN " + armour + "\n" + body[:64] + "\n" + body[64:128] + "\n" + body[128:] + "\n-----END " + armour
+	account := fmt.Sprintf(`{"type": "service_account", "private_key_id": %q, "client_secret": %q, "token_uri": "https://oauth2.example.com/token"}`, of(hexDigits, 40), of(urlSafe, 35))
+	token := b64url([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + b64url([]byte(`{"iss":"kubernetes/serviceaccount","sub":"system:serviceaccount:orders:deployer"}`)) + "." + b64url(random(96))
+	return []censortest.Entry{
+		{ID: "stripe_secret_key", Type: "sealed", Value: "sk_" + "live_51" + of(alnum, 97)},
+		{ID: "sendgrid_api_key", Value: "SG." + of(urlSafe, 22) + "." + of(urlSafe, 43)},
+		{ID: "jwt_secret", Value: of(alnum, 64)},
+		{ID: "database_url", Value: "postgres://orders_app:" + of(alnum, 24) + "@orders-db.internal.example.com:5432/orders?sslmode=require"},
+		{ID: "jwt_private_key", Type: "sealed", Value: pemLike},
+		{ID: "phase_service_token", Type: "sealed", Value: "pss_service:v2:" + of(hexDigits, 64) + ":" + of(hexDigits, 64) + ":" + of(hexDigits, 64) + ":" + of(hexDigits, 64)},
+		{ID: "rds_master_password", Type: "sealed", Value: of(alnum+"!#%^*-_", 28)},
+		{ID: "aws_iam_secret_key", Type: "sealed", Value: of(alnum+"/+", 40)},
+		{ID: "webhook_signing_secret", Value: "whsec_" + of(alnum, 32)},
+		{ID: "slack_bot_token", Value: "xoxb-" + of(digits, 13) + "-" + of(digits, 13) + "-" + of(alnum, 24)},
+		{ID: "registry_token", Value: "dckr_pat_" + of(urlSafe, 27)},
+		{ID: "gcp_service_account", Type: "sealed", Value: account},
+		{ID: "kube_sa_token", Value: token},
+		{ID: "github_token_netrc", Value: "ghp_" + of(alnum, 36)},
+		{ID: "mailgun_api_key", Value: of(hexDigits, 32) + "-" + of(hexDigits, 8) + "-" + of(hexDigits, 8)},
+		{ID: "vercel_token", Value: of(alnum, 24)},
+		{ID: "mssql_password", Value: of(alnum+"!#", 20)},
+		{ID: "grafana_admin_password", Value: of(alnum, 20)},
+	}
+}
+
+// binaryFixture indexes the seed's values and returns those a scan removes.
+func binaryFixture(t testing.TB, rng *rand.Rand) (*Index, []plantedValue, *censortest.Verifier) {
+	t.Helper()
+	entries := seededEntries(rng)
+	var secrets []secret
+	for _, entry := range entries {
+		secrets = append(secrets, secret{ID: entry.ID, Type: entry.Type, Value: entry.Value})
+	}
+	ix, verifier := build(t, secrets...), censortest.NewVerifier(entries)
+	// Now and then a random value has a part too plain to be indexed, which no
+	// scan removes. What is asked of the walk is what the matcher can do.
 	var values []plantedValue
-	for _, candidate := range candidates {
-		plain, _ := ix.Redact([]byte("the value " + candidate.value + " as text"))
+	for _, entry := range entries {
+		plain, _ := ix.Redact([]byte("the value " + entry.Value + " as text"))
 		if len(unexpectedMisses(verifier, plain)) == 0 {
-			values = append(values, candidate)
+			values = append(values, plantedValue{id: entry.ID, value: entry.Value})
 		} else {
-			t.Logf("%s holds a part the matcher does not index and is not planted", candidate.id)
+			t.Logf("%s holds a part the matcher does not index and is not planted", entry.ID)
 		}
 	}
 	return ix, values, verifier
+}
+
+// held reports whether the matcher is held to the first n bytes of a value:
+// all of it, or a chunk that counts lying whole in them (see Limits).
+func held(value string, n int) bool {
+	if n >= len(value) {
+		return true
+	}
+	if jsonLeaves(value) != nil {
+		// Indexed leaf by leaf: the document has no chunks of its own.
+		return false
+	}
+	mask := weakMask(value)
+	for at := 0; at+chunkSize <= n; at += chunkSize {
+		structure := mask != nil
+		for i := at; structure && i < at+chunkSize; i++ {
+			structure = mask[i]
+		}
+		if !structure && entropy(value[at:at+chunkSize]) >= weakChunkEntropy {
+			return true
+		}
+	}
+	return false
 }
 
 // unexpectedMisses names what the verifier still finds and a scan is meant to
@@ -214,12 +290,15 @@ func (g *messageMaker) accidentText() ([]byte, string) {
 	for len(payload) < room {
 		payload = append(payload, ' ')
 	}
-	if value := g.values[g.rng.Intn(len(g.values))].value; cut && id == "" && len(value) < room {
-		// The start of a value, or all of it, right up to the cut character.
-		piece := value[:min(len(value), chunkSize+g.rng.Intn(len(value)))]
-		payload = append(append(bytes.Repeat([]byte("é"), (room-len(piece)-1)/2), ' '), piece...)
-		if len(payload) < room {
-			payload = append([]byte{'.'}, payload...)
+	if value := g.values[g.rng.Intn(len(g.values))]; cut && id == "" && len(value.value) < room {
+		// The start of a value, or all of it, right up to the cut character:
+		// one the matcher is held to, so that it is planted like any other.
+		if piece := value.value[:min(len(value.value), chunkSize+g.rng.Intn(len(value.value)))]; held(value.value, len(piece)) {
+			id = value.id
+			payload = append(append(bytes.Repeat([]byte("é"), (room-len(piece)-1)/2), ' '), piece...)
+			if len(payload) < room {
+				payload = append([]byte{'.'}, payload...)
+			}
 		}
 	}
 	out := append([]byte{tags[g.rng.Intn(len(tags))], byte(length)}, payload...)
@@ -423,12 +502,12 @@ func rewriteChecked(t testing.TB, ix *Index, input []byte, opts ScanOptions) ([]
 	return out, report, written
 }
 
-// The guarantees, over messages of every shape with the fixture's values in
-// them raw, in base64 and in hex.
+// The guarantees, over messages of every shape with values in them raw, in
+// base64 and in hex. CENSOR_TEST_SEED gives back the values and the messages.
 func TestBinaryGuaranteesOverGeneratedMessages(t *testing.T) {
-	ix, values, verifier := binaryFixture(t)
-	seed := time.Now().UnixNano()
+	seed := testSeed(t)
 	rng := rand.New(rand.NewSource(seed))
+	ix, values, verifier := binaryFixture(t, rng)
 	maker := &messageMaker{rng: rng, values: values}
 	messages := 150
 	if testing.Short() || raceEnabled {
@@ -481,6 +560,25 @@ func TestBinaryGuaranteesOverGeneratedMessages(t *testing.T) {
 		t.Fatalf("seed %d: %d leaves held values and %d were replaced", seed, leavesWithValues, replaced)
 	}
 	t.Logf("seed %d: %d messages, %d leaves with values, %d replacements", seed, messages, leavesWithValues, replaced)
+}
+
+// A field that ends inside a value holds a piece of it. The piece is found
+// when a chunk that counts lies whole in it, and left, unreported, when none does.
+func TestBinaryPieceOfAValueIsHeldToItsChunks(t *testing.T) {
+	rest := fixedText("a piece of plain chunks", alnum, 24)
+	value := "aabbccaabbcc" + "ddeeffddeeff" + rest
+	if entropy(value[:12]) >= weakChunkEntropy || entropy(value[12:24]) >= weakChunkEntropy || entropy(rest[:12]) < weakChunkEntropy {
+		t.Fatal("the test's chunks are not two plain ones and one that counts")
+	}
+	ix := build(t, secret{ID: "token", Value: value})
+	for cut := chunkSize; cut <= len(value); cut++ {
+		message := protoString(protoNumber(nil, 1, 7), 2, []byte("the build said "+value[:cut]))
+		out, report, _ := rewriteChecked(t, ix, message, ScanOptions{})
+		left := bytes.Contains(out, []byte(value[:chunkSize]))
+		if want := cut < 3*chunkSize; left != want || report.Found() == want || held(value, cut) == want {
+			t.Fatalf("the first %d bytes: left %v, reported %v, held %v", cut, left, report.Found(), held(value, cut))
+		}
+	}
 }
 
 // Every file of the fake-secret repository, sent as a string of a protobuf
