@@ -36,11 +36,26 @@ func init() {
 	aiCmd.AddCommand(aiEnableCmd)
 }
 
+// loadAIConfigForSetup returns nil only when ai.json does not exist. A file this
+// build cannot read may hold a newer CLI's settings, so setup never replaces it.
+func loadAIConfigForSetup() (*config.AIConfig, error) {
+	cfg := config.LoadAIConfig()
+	if cfg == nil {
+		if _, err := os.Stat(config.AIConfigPath); !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%s cannot be read by this version of the Phase CLI; update the Phase CLI if a newer version wrote it, otherwise delete the file and rerun this command", config.AIConfigPath)
+		}
+	}
+	return cfg, nil
+}
+
 func runAIEnable(cmd *cobra.Command, args []string) error {
 	if ai.IsAIAgent() {
 		return fmt.Errorf("phase ai enable must be run by the user directly, not by an AI agent")
 	}
-	previousAIConfig := config.LoadAIConfig()
+	// Fail before any prompt; the file is read again under the setup lock.
+	if _, err := loadAIConfigForSetup(); err != nil {
+		return err
+	}
 
 	targetFlag, _ := cmd.Flags().GetString("path")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
@@ -128,18 +143,6 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		selectedTarget, _ = ai.SkillTargetByPath(installPath)
 	}
 
-	cfg := previousAIConfig
-	if cfg == nil {
-		cfg = &config.AIConfig{DefaultWorkflowID: workflowID}
-	} else if cmd.Flags().Changed("workflow") {
-		cfg.DefaultWorkflowID = workflowID
-	}
-	for index, path := range cfg.SkillInstallPaths {
-		cfg.SkillInstallPaths[index] = ai.CanonicalSkillPath(path)
-	}
-	cfg.Enabled = true
-	cfg.AddHarnessInstallation(selectedTarget.ID, installPath)
-
 	// Re-enabling may change the Phase host, principal, Workflow, or CLI binary.
 	// The shared runtime is stopped through its authenticated control even while
 	// harness sessions hold leases: they fail open and restart the updated
@@ -157,6 +160,21 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prepare Phase AI integration update: %w", err)
 	}
 	defer releaseSetup()
+	// Another setup may have saved while this one prompted.
+	cfg, err := loadAIConfigForSetup()
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		cfg = &config.AIConfig{DefaultWorkflowID: workflowID}
+	} else if cmd.Flags().Changed("workflow") {
+		cfg.DefaultWorkflowID = workflowID
+	}
+	for index, path := range cfg.SkillInstallPaths {
+		cfg.SkillInstallPaths[index] = ai.CanonicalSkillPath(path)
+	}
+	cfg.Enabled = true
+	cfg.AddHarnessInstallation(selectedTarget.ID, installPath)
 	stoppedRuntime, err := prepareHookRuntimeForSetup(stopContext)
 	if err != nil {
 		return fmt.Errorf("prepare Phase AI integration update: %w", err)

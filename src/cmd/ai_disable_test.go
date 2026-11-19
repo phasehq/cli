@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phasehq/cli/pkg/ai"
@@ -163,5 +164,28 @@ func TestForeignOpenCodePluginIsNotRecordedForCleanup(t *testing.T) {
 	}
 	if payload, err := os.ReadFile(plugin); err != nil || string(payload) != string(foreign) {
 		t.Fatalf("the foreign plugin was changed: %q, %v", payload, err)
+	}
+}
+
+func TestAIDisableWaitsForTheSetupLock(t *testing.T) {
+	isolateAISetup(t)
+	want := &config.AIConfig{Enabled: true, DefaultWorkflowID: "workflow-one"}
+	if err := config.SaveAIConfig(want); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(config.AIConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := lockHookSetup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := runAIDisableForTest(); err == nil || !strings.Contains(err.Error(), "prepare Phase AI disable") {
+		t.Fatalf("disable during another setup: err = %v", err)
+	}
+	if after, err := os.ReadFile(config.AIConfigPath); err != nil || string(after) != string(before) {
+		t.Fatalf("disable wrote ai.json while another setup held the lock: %s, %v", after, err)
 	}
 }

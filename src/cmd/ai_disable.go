@@ -31,6 +31,22 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("phase ai disable must be run by the user directly, not by an AI agent")
 	}
 
+	stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+	defer cancel()
+	// Hold off a concurrent enable and any hook start until ai.json is final.
+	unlockSetup, err := lockHookSetup(stopContext)
+	if err != nil {
+		return fmt.Errorf("prepare Phase AI disable: %w", err)
+	}
+	setupLocked := true
+	releaseSetup := func() {
+		if setupLocked {
+			setupLocked = false
+			unlockSetup()
+		}
+	}
+	defer releaseSetup()
+
 	cfg := config.LoadAIConfig()
 	wasEnabled := cfg != nil && cfg.Enabled
 	if wasEnabled {
@@ -40,8 +56,6 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 		}
 	}
 	var cleanupErrors []error
-	stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
-	defer cancel()
 	if err := stopHookRuntime(stopContext); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop hook-managed Phase runtime: %w", err))
 	}
@@ -126,6 +140,8 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("Phase AI integrations were removed, but their local installation state could not be cleared: %w", err)
 		}
 	}
+	// The sweep removes the setup lock file, which it skips while held.
+	releaseSetup()
 	if directory, err := hookRuntimeDir(); err == nil {
 		if err := errors.Join(sweepAIDirectory(directory, true), removeAIRuntimeLeftovers(directory)); err != nil {
 			return fmt.Errorf("Phase AI was disabled, but ~/.phase/ai could not be cleaned; rerun `phase ai disable`: %w", err)

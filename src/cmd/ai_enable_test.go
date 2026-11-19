@@ -13,6 +13,7 @@ import (
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/util"
+	"github.com/spf13/cobra"
 )
 
 func TestResolveAIEnableCATrust(t *testing.T) {
@@ -254,5 +255,34 @@ func TestTrustAttemptPossibleOnlyWhenADialogCanAppear(t *testing.T) {
 		if got := trustAttemptPossible(test.flagChanged, test.flagValue, test.interactive); got != test.want {
 			t.Fatalf("trustAttemptPossible(%v, %v, %v) = %v", test.flagChanged, test.flagValue, test.interactive, got)
 		}
+	}
+}
+
+func TestAIEnableRefusesAnAIConfigItCannotRead(t *testing.T) {
+	isolateAISetup(t)
+	for name, contents := range map[string]string{
+		"undecodable":   `{"version":"2","enabled":true,"defaultWorkflowId":"wf",}`,
+		"newer version": `{"version":"99","enabled":true,"defaultWorkflowId":"wf"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(config.AIConfigPath, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := &cobra.Command{}
+			command.SetContext(context.Background())
+			err := runAIEnable(command, nil)
+			if err == nil || !strings.Contains(err.Error(), "cannot be read by this version") {
+				t.Fatalf("enable over an unreadable ai.json: err = %v", err)
+			}
+			if got, readErr := os.ReadFile(config.AIConfigPath); readErr != nil || string(got) != contents {
+				t.Fatalf("ai.json was changed: %q, %v", got, readErr)
+			}
+		})
+	}
+	if err := os.Remove(config.AIConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := loadAIConfigForSetup(); cfg != nil || err != nil {
+		t.Fatalf("missing ai.json = %#v, %v; want a fresh setup", cfg, err)
 	}
 }
