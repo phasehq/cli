@@ -89,7 +89,8 @@ func runAIClaudeHook(cmd *cobra.Command, args []string) error {
 	}
 	directory, err := hookRuntimeDir()
 	if err != nil {
-		return emitClaudeHookContext(cmd, claudePhaseAIHarnessContext+"\n"+runtimeStatusLine(hookRuntimeHealth{}))
+		// No runtime directory means no loader either.
+		return emitClaudeHookContext(cmd, claudeNoLoaderPhaseAIContext+"\n"+runtimeStatusLine(hookRuntimeHealth{}))
 	}
 	// The harness-owned env file only ever receives a line that sources the
 	// daemon-maintained file, so this hook never writes a secret anywhere the
