@@ -42,7 +42,7 @@ type ScanOptions struct {
 	// DefaultConversationFields. Indexed values are found everywhere regardless.
 	ConversationFields []string
 	// BinaryMinLength is the length from which a string made only of base64
-	// characters, or a data: URI, is taken for an image or a file and skipped.
+	// characters, or a data: URI of them, is taken for an image or a file and skipped.
 	// Zero means 16 KiB; a negative value never skips.
 	BinaryMinLength int
 	// Rules, when set, are the pattern rules this call applies instead of the
@@ -477,9 +477,11 @@ func isBinaryBlock(text []byte, minLength int) bool {
 	if len(text) < minLength {
 		return false
 	}
+	// A data: URI is a file only while base64 is all that follows its header:
+	// text written after one is read.
 	if bytes.HasPrefix(text, []byte("data:")) {
 		if comma := bytes.Index(text[:min(len(text), 200)], []byte(";base64,")); comma > 0 {
-			return true
+			text = text[comma+len(";base64,"):]
 		}
 	}
 	for _, b := range text {

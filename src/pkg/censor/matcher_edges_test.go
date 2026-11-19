@@ -212,3 +212,24 @@ func TestOnlySecretLinesOfAMultilineValueAreIndexedAlone(t *testing.T) {
 		}
 	}
 }
+
+// A data: URI is skipped as an image or a file only while base64 is all that
+// follows its header. Text written after one, in the same string, is read.
+func TestTextAfterADataURIIsRead(t *testing.T) {
+	password := randomString(t, alnum, 24)
+	ix := build(t, secret{ID: "pw", Value: password})
+	image := "data:image/png;base64," + base64.StdEncoding.EncodeToString(randomBytes(t, 13000))
+	r := apply(ix, modelRequest(image+"\nerror: login failed for password "+password))
+	if bytes.Contains(r.Out, []byte(password)) || len(r.Hits) != 1 || r.Report.SkippedBinary != 0 {
+		t.Errorf("text after an image: %d hits, %d skipped", len(r.Hits), r.Report.SkippedBinary)
+	}
+	if r := apply(ix, modelRequest(image)); r.Changed || r.Report.SkippedBinary != 1 {
+		t.Errorf("an image alone: changed %v, %d skipped", r.Changed, r.Report.SkippedBinary)
+	}
+	// A field of a protobuf message is held to the same.
+	message := protoString(nil, 1, []byte(image+" password "+password))
+	out, report := ix.RewriteBinary(message, ScanOptions{})
+	if bytes.Contains(out, []byte(password)) || report.Inventory != 1 || len(out) != len(message) {
+		t.Errorf("text after an image in a message: %d found", report.Inventory)
+	}
+}
