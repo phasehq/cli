@@ -4,16 +4,19 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -67,19 +70,13 @@ func phaseServiceToken() string {
 	return "pss_service:v2:" + strings.Repeat("a1b2c3d4", 8) + ":" + strings.Repeat("e5f6a7b8", 8) + ":" + strings.Repeat("c9d0e1f2", 8) + ":" + strings.Repeat("a3b4c5d6", 8)
 }
 
+// What happens to something leak protection finds depends on the kind of
+// bytes it is in and on nothing else. Every row of the policy that a body and
+// a message share is sent through both adapters: as a request body under two
+// content types, and as a WebSocket message under each opcode. The same bytes
+// meet the same end. (The oversize row has a test of its own: it needs
+// sixteen megabytes.)
 func TestOnePolicySaysWhatHappensInEachPart(t *testing.T) {
-	want := map[leakPart]leakPartRule{
-		leakPartURL:      {read: true, block: true},
-		leakPartHeader:   {read: true},
-		leakPartJSON:     {read: true, rewrite: true},
-		leakPartText:     {read: true, rewrite: true},
-		leakPartBinary:   {read: true, block: true},
-		leakPartOpaque:   {read: true, block: true},
-		leakPartOversize: {},
-	}
-	if !reflect.DeepEqual(leakPartRules, want) {
-		t.Fatalf("the policy: %+v", leakPartRules)
-	}
 	for part, rule := range leakPartRules {
 		// What can be replaced never needs to block, and nothing is acted on
 		// that was not read.
@@ -107,30 +104,118 @@ func TestOnePolicySaysWhatHappensInEachPart(t *testing.T) {
 		}
 	}
 
-	// A payload is read as what it is, whoever holds it.
-	guard := newTestLeakGuard(t, leakModeCensor)
-	registerLeakValues(t, guard, map[string]string{"stripe": leakSecretOne})
-	for name, c := range map[string]struct {
-		payload   []byte
-		rewritten bool
-		block     bool
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	client := rig.client(rig.phaseRoots)
+	target := "https://chatgpt.com" + codexSocketPath
+
+	// The URL and the headers belong to a request alone.
+	request, _ := http.NewRequest(http.MethodPost, target+"?key="+url.QueryEscape(leakSecretOne), strings.NewReader(`{"input":"nothing"}`))
+	if status := doRequest(t, client, request); status != http.StatusForbidden || rig.receivedCount() != 0 {
+		t.Fatalf("a known value in the URL: %d", status)
+	}
+	request, _ = http.NewRequest(http.MethodPost, target, strings.NewReader(`{"input":"nothing"}`))
+	request.Header.Set("X-Note", leakSecretOne)
+	if status := doRequest(t, client, request); status != http.StatusOK || rig.lastReceived().header.Get("X-Note") != leakSecretOne {
+		t.Fatalf("a known value in a header: %d", status)
+	}
+
+	const (
+		replaced = "replaced"
+		blocked  = "blocked"
+		passed   = "passed as it came"
+	)
+	token := phaseServiceToken()
+	for _, c := range []struct {
+		name    string
+		payload []byte
+		want    string
+		// sent is what goes out in its place, when that is known exactly.
+		sent []byte
+		// opaque sends it as bytes the proxy cannot decode: a body in an
+		// encoding it does not undo, a message compressed against the
+		// handshake.
+		opaque bool
 	}{
-		"JSON":                       {[]byte(`{"input":"key ` + leakSecretOne + `"}`), true, false},
-		"text that is not JSON":      {[]byte("KEY=" + leakSecretOne + "\n"), true, false},
-		"bytes that are not text":    {append([]byte{0xff, 0x00, 0xfe}, leakSecretOne...), false, true},
-		"a Phase token in binary":    {append([]byte{0xff, 0x00, 0xfe}, phaseServiceToken()...), false, true},
-		"clean text":                 {[]byte("nothing to see"), false, false},
-		"clean bytes":                {[]byte{0xff, 0x00, 0xfe, 0x01}, false, false},
-		"text holding a Phase token": {[]byte("token " + phaseServiceToken()), true, false},
+		{name: "JSON", payload: []byte(`{"input":"key ` + leakSecretOne + `"}`), want: replaced, sent: []byte(`{"input":"key ph:secret:stripe"}`)},
+		{name: "text that is not JSON", payload: []byte("KEY=" + leakSecretOne + "\n"), want: replaced, sent: []byte("KEY=ph:secret:stripe\n")},
+		{name: "text holding a Phase token", payload: []byte("token " + token), want: replaced},
+		{name: "bytes that are not text", payload: append([]byte{0xff, 0x00, 0xfe}, leakSecretOne...), want: blocked},
+		{name: "a Phase token in bytes that are not text", payload: append([]byte{0xff, 0x00, 0xfe}, token...), want: blocked},
+		{name: "clean JSON", payload: []byte(`{"input" : "nothing to see"}`), want: passed},
+		{name: "clean text", payload: []byte("nothing to see"), want: passed},
+		{name: "clean bytes", payload: []byte{0xff, 0x00, 0xfe, 0x01}, want: passed},
+		{name: "a known value in bytes that cannot be decoded", payload: []byte("not brotli, not deflate: " + leakSecretOne), want: blocked, opaque: true},
+		{name: "clean bytes that cannot be decoded", payload: []byte("not brotli, not deflate"), want: passed, opaque: true},
 	} {
-		scan := guard.newScan(guard.inspects(envFlow, "api.anthropic.com", 443), "http", censor.ScanOptions{})
-		out := guard.readPayload(scan, c.payload, "body")
-		if (out != nil) != c.rewritten || scan.block != c.block {
-			t.Errorf("%s: rewritten = %v, block = %v", name, out != nil, scan.block)
+		// went checks what reached the provider against the row.
+		went := func(t *testing.T, how string, got []byte) {
+			t.Helper()
+			switch {
+			case c.want == passed && !bytes.Equal(got, c.payload):
+				t.Fatalf("%s: %q was changed to %q", how, c.payload, got)
+			case c.want == replaced && (bytes.Contains(got, []byte(leakSecretOne)) || bytes.Contains(got, []byte(token)) || !bytes.Contains(got, []byte("ph:"))):
+				t.Fatalf("%s: the value was not replaced: %q", how, got)
+			case c.want == replaced && c.sent != nil && !bytes.Equal(got, c.sent):
+				t.Fatalf("%s: the provider received %q, want %q", how, got, c.sent)
+			}
 		}
-		if out != nil && (bytes.Contains(out, []byte(leakSecretOne)) || bytes.Contains(out, []byte(phaseServiceToken()))) {
-			t.Errorf("%s: the value is still there", name)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			// As a request body, whatever the client calls it.
+			for _, contentType := range []string{"application/json", "application/octet-stream"} {
+				how := "a body sent as " + contentType
+				before := rig.receivedCount()
+				request, _ := http.NewRequest(http.MethodPost, target, bytes.NewReader(c.payload))
+				request.Header.Set("Content-Type", contentType)
+				if c.opaque {
+					request.Header.Set("Content-Encoding", "br")
+				}
+				status := doRequest(t, client, request)
+				if c.want == blocked {
+					if status != http.StatusForbidden || rig.receivedCount() != before {
+						t.Fatalf("%s: status %d, and %d requests reached the provider", how, status, rig.receivedCount()-before)
+					}
+					continue
+				}
+				if status != http.StatusOK || rig.receivedCount() != before+1 {
+					t.Fatalf("%s: status %d", how, status)
+				}
+				went(t, how, rig.lastReceived().body)
+			}
+			// As a WebSocket message, whichever opcode the client frames it
+			// with. What goes out keeps that opcode.
+			for _, opcode := range []byte{wsOpText, 0x2} {
+				how := fmt.Sprintf("a message framed with opcode %d", opcode)
+				peer := rig.openWebSocket(t, "chatgpt.com", codexSocketPath)
+				frame := clientFrame(true, opcode, c.payload)
+				if c.opaque {
+					frame[0] |= 0x40
+				}
+				peer.send(t, frame)
+				if c.want == blocked {
+					fin, closing, payload, err := readFrame(peer.reader)
+					if err != nil || !fin || closing != wsOpClose || len(payload) < 2 || binary.BigEndian.Uint16(payload) != wsClosePolicyViolation {
+						t.Fatalf("%s: the client was not told its message broke policy: %v %v %x %v", how, fin, closing, payload, err)
+					}
+					for {
+						got, open := peer.received(t)
+						if !open {
+							break
+						}
+						if got.opcode != wsOpClose {
+							t.Fatalf("%s: the service received opcode %d after a blocked message", how, got.opcode)
+						}
+					}
+					continue
+				}
+				got, open := peer.received(t)
+				if !open || got.opcode != opcode {
+					t.Fatalf("%s: the service received opcode %d (still open: %v)", how, got.opcode, open)
+				}
+				went(t, how, got.payload)
+				_ = peer.conn.Close()
+			}
+		})
 	}
 }
 
@@ -1052,6 +1137,14 @@ func TestEveryLeakDetailMemberReachesTheConsole(t *testing.T) {
 	window := leakFlowDetail(leakModeCensor, scan.match)
 	window["windowSeconds"] = 20
 	details["window"] = window
+	// More distinct placeholders than are counted: the event with the most
+	// members there is.
+	capped := scanWith(leakModeCensor, append(inventoryFindings(maxScanPlaceholders+1),
+		censor.Finding{Kind: "rule", Label: "jwt", Placeholder: "ph:jwt:1", Action: "redact"},
+		censor.Finding{Kind: "rule", Label: "private_key_header", Action: "alert"},
+		censor.Finding{Kind: "inventory", Placeholder: "ph:secret:signed", Action: "left"})...)
+	capped.changed, capped.listed = true, capped.placeholders
+	details["capped"] = proxy.leakEvent(nil, request, "api.anthropic.com", 443, capped, "allow", outcomeCensored, leakReasonFound, 0, time.Now()).Detail
 	seen := map[string]bool{}
 	for name, detail := range details {
 		if len(detail) > 16 {
@@ -1072,6 +1165,11 @@ func TestEveryLeakDetailMemberReachesTheConsole(t *testing.T) {
 					t.Errorf("%s: detail.%s is %d characters", name, member, len(typed))
 				}
 			case int:
+			case bool:
+				// A flag is sent only when it is set.
+				if !typed {
+					t.Errorf("%s: detail.%s is false", name, member)
+				}
 			default:
 				t.Errorf("%s: detail.%s is a %T", name, member, value)
 			}
@@ -1079,7 +1177,7 @@ func TestEveryLeakDetailMemberReachesTheConsole(t *testing.T) {
 	}
 	for _, member := range []string{
 		"mode", "harness", "capture", "where", "inventoryHits", "ruleRedactions", "ruleAlerts", "signedFindings", "labels",
-		"placeholders", "placeholderCount", "replacedCount", "severity", "scope", "windowSeconds",
+		"placeholders", "placeholderCount", "replacedCount", "placeholdersCapped", "severity", "scope", "windowSeconds",
 	} {
 		if !seen[member] {
 			t.Errorf("no event holds detail.%s", member)
@@ -1102,5 +1200,372 @@ func TestEveryLeakDetailMemberReachesTheConsole(t *testing.T) {
 		if !eventIdentifier.MatchString(value) {
 			t.Errorf("%q is not an identifier", value)
 		}
+	}
+}
+
+// A value cannot be found before its placeholder is known to hold a key
+// name: a request scanned in between would put the name in an event. The
+// registration is held here at the guard's lock, where it records what an id
+// is, and the index is looked at while it waits.
+func TestAKeyNameIsKnownBeforeItsValueCanBeFound(t *testing.T) {
+	guard := newTestLeakGuard(t, leakModeCensor)
+	entry, err := censor.IndexValue(guard.key, "secret", "DATABASE_PASSWORD", leakSecretThree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeholder := entry.Placeholder()
+	// found reports the registered value found as itself, whatever a pattern
+	// rule makes of the same bytes.
+	found := func(guard *leakGuard) bool {
+		return slices.ContainsFunc(guard.index.Find([]byte(leakSecretThree)), func(match censor.Match) bool {
+			return match.Placeholder == placeholder
+		})
+	}
+	guard.mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := guard.add([]*censor.Entries{entry}, []bool{true})
+		done <- err
+	}()
+	findable := false
+	for deadline := time.Now().Add(150 * time.Millisecond); !findable && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		findable = found(guard)
+	}
+	_, named := guard.keyNamed[placeholder]
+	guard.mu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if findable && !named {
+		t.Fatal("the value could be found while its placeholder was not yet known to hold a key name")
+	}
+	if got := guard.eventPlaceholders([]string{placeholder}); !found(guard) || !reflect.DeepEqual(got, []string{"ph:secret"}) {
+		t.Fatalf("after the registration an event would name %v", got)
+	}
+
+	// The same with nothing held: a request is scanned while the value is
+	// registered, and what its event would say is read the moment the value
+	// is found.
+	for round := 0; round < 200; round++ {
+		guard := newTestLeakGuard(t, leakModeCensor)
+		entry, err := censor.IndexValue(guard.key, "secret", "DATABASE_PASSWORD", leakSecretThree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		named := make(chan string, 1)
+		go func() {
+			<-start
+			for deadline := time.Now().Add(5 * time.Second); !found(guard); {
+				if time.Now().After(deadline) {
+					named <- "the value was never found"
+					return
+				}
+			}
+			named <- strings.Join(guard.eventPlaceholders([]string{placeholder}), ",")
+		}()
+		close(start)
+		if _, _, err := guard.add([]*censor.Entries{entry}, []bool{true}); err != nil {
+			t.Fatal(err)
+		}
+		if got := <-named; got != "ph:secret" {
+			t.Fatalf("round %d: an event would name %q", round, got)
+		}
+	}
+}
+
+// manyLeakValues returns count fake values that share nothing.
+func manyLeakValues(count int) map[string]string {
+	random := mathrand.New(mathrand.NewPCG(20261119, 5))
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	values := make(map[string]string, count)
+	for i := 0; i < count; i++ {
+		value := make([]byte, 40)
+		for at := range value {
+			value[at] = alphabet[random.IntN(len(alphabet))]
+		}
+		values[fmt.Sprintf("id-%04d", i)] = string(value)
+	}
+	return values
+}
+
+// placeholderCount and replacedCount are counts of distinct placeholders
+// however many there are, up to a bound; past it the event says the counts
+// are a floor. Before, past 256 distinct placeholders every further
+// occurrence was counted.
+func TestPlaceholdersAreCountedOnceEachHoweverMany(t *testing.T) {
+	repeated := func(distinct, times int) []censor.Finding {
+		var findings []censor.Finding
+		for round := 0; round < times; round++ {
+			findings = append(findings, inventoryFindings(distinct)...)
+		}
+		return findings
+	}
+	scan := scanWith(leakModeCensor, repeated(300, 3)...)
+	scan.changed = true
+	if detail := scan.detail(); detail["placeholderCount"] != 300 || detail["replacedCount"] != 300 || detail["inventoryHits"] != 900 || detail["placeholdersCapped"] != nil {
+		t.Fatalf("300 distinct placeholders, each three times: %+v", detail)
+	}
+	// One of them again, where it cannot be replaced, is still one of the 300.
+	scan.addFixed([]censor.Match{{Finding: censor.Finding{Kind: "inventory", Placeholder: "ph:secret:id-7", Action: "redact"}}}, "header", false)
+	if detail := scan.detail(); detail["placeholderCount"] != 300 || detail["replacedCount"] != 300 {
+		t.Fatalf("a placeholder found again in a header: %+v", detail)
+	}
+
+	// Exactly as many as are counted is still exact.
+	scan = scanWith(leakModeCensor, repeated(maxScanPlaceholders, 2)...)
+	scan.changed = true
+	if detail := scan.detail(); detail["placeholderCount"] != maxScanPlaceholders || detail["placeholdersCapped"] != nil {
+		t.Fatalf("%d distinct placeholders: count %v, capped %v", maxScanPlaceholders, detail["placeholderCount"], detail["placeholdersCapped"])
+	}
+	// One more is "or more": the counts stop at the bound and say so.
+	scan = scanWith(leakModeCensor, repeated(maxScanPlaceholders+50, 2)...)
+	scan.changed = true
+	detail := scan.detail()
+	if detail["placeholderCount"] != maxScanPlaceholders || detail["replacedCount"] != maxScanPlaceholders || detail["placeholdersCapped"] != true {
+		t.Fatalf("%d distinct placeholders: count %v, replaced %v, capped %v", maxScanPlaceholders+50, detail["placeholderCount"], detail["replacedCount"], detail["placeholdersCapped"])
+	}
+	if len(scan.placeholders) != maxScanPlaceholders || len(scan.replaceable) != maxScanPlaceholders || len(scan.seen) != maxScanPlaceholders {
+		t.Fatalf("the scan keeps %d placeholders", len(scan.placeholders))
+	}
+	// A report that lists only the first of its findings cannot be counted
+	// to the end either.
+	scan = &leakScan{mode: leakModeCensor}
+	scan.addReport(&censor.Report{Findings: inventoryFindings(3), Truncated: true}, "body")
+	if detail := scan.detail(); detail["placeholderCount"] != 3 || detail["placeholdersCapped"] != true {
+		t.Fatalf("a truncated report: %+v", detail)
+	}
+
+	// The flag reaches the Console when it is set, as itself, and through
+	// the spool; anything else under its name does not.
+	for name, c := range map[string]struct {
+		value any
+		kept  bool
+	}{"set": {true, true}, "not set": {false, false}, "a word": {"true", false}, "a number": {1, false}} {
+		kept := safeEventDetail(map[string]any{"placeholdersCapped": c.value}, nil)
+		if value, ok := kept["placeholdersCapped"]; ok != c.kept || (ok && value != true) {
+			t.Errorf("%s: kept as %v", name, kept)
+		}
+	}
+	encoded, _ := json.Marshal(detail)
+	var spooled map[string]any
+	_ = json.Unmarshal(encoded, &spooled)
+	if kept := safeEventDetail(spooled, nil); kept["placeholdersCapped"] != true || kept["placeholderCount"] != maxScanPlaceholders {
+		t.Fatalf("after a round trip through the spool: %+v", kept)
+	}
+
+	// And through the proxy: 300 registered values, each three times in one
+	// body, are 300 placeholders. Off the conversation paths only registered
+	// values are looked for, so nothing else is counted.
+	rig := newLeakRig(t, leakModeCensor)
+	values := manyLeakValues(300)
+	registerLeakValues(t, rig.guard, values)
+	var all []string
+	for _, value := range values {
+		all = append(all, value)
+	}
+	sort.Strings(all)
+	content := strings.Repeat(strings.Join(all, " ")+"\n", 3)
+	postMessages(t, rig.client(rig.phaseRoots), "https://api.anthropic.com/api/event_logging/batch", anthropicBody(content), "")
+	received := rig.lastReceived().body
+	for _, value := range all {
+		if bytes.Contains(received, []byte(value)) {
+			t.Fatal("a registered value reached the provider")
+		}
+	}
+	event := rig.leakEvents(1)[0]
+	if event.Detail["placeholderCount"] != float64(300) || event.Detail["replacedCount"] != float64(300) || event.Detail["inventoryHits"] != float64(900) ||
+		event.Detail["placeholdersCapped"] != nil || event.Detail["severity"] != leakSeverityHigh {
+		t.Fatalf("the event for 300 values, each three times: %+v", event.Detail)
+	}
+}
+
+// A message cut into frames that carry nothing never reaches the limit on
+// the bytes held, so the frames held are limited too. Past the limit the
+// message passes unread, like one that is too long.
+func TestAMessageInTooManyFramesPassesUnread(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	peer := rig.openWebSocket(t, "chatgpt.com", codexSocketPath)
+	_ = peer.conn.SetDeadline(time.Now().Add(30 * time.Second))
+	peer.send(t, clientFrame(false, wsOpText, []byte("a")))
+	peer.send(t, bytes.Repeat(clientFrame(false, wsOpContinuation, nil), maxLeakFrames+8))
+	// The message has not ended, and is already on its way: the proxy holds
+	// no more of it.
+	unread := func() []agentapi.Event {
+		var events []agentapi.Event
+		for _, event := range rig.leakEventsNow() {
+			if event.Outcome == outcomeUnread {
+				events = append(events, event)
+			}
+		}
+		return events
+	}
+	var events []agentapi.Event
+	for deadline := time.Now().Add(5 * time.Second); len(events) == 0; events = unread() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d empty frames of one message are still held", maxLeakFrames+8)
+		}
+	}
+	if event := events[0]; len(events) != 1 || event.Reason != leakReasonOverLimit || event.Protocol != "websocket" || event.Detail["scope"] != leakScopeMessage {
+		t.Fatalf("events: %+v", events)
+	}
+	peer.send(t, clientFrame(true, wsOpContinuation, []byte("b")))
+	if got, open := peer.received(t); !open || got.opcode != wsOpText || string(got.payload) != "ab" {
+		t.Fatalf("the message arrived as opcode %d, %q", got.opcode, got.payload)
+	}
+	// The next message is read like any other.
+	peer.send(t, clientFrame(true, wsOpText, []byte("KEY="+leakSecretOne)))
+	if got, _ := peer.received(t); string(got.payload) != "KEY=ph:secret:stripe" {
+		t.Fatalf("the message after it: %q", got.payload)
+	}
+	// A message in as many frames as are held is still read whole.
+	fragments := clientFrame(false, wsOpText, []byte("KEY="))
+	fragments = append(fragments, bytes.Repeat(clientFrame(false, wsOpContinuation, nil), maxLeakFrames-2)...)
+	fragments = append(fragments, clientFrame(true, wsOpContinuation, []byte(leakSecretOne))...)
+	peer.send(t, fragments)
+	if got, _ := peer.received(t); string(got.payload) != "KEY=ph:secret:stripe" {
+		t.Fatalf("a message in %d frames: %q", maxLeakFrames, got.payload)
+	}
+}
+
+// A body and a message over the size limit are not read: they reach the
+// service byte for byte, and one unread event says so. What follows on the
+// same connection is read again.
+func TestOversizeBodiesAndMessagesPassUnread(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sends two payloads of seventeen megabytes")
+	}
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	big := bytes.Repeat([]byte("0123456789abcdef"), (maxLeakBody+(1<<20))/16)
+	// A known value at its end: nothing of an oversize payload is looked at.
+	copy(big[len(big)-len(leakSecretOne):], leakSecretOne)
+	client := rig.client(rig.phaseRoots)
+	client.Timeout = 60 * time.Second
+	request, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(big))
+	request.Header.Set("Content-Type", "text/plain")
+	if status := doRequest(t, client, request); status != http.StatusOK {
+		t.Fatalf("an oversize body: status %d", status)
+	}
+	if got := rig.lastReceived().body; sha256.Sum256(got) != sha256.Sum256(big) {
+		t.Fatalf("an oversize body of %d bytes arrived as %d bytes, or changed", len(big), len(got))
+	}
+	// The same connection reads the next body.
+	postMessages(t, client, "https://api.anthropic.com/v1/messages", anthropicBody("key "+leakSecretOne), "")
+	if bytes.Contains(rig.lastReceived().body, []byte(leakSecretOne)) {
+		t.Fatal("the body after an oversize one was not read")
+	}
+
+	peer := rig.openWebSocket(t, "chatgpt.com", codexSocketPath)
+	_ = peer.conn.SetDeadline(time.Now().Add(60 * time.Second))
+	third := len(big) / 3
+	sent := make(chan error, 1)
+	go func() {
+		var err error
+		for _, frame := range [][]byte{
+			clientFrame(false, wsOpText, big[:third]),
+			clientFrame(false, wsOpContinuation, big[third:2*third]),
+			clientFrame(true, wsOpContinuation, big[2*third:]),
+			clientFrame(true, wsOpText, []byte("KEY="+leakSecretOne)),
+		} {
+			if _, err = peer.conn.Write(frame); err != nil {
+				break
+			}
+		}
+		sent <- err
+	}()
+	next := func() wsMessage {
+		t.Helper()
+		select {
+		case message, open := <-peer.messages:
+			if !open {
+				t.Fatal("the WebSocket ended")
+			}
+			return message
+		case <-time.After(30 * time.Second):
+			t.Fatal("the service received nothing")
+		}
+		return wsMessage{}
+	}
+	if got := next(); got.opcode != wsOpText || sha256.Sum256(got.payload) != sha256.Sum256(big) {
+		t.Fatalf("an oversize message of %d bytes arrived as %d bytes under opcode %d, or changed", len(big), len(got.payload), got.opcode)
+	}
+	if got := next(); string(got.payload) != "KEY=ph:secret:stripe" {
+		t.Fatalf("the message after an oversize one: %q", got.payload)
+	}
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+
+	var unread []agentapi.Event
+	for _, event := range rig.leakEventsNow() {
+		if event.Outcome == outcomeUnread {
+			if event.Reason != leakReasonOverLimit || event.ProxyDecision != "allow" || event.Detail["severity"] != nil || event.Detail["placeholderCount"] != nil {
+				t.Fatalf("event: %+v", event)
+			}
+			unread = append(unread, event)
+		}
+	}
+	if len(unread) != 2 || unread[0].Protocol != "http" || unread[0].Detail["scope"] != leakScopeRequest ||
+		unread[1].Protocol != "websocket" || unread[1].Detail["scope"] != leakScopeMessage {
+		t.Fatalf("unread events: %+v", unread)
+	}
+}
+
+// The hosts remembered for their refused handshakes are bounded: a domain
+// entry matches any number of subdomains. A host in an open window is kept
+// for as long as there is anything else to drop.
+func TestRefusedHandshakesAreRememberedForABoundedNumberOfHosts(t *testing.T) {
+	tracker := newHandshakeTracker()
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	tracker.now = func() time.Time { return now }
+	window := leakStateKey{tool: "opencode", host: "eu.models.example"}
+	tracker.note(window, false)
+	if tracker.note(window, false) == 0 || !tracker.bypassed(window) {
+		t.Fatal("two refusals opened no window")
+	}
+	for i := 0; i < 4*maxRememberedHosts; i++ {
+		tracker.note(leakStateKey{tool: "opencode", host: fmt.Sprintf("h%d.models.example", i)}, false)
+		if len(tracker.hosts) > maxRememberedHosts {
+			t.Fatalf("%d hosts are remembered", len(tracker.hosts))
+		}
+	}
+	if !tracker.bypassed(window) {
+		t.Fatal("a host in a window was dropped for hosts that refused once")
+	}
+	// When every host remembered is in a window they all go: their hosts are
+	// read again, which is the safe way to be wrong.
+	for i := 0; i < 2*maxRememberedHosts; i++ {
+		key := leakStateKey{tool: "opencode", host: fmt.Sprintf("w%d.models.example", i)}
+		tracker.note(key, false)
+		tracker.note(key, false)
+		if len(tracker.hosts) > maxRememberedHosts {
+			t.Fatalf("%d hosts are remembered", len(tracker.hosts))
+		}
+	}
+	if len(tracker.bypassedHosts()) > maxRememberedHosts {
+		t.Fatalf("%d hosts are in a window", len(tracker.bypassedHosts()))
+	}
+	// A window that has ended makes room before one that is open.
+	tracker = newHandshakeTracker()
+	tracker.now = func() time.Time { return now }
+	tracker.note(window, false)
+	tracker.note(window, false)
+	now = now.Add(handshakeBypassFirst + time.Second)
+	open := leakStateKey{tool: "opencode", host: "us.models.example"}
+	tracker.note(open, false)
+	tracker.note(open, false)
+	for i := 0; i < maxRememberedHosts; i++ {
+		tracker.note(leakStateKey{tool: "opencode", host: fmt.Sprintf("h%d.models.example", i)}, false)
+	}
+	if !tracker.bypassed(open) || len(tracker.hosts) > maxRememberedHosts {
+		t.Fatalf("an open window was dropped (%d hosts remembered)", len(tracker.hosts))
+	}
+	tracker.mu.Lock()
+	_, kept := tracker.hosts[window]
+	tracker.mu.Unlock()
+	if kept {
+		t.Fatal("a window that had ended was kept while hosts were dropped")
 	}
 }

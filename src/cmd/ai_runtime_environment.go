@@ -316,8 +316,7 @@ func inspectHookRuntime(directory string) hookRuntimeHealth {
 	}
 	// A daemon recycling its session has withdrawn its state as if starting.
 	lock, lockErr := readHookRuntimeLock(filepath.Join(directory, hookRuntimeLockFile))
-	if lockErr == nil && lock.PID > 0 && processIsAlive(lock.PID) &&
-		(time.Since(lock.CreatedAt) < 2*hookStartTimeout || time.Since(lock.RecyclingAt) < 2*hookStartTimeout) {
+	if lockErr == nil && hookRuntimeStarting(lock) {
 		health.starting = true
 		return health
 	}
@@ -329,6 +328,14 @@ func inspectHookRuntime(directory string) hookRuntimeHealth {
 		}
 	}
 	return health
+}
+
+// hookRuntimeStarting reports a lock held by a live daemon that has no state
+// to show yet: it is starting, or it withdrew its state to recycle its
+// session. Either lasts seconds, so a lock that says so for longer is stale.
+func hookRuntimeStarting(lock hookRuntimeLock) bool {
+	return lock.PID > 0 && processIsAlive(lock.PID) &&
+		(time.Since(lock.CreatedAt) < 2*hookStartTimeout || time.Since(lock.RecyclingAt) < 2*hookStartTimeout)
 }
 
 // reconcileRuntimeEnvironment retires proxy routing in the sourced file when the

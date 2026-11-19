@@ -85,15 +85,27 @@ type engineRuntime struct {
 // is required before a successor OpenSession mutates the shared Agent client.
 type drainingHandler struct {
 	handler http.Handler
+	// refused is told of each request turned away here, which the handler
+	// never sees.
+	refused func(*http.Request)
 	mu      sync.Mutex
 	closing bool
 	wg      sync.WaitGroup
+}
+
+// draining wraps the proxy for one engine run. A CONNECT turned away while
+// the run ends uses its flow note up like any other CONNECT.
+func (p *httpProxy) draining() *drainingHandler {
+	return &drainingHandler{handler: p, refused: p.dropFlow}
 }
 
 func (h *drainingHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	h.mu.Lock()
 	if h.closing {
 		h.mu.Unlock()
+		if h.refused != nil {
+			h.refused(request)
+		}
 		http.Error(writer, "Phase AI session is refreshing", http.StatusServiceUnavailable)
 		return
 	}
@@ -358,8 +370,9 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		return err
 	}
 	// A proxy started for one harness names its clients' flows as that tool's
-	// wherever the tool's own list holds the host. Every listed host is read
-	// either way. A label that names no listed tool leaves the tool unknown.
+	// wherever the tool's own list reads the host. Every host a list reads is
+	// read either way, and in the same way. A label that names no listed tool
+	// leaves the tool unknown.
 	tool := leak.hosts.toolFor(session.HarnessLabel)
 	control := &controlHandler{state: state, environments: environments, leak: leak}
 	httpHandler := &httpProxy{
@@ -367,7 +380,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		dial: dial, lockdown: e.Lockdown, events: events, manifest: manifest, control: control, lifecycle: ctx,
 		leak: leak, tool: tool, flows: e.flowNotes(),
 	}
-	trackedHandler := &drainingHandler{handler: httpHandler}
+	trackedHandler := httpHandler.draining()
 	proxyServer := &http.Server{
 		Handler: trackedHandler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second,
 		MaxHeaderBytes: 1 << 20,

@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/internal/tlsmirror"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
@@ -1391,8 +1393,13 @@ func TestMirrorForwardingAddsNothingOfItsOwn(t *testing.T) {
 	request := func(host string) string {
 		return fmt.Sprintf("POST /zen/v1/chat/completions HTTP/1.1\r\nHost: %s\r\nUser-Agent: opencode/2.0.25\r\nAuthorization: Bearer harness-login\r\nx-opencode-session: abc\r\nX-Test-Handler: gzip\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", host, len(body), body)
 	}
+	// The same request from a client that names no User-Agent.
+	unnamed := func(host string) string {
+		return fmt.Sprintf("POST /zen/v1/chat/completions HTTP/1.1\r\nHost: %s\r\nX-Test-Handler: gzip\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", host, len(body), body)
+	}
 	conn, _ := rig.connectTLS(t, mirrorHost, distinctiveTLS(rig.phaseRoots))
-	response, answer := exchange(t, conn, bufio.NewReader(conn), request(mirrorHost))
+	reader := bufio.NewReader(conn)
+	response, answer := exchange(t, conn, reader, request(mirrorHost))
 	received := rig.lastReceived()
 	if got := names(received.header); got != "Authorization,Content-Length,Content-Type,User-Agent,X-Opencode-Session,X-Test-Handler" {
 		t.Fatalf("the provider received the headers %s", got)
@@ -1403,15 +1410,29 @@ func TestMirrorForwardingAddsNothingOfItsOwn(t *testing.T) {
 	if response.Header.Get("Content-Encoding") != "gzip" || !bytes.Equal(answer, compressed.Bytes()) {
 		t.Fatalf("the answer was not passed back as the service sent it: %v %q", response.Header, answer)
 	}
+	// A request that names no client is sent on naming none: the forwarding
+	// does not put its own name in a User-Agent.
+	if response, _ := exchange(t, conn, reader, unnamed(mirrorHost)); response.StatusCode != http.StatusOK {
+		t.Fatalf("a request with no User-Agent: %d", response.StatusCode)
+	}
+	if received := rig.lastReceived(); names(received.header) != "Content-Length,Content-Type,X-Test-Handler" || !bytes.Equal(received.body, body) {
+		t.Fatalf("for a request with no User-Agent the provider received the headers %s (User-Agent %q)", names(received.header), received.header.Get("User-Agent"))
+	}
 	// The proxy's usual transport, on a host whose hello is not copied, asks
-	// for gzip itself and undoes it: that is the difference.
+	// for gzip itself and undoes it, and names itself when the client named
+	// nothing: that is the difference.
 	conn, _ = rig.connectTLS(t, "api.anthropic.com", distinctiveTLS(rig.phaseRoots))
-	response, answer = exchange(t, conn, bufio.NewReader(conn), request("api.anthropic.com"))
+	reader = bufio.NewReader(conn)
+	response, answer = exchange(t, conn, reader, request("api.anthropic.com"))
 	if got := names(rig.lastReceived().header); got != "Accept-Encoding,Authorization,Content-Length,Content-Type,User-Agent,X-Opencode-Session,X-Test-Handler" {
 		t.Fatalf("on a host that is not flagged the provider received the headers %s", got)
 	}
 	if response.Header.Get("Content-Encoding") != "" || string(answer) != `{"answer":"compressed by the service"}` {
 		t.Fatalf("on a host that is not flagged the answer came back as %v %q", response.Header, answer)
+	}
+	exchange(t, conn, reader, unnamed("api.anthropic.com"))
+	if received := rig.lastReceived(); names(received.header) != "Accept-Encoding,Content-Length,Content-Type,User-Agent,X-Test-Handler" || !strings.HasPrefix(received.header.Get("User-Agent"), "Go-http-client/") {
+		t.Fatalf("on a host that is not flagged a request with no User-Agent arrived with the headers %s", names(received.header))
 	}
 }
 
@@ -1534,6 +1555,54 @@ func TestMirrorReadsAHelloSentWithTheConnect(t *testing.T) {
 	sameHello(t, tap.hello(t), rig.wire.hello(t, 0))
 }
 
+// A hello sent with the CONNECT is not lost on any other path either: a host
+// read without its hello being copied, a host the proxy leaves alone, and a
+// host inside a pass-through window. Before, each of them waited for a hello
+// the client had already sent.
+func TestAHelloSentWithTheConnectReachesEveryKindOfTunnel(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	// The mirror host's client has refused the certificate twice.
+	rig.guard.handshakes.note(hostKey(mirrorHost), false)
+	if rig.guard.handshakes.note(hostKey(mirrorHost), false) == 0 {
+		t.Fatal("no window opened")
+	}
+	body := chatBody("the key is " + leakSecretOne)
+	for _, c := range []struct {
+		name, host string
+		read       bool
+	}{
+		{"a host that is read", "api.anthropic.com", true},
+		{"a host outside the table", "api.example.com", false},
+		{"a host in a pass-through window", mirrorHost, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			raw, err := net.Dial("tcp", rig.proxyURL.Host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			// Short: a hello that is lost is waited for until this passes.
+			_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+			authorization := base64.StdEncoding.EncodeToString([]byte("phase:runtime-test"))
+			pipelined := &pipelinedConn{Conn: raw, connect: fmt.Appendf(nil, "CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\nProxy-Authorization: Basic %s\r\n\r\n", c.host, c.host, authorization)}
+			config := distinctiveTLS(rig.bothRoots)
+			config.ServerName = c.host
+			conn := tls.Client(pipelined, config)
+			if err := conn.Handshake(); err != nil {
+				t.Fatalf("a hello sent with the CONNECT: %v", err)
+			}
+			_, phaseErr := conn.ConnectionState().PeerCertificates[0].Verify(x509.VerifyOptions{Roots: rig.phaseRoots, DNSName: c.host})
+			if response, _ := exchange(t, conn, bufio.NewReader(conn), chatRequest(c.host, body)); response.StatusCode != http.StatusOK {
+				t.Fatalf("status %d", response.StatusCode)
+			}
+			if replaced := !bytes.Contains(rig.lastReceived().body, []byte(leakSecretOne)); replaced != c.read || (phaseErr == nil) != c.read {
+				t.Fatalf("answered by the proxy = %v, value replaced = %v, want %v", phaseErr == nil, replaced, c.read)
+			}
+		})
+	}
+}
+
 // A Connection's own host is not handled here: its tunnel is terminated as
 // for any Connection and sent with the proxy's usual transport, and it is
 // never passed through, flagged or not.
@@ -1617,4 +1686,336 @@ func TestUnreadTunnelEventFitsTheConsole(t *testing.T) {
 	if kept := safeEventDetail(detail, nil); !reflect.DeepEqual(kept, detail) {
 		t.Fatalf("the detail is cut before it reaches the Console: %+v", kept)
 	}
+}
+
+// leakStatus is what GET /v1/status says of leak protection.
+func (r *leakRig) leakStatus(t *testing.T) *remoteapi.LeakProtectionStatus {
+	t.Helper()
+	recorder := controlCall(r.proxy, http.MethodGet, "/v1/status", "", nil)
+	var status remoteapi.StatusResponse
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &status) != nil || status.LeakProtection == nil {
+		t.Fatalf("status: %d %s", recorder.Code, recorder.Body.String())
+	}
+	return status.LeakProtection
+}
+
+// hostStatus is how status lists a host: inspected, or not and why.
+func hostStatus(status *remoteapi.LeakProtectionStatus, host string) (inspected bool, reasons []string) {
+	return containsString(status.InspectedHosts, host) && !containsString(status.UnreadHosts, host), status.UnreadReasons[host]
+}
+
+// passThrough opens a connection to the mirror host that the proxy hands to
+// the service unread, and that the client keeps: its hello names another
+// server than its CONNECT did, so no exact copy of it can be sent
+// (hello_not_mirrored), and the client completes its own TLS with the service.
+func (r *leakRig) passThrough(t *testing.T) *tls.Conn {
+	t.Helper()
+	config := distinctiveTLS(r.providerRoots)
+	config.ServerName = "elsewhere.example"
+	conn, _ := r.connectTLS(t, mirrorHost, config)
+	return conn
+}
+
+// A connection handed to the service unread stays unread for as long as the
+// client keeps it. Status lists its host as not read, with the reason, while
+// it is open and for a minute after it was opened, and the event is sent
+// again for as long as it stays open. Before, the host was listed as
+// inspected throughout and one event was all there ever was.
+func TestAPassedThroughConnectionIsSaidToBeUnreadWhileItLasts(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	clock := &testClock{now: time.Now()}
+	rig.guard.connections.now, rig.guard.unread.now = clock.Now, clock.Now
+	rig.proxy.unreadRepeat = 5 * time.Millisecond
+	eventually := func(what string, done func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(3 * time.Second); !done(); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal(what)
+			}
+		}
+	}
+	if inspected, reasons := hostStatus(rig.leakStatus(t), mirrorHost); !inspected || reasons != nil {
+		t.Fatalf("before any connection the host is not listed as inspected (%v)", reasons)
+	}
+
+	conn := rig.passThrough(t)
+	status := rig.leakStatus(t)
+	if inspected, reasons := hostStatus(status, mirrorHost); inspected || !reflect.DeepEqual(reasons, []string{leakReasonHelloNotMirrored}) {
+		t.Fatalf("with a passed-through connection open the host is listed as inspected = %v, for %v", inspected, reasons)
+	}
+	if !reflect.DeepEqual(status.UnreadHosts, []string{"*.cursor.sh", "cursor.sh", mirrorHost}) || containsString(status.InspectedHosts, mirrorHost) {
+		t.Fatalf("status hosts: %v and %v", status.InspectedHosts, status.UnreadHosts)
+	}
+	rig.passedThroughOnce(t, leakReasonHelloNotMirrored)
+
+	// It is offered again all the time and sent at the pace every unread
+	// report keeps: not again within the minute.
+	time.Sleep(60 * time.Millisecond)
+	if events := rig.unreadTunnels(); len(events) != 1 {
+		t.Fatalf("%d events within a minute of the first", len(events))
+	}
+	// A minute on the connection is still open, and the event says so again.
+	clock.advance(unreadPeriod)
+	eventually("an open passed-through connection was not reported again a minute later", func() bool { return len(rig.unreadTunnels()) >= 2 })
+	events := rig.unreadTunnels()
+	if event := events[1]; len(events) != 2 || event.Reason != leakReasonHelloNotMirrored || event.Host != mirrorHost || event.Detail["scope"] != leakScopeConnection ||
+		event.Detail["harness"] != "opencode" || len(event.Detail) != 4 || durableAuditEvent(event) {
+		t.Fatalf("the repeated event: %+v", events)
+	}
+	// And the host is still not read, though the connection opened long ago:
+	// what the client sends on it reaches the service as it is.
+	body := chatBody("the key is " + leakSecretOne)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	if response, _ := exchange(t, conn, bufio.NewReader(conn), chatRequest(mirrorHost, body)); response.StatusCode != http.StatusOK || !bytes.Equal(rig.lastReceived().body, body) {
+		t.Fatalf("the passed-through connection: %d", response.StatusCode)
+	}
+	if inspected, reasons := hostStatus(rig.leakStatus(t), mirrorHost); inspected || !reflect.DeepEqual(reasons, []string{leakReasonHelloNotMirrored}) {
+		t.Fatalf("a minute on, with the connection open: inspected = %v, for %v", inspected, reasons)
+	}
+
+	// Once the client lets go of it the host is read again, and the reports
+	// stop.
+	_ = conn.Close()
+	eventually("the host was not listed as inspected after its passed-through connection closed", func() bool {
+		inspected, reasons := hostStatus(rig.leakStatus(t), mirrorHost)
+		return inspected && reasons == nil
+	})
+	clock.advance(unreadPeriod)
+	time.Sleep(60 * time.Millisecond)
+	if events := rig.unreadTunnels(); len(events) != 2 {
+		t.Fatalf("%d events after the connection closed, want the two from while it was open", len(events))
+	}
+
+	// A connection that was passed through and is gone already is still said
+	// for a minute: as long as its event is not repeated.
+	_ = rig.passThrough(t).Close()
+	eventually("a passed-through connection that closed at once was not counted", func() bool {
+		_, _, passed := rig.guard.connections.counts(mirrorHost)
+		rig.guard.connections.mu.Lock()
+		defer rig.guard.connections.mu.Unlock()
+		return passed[leakReasonHelloNotMirrored] == 2 && !rig.guard.connections.hosts[mirrorHost].anyOpen()
+	})
+	clock.advance(unreadPeriod - time.Second)
+	if inspected, reasons := hostStatus(rig.leakStatus(t), mirrorHost); inspected || !reflect.DeepEqual(reasons, []string{leakReasonHelloNotMirrored}) {
+		t.Fatalf("within a minute of a passed-through connection: inspected = %v, for %v", inspected, reasons)
+	}
+	clock.advance(time.Second)
+	if inspected, reasons := hostStatus(rig.leakStatus(t), mirrorHost); !inspected || reasons != nil {
+		t.Fatalf("a minute after the last passed-through connection: inspected = %v, for %v", inspected, reasons)
+	}
+	// Nothing in status is more than names, counts and reasons.
+	encoded, _ := json.Marshal(rig.leakStatus(t))
+	if bytes.Contains(encoded, []byte("elsewhere")) || bytes.Contains(encoded, []byte(leakSecretOne)) ||
+		!bytes.Contains(encoded, []byte(`"mirroredHosts":[{"host":"opencode.ai","copied":0,"rebuilt":0,"passedThrough":{"hello_not_mirrored":2}}]`)) {
+		t.Fatalf("status: %s", encoded)
+	}
+}
+
+// Status counts how the connections to a host whose hello is copied went:
+// read with a copy, sent a hello rebuilt from one that offered a session, or
+// handed over unread and why.
+func TestStatusCountsTheConnectionsOfAMirroredHost(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	counts := func() remoteapi.MirroredHostStatus {
+		t.Helper()
+		hosts := rig.leakStatus(t).MirroredHosts
+		if len(hosts) != 1 || hosts[0].Host != mirrorHost {
+			t.Fatalf("the mirrored hosts: %+v", hosts)
+		}
+		return hosts[0]
+	}
+	if got := counts(); got.Copied != 0 || got.Rebuilt != 0 || got.PassedThrough != nil {
+		t.Fatalf("before any connection: %+v", got)
+	}
+	body := chatBody("the key is " + leakSecretOne)
+	send := func(config *tls.Config) {
+		t.Helper()
+		conn, _ := rig.connectTLS(t, mirrorHost, config)
+		if response, _ := exchange(t, conn, bufio.NewReader(conn), chatRequest(mirrorHost, body)); response.StatusCode != http.StatusOK {
+			t.Fatalf("status %d", response.StatusCode)
+		}
+		if bytes.Contains(rig.lastReceived().body, []byte(leakSecretOne)) {
+			t.Fatal("the connection was not read")
+		}
+		_ = conn.Close()
+	}
+	// A client with no session: its own hello is copied.
+	known := distinctiveTLS(rig.bothRoots)
+	known.ServerName = mirrorHost
+	known.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+	send(known)
+	if got := counts(); got.Copied != 1 || got.Rebuilt != 0 || got.PassedThrough != nil {
+		t.Fatalf("after one connection read with a copy: %+v", got)
+	}
+	// The same client with a session to offer: the hello it sent before is
+	// the one copied, so nothing was rebuilt.
+	rig.directSession(t, known)
+	send(known)
+	if got := counts(); got.Copied != 2 || got.Rebuilt != 0 {
+		t.Fatalf("after a client seen before offered a session: %+v", got)
+	}
+	// A client first seen with a session to offer: the hello sent is made
+	// from the one it sent, and that is counted.
+	stranger := distinctiveTLS(rig.bothRoots)
+	stranger.ServerName = mirrorHost
+	stranger.CurvePreferences = []tls.CurveID{tls.X25519}
+	stranger.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+	rig.directSession(t, stranger)
+	send(stranger)
+	send(stranger)
+	if got := counts(); got.Copied != 4 || got.Rebuilt != 2 || got.PassedThrough != nil {
+		t.Fatalf("after two connections of a client first seen with a session: %+v", got)
+	}
+	// Connections handed over unread are counted by reason: two whose hello
+	// cannot be copied, and one whose hello says early data follows.
+	_ = rig.passThrough(t).Close()
+	_ = rig.passThrough(t).Close()
+	opened, first := rig.connectTLS(t, mirrorHost, distinctiveTLS(rig.phaseRoots))
+	_ = opened.Close()
+	index := rig.wire.count()
+	early := withHelloExtension(t, first.hello(t), 42, nil)
+	tap := rig.connect(t, mirrorHost)
+	if _, err := tap.Write(early); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rig.wire.hello(t, index), early) {
+		t.Fatal("the provider did not receive the client's own hello")
+	}
+	_ = tap.Close()
+	want := remoteapi.MirroredHostStatus{Host: mirrorHost, Copied: 5, Rebuilt: 2, PassedThrough: map[string]int{leakReasonHelloNotMirrored: 2, leakReasonHelloResumption: 1}}
+	if got := counts(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the counts: %+v, want %+v", got, want)
+	}
+	// With leak protection off nothing is mirrored, and nothing is counted.
+	if off := newTestLeakGuard(t, leakModeOff).status(); off.MirroredHosts != nil || off.UnreadReasons != nil {
+		t.Fatalf("off mode: %+v", off)
+	}
+}
+
+// A tunnel opened inside a pass-through window is raw for as long as the
+// client keeps it, after the window has ended too. Status goes on listing the
+// host as not read until it is gone.
+func TestAHostStaysUnreadWhileATunnelOfItsWindowIsOpen(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	clock := &testClock{now: time.Now()}
+	rig.guard.handshakes.now, rig.guard.connections.now = clock.Now, clock.Now
+	const host = "api.anthropic.com"
+	rig.guard.handshakes.note(hostKey(host), false)
+	if rig.guard.handshakes.note(hostKey(host), false) != handshakeBypassFirst {
+		t.Fatal("no window opened")
+	}
+	if inspected, reasons := hostStatus(rig.leakStatus(t), host); inspected || !reflect.DeepEqual(reasons, []string{leakReasonTLSRefused}) {
+		t.Fatalf("in the window: inspected = %v, for %v", inspected, reasons)
+	}
+	// The client opens its tunnel in the window and keeps it.
+	config := distinctiveTLS(rig.providerRoots)
+	conn, _ := rig.connectTLS(t, host, config)
+	reader := bufio.NewReader(conn)
+	body := anthropicBody("key " + leakSecretOne)
+	request := fmt.Sprintf("POST /v1/messages HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s", host, len(body), body)
+	clock.advance(handshakeBypassFirst + unreadPeriod + time.Second)
+	if rig.guard.handshakes.bypassed(hostKey(host)) {
+		t.Fatal("the window did not end")
+	}
+	// The window is over, and what the client sends on its tunnel still
+	// reaches the provider unread.
+	if response, _ := exchange(t, conn, reader, request); response.StatusCode != http.StatusOK || !bytes.Equal(rig.lastReceived().body, body) {
+		t.Fatalf("the tunnel of the window: %d", response.StatusCode)
+	}
+	if inspected, reasons := hostStatus(rig.leakStatus(t), host); inspected || !reflect.DeepEqual(reasons, []string{leakReasonTLSRefused}) {
+		t.Fatalf("after the window, with its tunnel open: inspected = %v, for %v", inspected, reasons)
+	}
+	_ = conn.Close()
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if inspected, reasons := hostStatus(rig.leakStatus(t), host); inspected && reasons == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the host was not listed as inspected after the tunnel of its window closed")
+		}
+	}
+	// A host that is not flagged has no mirror counts.
+	if hosts := rig.leakStatus(t).MirroredHosts; len(hosts) != 1 || hosts[0].Host != mirrorHost {
+		t.Fatalf("the mirrored hosts: %+v", hosts)
+	}
+}
+
+// What is counted per host is bounded, and a host with an open connection is
+// never dropped for another: status has to go on naming it.
+func TestConnectionCountsAreKeptForABoundedNumberOfHosts(t *testing.T) {
+	log := newConnectionLog()
+	ended := log.passed("open.models.example", leakReasonHelloUnreadable)
+	for i := 0; i < 4*maxRememberedHosts; i++ {
+		host := fmt.Sprintf("h%d.models.example", i)
+		log.noteCopied(host)
+		log.passed(host, leakReasonHelloResumption)()
+		if len(log.hosts) > maxRememberedHosts {
+			t.Fatalf("%d hosts are counted", len(log.hosts))
+		}
+	}
+	if reasons := log.unreadNow()["open.models.example"]; !reflect.DeepEqual(reasons, []string{leakReasonHelloUnreadable}) {
+		t.Fatalf("a host with an open connection was dropped: %v", reasons)
+	}
+	// Ending a connection twice counts once.
+	ended()
+	ended()
+	log.mu.Lock()
+	open := log.hosts["open.models.example"].unread[leakReasonHelloUnreadable].open
+	log.mu.Unlock()
+	if open != 0 {
+		t.Fatalf("%d connections are open after the one ended", open)
+	}
+	// When every host counted has an open connection a new one is not
+	// counted, and ending it is nothing.
+	full := newConnectionLog()
+	for i := 0; i < maxRememberedHosts; i++ {
+		full.passed(fmt.Sprintf("h%d.models.example", i), leakReasonHelloUnreadable)
+	}
+	full.passed("one-more.models.example", leakReasonHelloUnreadable)()
+	full.noteCopied("one-more.models.example")
+	full.noteRebuilt("one-more.models.example")
+	if copied, rebuilt, passed := full.counts("one-more.models.example"); len(full.hosts) != maxRememberedHosts || copied != 0 || rebuilt != 0 || passed != nil {
+		t.Fatalf("%d hosts are counted", len(full.hosts))
+	}
+}
+
+// A service that settles on a cipher suite Go's own TLS does not use is not
+// sent the request over the proxy's connection: the client's own connection
+// is handed over instead, as when the proxy's handshake fails.
+func TestMirrorPassesThroughWhenTheServiceSettlesOnALegacySuite(t *testing.T) {
+	const legacy = tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256
+	rig := newLeakRigWith(t, leakModeCensor, func(provider *httptest.Server) {
+		provider.TLS.MaxVersion = tls.VersionTLS12
+		provider.TLS.CipherSuites = []uint16{legacy}
+	})
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	// A client that still offers the suite, after the ones it prefers.
+	config := distinctiveTLS(rig.providerRoots)
+	config.MaxVersion = tls.VersionTLS12
+	config.CipherSuites = append(config.CipherSuites, legacy)
+	conn, tap := rig.connectTLS(t, mirrorHost, config)
+	if suite := conn.ConnectionState().CipherSuite; suite != legacy {
+		t.Fatalf("the client and the service settled on %04x", suite)
+	}
+	body := chatBody("the key is " + leakSecretOne)
+	if response, _ := exchange(t, conn, bufio.NewReader(conn), chatRequest(mirrorHost, body)); response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", response.StatusCode)
+	}
+	if !bytes.Equal(rig.lastReceived().body, body) {
+		t.Fatal("a connection passed through unread was changed")
+	}
+	// The copy was tried, and given up once it was known what the service
+	// chose; then the client's own hello.
+	sent := tap.hello(t)
+	if rig.wire.count() != 2 {
+		t.Fatalf("%d connections to the provider, want the copy and the client's own", rig.wire.count())
+	}
+	sameHello(t, sent, rig.wire.hello(t, 0))
+	if !bytes.Equal(rig.wire.hello(t, 1), sent) {
+		t.Fatal("the provider did not receive the client's own hello")
+	}
+	rig.wire.closed(t, 0)
+	rig.passedThroughOnce(t, leakReasonUpstreamHandshake)
 }

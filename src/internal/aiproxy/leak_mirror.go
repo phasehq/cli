@@ -63,7 +63,8 @@ var (
 // mirrorTunnel is the upstream side of one client connection to such a host.
 // Every connection it opens starts with a copy of the hello that client
 // opened its tunnel with, or of the one it sends with no session to resume;
-// it never opens one any other way.
+// it never opens one any other way. It is what sends the tunnel's requests
+// (RoundTrip).
 type mirrorTunnel struct {
 	proxy   *httpProxy
 	host    string
@@ -71,7 +72,7 @@ type mirrorTunnel struct {
 	// hello is the hello that is copied. It never offers a session.
 	hello []byte
 	roots *x509.CertPool
-	// transport sends the tunnel's requests over the tunnel's connections.
+	// transport carries the tunnel's requests over the tunnel's connections.
 	transport *http.Transport
 
 	mu sync.Mutex
@@ -96,26 +97,34 @@ func (c *replayConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
-// openMirror reads the hello a client opens its tunnel with and opens the
-// upstream connection with a copy of it. It returns the client's connection
-// with the hello put back, ready for the proxy to terminate, and the tunnel's
-// upstream. When the hello cannot be read or copied, or the service does not
-// take the copy, the connection is passed through unread and ok is false.
-func (p *httpProxy) openMirror(ctx context.Context, client net.Conn, pending *bufio.Reader, host string, port int, match *leakHostMatch, selection string) (net.Conn, *mirrorTunnel, bool) {
-	source := client
-	if ahead := pending.Buffered(); ahead > 0 {
-		// The server read past the CONNECT request: a client may send its
-		// hello without waiting for the answer.
-		read, _ := pending.Peek(ahead)
-		source = &replayConn{Conn: client, replay: bytes.NewReader(bytes.Clone(read))}
+// withBuffered returns a hijacked connection with what the server had read
+// past the CONNECT request put back in front of it. A client may send its
+// first bytes, its TLS hello, without waiting for the proxy's answer; they
+// arrive with the CONNECT, and a tunnel that began after them would wait for
+// a hello the client has already sent.
+func withBuffered(client net.Conn, pending *bufio.Reader) net.Conn {
+	ahead := pending.Buffered()
+	if ahead == 0 {
+		return client
 	}
+	read, _ := pending.Peek(ahead)
+	return &replayConn{Conn: client, replay: bytes.NewReader(bytes.Clone(read))}
+}
+
+// openMirror reads the hello a client opens its tunnel with and opens the
+// upstream connection with a copy of it. source is the client's connection
+// as withBuffered returns it. It returns that connection with the hello put
+// back, ready for the proxy to terminate, and the tunnel's upstream. When the
+// hello cannot be read or copied, or the service does not take the copy, the
+// connection is passed through unread and ok is false.
+func (p *httpProxy) openMirror(ctx context.Context, source net.Conn, host string, port int, match *leakHostMatch, selection string) (net.Conn, *mirrorTunnel, bool) {
 	wait := p.mirrorHelloWait
 	if wait <= 0 {
 		wait = mirrorHelloTimeout
 	}
-	_ = client.SetReadDeadline(time.Now().Add(wait))
+	_ = source.SetReadDeadline(time.Now().Add(wait))
 	hello, err := tlsmirror.ReadHello(source)
-	_ = client.SetReadDeadline(time.Time{})
+	_ = source.SetReadDeadline(time.Time{})
 	var tunnel *mirrorTunnel
 	reason := ""
 	switch {
@@ -193,39 +202,42 @@ func (f *freshHellos) like(key leakStateKey, fresh []byte) []byte {
 
 // mirroredHello returns the hello to copy for a client's hello: the hello
 // itself, or, when it offers to resume a session, the one that client sends
-// with no session. offered says the client's hello offered one. reason is
-// set when the connection has to be passed through whatever could be copied.
-func (p *httpProxy) mirroredHello(match *leakHostMatch, hello []byte) (mirrored []byte, offered bool, reason string) {
+// with no session. offered says the client's hello offered one, and rebuilt
+// that the hello returned was made from it because the client had not been
+// seen without a session: such a hello may differ from the client's own in
+// its padding. reason is set when the connection has to be passed through
+// whatever could be copied.
+func (p *httpProxy) mirroredHello(match *leakHostMatch, hello []byte) (mirrored []byte, offered, rebuilt bool, reason string) {
 	parsed, err := tlsmirror.ParseHello(hello)
 	if err != nil {
-		return nil, false, leakReasonHelloNotMirrored
+		return nil, false, false, leakReasonHelloNotMirrored
 	}
 	if !parsed.Resumes {
-		return hello, false, ""
+		return hello, false, false, ""
 	}
 	// A client that sends early data expects the server to read it or to
 	// skip it. The proxy's TLS does neither and would end the handshake, so
 	// such a connection is left to the service.
 	if parsed.EarlyData {
-		return nil, true, leakReasonHelloResumption
+		return nil, true, false, leakReasonHelloResumption
 	}
 	fresh, err := tlsmirror.Fresh(hello)
 	if err != nil {
-		return nil, true, leakReasonHelloResumption
+		return nil, true, false, leakReasonHelloResumption
 	}
 	// The hello this client sent when it had no session is its own in every
 	// part, padding included. The one made here is used when none was seen.
 	if seen := p.leak.mirrored.like(match.key, fresh); seen != nil {
-		fresh = seen
+		return seen, true, false, ""
 	}
-	return fresh, true, ""
+	return fresh, true, true, ""
 }
 
 // dialMirror opens a tunnel's first upstream connection. It returns the
 // tunnel, or the reason the client's connection is passed through instead, or
 // an error when the service cannot be reached at all.
 func (p *httpProxy) dialMirror(ctx context.Context, match *leakHostMatch, host string, port int, hello []byte) (*mirrorTunnel, string, error) {
-	hello, offered, reason := p.mirroredHello(match, hello)
+	hello, offered, rebuilt, reason := p.mirroredHello(match, hello)
 	if reason != "" {
 		return nil, reason, nil
 	}
@@ -248,8 +260,15 @@ func (p *httpProxy) dialMirror(ctx context.Context, match *leakHostMatch, host s
 		proxy: p, host: host, address: net.JoinHostPort(host, strconv.Itoa(port)), hello: hello, roots: p.unboundRoots(),
 	}
 	first, err := tunnel.connect(ctx)
+	// Status counts what was sent: a hello that is not the client's own in
+	// every part is the first thing to look at when the service turns the
+	// connection or its requests away.
+	if rebuilt && !errors.Is(err, errMirrorUnreachable) {
+		p.leak.connections.noteRebuilt(match.key.host)
+	}
 	switch {
 	case err == nil:
+		p.leak.connections.noteCopied(match.key.host)
 	case errors.Is(err, errMirrorUnreachable):
 		return nil, "", err
 	case errors.Is(err, errMirrorNotHTTP1):
@@ -279,6 +298,18 @@ func (p *httpProxy) dialMirror(ctx context.Context, match *leakHostMatch, host s
 		IdleConnTimeout:     mirrorIdleTimeout,
 	}
 	return tunnel, "", nil
+}
+
+// RoundTrip sends one of the tunnel's requests with the headers it came with
+// and none of the proxy's own. net/http names itself in a User-Agent when a
+// request has none, which is not what this service's own client sends; a
+// header that is present and empty is how it is told to send none.
+func (m *mirrorTunnel) RoundTrip(request *http.Request) (*http.Response, error) {
+	if _, sent := request.Header["User-Agent"]; !sent {
+		// The request is the proxy's own copy of the client's, made to be sent.
+		request.Header["User-Agent"] = []string{""}
+	}
+	return m.transport.RoundTrip(request)
 }
 
 // connect opens one upstream connection with the copy of the client's hello.
@@ -352,7 +383,9 @@ func stillOpen(conn net.Conn) bool {
 
 // passThroughUnread hands a client's connection to the service as the client
 // opened it: a new TCP connection, the bytes already read from the client,
-// then both directions copied as they come. Nothing on it is read.
+// then both directions copied as they come. Nothing on it is read, for as
+// long as the client keeps it: status lists the host as not read meanwhile,
+// and the event is repeated.
 func (p *httpProxy) passThroughUnread(ctx context.Context, client net.Conn, read []byte, host string, port int, match *leakHostMatch, selection, reason string) {
 	upstream, err := p.dialUnbound(ctx, net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
@@ -360,10 +393,12 @@ func (p *httpProxy) passThroughUnread(ctx context.Context, client net.Conn, read
 	}
 	defer upstream.Close()
 	p.noteUnreadTunnel(host, port, match, reason)
+	defer p.leak.connections.passed(match.key.host, reason)()
 	if _, err := upstream.Write(read); err != nil {
 		return
 	}
 	defer p.watchPassThrough(ctx, client, upstream, host, port, selection)()
+	defer p.repeatUnreadTunnel(host, port, match, reason)()
 	copyBidirectional(client, upstream)
 }
 
@@ -374,6 +409,13 @@ func (p *httpProxy) noteUnreadTunnel(host string, port int, match *leakHostMatch
 	if p.observe != nil {
 		p.observe(leakObservation{host: host, connection: reason})
 	}
+	p.reportUnreadTunnel(host, port, match, reason)
+}
+
+// reportUnreadTunnel sends the event for a connection passed through unread,
+// at the pace every unread report keeps: once for its tool, host and reason,
+// then at most once in unreadPeriod.
+func (p *httpProxy) reportUnreadTunnel(host string, port int, match *leakHostMatch, reason string) {
 	if p.events == nil || !p.leak.unread.fresh(match.key, reason) {
 		return
 	}
@@ -382,6 +424,40 @@ func (p *httpProxy) noteUnreadTunnel(host string, port int, match *leakHostMatch
 	event.Detail = leakFlowDetail(p.leak.mode, match)
 	event.Detail["scope"] = leakScopeConnection
 	p.events.Emit(event)
+}
+
+// repeatUnreadTunnel reports a connection passed through unread again for as
+// long as it stays open. A client can keep one for a whole session, and the
+// one event sent when it opened would say nothing of that an hour later. The
+// report is offered more often than it may be sent, so that it goes out soon
+// after each unreadPeriod and not a whole period late. It returns what ends
+// the reports, which waits for one in flight.
+func (p *httpProxy) repeatUnreadTunnel(host string, port int, match *leakHostMatch, reason string) func() {
+	if p.events == nil {
+		return func() {}
+	}
+	every := p.unreadRepeat
+	if every <= 0 {
+		every = unreadPeriod / 4
+	}
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				p.reportUnreadTunnel(host, port, match, reason)
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-stopped
+	}
 }
 
 // unboundRoots returns the roots the proxy's own TLS trusts for a host no

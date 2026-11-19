@@ -159,6 +159,17 @@ func (n *flowNotes) take(remoteAddr string) (FlowContext, bool) {
 	return note.flow, true
 }
 
+// forget drops the note left for an address, if one still waits there.
+func (n *flowNotes) forget(remoteAddr string) {
+	address, ok := loopbackAddress(remoteAddr)
+	if !ok {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.notes, address)
+}
+
 // flowNotes returns the process-wide notes, made on first use so a zero
 // Engine behaves like New().
 func (e *Engine) flowNotes() *flowNotes {
@@ -177,14 +188,25 @@ func (e *Engine) flowNotes() *flowNotes {
 // remoteAddr, the loopback address and port of the caller's own connection
 // to the proxy (its LocalAddr). It is for a capture layer in this process: a
 // tunnel's router calls it for each flow it hands over, before it writes the
-// CONNECT. The note is used by the first CONNECT from that address and is
-// forgotten after about ten seconds if none comes.
+// CONNECT. The note is used up by the first CONNECT from that address,
+// whether the proxy serves that CONNECT or refuses it, so a second CONNECT on
+// the same connection needs a note of its own. A note nobody uses is
+// forgotten after about ten seconds; ForgetFlow drops it at once.
 //
 // A CONNECT nobody noted is a client that was given the proxy through its
 // environment. An error means the note was not kept, and the caller must not
 // hand the flow over: its CONNECT would be taken for such a client.
 func (e *Engine) NoteFlow(remoteAddr string, flow FlowContext) error {
 	return e.flowNotes().note(remoteAddr, flow)
+}
+
+// ForgetFlow drops the note left for remoteAddr. A capture layer calls it
+// when the connection it noted ends without sending its CONNECT: the note
+// would otherwise wait out its ten seconds, and another program that
+// connected from the same address and port in that time would be taken for
+// the noted flow.
+func (e *Engine) ForgetFlow(remoteAddr string) {
+	e.flowNotes().forget(remoteAddr)
 }
 
 // ReadHost is one host leak protection reads for a tool, on port 443.
@@ -249,4 +271,12 @@ func (p *httpProxy) connectFlow(req *http.Request) FlowContext {
 		}
 	}
 	return p.ownFlow()
+}
+
+// dropFlow uses up the note of a CONNECT that is turned away before the
+// proxy handles it.
+func (p *httpProxy) dropFlow(req *http.Request) {
+	if req != nil && req.Method == http.MethodConnect {
+		p.connectFlow(req)
+	}
 }

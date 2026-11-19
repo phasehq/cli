@@ -463,3 +463,153 @@ func TestRegistrationSaysWhatEachIDIs(t *testing.T) {
 		}
 	}
 }
+
+// closedProxy is the URL of a proxy nothing listens at.
+func closedProxy(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	return "http://phase:capability@" + address
+}
+
+// restartingSource is a source whose proxy is away for a while: it is found
+// at found, which the test changes, and says it is restarting while it is.
+type restartingSource struct {
+	mu         sync.Mutex
+	found      string
+	restarting bool
+	asked      int
+}
+
+func (s *restartingSource) set(found string, restarting bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.found, s.restarting = found, restarting
+}
+
+// timesAsked is how often the source was asked whether it is restarting.
+func (s *restartingSource) timesAsked() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.asked
+}
+
+func (s *restartingSource) source() Source {
+	return Source{
+		Name: "runtime",
+		Find: func() (string, bool) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.found, s.found != ""
+		},
+		Restarting: func() bool {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.asked++
+			return s.restarting
+		},
+	}
+}
+
+// A proxy that is restarting takes no registration for a moment: it is
+// starting, or between two sessions with its listener closed. A value handed
+// out then would never reach the inventory it comes back with, so the
+// registration waits for it, for Timeout in all.
+func TestARegistrationWaitsForAProxyThatIsRestarting(t *testing.T) {
+	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}
+	for name, start := range map[string]func(t *testing.T) string{
+		// Its source does not find it yet.
+		"not found yet": func(*testing.T) string { return "" },
+		// Its source still points at it, and nothing listens there.
+		"found where nothing listens": closedProxy,
+	} {
+		t.Run(name+", back in time", func(t *testing.T) {
+			fake, server := newFakeProxy(t)
+			withEnvironment(t, map[string]string{})
+			away := &restartingSource{found: start(t), restarting: true}
+			withSource(t, away.source())
+			found, ok := Locate()
+			if !ok || found.InSession() || found.Source != "runtime" {
+				t.Fatalf("a proxy that is restarting was not found: %+v %v", found, ok)
+			}
+			go func() {
+				time.Sleep(150 * time.Millisecond)
+				away.set(capabilityURL(server), true)
+			}()
+			started := time.Now()
+			result, err := Register(context.Background(), value)
+			if elapsed := time.Since(started); err != nil || result.Added != 1 || fake.posts != 1 || elapsed < 100*time.Millisecond || elapsed > Timeout+500*time.Millisecond {
+				t.Fatalf("a registration with a proxy back after 150ms: %+v %v after %v", result, err, elapsed)
+			}
+		})
+		t.Run(name+", not back in time", func(t *testing.T) {
+			withEnvironment(t, map[string]string{})
+			away := &restartingSource{found: start(t), restarting: true}
+			withSource(t, away.source())
+			started := time.Now()
+			result, err := Register(context.Background(), value)
+			elapsed := time.Since(started)
+			// Its own error: a proxy runs, and the values are not protected.
+			if !errors.Is(err, ErrRestarting) || errors.Is(err, ErrNotListening) || result != (Result{}) {
+				t.Fatalf("a registration with a proxy that stayed away: %+v %v", result, err)
+			}
+			if elapsed < Timeout*8/10 || elapsed > 2*Timeout {
+				t.Fatalf("a proxy that is restarting was waited for %v, not about %v", elapsed, Timeout)
+			}
+		})
+		t.Run(name+", gone for good", func(t *testing.T) {
+			withEnvironment(t, map[string]string{})
+			away := &restartingSource{found: start(t), restarting: true}
+			withSource(t, away.source())
+			proxy, ok := Locate()
+			if !ok {
+				t.Fatal("a proxy that is restarting was not found")
+			}
+			// Its process ends while it is waited for: no proxy runs.
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				away.set("", false)
+			}()
+			started := time.Now()
+			_, err := proxy.Register(context.Background(), value)
+			if elapsed := time.Since(started); !errors.Is(err, ErrNotListening) || elapsed > Timeout*8/10 {
+				t.Fatalf("a proxy that went away for good: %v after %v", err, elapsed)
+			}
+		})
+	}
+
+	// A source that does not say its proxy is restarting is not waited for,
+	// and is not even asked when there is nothing to register.
+	withEnvironment(t, map[string]string{})
+	gone := &restartingSource{found: closedProxy(t)}
+	withSource(t, gone.source())
+	started := time.Now()
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > Timeout/2 {
+		t.Fatalf("a proxy that is not running: %v after %v", err, time.Since(started))
+	}
+	gone.set(closedProxy(t), true)
+	proxy, _ := Locate()
+	asked := gone.timesAsked()
+	if result, err := proxy.Register(context.Background(), []Value{{Type: "config", ID: "LOG_LEVEL", Value: "debug-level-value"}}); err != nil || result != (Result{}) || gone.timesAsked() != asked {
+		t.Fatalf("a registration of nothing: %+v %v, the source was asked %d times", result, err, gone.timesAsked()-asked)
+	}
+	// The wait ends with the command's own context.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started = time.Now()
+	if _, err := Register(ctx, value); !errors.Is(err, ErrRestarting) || time.Since(started) > Timeout/2 {
+		t.Fatalf("a wait whose context ended: %v after %v", err, time.Since(started))
+	}
+	// A session's own proxy says nothing of the kind: nothing listening there
+	// fails at once, as before, and no other source is asked about it.
+	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": closedProxy(t)})
+	asked = gone.timesAsked()
+	started = time.Now()
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > Timeout/2 || gone.timesAsked() != asked {
+		t.Fatalf("a session whose proxy is gone: %v after %v, another source asked %d times", err, time.Since(started), gone.timesAsked()-asked)
+	}
+}

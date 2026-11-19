@@ -68,9 +68,10 @@ const (
 	leakSeverityHighPlaceholders   = 5
 	leakSeverityMediumPlaceholders = 1
 
-	// maxScanPlaceholders is how many distinct placeholders one request keeps
-	// to compare with what was already reported; the count goes on past it.
-	maxScanPlaceholders = 256
+	// maxScanPlaceholders is how many distinct placeholders one request is
+	// counted to, exactly. A request that holds more says so
+	// (placeholdersCapped) and its counts are a floor.
+	maxScanPlaceholders = 4096
 )
 
 // Login headers are the harness's own business and never judged; the proxy
@@ -100,16 +101,21 @@ type leakScan struct {
 	redacted  int
 	alerts    int
 	left      int
-	// placeholders are the distinct placeholders found, up to
-	// maxScanPlaceholders; count is how many there were.
+	// placeholders are the distinct placeholders found, in the order found
+	// and up to maxScanPlaceholders. A placeholder found many times is one.
 	placeholders []string
-	count        int
-	// replaceable are those of them found where the request can be rewritten,
-	// counted the same way. They were replaced when changed is set.
-	replaceable      []string
-	replaceableCount int
+	// replaceable are those of them found where the request can be rewritten.
+	// They were replaced when changed is set.
+	replaceable []string
+	// seen and seenReplaceable hold the same placeholders, to look one up in.
+	seen, seenReplaceable map[string]struct{}
+	// capped says there were more distinct placeholders than are counted: a
+	// list above is full, or a report listed only the first of its findings.
+	capped bool
 	// phaseToken says one of Phase's own tokens was found.
 	phaseToken bool
+	// text says the body or message was read as text, JSON or not.
+	text bool
 	// listed are the placeholders an event names.
 	listed  []string
 	labels  []string
@@ -150,12 +156,26 @@ func (s *leakScan) addFinding(f censor.Finding, where string) {
 	if f.Label != "" && !containsString(s.labels, f.Label) {
 		s.labels = append(s.labels, f.Label)
 	}
-	if f.Placeholder != "" && !containsString(s.placeholders, f.Placeholder) {
-		s.count++
-		if len(s.placeholders) < maxScanPlaceholders {
-			s.placeholders = append(s.placeholders, f.Placeholder)
-		}
+	if f.Placeholder != "" {
+		s.keep(&s.placeholders, &s.seen, f.Placeholder)
 	}
+}
+
+// keep adds a placeholder to one of the scan's lists unless the list holds it
+// already. A list that is full says the scan's counts are capped.
+func (s *leakScan) keep(list *[]string, seen *map[string]struct{}, placeholder string) {
+	if _, known := (*seen)[placeholder]; known {
+		return
+	}
+	if len(*list) >= maxScanPlaceholders {
+		s.capped = true
+		return
+	}
+	if *seen == nil {
+		*seen = map[string]struct{}{}
+	}
+	(*seen)[placeholder] = struct{}{}
+	*list = append(*list, placeholder)
 }
 
 // addReport records what was found in bytes that can be rewritten.
@@ -163,14 +183,15 @@ func (s *leakScan) addReport(report *censor.Report, where string) {
 	if report == nil {
 		return
 	}
+	// A report lists only the first of very many findings; the placeholders
+	// of the rest are not known.
+	if report.Truncated {
+		s.capped = true
+	}
 	for _, finding := range report.Findings {
 		s.addFinding(finding, where)
-		if finding.Action == "left" || finding.Placeholder == "" || containsString(s.replaceable, finding.Placeholder) {
-			continue
-		}
-		s.replaceableCount++
-		if len(s.replaceable) < maxScanPlaceholders {
-			s.replaceable = append(s.replaceable, finding.Placeholder)
+		if finding.Action != "left" && finding.Placeholder != "" {
+			s.keep(&s.replaceable, &s.seenReplaceable, finding.Placeholder)
 		}
 	}
 }
@@ -200,15 +221,15 @@ func (s *leakScan) replaced() int {
 	if !s.changed {
 		return 0
 	}
-	return s.replaceableCount
+	return len(s.replaceable)
 }
 
 // severity grades what the scan found. blocked says the request was stopped.
 func (s *leakScan) severity(blocked bool) string {
 	switch {
-	case blocked || s.phaseToken || s.count >= leakSeverityHighPlaceholders:
+	case blocked || s.phaseToken || len(s.placeholders) >= leakSeverityHighPlaceholders:
 		return leakSeverityHigh
-	case s.count >= leakSeverityMediumPlaceholders:
+	case len(s.placeholders) >= leakSeverityMediumPlaceholders:
 		return leakSeverityMedium
 	case s.alerts > 0 || s.left > 0:
 		return leakSeverityLow
@@ -440,7 +461,7 @@ func (p *httpProxy) emitLeakEvent(binding *binding, req *http.Request, host stri
 	switch {
 	case scan.unread != "":
 		report = p.leak.unread.fresh(key, scan.unread) || report
-	case scan.left > 0 && scan.count == 0:
+	case scan.left > 0 && len(scan.placeholders) == 0:
 		// Nothing was replaced and no placeholder names it, so the report-once
 		// memory of placeholders does not cover it.
 		report = p.leak.unread.fresh(key, leakQuietSignedText)
@@ -520,7 +541,7 @@ func (s *leakScan) detail() map[string]any {
 		sort.Strings(s.labels)
 		detail["labels"] = joinWithin(s.labels, maxLeakDetailText)
 	}
-	if s.count > 0 {
+	if len(s.placeholders) > 0 {
 		listed := s.listed
 		if len(listed) > maxLeakPlaceholders {
 			listed = listed[:maxLeakPlaceholders]
@@ -528,8 +549,13 @@ func (s *leakScan) detail() map[string]any {
 		if len(listed) > 0 {
 			detail["placeholders"] = joinWithin(listed, maxLeakDetailText)
 		}
-		detail["placeholderCount"] = s.count
+		detail["placeholderCount"] = len(s.placeholders)
 		detail["replacedCount"] = s.replaced()
+		// The two counts are of distinct placeholders, and exact unless this
+		// says there were more.
+		if s.capped {
+			detail["placeholdersCapped"] = true
+		}
 	}
 	if s.unread != "" && s.scope != "" {
 		detail["scope"] = s.scope

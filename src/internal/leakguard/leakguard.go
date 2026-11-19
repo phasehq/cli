@@ -7,6 +7,8 @@
 // command runs in names it in the environment, and other sources find one
 // that runs on the machine for commands whose shell does not carry that
 // environment. When no source finds one it does nothing and makes no call.
+// A source can also say its proxy is restarting; a registration then waits
+// for it, for Timeout in all.
 package leakguard
 
 import (
@@ -33,7 +35,8 @@ import (
 )
 
 // Timeout bounds one registration, key fetch included. A command that hands
-// out values waits at most this long for the proxy.
+// out values waits at most this long for the proxy, and, before that, at most
+// this long for a proxy that is restarting to come back.
 const Timeout = time.Second
 
 // maxEntryBytes is the largest one value's entries may be and still fit in a
@@ -73,6 +76,15 @@ var ErrInventoryFull = errors.New("the leak protection inventory is full")
 // with something this version does not read, is another error.
 var ErrNotListening = errors.New("nothing is listening at the Phase AI proxy's address")
 
+// ErrRestarting is returned when the proxy's process runs but took no
+// registration in time: it was starting, or between two sessions with its
+// listener closed, and did not come back within Timeout. Its values are not
+// protected; unlike ErrNotListening it does not mean no proxy runs.
+var ErrRestarting = errors.New("the Phase AI proxy is restarting and did not come back in time")
+
+// restartPoll is how often a proxy that is restarting is looked for again.
+var restartPoll = 25 * time.Millisecond
+
 // unanswered is the error for a call the proxy did not answer.
 func unanswered(err error) error {
 	if connectionRefused(err) {
@@ -103,6 +115,14 @@ const SourceSession = "session"
 type Source struct {
 	Name string
 	Find func() (proxyURL string, found bool)
+	// Restarting is optional. It reports a proxy of this source whose process
+	// runs and takes no registration at this moment: it is starting, or it
+	// is between two sessions and its listener is closed. Register waits for
+	// such a proxy, because a value handed out meanwhile would never reach
+	// the inventory the proxy comes back with. It is asked only when Find
+	// found nothing, or nothing listened where Find pointed, and like Find
+	// it looks at a file or two and never at the network.
+	Restarting func() bool
 }
 
 var (
@@ -132,10 +152,13 @@ func AddSource(source Source) {
 
 // Proxy is a running Phase AI proxy to register values with.
 type Proxy struct {
-	// URL is the proxy's address with its capability.
+	// URL is the proxy's address with its capability. It is empty for a
+	// proxy that is restarting: Register waits for its source to find it.
 	URL string
 	// Source names the source that found it.
 	Source string
+	// source is that source, asked again while the proxy is restarting.
+	source *Source
 }
 
 // InSession reports a proxy named by the process's own environment: the
@@ -143,14 +166,19 @@ type Proxy struct {
 // by the model unless the proxy removes it.
 func (p Proxy) InSession() bool { return p.Source == SourceSession }
 
-// Locate returns the proxy to register with: the first one a source finds.
+// Locate returns the proxy to register with: the first one a source finds,
+// or says is restarting.
 func Locate() (Proxy, bool) {
 	sourcesMu.RLock()
 	ordered := sources
 	sourcesMu.RUnlock()
-	for _, source := range ordered {
+	for index := range ordered {
+		source := &ordered[index]
 		if found, ok := source.Find(); ok && found != "" {
-			return Proxy{URL: found, Source: source.Name}, true
+			return Proxy{URL: found, Source: source.Name, source: source}, true
+		}
+		if source.Restarting != nil && source.Restarting() {
+			return Proxy{Source: source.Name, source: source}, true
 		}
 	}
 	return Proxy{}, false
@@ -207,18 +235,64 @@ type registration struct {
 
 // Register protects values with this proxy's leak protection. It never sends
 // a value: the proxy receives keyed hashes only.
+//
+// When nothing listens at the proxy's address, or its source has not found it
+// yet, and the source says the proxy is restarting, Register waits for it: it
+// asks the source again every few milliseconds, for Timeout in all, and
+// registers once the proxy is back. If it is not back in time the error is
+// ErrRestarting. A source that says nothing of the kind leaves
+// ErrNotListening, at once.
 func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
-	var result Result
 	values = protectable(values)
 	if len(values) == 0 {
-		return result, nil
+		return Result{}, nil
 	}
-	client, err := phaseproxy.ControlClient(p.URL, Timeout, Timeout)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	address := p.URL
+	var deadline time.Time
+	for {
+		if address == "" && p.source != nil {
+			if found, ok := p.source.Find(); ok {
+				address = found
+			}
+		}
+		if address != "" {
+			result, err := register(ctx, address, values)
+			if !errors.Is(err, ErrNotListening) {
+				return result, err
+			}
+		}
+		if p.source == nil || p.source.Restarting == nil || !p.source.Restarting() {
+			return Result{}, ErrNotListening
+		}
+		if now := time.Now(); deadline.IsZero() {
+			deadline = now.Add(Timeout)
+		} else if !now.Before(deadline) {
+			return Result{}, ErrRestarting
+		}
+		select {
+		case <-ctx.Done():
+			return Result{}, ErrRestarting
+		case <-time.After(restartPoll):
+		}
+		// Its source is asked again: the proxy may come back at another
+		// address, or as another process with another capability.
+		address = ""
+	}
+}
+
+// register sends values, already filtered, to the proxy at address, its URL
+// with its capability.
+func register(ctx context.Context, address string, values []Value) (Result, error) {
+	var result Result
+	client, err := phaseproxy.ControlClient(address, Timeout, Timeout)
 	if err != nil {
 		return result, err
 	}
 	keyContext, cancelKey := context.WithTimeout(ctx, Timeout)
-	key, err := proxyKey(keyContext, client, p.URL)
+	key, err := proxyKey(keyContext, client, address)
 	cancelKey()
 	if err != nil {
 		return result, err

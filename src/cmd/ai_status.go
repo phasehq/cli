@@ -207,8 +207,8 @@ func appScopeSummary(scope remoteapi.AppScope) string {
 
 // leakProtectionSummary is the one status line about leak protection: the
 // mode, how many secrets are known, how many could not be protected, how many
-// pattern rules are not applied, and which listed hosts are not inspected. It
-// never names a secret.
+// pattern rules are not applied, and which listed hosts are not inspected,
+// with why for a host that would be read otherwise. It never names a secret.
 func leakProtectionSummary(status remoteapi.LeakProtectionStatus) string {
 	var mode string
 	switch status.Mode {
@@ -227,7 +227,14 @@ func leakProtectionSummary(status remoteapi.LeakProtectionStatus) string {
 		line += fmt.Sprintf("; %d pattern %s skipped", status.RulesSkipped, plural(status.RulesSkipped, "rule", "rules"))
 	}
 	if len(status.UnreadHosts) > 0 {
-		line += "; not inspected: " + strings.Join(status.UnreadHosts, ", ")
+		hosts := make([]string, 0, len(status.UnreadHosts))
+		for _, host := range status.UnreadHosts {
+			if reasons := status.UnreadReasons[host]; len(reasons) > 0 {
+				host += " (" + strings.Join(reasons, ", ") + ")"
+			}
+			hosts = append(hosts, host)
+		}
+		line += "; not inspected: " + strings.Join(hosts, ", ")
 	}
 	return line
 }

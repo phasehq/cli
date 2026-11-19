@@ -105,6 +105,13 @@ type recordingServer struct {
 
 func newRecordingServer(t *testing.T, configure func(*tls.Config)) *recordingServer {
 	t.Helper()
+	return newRecordingServerFor(t, "mirror.test", configure)
+}
+
+// newRecordingServerFor is a recording server that answers every name with a
+// certificate for name.
+func newRecordingServerFor(t *testing.T, name string, configure func(*tls.Config)) *recordingServer {
+	t.Helper()
 	authority, certificate, _, err := phaseproxy.GenerateCA(time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +124,7 @@ func newRecordingServer(t *testing.T, configure func(*tls.Config)) *recordingSer
 			server.mu.Lock()
 			server.infos = append(server.infos, hello)
 			server.mu.Unlock()
-			return authority.CertificateForHost("mirror.test")
+			return authority.CertificateForHost(name)
 		},
 	}
 	if configure != nil {

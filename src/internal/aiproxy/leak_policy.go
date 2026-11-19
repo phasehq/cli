@@ -10,10 +10,11 @@ import (
 
 // What leak protection does with something it finds depends on the kind of
 // bytes it was found in and on nothing else: not on whether those bytes came
-// as a request body or as a WebSocket message. This file is the one place
-// that decides it. The HTTP adapter (leak_inspect.go) and the WebSocket
-// adapter (leak_websocket.go) read what they hold through readPayload,
-// readFixed and addFound, and act on the scan's verdict.
+// as a request body or as a WebSocket message, and not on what the client
+// called them (a Content-Type, a text or binary opcode). This file is the
+// one place that decides it. The HTTP adapter (leak_inspect.go) and the
+// WebSocket adapter (leak_websocket.go) read what they hold through
+// readPayload, readFixed and addFound, and act on the scan's verdict.
 
 // leakPart is a kind of bytes a request is made of.
 type leakPart int
@@ -58,6 +59,9 @@ type leakPartRule struct {
 //	binary    yes   blocks
 //	opaque    yes   blocks; the request or message is reported as unread
 //	oversize  no    passes unread
+//
+// A body or a message is JSON, text or binary by its bytes: valid JSON,
+// otherwise valid UTF-8 with no NUL byte, otherwise binary.
 //
 // observe mode reads the same way and never replaces or blocks.
 var leakPartRules = map[leakPart]leakPartRule{
@@ -126,15 +130,17 @@ func (g *leakGuard) readFixed(scan *leakScan, part leakPart, data []byte, where 
 // readPayload reads a decoded body or a whole message: as JSON when it is
 // JSON, as plain text when it is other text, and as binary when it is
 // neither. It returns what to send in its place, or nil when nothing in it
-// is to change.
+// is to change, and notes on the scan whether the bytes were text.
 func (g *leakGuard) readPayload(scan *leakScan, payload []byte, where string) []byte {
 	out, report, err := g.index.RewriteJSON(payload, scan.opts)
 	switch {
 	case err == nil:
+		scan.text = true
 		return scan.addRewritten(leakPartJSON, out, report, where)
 	case !errors.Is(err, censor.ErrNotJSON):
 		return nil
 	case utf8.Valid(payload) && bytes.IndexByte(payload, 0) < 0:
+		scan.text = true
 		out, report = g.index.RedactWith(payload, scan.opts)
 		return scan.addRewritten(leakPartText, out, report, where)
 	default:

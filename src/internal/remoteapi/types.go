@@ -117,12 +117,38 @@ type LeakProtectionStatus struct {
 	Unprotected    int      `json:"unprotected"`
 	InspectedHosts []string `json:"inspectedHosts"`
 	UnreadHosts    []string `json:"unreadHosts"`
+	// UnreadReasons says why a host the proxy's table reads is listed under
+	// UnreadHosts at this moment: tls_refused while its client's pass-through
+	// window is open or a connection opened in one still is, and the reason a
+	// connection to it was handed to the service unread, while that
+	// connection is open and for a minute after it was opened. It is absent
+	// when every such host is being read.
+	UnreadReasons map[string][]string `json:"unreadReasons,omitempty"`
+	// MirroredHosts counts how the connections went to each host that is sent
+	// a copy of its client's TLS hello.
+	MirroredHosts []MirroredHostStatus `json:"mirroredHosts,omitempty"`
 	// RulesSkipped counts the pattern rules the proxy is not applying: rules
 	// of its rule file that this version cannot apply, and rules it depends
 	// on that the file does not hold. SkippedRules names them by rule id.
 	// Both are absent when every rule applies, as with the shipped file.
 	RulesSkipped int      `json:"rulesSkipped,omitempty"`
 	SkippedRules []string `json:"skippedRules,omitempty"`
+}
+
+// MirroredHostStatus counts, since the proxy process started, the client
+// connections to one host that answers only its own client's TLS.
+type MirroredHostStatus struct {
+	Host string `json:"host"`
+	// Copied is how many were opened with a copy of the client's hello and
+	// read.
+	Copied int `json:"copied"`
+	// Rebuilt is how many times the hello sent was rebuilt from one that
+	// offered a session, because that client had not been seen without one.
+	// Such a hello can differ from the client's own in its padding. It is
+	// counted whether or not the service took it.
+	Rebuilt int `json:"rebuilt"`
+	// PassedThrough is how many were handed to the service unread, by reason.
+	PassedThrough map[string]int `json:"passedThrough,omitempty"`
 }
 
 // ConnectionDetail is what an Agent may read about one of its Connections. It

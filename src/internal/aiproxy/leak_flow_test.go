@@ -298,7 +298,54 @@ func (r *leakRig) connectAs(t *testing.T, host string, flow *FlowContext, header
 // the provider's own and its body arrives as it was sent.
 func (r *leakRig) sendAs(t *testing.T, host, path string, flow *FlowContext, headers ...string) (read bool) {
 	t.Helper()
-	raw := r.connectAs(t, host, flow, headers...)
+	return r.sendOver(t, r.connectAs(t, host, flow, headers...), host, path)
+}
+
+// pipeWriter answers a request the proxy is handed directly, and gives up
+// its connection, the proxy's end of a pipe, when the proxy takes the tunnel
+// over.
+type pipeWriter struct {
+	*httptest.ResponseRecorder
+	conn net.Conn
+}
+
+func (w *pipeWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+// connectFrom opens a tunnel to host as a connection from remoteAddr would:
+// the proxy is handed the CONNECT with that address, as its server hands it
+// one. A test cannot make the system give it a chosen source port, and this
+// is how it stands in for the program that gets a port another one had. It
+// returns the client's end of the tunnel.
+func (r *leakRig) connectFrom(t *testing.T, remoteAddr, host string) net.Conn {
+	t.Helper()
+	client, server := net.Pipe()
+	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
+	request := httptest.NewRequest(http.MethodConnect, host+":443", nil)
+	request.RemoteAddr = remoteAddr
+	setProxyCapability(request, "runtime-test")
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		r.proxy.ServeHTTP(&pipeWriter{ResponseRecorder: httptest.NewRecorder(), conn: server}, request)
+	}()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+		<-served
+	})
+	response, err := http.ReadResponse(bufio.NewReader(client), &http.Request{Method: http.MethodConnect})
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT %s from %s: %v %v", host, remoteAddr, response, err)
+	}
+	return client
+}
+
+// sendOver sends one model request over a tunnel that is already open, and
+// reports whether the proxy read it, as sendAs does.
+func (r *leakRig) sendOver(t *testing.T, raw net.Conn, host, path string) (read bool) {
+	t.Helper()
 	conn := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: r.bothRoots, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
 	if err := conn.Handshake(); err != nil {
 		t.Fatalf("TLS with %s: %v", host, err)
@@ -430,22 +477,241 @@ func TestFlowCannotBeSetByAHeaderAndIsUsedOnce(t *testing.T) {
 	if got := rig.seenLeakEvents(t); len(got) != 2 || got[1] != (seenLeakEvent{"codex", CaptureTunnel, "api.openai.com"}) {
 		t.Fatalf("events: %+v", got)
 	}
-	// A CONNECT the proxy refuses uses its note up too.
+	// A CONNECT the proxy refuses uses its note up too, wherever it is
+	// refused. Here that is before its capability is accepted: the note says
+	// an unknown program's flow through a tunnel, which is never read.
+	refused, err := net.Dial("tcp", rig.proxyURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer refused.Close()
+	_ = refused.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := rig.proxy.flows.note(refused.LocalAddr().String(), unknown); err != nil {
+		t.Fatal(err)
+	}
+	connect := func(conn net.Conn, reader *bufio.Reader, target, capability string) int {
+		t.Helper()
+		authorization := base64.StdEncoding.EncodeToString([]byte("phase:" + capability))
+		_, _ = fmt.Fprintf(conn, "CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\nProxy-Authorization: Basic %s\r\n\r\n", target, target, authorization)
+		response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+		if err != nil {
+			t.Fatalf("CONNECT %s: %v", target, err)
+		}
+		// A refusal has a body, which is read so the connection can go on;
+		// what follows an accepted CONNECT is the tunnel.
+		if response.StatusCode != http.StatusOK {
+			_, _ = io.Copy(io.Discard, response.Body)
+		}
+		return response.StatusCode
+	}
+	if status := connect(refused, bufio.NewReader(refused), host, "not-the-capability"); status != http.StatusProxyAuthRequired {
+		t.Fatalf("a CONNECT with the wrong capability: %d", status)
+	}
+	if len(rig.proxy.flows.notes) != 0 {
+		t.Fatal("a CONNECT refused for its capability left its note behind")
+	}
+	// So the next program to connect from that address and port, which the
+	// system hands out again, is not taken for the noted flow: it is a client
+	// of the proxy environment, and is read.
+	if !rig.sendOver(t, rig.connectFrom(t, refused.LocalAddr().String(), host), host, path) {
+		t.Fatal("the next CONNECT from the address of a refused one was taken for the flow the refused one was noted as")
+	}
+
+	// Refused after its capability is accepted: the reserved host.
 	raw, err := net.Dial("tcp", rig.proxyURL.Host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer raw.Close()
+	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := rig.proxy.flows.note(raw.LocalAddr().String(), codex); err != nil {
 		t.Fatal(err)
 	}
-	authorization := base64.StdEncoding.EncodeToString([]byte("phase:runtime-test"))
-	_, _ = fmt.Fprintf(raw, "CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\nProxy-Authorization: Basic %s\r\n\r\n", ManifestHost, ManifestHost, authorization)
-	if response, err := http.ReadResponse(bufio.NewReader(raw), &http.Request{Method: http.MethodConnect}); err != nil || response.StatusCode != http.StatusForbidden {
-		t.Fatalf("CONNECT to the reserved host: %v %v", response, err)
+	if status := connect(raw, bufio.NewReader(raw), ManifestHost, "runtime-test"); status != http.StatusForbidden {
+		t.Fatalf("CONNECT to the reserved host: %d", status)
 	}
 	if len(rig.proxy.flows.notes) != 0 {
 		t.Fatal("a refused CONNECT left its note behind")
+	}
+	// A request that is not a CONNECT is nobody's noted flow, and uses up
+	// nothing.
+	if err := rig.proxy.flows.note("127.0.0.1:50300", codex); err != nil {
+		t.Fatal(err)
+	}
+	status := httptest.NewRequest(http.MethodGet, "http://phase.invalid/v1/status", nil)
+	status.RemoteAddr = "127.0.0.1:50300"
+	setProxyCapability(status, "runtime-test")
+	recorder := httptest.NewRecorder()
+	rig.proxy.ServeHTTP(recorder, status)
+	if _, noted := rig.proxy.flows.take("127.0.0.1:50300"); recorder.Code != http.StatusOK || !noted {
+		t.Fatalf("a request that is no CONNECT used a note up (status %d)", recorder.Code)
+	}
+}
+
+// A CONNECT turned away while an engine's run ends never reaches the proxy's
+// own handler. Its note is used up all the same.
+func TestAConnectRefusedWhileDrainingUsesItsNoteUp(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	rig.proxy.flows = newFlowNotes()
+	handler := rig.proxy.draining()
+	serve := func(method, target, remote string) int {
+		request := httptest.NewRequest(method, target, nil)
+		request.RemoteAddr = remote
+		setProxyCapability(request, "runtime-test")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Code
+	}
+	for _, remote := range []string{"127.0.0.1:50310", "127.0.0.1:50311"} {
+		if err := rig.proxy.flows.note(remote, tunnelFlow("codex")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// While the run is live the handler is the proxy itself.
+	if status := serve(http.MethodGet, "http://phase.invalid/v1/status", "127.0.0.1:50310"); status != http.StatusOK || len(rig.proxy.flows.notes) != 2 {
+		t.Fatalf("before draining: status %d, %d notes", status, len(rig.proxy.flows.notes))
+	}
+	handler.closeAndWait()
+	if status := serve(http.MethodGet, "http://phase.invalid/v1/status", "127.0.0.1:50310"); status != http.StatusServiceUnavailable || len(rig.proxy.flows.notes) != 2 {
+		t.Fatalf("a request that is no CONNECT, while draining: status %d, %d notes", status, len(rig.proxy.flows.notes))
+	}
+	if status := serve(http.MethodConnect, "api.anthropic.com:443", "127.0.0.1:50310"); status != http.StatusServiceUnavailable {
+		t.Fatalf("a CONNECT while draining: %d", status)
+	}
+	if _, noted := rig.proxy.flows.take("127.0.0.1:50310"); noted {
+		t.Fatal("a CONNECT refused while draining left its note behind")
+	}
+	if _, noted := rig.proxy.flows.take("127.0.0.1:50311"); !noted {
+		t.Fatal("another connection's note was dropped")
+	}
+}
+
+// A capture layer drops the note of a connection that ended without sending
+// its CONNECT.
+func TestForgetFlowDropsANoteNobodyUsed(t *testing.T) {
+	engine := New()
+	flow := tunnelFlow("opencode")
+	for _, address := range []string{"127.0.0.1:50320", "127.0.0.1:50321", "[::1]:50322"} {
+		if err := engine.NoteFlow(address, flow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The address is the same however it is written.
+	engine.ForgetFlow("[::ffff:127.0.0.1]:50320")
+	engine.ForgetFlow("[::1]:50322")
+	// What names no note changes nothing.
+	for _, address := range []string{"127.0.0.1:50399", "192.0.2.10:50321", "127.0.0.1", "not an address", ""} {
+		engine.ForgetFlow(address)
+	}
+	notes := engine.flowNotes()
+	if _, noted := notes.take("127.0.0.1:50320"); noted {
+		t.Fatal("a forgotten note was still used")
+	}
+	if _, noted := notes.take("[::1]:50322"); noted {
+		t.Fatal("a forgotten note was still used")
+	}
+	if got, noted := notes.take("127.0.0.1:50321"); !noted || got != flow {
+		t.Fatalf("another connection's note: %+v %v", got, noted)
+	}
+	// Forgetting a note twice, or one that was used, is nothing.
+	engine.ForgetFlow("127.0.0.1:50321")
+	engine.ForgetFlow("127.0.0.1:50320")
+	var zero Engine
+	zero.ForgetFlow("127.0.0.1:50323")
+	if err := zero.NoteFlow("127.0.0.1:50323", flow); err != nil {
+		t.Fatal(err)
+	}
+	zero.ForgetFlow("127.0.0.1:50323")
+	if _, noted := zero.flowNotes().take("127.0.0.1:50323"); noted {
+		t.Fatal("a zero engine kept a forgotten note")
+	}
+}
+
+// Behind the environment proxy the tool a session was started for names a
+// flow and decides nothing else. A host is read as the first list that reads
+// it says, in every session alike: were the session's own entry used, a host
+// that tool lists as unread, or reads less of, would go unread for every
+// other tool run from its shell.
+func TestTheSessionsToolNeverDecidesWhatIsRead(t *testing.T) {
+	guard := newTestLeakGuard(t, leakModeCensor)
+	narrow := leakHostRule{Host: "models.example", PathPrefix: "/v1/", Treatment: leakTreatmentInspect, ConversationPaths: []string{"/v1/chat"}}
+	wide := leakHostRule{Host: "models.example", Treatment: leakTreatmentInspect, ConversationPaths: []string{"/v1/chat", "/v2/chat"}}
+	streamed := leakHostRule{Host: "stream.example", Treatment: leakTreatmentInspect, ConversationPaths: []string{"/chat"}}
+	domain := leakHostRule{Host: "one.example", Subdomains: true, Treatment: leakTreatmentInspect}
+	signIn := leakHostRule{Host: "auth.one.example", Treatment: leakTreatmentInspect, MirrorHello: true}
+	guard.hosts = leakHostTable{
+		{Harness: "first", Hosts: []leakHostRule{
+			{Host: "stream.example", Treatment: leakTreatmentUnread, Reason: "its client refuses inspection"},
+			narrow,
+			domain,
+			// One name of a domain the list reads, left unread.
+			{Host: "auth.one.example", Treatment: leakTreatmentUnread, Reason: "sign-in"},
+		}},
+		{Harness: "second", Hosts: []leakHostRule{streamed, wide, signIn}},
+		{Harness: "third", Hosts: []leakHostRule{{Host: "stream.example", Treatment: leakTreatmentUnread}, {Host: "left.example", Treatment: leakTreatmentUnread}}},
+	}
+	for _, c := range []struct {
+		host string
+		rule leakHostRule
+		// named is what the flow is called in a session for each tool; any
+		// other session calls it by the tool whose entry reads the host.
+		owner string
+		named map[string]string
+	}{
+		// The first list leaves it unread and the second reads it: it is read.
+		{"stream.example", streamed, "second", nil},
+		// The first list that reads it decides how, in the second's session too.
+		{"models.example", narrow, "first", map[string]string{"second": "second"}},
+		{"api.one.example", domain, "first", nil},
+		// A list's own exception stands within that list, and no further.
+		{"auth.one.example", signIn, "second", nil},
+	} {
+		for _, tool := range []string{"", "first", "second", "third", "goose"} {
+			match := guard.inspects(proxyFlow(tool), c.host, 443)
+			if match == nil {
+				t.Errorf("%s is not read in a session for %q", c.host, tool)
+				continue
+			}
+			want := c.owner
+			if name, ok := c.named[tool]; ok {
+				want = name
+			}
+			if !reflect.DeepEqual(match.rule, c.rule) || match.harness != want || match.key != (leakStateKey{tool: want, host: c.host}) {
+				t.Errorf("%s in a session for %q: read by %+v as %s (kept under %+v), want %+v as %s", c.host, tool, match.rule, match.harness, match.key, c.rule, want)
+			}
+		}
+	}
+	// A host no list reads is read in no session.
+	for _, tool := range []string{"", "first", "third"} {
+		if guard.inspects(proxyFlow(tool), "left.example", 443) != nil {
+			t.Errorf("a host every list leaves unread is read in a session for %q", tool)
+		}
+	}
+	// A tunnel's flow is still read by its own tool's list and no other.
+	for _, c := range []struct {
+		tool, host string
+		rule       *leakHostRule
+	}{
+		{"first", "stream.example", nil}, {"second", "stream.example", &streamed}, {"third", "stream.example", nil},
+		{"first", "models.example", &narrow}, {"second", "models.example", &wide}, {"third", "models.example", nil},
+		{"first", "auth.one.example", nil}, {"second", "auth.one.example", &signIn}, {"first", "api.one.example", &domain}, {"second", "api.one.example", nil},
+	} {
+		match := guard.inspects(tunnelFlow(c.tool), c.host, 443)
+		switch {
+		case c.rule == nil && match != nil:
+			t.Errorf("a tunnel flow of %s is read on %s", c.tool, c.host)
+		case c.rule != nil && (match == nil || !reflect.DeepEqual(match.rule, *c.rule) || match.harness != c.tool):
+			t.Errorf("a tunnel flow of %s on %s is read as %+v", c.tool, c.host, match)
+		}
+	}
+	// Status says the same: a host some list reads is inspected, and is not
+	// also listed as unread.
+	status := guard.status()
+	if want := []string{"*.one.example", "auth.one.example", "models.example", "one.example", "stream.example"}; !reflect.DeepEqual(status.InspectedHosts, want) {
+		t.Fatalf("inspected: %v", status.InspectedHosts)
+	}
+	if !reflect.DeepEqual(status.UnreadHosts, []string{"left.example"}) {
+		t.Fatalf("not inspected: %v", status.UnreadHosts)
 	}
 }
 

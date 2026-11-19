@@ -28,6 +28,11 @@ const (
 	// wsCloseWait is how long the proxy waits for the frame the service is
 	// sending to finish before it gives up on a close frame of its own.
 	wsCloseWait = 2 * time.Second
+
+	// maxLeakFrames is how many frames of one message the proxy holds. The
+	// bytes held are bounded by maxLeakBody, which a message cut into empty
+	// frames never reaches.
+	maxLeakFrames = 4096
 )
 
 // wsFrameHeader is one frame's header as it was sent.
@@ -184,15 +189,16 @@ func (d *wsDownstream) close(code uint16, reason string) {
 
 // pumpLeakFrames copies the client's frames upstream, holding each message
 // until its last frame has arrived so it can be read whole. What it does with
-// a message is what the policy says for a request body of the same kind
-// (leak_policy.go): text, JSON or not, goes out as one new frame with what
-// was found replaced; a binary message, and one compressed against the
-// handshake, cannot be rewritten, so a known value or a Phase token in it
-// blocks. Blocking a message ends the WebSocket: the client is sent a close
-// frame that says its message broke policy, and the message is never sent.
-// Control frames, and a message too long to hold, go out as the client framed
-// them. It returns when the client side ends, a write upstream fails, or a
-// message is blocked.
+// a message is what the policy says for a request body of the same bytes
+// (leak_policy.go), whichever opcode the client framed it with: text, JSON or
+// not, goes out as one new frame of the message's own opcode with what was
+// found replaced; bytes that are not text, and a message compressed against
+// the handshake, cannot be rewritten, so a known value or a Phase token in
+// them blocks. Blocking a message ends the WebSocket: the client is sent a
+// close frame that says its message broke policy, and the message is never
+// sent. Control frames, and a message too long or in too many frames to
+// hold, go out as the client framed them. It returns when the client side
+// ends, a write upstream fails, or a message is blocked.
 func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, downstream *wsDownstream, request *http.Request, host string, port int, match *leakHostMatch) {
 	guard := p.leak
 	opts := guard.scanOptionsFor(match, request.URL.Path)
@@ -241,9 +247,9 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, dow
 			}
 			continue
 		}
-		if uint64(len(message))+frame.length > maxLeakBody {
-			// Too long to hold: what was held goes out as it came, then the
-			// rest of the message streams through.
+		if uint64(len(message))+frame.length > maxLeakBody || len(held) >= maxLeakFrames {
+			// Too long to hold, or in too many frames: what was held goes out
+			// as it came, then the rest of the message streams through.
 			if !write(held...) || !write(frame.raw) {
 				return
 			}
@@ -278,28 +284,27 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, dow
 		began := time.Now()
 		scan := guard.newScan(match, "websocket", opts)
 		var rewritten []byte
-		switch {
-		case compressed:
+		if compressed {
 			// The compression offer is removed from the handshake, so this is a
 			// client that compressed anyway; its bytes are looked at as they came.
 			scan.leaveUnread(leakReasonCompressed, leakScopeMessage)
 			guard.readFixed(scan, leakPartOpaque, message, "message")
-		case messageOpcode == wsOpText:
+		} else {
+			// The bytes say what the message is, as they do for a request body:
+			// JSON sent in a binary frame is JSON.
 			rewritten = guard.readPayload(scan, message, "message")
-		default:
-			guard.readFixed(scan, leakPartBinary, message, "message")
 		}
 		out := held
 		verdict := scan.verdict(rewritten != nil)
 		if verdict == leakReplace {
-			replacement, err := maskedClientFrame(wsOpText, rewritten)
+			replacement, err := maskedClientFrame(messageOpcode, rewritten)
 			if err != nil {
 				return
 			}
 			out = [][]byte{replacement}
 			scan.changed = true
 		}
-		if messageOpcode == wsOpText {
+		if messageOpcode == wsOpText || scan.text {
 			p.observeRead(scan, host, request.URL.EscapedPath(), message, rewritten, verdict == leakBlock, began)
 		}
 		if verdict == leakBlock {

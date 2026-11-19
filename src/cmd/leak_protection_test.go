@@ -148,6 +148,17 @@ func TestStatusLineSummarisesLeakProtection(t *testing.T) {
 	if line := leakProtectionSummary(remoteapi.LeakProtectionStatus{Mode: "off", SecretsKnown: 1}); line != "off (model traffic is not inspected); 1 secret known" {
 		t.Fatalf("off: %s", line)
 	}
+	// A host that would be read, and is not being read now, is listed with
+	// why; a host the table never reads has no reason to give.
+	line = leakProtectionSummary(remoteapi.LeakProtectionStatus{
+		Mode: "censor", SecretsKnown: 2, InspectedHosts: []string{"api.openai.com"},
+		UnreadHosts:   []string{"*.cursor.sh", "api.anthropic.com", "cursor.sh", "opencode.ai"},
+		UnreadReasons: map[string][]string{"opencode.ai": {"hello_resumption", "upstream_handshake_failed"}, "api.anthropic.com": {"tls_refused"}},
+	})
+	want = "censor (secrets in model traffic are replaced with placeholders); 2 secrets known; not inspected: *.cursor.sh, api.anthropic.com (tls_refused), cursor.sh, opencode.ai (hello_resumption, upstream_handshake_failed)"
+	if line != want {
+		t.Fatalf("status line:\n%s\n%s", line, want)
+	}
 }
 
 // The status line counts the pattern rules that are not applied and names
@@ -409,17 +420,21 @@ func TestValuesAreRegisteredWithTheHookProxyWithoutProxyVariables(t *testing.T) 
 	}
 }
 
-// With no proxy running, a command that hands out values pays one check of
-// one file: nothing is read, and nothing is called.
-func TestWithNoProxyRunningACommandPaysOneFileCheck(t *testing.T) {
+// With no proxy running, a command that hands out values pays two file
+// checks: of the runtime state, and of the runtime lock, which is how a daemon
+// that is starting or recycling is told from none. Nothing is read, nothing
+// is called and nothing is waited for.
+func TestWithNoProxyRunningACommandPaysTwoFileChecks(t *testing.T) {
 	directory := withHookRuntimeDirectory(t)
 	noSession(t)
 	statePath := filepath.Join(directory, hookRuntimeStateFile)
-	checks := 0
+	lockPath := filepath.Join(directory, hookRuntimeLockFile)
+	checks, checked := 0, map[string]int{}
 	previousStat := leakRuntimeStat
 	leakRuntimeStat = func(path string) (os.FileInfo, error) {
 		checks++
-		if path != statePath {
+		checked[path]++
+		if path != statePath && path != lockPath {
 			t.Errorf("%s was looked at", path)
 		}
 		return previousStat(path)
@@ -441,8 +456,8 @@ func TestWithNoProxyRunningACommandPaysOneFileCheck(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if elapsed := time.Since(started); checks != commands || calls != 0 || elapsed > 2*time.Second {
-		t.Fatalf("%d commands made %d file checks and %d registrations in %v", commands, checks, calls, elapsed)
+	if elapsed := time.Since(started); checks != 2*commands || checked[statePath] != commands || checked[lockPath] != commands || calls != 0 || elapsed > 2*time.Second {
+		t.Fatalf("%d commands made %d file checks (%v) and %d registrations in %v", commands, checks, checked, calls, elapsed)
 	}
 	if _, ok := leakguard.Locate(); ok {
 		t.Fatal("a proxy was found where none runs")
@@ -662,5 +677,200 @@ func TestTheSessionsProxyComesBeforeTheHookProxy(t *testing.T) {
 	}
 	if posts, _, _ := hook.registered(); posts != 0 {
 		t.Fatal("a session whose proxy is down registered with another proxy")
+	}
+}
+
+// hookDaemonLock writes the lock a hook daemon holds: the process that runs
+// it, when it started, and when it last withdrew its state to recycle its
+// session.
+func hookDaemonLock(t *testing.T, directory string, pid int, created, recycling time.Time) {
+	t.Helper()
+	lock := hookRuntimeLock{Version: hookRuntimeStateVersion, Generation: "generation-leak", PID: pid, CreatedAt: created.UTC()}
+	if !recycling.IsZero() {
+		lock.RecyclingAt = recycling.UTC()
+	}
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), lock); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// publishHookProxyStateLater writes the state a daemon publishes when its
+// session is ready, after a moment: the daemon coming back from a recycle.
+func publishHookProxyStateLater(t *testing.T, directory, proxyURL string, after time.Duration) {
+	t.Helper()
+	published := make(chan error, 1)
+	go func() {
+		time.Sleep(after)
+		published <- writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), hookRuntimeState{
+			Version: hookRuntimeStateVersion, Generation: "generation-leak", RuntimeFingerprint: "fingerprint",
+			PID: os.Getpid(), StartedAt: time.Now().UTC(), ProxyURL: proxyURL,
+		})
+	}()
+	t.Cleanup(func() {
+		if err := <-published; err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+// While the hook daemon recycles its session there is no proxy to register
+// with for some seconds: its listener is closed, and then its state is gone.
+// A value handed out then is registered once the daemon is back. Before, the
+// gap was taken for no proxy running: the value went out, and the daemon,
+// which comes back with its inventory, never learnt it.
+func TestValuesHandedOutWhileTheDaemonRecyclesAreRegistered(t *testing.T) {
+	for name, c := range map[string]struct {
+		// stale leaves the daemon's state where it was, naming an address
+		// nothing listens at any more: the first seconds of a recycle.
+		stale bool
+		// created is how long ago the daemon started, and recycling how long
+		// ago it last said it withdrew its state (negative: never).
+		created, recycling time.Duration
+	}{
+		// In the order a recycle goes through them.
+		"its listener is closed and nothing says so yet":  {true, time.Hour, -1},
+		"it says it is recycling, its state still there":  {true, time.Hour, 0},
+		"its state is withdrawn":                          {false, time.Hour, 0},
+		"it recycled before and is at it again":           {true, time.Hour, time.Hour},
+		"it is starting":                                  {false, time.Second, -1},
+		"it is starting, an earlier daemon's state there": {true, time.Second, -1},
+	} {
+		for login, backend := range map[string]phase.SecretsBackend{"an Agent login": &phase.AgentBackend{}, "another login": nil} {
+			t.Run(name+", "+login, func(t *testing.T) {
+				directory := withHookRuntimeDirectory(t)
+				noSession(t)
+				fake, proxyURL := newLeakControlProxy(t)
+				warnings := captureLeakWarnings(t)
+				var recycling time.Time
+				if c.recycling >= 0 {
+					recycling = time.Now().Add(-c.recycling)
+				}
+				hookDaemonLock(t, directory, os.Getpid(), time.Now().Add(-c.created), recycling)
+				if c.stale {
+					hookProxyState(t, directory, "http://phase:"+leakTestCapability+"@"+closedAddress(t), os.Getpid())
+				}
+				publishHookProxyStateLater(t, directory, proxyURL, 150*time.Millisecond)
+
+				started := time.Now()
+				if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+					t.Fatalf("the command was refused: %v", err)
+				}
+				elapsed := time.Since(started)
+				posts, ids, _ := fake.registered()
+				if posts != 1 || !reflect.DeepEqual(ids, []string{"secret:STRIPE_KEY"}) {
+					t.Fatalf("%d registrations of %v reached the daemon once it was back", posts, ids)
+				}
+				if warnings.Len() != 0 {
+					t.Fatalf("a registration that worked said %q", warnings.String())
+				}
+				if elapsed < 100*time.Millisecond || elapsed > leakguard.Timeout+500*time.Millisecond {
+					t.Fatalf("the command waited %v for a daemon that was back after 150ms", elapsed)
+				}
+			})
+		}
+	}
+}
+
+// A daemon that is not back in time is a proxy that could not be reached: the
+// command says so once and carries on, as for any other failed registration
+// with the hook proxy. It is never taken for no proxy running.
+func TestADaemonThatDoesNotComeBackInTimeIsUnreachable(t *testing.T) {
+	for name, stale := range map[string]bool{"its state is withdrawn": false, "its listener is closed and nothing says so yet": true} {
+		t.Run(name, func(t *testing.T) {
+			directory := withHookRuntimeDirectory(t)
+			noSession(t)
+			warnings := captureLeakWarnings(t)
+			if stale {
+				// The daemon started an hour ago and still owns the state it
+				// published; nothing listens where the state points.
+				hookDaemonLock(t, directory, os.Getpid(), time.Now().Add(-time.Hour), time.Time{})
+				hookProxyState(t, directory, "http://phase:"+leakTestCapability+"@"+closedAddress(t), os.Getpid())
+			} else {
+				hookDaemonLock(t, directory, os.Getpid(), time.Now().Add(-time.Hour), time.Now())
+			}
+			if found, ok := leakguard.Locate(); !ok || found.InSession() || found.Source != leakRuntimeSource {
+				t.Fatalf("a daemon that is recycling was not found: %+v %v", found, ok)
+			}
+			for _, backend := range []phase.SecretsBackend{&phase.AgentBackend{}, nil} {
+				started := time.Now()
+				if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+					t.Fatalf("a command outside a session was refused: %v", err)
+				}
+				if elapsed := time.Since(started); elapsed < leakguard.Timeout*8/10 || elapsed > 3*leakguard.Timeout {
+					t.Fatalf("the command waited %v for the daemon, not about %v", elapsed, leakguard.Timeout)
+				}
+			}
+			// One line for the process, and it is not the one for no proxy.
+			if got := warnings.String(); got != leakProtectionWarning+"\n" || strings.Contains(got, "sk_live") {
+				t.Fatalf("the commands said %q", got)
+			}
+			// Only config values: there is nothing to register, so nothing is
+			// waited for.
+			started := time.Now()
+			if err := protectSecrets(context.Background(), nil, leakTestSecrets[1:]); err != nil || time.Since(started) > leakguard.Timeout/2 {
+				t.Fatalf("a command with nothing to protect: %v after %v", err, time.Since(started))
+			}
+		})
+	}
+}
+
+// A lock that does not say a daemon is on its way costs no wait: its process
+// is gone, or it has claimed to start or recycle for longer than either takes
+// and published no state, or the state there is not its own.
+func TestALockThatSaysNothingIsOnItsWayCostsNoWait(t *testing.T) {
+	const deadPID = 1 << 30
+	type leftState struct {
+		pid        int
+		generation string
+	}
+	for name, c := range map[string]struct {
+		pid       int
+		created   time.Duration
+		recycling time.Duration
+		state     *leftState
+	}{
+		"its process is gone":                           {deadPID, time.Second, time.Second, nil},
+		"its process is gone and its state was left":    {deadPID, time.Second, time.Second, &leftState{deadPID, "generation-leak"}},
+		"it started long ago and has no state":          {os.Getpid(), time.Hour, -1, nil},
+		"it recycled long ago and has no state":         {os.Getpid(), time.Hour, 3 * hookStartTimeout, nil},
+		"it has no process yet":                         {0, time.Second, -1, nil},
+		"the state is another daemon's, long gone":      {os.Getpid(), time.Hour, -1, &leftState{os.Getpid(), "another-generation"}},
+		"the state names another process than the lock": {os.Getpid(), time.Hour, -1, &leftState{os.Getppid(), "generation-leak"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory := withHookRuntimeDirectory(t)
+			noSession(t)
+			warnings := captureLeakWarnings(t)
+			var recycling time.Time
+			if c.recycling >= 0 {
+				recycling = time.Now().Add(-c.recycling)
+			}
+			hookDaemonLock(t, directory, c.pid, time.Now().Add(-c.created), recycling)
+			if c.state != nil {
+				// Nothing listens where the state points.
+				state := hookRuntimeState{
+					Version: hookRuntimeStateVersion, Generation: c.state.generation, RuntimeFingerprint: "fingerprint",
+					PID: c.state.pid, StartedAt: time.Now().UTC(), ProxyURL: "http://phase:" + leakTestCapability + "@" + closedAddress(t),
+				}
+				if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			started := time.Now()
+			for i := 0; i < 5; i++ {
+				for _, backend := range []phase.SecretsBackend{nil, &phase.AgentBackend{}} {
+					if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if elapsed := time.Since(started); elapsed > leakguard.Timeout/2 {
+				t.Fatalf("ten commands waited %v for a daemon that is not coming", elapsed)
+			}
+			// No proxy runs: an Agent login is told once, nobody else anything.
+			if got := warnings.String(); got != leakProtectionInactiveMsg+"\n" {
+				t.Fatalf("the commands said %q", got)
+			}
+		})
 	}
 }

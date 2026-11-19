@@ -75,6 +75,10 @@ type leakGuard struct {
 	// mirrored keeps the hellos of clients whose hello is copied, as they
 	// sent them with no session to offer.
 	mirrored *freshHellos
+	// connections counts what became of the connections that were not simply
+	// terminated and read: those handed to the service unread, and those
+	// opened with a copy of the client's hello.
+	connections *connectionLog
 }
 
 // leakMatchKey is a flow and the host as a client wrote it.
@@ -111,7 +115,7 @@ func newLeakGuardWithRules(mode string, rules *censor.Rules) (*leakGuard, error)
 		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, limitedRules: limited,
 		skipped:  append(rules.Skipped(), absent...),
 		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, keyNamed: map[string]struct{}{},
-		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(),
+		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(), connections: newConnectionLog(),
 	}, nil
 }
 
@@ -316,33 +320,47 @@ const maxUnprotectedNames = 4096
 // an id the Console issued.
 func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
 	for i, entry := range entries {
-		if err := g.index.Add(entry); err != nil {
-			if errors.Is(err, censor.ErrIndexFull) {
-				return added, unprotected, errLeakInventoryFull
-			}
+		protected, err := g.addOne(entry, i < len(keyNamed) && keyNamed[i])
+		switch {
+		case errors.Is(err, censor.ErrIndexFull):
+			return added, unprotected, errLeakInventoryFull
+		case err != nil:
 			return added, unprotected, err
-		}
-		name := entry.Type + ":" + entry.ID
-		g.mu.Lock()
-		if entry.Protected() {
-			delete(g.unprotected, name)
-			// Once a placeholder is known to hold a key name it stays so,
-			// whatever a later registration says of the same id.
-			if i < len(keyNamed) && keyNamed[i] {
-				g.keyNamed[entry.Placeholder()] = struct{}{}
-			}
+		case protected:
 			added++
-		} else {
-			// A value is counted once however often it is registered, and the
-			// names kept for that are bounded.
-			if _, counted := g.unprotected[name]; !counted && len(g.unprotected) < maxUnprotectedNames {
-				g.unprotected[name] = struct{}{}
-			}
+		default:
 			unprotected++
 		}
-		g.mu.Unlock()
 	}
 	return added, unprotected, nil
+}
+
+// addOne indexes one entry and records what is known of its id. The guard's
+// lock is held over both. A request scanned between the two would find the
+// value and not know yet that its placeholder holds a key name, and its event
+// would carry the name; eventPlaceholders waits for the same lock.
+func (g *leakGuard) addOne(entry *censor.Entries, keyNamed bool) (protected bool, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err = g.index.Add(entry); err != nil {
+		return false, err
+	}
+	name := entry.Type + ":" + entry.ID
+	if !entry.Protected() {
+		// A value is counted once however often it is registered, and the
+		// names kept for that are bounded.
+		if _, counted := g.unprotected[name]; !counted && len(g.unprotected) < maxUnprotectedNames {
+			g.unprotected[name] = struct{}{}
+		}
+		return false, nil
+	}
+	delete(g.unprotected, name)
+	// Once a placeholder is known to hold a key name it stays so, whatever a
+	// later registration says of the same id.
+	if keyNamed {
+		g.keyNamed[entry.Placeholder()] = struct{}{}
+	}
+	return true, nil
 }
 
 func (g *leakGuard) unprotectedCount() int {
@@ -374,38 +392,75 @@ func (g *leakGuard) eventPlaceholders(placeholders []string) []string {
 	return written
 }
 
-// status is counts and names only: of hosts, and of pattern rules. Every
-// listed host is read for a client of the proxy environment, whichever tool
-// the proxy serves, so the hosts are the table's.
+// status is counts, names and reasons only: of hosts, and of pattern rules.
+// Every listed host is read for a client of the proxy environment, whichever
+// tool the proxy serves, so the hosts are the table's. A host the table reads
+// is listed as not read, with why, while that is what happens to it: in a
+// pass-through window, and while a connection to it that was handed to the
+// service unread is open or was opened in the last unreadPeriod.
 func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
 	inspected := g.hosts.hostNames(leakTreatmentInspect)
-	unread := g.hosts.hostNames(leakTreatmentUnread)
-	if g.mode == leakModeOff {
-		unread = append(inspected, unread...)
-		inspected = []string{}
-	} else if bypassed := g.handshakes.bypassedHosts(); len(bypassed) > 0 {
-		kept := inspected[:0:0]
-		for _, host := range inspected {
-			if slices.Contains(bypassed, host) {
-				unread = append(unread, host)
-				continue
-			}
-			kept = append(kept, host)
-		}
-		inspected = kept
-	}
-	sort.Strings(unread)
-	if inspected == nil {
-		inspected = []string{}
-	}
-	if unread == nil {
-		unread = []string{}
-	}
-	return &remoteapi.LeakProtectionStatus{
+	// A host one tool lists as not read is read when another tool's list
+	// reads it.
+	unread := slices.DeleteFunc(g.hosts.hostNames(leakTreatmentUnread), func(name string) bool { return slices.Contains(inspected, name) })
+	status := &remoteapi.LeakProtectionStatus{
 		Mode: g.mode, SecretsKnown: g.index.Stats().Secrets, Unprotected: g.unprotectedCount(),
-		InspectedHosts: inspected, UnreadHosts: unread,
 		RulesSkipped: len(g.skipped), SkippedRules: g.skippedRuleIDs(),
 	}
+	if g.mode == leakModeOff {
+		unread = append(inspected, unread...)
+		inspected = nil
+	} else {
+		status.UnreadReasons = g.notReadNow()
+		for host := range status.UnreadReasons {
+			inspected = slices.DeleteFunc(inspected, func(name string) bool { return name == host })
+			// A name under a domain entry is listed by itself: the rest of
+			// the domain is still read.
+			if !slices.Contains(unread, host) {
+				unread = append(unread, host)
+			}
+		}
+		status.MirroredHosts = g.mirroredStatus()
+	}
+	sort.Strings(unread)
+	status.InspectedHosts, status.UnreadHosts = append([]string{}, inspected...), append([]string{}, unread...)
+	return status
+}
+
+// notReadNow names the hosts the table reads that are not being read at this
+// moment, each with why: nil when there are none.
+func (g *leakGuard) notReadNow() map[string][]string {
+	reasons := g.connections.unreadNow()
+	for _, host := range g.handshakes.bypassedHosts() {
+		if slices.Contains(reasons[host], leakReasonTLSRefused) {
+			continue
+		}
+		if reasons == nil {
+			reasons = map[string][]string{}
+		}
+		reasons[host] = append(reasons[host], leakReasonTLSRefused)
+		sort.Strings(reasons[host])
+	}
+	return reasons
+}
+
+// mirroredStatus counts, for each host whose hello is copied, how its
+// connections went: the table's flagged hosts, and any name under a flagged
+// domain that was connected to.
+func (g *leakGuard) mirroredStatus() []remoteapi.MirroredHostStatus {
+	names := g.hosts.mirroredHostNames()
+	for _, host := range g.connections.hostNames() {
+		if g.hosts.mirrors(host) && !slices.Contains(names, host) {
+			names = append(names, host)
+		}
+	}
+	sort.Strings(names)
+	var hosts []remoteapi.MirroredHostStatus
+	for _, host := range names {
+		copied, rebuilt, passed := g.connections.counts(host)
+		hosts = append(hosts, remoteapi.MirroredHostStatus{Host: host, Copied: copied, Rebuilt: rebuilt, PassedThrough: passed})
+	}
+	return hosts
 }
 
 func containsString(values []string, value string) bool {
@@ -501,6 +556,7 @@ func (t *handshakeTracker) note(key leakStateKey, ok bool) time.Duration {
 	}
 	state := t.hosts[key]
 	if state == nil {
+		t.makeRoom()
 		state = &handshakeState{}
 		t.hosts[key] = state
 	}
@@ -514,6 +570,25 @@ func (t *handshakeTracker) note(key leakStateKey, ok bool) time.Duration {
 	}
 	state.until = t.clock().Add(pause)
 	return pause
+}
+
+// makeRoom keeps what is remembered within maxRememberedHosts: a domain
+// entry matches any number of subdomains. What goes first is what holds no
+// open window. When every host remembered is in a window they all go, which
+// only means those hosts are read again.
+func (t *handshakeTracker) makeRoom() {
+	if len(t.hosts) < maxRememberedHosts {
+		return
+	}
+	now := t.clock()
+	for key, state := range t.hosts {
+		if !now.Before(state.until) {
+			delete(t.hosts, key)
+		}
+	}
+	if len(t.hosts) >= maxRememberedHosts {
+		clear(t.hosts)
+	}
 }
 
 func (t *handshakeTracker) bypassed(key leakStateKey) bool {
@@ -535,4 +610,170 @@ func (t *handshakeTracker) bypassedHosts() []string {
 		}
 	}
 	return hosts
+}
+
+// A connection handed to the service unread stays unread for as long as the
+// client keeps it: a whole session can run over one. connectionLog counts
+// such connections per host, so status can say a host is not being read
+// while one is open, and for unreadPeriod after one was opened, which is as
+// long as their event is not repeated. For a host whose hello is copied it
+// also counts the connections that were opened with a copy.
+type connectionLog struct {
+	mu    sync.Mutex
+	hosts map[string]*hostConnections
+	now   func() time.Time
+}
+
+type hostConnections struct {
+	// copied is the connections opened with a copy of the client's hello and
+	// read; rebuilt is the times the hello sent was made from one that
+	// offered a session, the client not having been seen without one.
+	copied, rebuilt int
+	// unread is the connections handed to the service unread, by reason.
+	unread map[string]*unreadConnections
+}
+
+type unreadConnections struct {
+	total, open int
+	// opened is when the latest of them was opened.
+	opened time.Time
+}
+
+func newConnectionLog() *connectionLog {
+	return &connectionLog{hosts: map[string]*hostConnections{}}
+}
+
+func (l *connectionLog) clock() time.Time {
+	if l.now != nil {
+		return l.now()
+	}
+	return time.Now()
+}
+
+// host returns what is counted for a host, or nil when there is no room for
+// another: a domain entry matches any number of subdomains. A host with no
+// open connection makes room for a new one; one with an open connection is
+// never dropped, since status has to go on naming it.
+func (l *connectionLog) host(name string) *hostConnections {
+	if counted := l.hosts[name]; counted != nil {
+		return counted
+	}
+	if len(l.hosts) >= maxRememberedHosts {
+		for other, counted := range l.hosts {
+			if !counted.anyOpen() {
+				delete(l.hosts, other)
+			}
+		}
+		if len(l.hosts) >= maxRememberedHosts {
+			return nil
+		}
+	}
+	counted := &hostConnections{unread: map[string]*unreadConnections{}}
+	l.hosts[name] = counted
+	return counted
+}
+
+func (c *hostConnections) anyOpen() bool {
+	for _, unread := range c.unread {
+		if unread.open > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// noteCopied counts a connection opened with a copy of the client's hello.
+func (l *connectionLog) noteCopied(host string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if counted := l.host(host); counted != nil {
+		counted.copied++
+	}
+}
+
+// noteRebuilt counts a hello sent that was rebuilt from one that offered a
+// session.
+func (l *connectionLog) noteRebuilt(host string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if counted := l.host(host); counted != nil {
+		counted.rebuilt++
+	}
+}
+
+// passed counts a connection handed to the service unread, and returns what
+// its end is told to.
+func (l *connectionLog) passed(host, reason string) (ended func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	counted := l.host(host)
+	if counted == nil {
+		return func() {}
+	}
+	unread := counted.unread[reason]
+	if unread == nil {
+		unread = &unreadConnections{}
+		counted.unread[reason] = unread
+	}
+	unread.total++
+	unread.open++
+	unread.opened = l.clock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			unread.open--
+		})
+	}
+}
+
+// unreadNow names the hosts with a connection handed over unread that is
+// open, or was opened in the last unreadPeriod, each with the reasons.
+func (l *connectionLog) unreadNow() map[string][]string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.clock()
+	var hosts map[string][]string
+	for host, counted := range l.hosts {
+		for reason, unread := range counted.unread {
+			if unread.open == 0 && now.Sub(unread.opened) >= unreadPeriod {
+				continue
+			}
+			if hosts == nil {
+				hosts = map[string][]string{}
+			}
+			hosts[host] = append(hosts[host], reason)
+		}
+		sort.Strings(hosts[host])
+	}
+	return hosts
+}
+
+func (l *connectionLog) hostNames() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	names := make([]string, 0, len(l.hosts))
+	for host := range l.hosts {
+		names = append(names, host)
+	}
+	return names
+}
+
+// counts returns what was counted for a host; passed is nil when no
+// connection to it was handed over.
+func (l *connectionLog) counts(host string) (copied, rebuilt int, passed map[string]int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	counted := l.hosts[host]
+	if counted == nil {
+		return 0, 0, nil
+	}
+	for reason, unread := range counted.unread {
+		if passed == nil {
+			passed = map[string]int{}
+		}
+		passed[reason] = unread.total
+	}
+	return counted.copied, counted.rebuilt, passed
 }

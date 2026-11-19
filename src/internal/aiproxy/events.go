@@ -165,13 +165,13 @@ func durableAuditEvent(event agentapi.Event) bool {
 		event.ProxyDecision == "auth_deny" || event.Outcome == outcomeScrubbed
 }
 
-// eventDetailText and eventDetailNumbers are the only detail members an event
-// may carry besides aws_sigv4_failure, path and rule: what the access policy
-// or the secret guard decided, or what leak protection found (counts, rule
-// labels, placeholders, how the connection was captured, how severe the
-// finding is and how much an unread reason covers), flat and bounded. An
-// event never carries a request or response value, nor the request an ask
-// offers.
+// eventDetailText, eventDetailNumbers and eventDetailFlags are the only detail
+// members an event may carry besides aws_sigv4_failure, path and rule: what
+// the access policy or the secret guard decided, or what leak protection
+// found (counts, whether the counts were capped, rule labels, placeholders,
+// how the connection was captured, how severe the finding is and how much an
+// unread reason covers), flat and bounded. An event never carries a request
+// or response value, nor the request an ask offers.
 var (
 	eventDetailText = []string{
 		"connectionId", "connectionName", "class", "method", "operation", "harness", "mode", "where", "labels", "placeholders",
@@ -180,6 +180,8 @@ var (
 	eventDetailNumbers = []string{
 		"scrubbedValues", "inventoryHits", "ruleRedactions", "ruleAlerts", "signedFindings", "placeholderCount", "replacedCount", "windowSeconds",
 	}
+	// A flag is kept only when it is set: absent, it is false.
+	eventDetailFlags = []string{"placeholdersCapped"}
 )
 
 // Console's limits for detail values.
@@ -216,6 +218,11 @@ func safeEventDetail(detail map[string]any, secrets []string) map[string]any {
 			if value >= 0 && value <= 1<<31 && value == float64(int(value)) {
 				result[name] = int(value)
 			}
+		}
+	}
+	for _, name := range eventDetailFlags {
+		if set, ok := detail[name].(bool); ok && set {
+			result[name] = true
 		}
 	}
 	return result

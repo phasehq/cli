@@ -40,11 +40,11 @@ const leakRuntimeSource = "runtime"
 // terminal) still hands out values a harness on this machine can read. A
 // later source, such as the phase up engine, is one more AddSource.
 func init() {
-	leakguard.AddSource(leakguard.Source{Name: leakRuntimeSource, Find: hookRuntimeProxy})
+	leakguard.AddSource(leakguard.Source{Name: leakRuntimeSource, Find: hookRuntimeProxy, Restarting: hookRuntimeRestarting})
 }
 
-// leakRuntimeStat is the one file check a command pays when no proxy runs;
-// tests count it.
+// leakRuntimeStat is the file check a command pays when no proxy runs, once
+// for the runtime state and once for the runtime lock; tests count it.
 var leakRuntimeStat = os.Lstat
 
 // hookRuntimeProxy finds the hook-managed proxy the way phase ai status does:
@@ -64,6 +64,41 @@ func hookRuntimeProxy() (string, bool) {
 		return "", false
 	}
 	return state.ProxyURL, true
+}
+
+// hookRuntimeRestarting reports a hook daemon that runs and has no proxy to
+// register with at this moment. Each time it recycles its session the daemon
+// closes its listener, some seconds later withdraws its state, and publishes
+// it again once the Console has answered; while it starts there is a lock and
+// no state yet. A value handed out in such a gap would never reach the
+// inventory the daemon comes back with, so the gap is not taken for no proxy:
+// the registration waits for it (leakguard.Proxy.Register).
+//
+// The runtime lock tells. Its process is alive, and either it is starting or
+// recycling (what inspectHookRuntime calls starting), or it still owns the
+// state it published: the seconds between its listener closing and its state
+// going. With no lock file, as on any machine with no daemon, this costs one
+// more stat and nothing is waited for. Liveness is all there is to go by, so
+// a lock and state left by a daemon that was killed, whose process id another
+// program holds by now, read as a daemon between two sessions.
+func hookRuntimeRestarting() bool {
+	directory, err := hookRuntimeDir()
+	if err != nil {
+		return false
+	}
+	path := filepath.Join(directory, hookRuntimeLockFile)
+	if _, err := leakRuntimeStat(path); err != nil {
+		return false
+	}
+	lock, err := readHookRuntimeLock(path)
+	if err != nil {
+		return false
+	}
+	if hookRuntimeStarting(lock) {
+		return true
+	}
+	state, err := readHookRuntimeState(filepath.Join(directory, hookRuntimeStateFile))
+	return err == nil && lock.PID > 0 && state.PID == lock.PID && state.Generation == lock.Generation && processIsAlive(lock.PID)
 }
 
 // leakLocate finds the proxy to register with, and leakRegister registers
@@ -112,6 +147,10 @@ func noProxyRunning(agent bool) {
 //   - a proxy found any other way that nothing listens at is no proxy: the
 //     state that named it is stale, or its process id went to another
 //     program. Warning then would warn on every command, in every shell;
+//   - unless its daemon is starting or recycling its session: the
+//     registration has then waited for it (hookRuntimeRestarting), and a
+//     daemon that did not come back in time is a proxy that could not be
+//     reached, not one that is not running;
 //   - with no proxy at all, see noProxyRunning.
 func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent bool, values []leakguard.Value) error {
 	if len(values) == 0 {

@@ -28,6 +28,7 @@ package tlsmirror
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -44,7 +45,26 @@ var (
 	ErrResumes = errors.New("tlsmirror: the ClientHello resumes a session")
 	// ErrNotCopied means no exact copy of the hello can be sent.
 	ErrNotCopied = errors.New("tlsmirror: the ClientHello cannot be copied exactly")
+	// ErrOldVersion means the handshake settled on a TLS version below 1.2.
+	ErrOldVersion = errors.New("tlsmirror: the server chose a TLS version below 1.2")
+	// ErrLegacySuite means the handshake settled on a cipher suite Go's own
+	// TLS does not use. The hello is the client's, and a client may still
+	// offer suites the proxy must not send a request over.
+	ErrLegacySuite = errors.New("tlsmirror: the server chose a cipher suite Go's own TLS does not use")
+	// errHandshakeStopped is a handshake the library gave up on by panicking.
+	errHandshakeStopped = errors.New("tlsmirror: the handshake could not be completed")
 )
+
+// standardSuites are the cipher suites crypto/tls uses: the ones it lists as
+// implemented without a known weakness. RSA key exchange, 3DES, RC4 and CBC
+// with SHA-256 are not among them.
+var standardSuites = func() map[uint16]bool {
+	suites := map[uint16]bool{}
+	for _, suite := range tls.CipherSuites() {
+		suites[suite.ID] = true
+	}
+	return suites
+}()
 
 // Check reports whether Client can send a copy of the hello in record to
 // serverName, without a connection: nil, ErrNotHello, ErrResumes or
@@ -61,7 +81,10 @@ func Check(record []byte, serverName string) error {
 //
 // The server's certificate is verified for serverName against roots (nil
 // means the system's) exactly as crypto/tls does, and nothing a caller passes
-// can turn that off. A connection below TLS 1.2 is refused, as it is by the
+// can turn that off. The copy offers whatever the client offered, so what the
+// server chose from it is checked once the handshake is done: a connection
+// below TLS 1.2 is refused with ErrOldVersion, and one on a cipher suite that
+// is not in tls.CipherSuites with ErrLegacySuite, as neither is used by the
 // proxy's own upstream TLS. On error conn is still the caller's to close.
 func Client(ctx context.Context, conn net.Conn, record []byte, serverName string, roots *x509.CertPool) (net.Conn, string, error) {
 	client, config, err := prepare(conn, record, serverName, roots)
@@ -76,7 +99,10 @@ func Client(ctx context.Context, conn net.Conn, record []byte, serverName string
 	config.Renegotiation = utls.RenegotiateNever
 	state := client.ConnectionState()
 	if state.Version < utls.VersionTLS12 {
-		return nil, "", errors.New("tlsmirror: the server chose a TLS version below 1.2")
+		return nil, "", ErrOldVersion
+	}
+	if !standardSuites[state.CipherSuite] {
+		return nil, "", ErrLegacySuite
 	}
 	return client, state.NegotiatedProtocol, nil
 }
@@ -135,9 +161,10 @@ func prepare(conn net.Conn, record []byte, serverName string, roots *x509.CertPo
 }
 
 func handshake(ctx context.Context, client *utls.UConn) (err error) {
+	// The library stops here too by panicking on a state it does not expect.
 	defer func() {
 		if recover() != nil {
-			err = errors.New("tlsmirror: the handshake could not be completed")
+			err = errHandshakeStopped
 		}
 	}()
 	return client.HandshakeContext(ctx)

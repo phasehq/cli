@@ -4,15 +4,21 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
 	"errors"
 	"go/parser"
 	"go/token"
 	"io"
 	"io/fs"
-	"math/rand/v2"
+	"math/big"
+	mathrand "math/rand/v2"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -311,7 +317,7 @@ func TestDamagedHellosAreRefusedQuietly(t *testing.T) {
 		helloOf(t, &tls.Config{ServerName: "mirror.test", InsecureSkipVerify: true}),
 		greasedHello(0x1a1a, 7),
 	}
-	random := rand.New(rand.NewPCG(20261119, 41))
+	random := mathrand.New(mathrand.NewPCG(20261119, 41))
 	copied := 0
 	for round := 0; round < 4000; round++ {
 		damaged := bytes.Clone(originals[round%len(originals)])
@@ -432,9 +438,276 @@ func TestClientRefusesAConnectionBelowTLS12(t *testing.T) {
 	if err := own.Handshake(); err != nil || own.ConnectionState().Version != tls.VersionTLS11 {
 		t.Fatalf("the client's own handshake: %v", err)
 	}
-	if conn, _, err := Client(testContext(t), server.dial(t), original, "mirror.test", server.roots); err == nil {
+	conn, _, err := Client(testContext(t), server.dial(t), original, "mirror.test", server.roots)
+	if err == nil {
 		_ = conn.Close()
 		t.Fatal("a connection below TLS 1.2 was returned")
+	}
+	// The handshake itself completed: it is the version the server chose that
+	// is refused, and it is said so.
+	if !errors.Is(err, ErrOldVersion) || errors.Is(err, ErrLegacySuite) || errors.Is(err, ErrNotCopied) {
+		t.Fatalf("a connection below TLS 1.2 was refused as %v", err)
+	}
+	if version := server.version(t); version != tls.VersionTLS11 {
+		t.Fatalf("the copy's handshake was TLS %04x, not the TLS 1.1 the test is about", version)
+	}
+}
+
+// rsaServer is a TLS 1.2 server with an RSA certificate for mirror.test that
+// takes one cipher suite, and the roots that verify it. It sends the suite of
+// each handshake it completes.
+func rsaServer(t *testing.T, suite uint16) (address string, roots *x509.CertPool, negotiated chan uint16) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "mirror.test"}, DNSNames: []string{"mirror.test"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IsCA: true, BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots = x509.NewCertPool()
+	roots.AddCert(certificate)
+	config := &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+		MaxVersion:   tls.VersionTLS12, CipherSuites: []uint16{suite},
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	negotiated = make(chan uint16, 8)
+	go func() {
+		for {
+			raw, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer raw.Close()
+				conn := tls.Server(raw, config)
+				_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+				if conn.Handshake() != nil {
+					return
+				}
+				negotiated <- conn.ConnectionState().CipherSuite
+				_, _ = io.Copy(io.Discard, conn)
+			}()
+		}
+	}()
+	return listener.Addr().String(), roots, negotiated
+}
+
+// The copy offers every cipher suite the client offered, the legacy ones a
+// client still carries included. A server that settles on one Go's own TLS
+// would not use is refused once the handshake is done, so the caller leaves
+// that connection to the client.
+func TestClientRefusesALegacyCipherSuite(t *testing.T) {
+	// CBC with SHA-256, under the server's usual ECDSA certificate.
+	server := newRecordingServer(t, func(config *tls.Config) {
+		config.MaxVersion = tls.VersionTLS12
+		config.CipherSuites = []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256}
+	})
+	config := distinctiveConfig("mirror.test", server.roots)
+	config.MaxVersion = tls.VersionTLS12
+	config.CipherSuites = []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256}
+	// RSA key exchange, which needs an RSA certificate.
+	address, rsaRoots, negotiated := rsaServer(t, tls.TLS_RSA_WITH_AES_128_GCM_SHA256)
+	rsaConfig := &tls.Config{
+		ServerName: "mirror.test", RootCAs: rsaRoots, MaxVersion: tls.VersionTLS12,
+		CipherSuites: []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_128_GCM_SHA256},
+	}
+	dialRSA := func() net.Conn {
+		conn, err := net.Dial("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		return conn
+	}
+	for name, c := range map[string]struct {
+		config *tls.Config
+		dial   func() net.Conn
+		suite  uint16
+		// last is the suite of the last handshake the server completed.
+		last func() uint16
+	}{
+		"CBC with SHA-256": {config, func() net.Conn { return server.dial(t) }, tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, func() uint16 {
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			return server.states[len(server.states)-1].CipherSuite
+		}},
+		"RSA key exchange": {rsaConfig, dialRSA, tls.TLS_RSA_WITH_AES_128_GCM_SHA256, func() uint16 {
+			select {
+			case suite := <-negotiated:
+				return suite
+			case <-time.After(3 * time.Second):
+				return 0
+			}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if standardSuites[c.suite] {
+				t.Fatalf("%04x is a suite Go's own TLS uses: the test shows nothing", c.suite)
+			}
+			original := helloOf(t, c.config)
+			if err := Check(original, "mirror.test"); err != nil {
+				t.Fatalf("the hello cannot be copied: %v", err)
+			}
+			// The client itself takes what the server chooses.
+			own := tls.Client(c.dial(), c.config)
+			if err := own.Handshake(); err != nil || own.ConnectionState().CipherSuite != c.suite {
+				t.Fatalf("the client's own handshake: %v, suite %04x", err, own.ConnectionState().CipherSuite)
+			}
+			_ = own.Close()
+			if got := c.last(); got != c.suite {
+				t.Fatalf("the server settled on %04x with the client itself", got)
+			}
+			conn, _, err := Client(testContext(t), c.dial(), original, "mirror.test", c.config.RootCAs)
+			if err == nil {
+				_ = conn.Close()
+				t.Fatalf("a connection on %04x was returned", c.suite)
+			}
+			if !errors.Is(err, ErrLegacySuite) || errors.Is(err, ErrOldVersion) || errors.Is(err, ErrNotCopied) {
+				t.Fatalf("a connection on %04x was refused as %v", c.suite, err)
+			}
+			// The copy's handshake did settle on it: the refusal is of what
+			// was negotiated, not of a handshake that failed.
+			if got := c.last(); got != c.suite {
+				t.Fatalf("the server settled on %04x with the copy", got)
+			}
+		})
+	}
+
+	// The rule is the standard library's list and nothing stricter: a suite
+	// it still uses is taken, here CBC with SHA-1 under ECDHE.
+	listed := newRecordingServer(t, func(config *tls.Config) {
+		config.MaxVersion = tls.VersionTLS12
+		config.CipherSuites = []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA}
+	})
+	config = distinctiveConfig("mirror.test", listed.roots)
+	config.MaxVersion = tls.VersionTLS12
+	config.CipherSuites = []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA}
+	conn, _, err := Client(testContext(t), listed.dial(t), helloOf(t, config), "mirror.test", listed.roots)
+	if err != nil {
+		t.Fatalf("a suite Go's own TLS uses was refused: %v", err)
+	}
+	echo(t, conn)
+	// Every suite of TLS 1.3 is one of them.
+	for _, suite := range []uint16{tls.TLS_AES_128_GCM_SHA256, tls.TLS_AES_256_GCM_SHA384, tls.TLS_CHACHA20_POLY1305_SHA256} {
+		if !standardSuites[suite] {
+			t.Errorf("the TLS 1.3 suite %04x is refused", suite)
+		}
+	}
+	for _, suite := range tls.InsecureCipherSuites() {
+		if standardSuites[suite.ID] {
+			t.Errorf("%s is taken", suite.Name)
+		}
+	}
+}
+
+// stoppingConn panics when it is written to, as the library that builds the
+// copy does on a state it does not expect.
+type stoppingConn struct{ net.Conn }
+
+func (stoppingConn) Write([]byte) (int, error) { panic("stopped in the middle of the handshake") }
+
+// A panic in the middle of the handshake is an error of that handshake and
+// goes no further: the caller hands the client's connection on instead.
+func TestAHandshakeThatPanicsIsAnError(t *testing.T) {
+	server := newRecordingServer(t, nil)
+	original := helloOf(t, distinctiveConfig("mirror.test", server.roots))
+	conn, _, err := Client(testContext(t), stoppingConn{server.dial(t)}, original, "mirror.test", server.roots)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("a handshake that panicked returned a connection")
+	}
+	if !errors.Is(err, errHandshakeStopped) || errors.Is(err, ErrNotCopied) || errors.Is(err, ErrNotHello) || errors.Is(err, ErrResumes) {
+		t.Fatalf("a handshake that panicked came back as %v", err)
+	}
+	// The hello was fine and the package still works.
+	if err := Check(original, "mirror.test"); err != nil {
+		t.Fatalf("the hello itself: %v", err)
+	}
+	again, _, err := Client(testContext(t), server.dial(t), original, "mirror.test", server.roots)
+	if err != nil {
+		t.Fatalf("the next handshake: %v", err)
+	}
+	echo(t, again)
+}
+
+// The client this package exists for: the ClientHello OpenCode 2.0.25 (Bun,
+// BoringSSL) opened a connection to opencode.ai with, recorded on 2026-11-19.
+// It holds nothing secret: a random, a session id, public key shares and the
+// server name. A change of the library that builds the copy, or of this
+// package, that stops copying this hello exactly fails here.
+func TestOpenCodesHelloIsCopied(t *testing.T) {
+	encoded, err := os.ReadFile(filepath.Join("testdata", "opencode-2.0.25-hello.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := ParseHello(record)
+	if err != nil {
+		t.Fatalf("the recorded hello does not parse: %v", err)
+	}
+	// What makes it this client's: its suites and groups, the hybrid key share
+	// that fills most of it, and no GREASE and no padding.
+	if len(record) != 1498 || want.ServerName != "opencode.ai" || want.Resumes || !reflect.DeepEqual(want.ALPN, []string{"http/1.1"}) ||
+		!reflect.DeepEqual(want.KeyShareGroups, []uint16{0x11ec, uint16(tls.X25519)}) || !reflect.DeepEqual(want.Versions, []uint16{tls.VersionTLS13, tls.VersionTLS12}) ||
+		len(want.CipherSuites) != 17 || len(want.Extensions) != 13 {
+		t.Fatalf("the recorded hello is not the one this test is about: %d bytes, %+v", len(record), want)
+	}
+	if err := Check(record, "opencode.ai"); err != nil {
+		t.Fatalf("OpenCode's hello cannot be copied: %v", err)
+	}
+	if err := Check(record, "elsewhere.example"); !errors.Is(err, ErrNotCopied) {
+		t.Fatalf("OpenCode's hello for another server name: %v", err)
+	}
+
+	// A handshake with the copy: a TLS 1.3 server sees the same hello, made
+	// for this connection.
+	server := newRecordingServerFor(t, "opencode.ai", func(config *tls.Config) {
+		config.MinVersion = tls.VersionTLS13
+		config.NextProtos = []string{"http/1.1"}
+	})
+	conn, protocol, err := Client(testContext(t), server.dial(t), record, "opencode.ai", server.roots)
+	if err != nil {
+		t.Fatalf("a handshake with the copy of OpenCode's hello: %v", err)
+	}
+	echo(t, conn)
+	sent, info := server.last(t)
+	if !SameShape(record, sent) || len(sent) != len(record) {
+		t.Fatalf("the server received %d bytes that are not the shape of OpenCode's hello (%d bytes)", len(sent), len(record))
+	}
+	got, err := ParseHello(sent)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("the copy offers %+v, OpenCode offered %+v (%v)", got, want, err)
+	}
+	if !reflect.DeepEqual(info.CipherSuites, want.CipherSuites) || !reflect.DeepEqual(info.Extensions, want.Extensions) || info.ServerName != "opencode.ai" {
+		t.Fatalf("crypto/tls read another hello than OpenCode's: %+v", info)
+	}
+	// The random, the session id and the key shares are the copy's own.
+	if bytes.Equal(sent, record) || bytes.Equal(record[recordHeaderLength+6:recordHeaderLength+38], sent[recordHeaderLength+6:recordHeaderLength+38]) {
+		t.Fatal("the recorded bytes themselves were sent")
+	}
+	if version := server.version(t); version != tls.VersionTLS13 || protocol != "http/1.1" {
+		t.Fatalf("the connection is TLS %04x with protocol %q", version, protocol)
 	}
 }
 
@@ -618,7 +891,7 @@ func TestFreshDropsOnlyWhatOffersASession(t *testing.T) {
 	// Damaged in any way, a hello is refused or rebuilt into one that parses
 	// and offers nothing; it never stops the process.
 	resuming := withExtension(t, withExtension(t, withExtension(t, plain, extensionSessionTicket, []byte("ticket")), extensionEarlyData, nil), extensionPreSharedKey, []byte("identities and binders"))
-	random := rand.New(rand.NewPCG(20261119, 43))
+	random := mathrand.New(mathrand.NewPCG(20261119, 43))
 	rebuilt := 0
 	for round := 0; round < 4000; round++ {
 		damaged := bytes.Clone(resuming)
