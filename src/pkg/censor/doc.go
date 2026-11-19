@@ -370,7 +370,13 @@
 //     fragment of such a value, a copy cut short by one character, and single
 //     lines of a multi-line value such as a PEM body are not caught, at any
 //     length, though the same value held with its id is caught by them as
-//     the items above say. It is the price of not answering a guess: the
+//     the items above say. One edge is wider than that: a base64 form holds
+//     only the characters made of the value's bits alone, which leaves out up
+//     to four bits of the value's first and last characters. So inside
+//     base64, at those alignments, a copy with its first or last character
+//     cut or changed is still replaced when the character standing in that
+//     place shares the bits the form does hold, as about four others do.
+//     Whole or not at all is the price of not answering a guess: the
 //     reader of a scan, who cannot name that value, would otherwise learn
 //     from a replaced fragment that 12 guessed bytes are part of it, and
 //     could work a value out chunk by chunk. Whole, a guess is the value.
