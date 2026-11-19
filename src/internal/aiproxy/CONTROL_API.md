@@ -344,12 +344,19 @@ Where a flow comes from:
   whatever becomes of that CONNECT: one refused for its capability (407) or
   while the session is refreshing (503) uses it up like one that is served,
   so a second CONNECT on the same connection needs a note of its own. A note
-  nobody uses waits about ten seconds; `Engine.ForgetFlow(remoteAddr)` drops
-  it at once, and a capture layer calls it when a connection it noted ends
-  without sending its CONNECT. A note left behind would name the next
-  connection from the same address and port. At most 4096 notes wait at once;
+  nobody uses waits about ten seconds. At most 4096 notes wait at once;
   `NoteFlow` returns an error when it could not keep one, and the flow must
-  then not be handed over.
+  then not be handed over to be read.
+- A tunnel first calls `Engine.TunnelConnection(remoteAddr)` for every
+  connection it opens to the proxy, and calls what that returns when it is
+  done with the connection, before it closes it. In between, what the proxy
+  knows of the address is that connection's alone. A CONNECT from it that
+  finds no note (the note was refused and the flow needs a Connection's
+  credential, or the CONNECT was read after the note was forgotten) is a
+  tunnel's flow from no known tool, so it is never read as a client of the
+  proxy environment. A note its CONNECT never used goes with the connection:
+  left behind, it would name the next connection from the same address and
+  port.
 - Nothing a request carries sets a flow: no header, target or proxy user name.
 - A CONNECT nobody noted is a client of the proxy environment. Its tool is the
   one the proxy was started for (`phase ai run -- claude` is `claude`,

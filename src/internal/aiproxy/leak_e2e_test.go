@@ -60,6 +60,9 @@ type leakRig struct {
 	// the hellos it was sent.
 	provider *httptest.Server
 	wire     *wireLog
+	// opened, when set, is told the address each connection connectAs makes
+	// comes from, before anything is noted or sent on it.
+	opened func(local string)
 
 	mu        sync.Mutex
 	received  []receivedRequest

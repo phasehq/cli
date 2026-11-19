@@ -87,11 +87,17 @@ type flowNote struct {
 type flowNotes struct {
 	mu    sync.Mutex
 	notes map[netip.AddrPort]flowNote
-	now   func() time.Time
+	// tunnelled holds the addresses of the connections a tunnel has open to
+	// the proxy, each with the mark of the call that put it there. They are as
+	// many as those connections, and each goes when its connection does,
+	// with the note that connection never used.
+	tunnelled map[netip.AddrPort]uint64
+	marks     uint64
+	now       func() time.Time
 }
 
 func newFlowNotes() *flowNotes {
-	return &flowNotes{notes: map[netip.AddrPort]flowNote{}}
+	return &flowNotes{notes: map[netip.AddrPort]flowNote{}, tunnelled: map[netip.AddrPort]uint64{}}
 }
 
 func (n *flowNotes) clock() time.Time {
@@ -159,15 +165,49 @@ func (n *flowNotes) take(remoteAddr string) (FlowContext, bool) {
 	return note.flow, true
 }
 
-// forget drops the note left for an address, if one still waits there.
-func (n *flowNotes) forget(remoteAddr string) {
+// tunnel records that the connection from remoteAddr is a tunnel's own until
+// the function it returns is called, which also drops a note that connection
+// never used. An address that is not loopback is one the proxy never accepts
+// a connection from, and is not kept.
+func (n *flowNotes) tunnel(remoteAddr string) (closed func()) {
 	address, ok := loopbackAddress(remoteAddr)
 	if !ok {
-		return
+		return func() {}
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.tunnelled == nil {
+		n.tunnelled = map[netip.AddrPort]uint64{}
+	}
+	n.marks++
+	mark := n.marks
+	n.tunnelled[address] = mark
+	// The tunnel notes its flow after this. A note already waiting here was
+	// left for an earlier connection from the same address, which is gone.
 	delete(n.notes, address)
+	return func() {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		// The address may have gone to a later connection by now, and neither
+		// that one's place here nor its note is this call's to forget.
+		if n.tunnelled[address] == mark {
+			delete(n.tunnelled, address)
+			delete(n.notes, address)
+		}
+	}
+}
+
+// tunnels reports whether the connection from remoteAddr is one a tunnel has
+// open to the proxy.
+func (n *flowNotes) tunnels(remoteAddr string) bool {
+	address, ok := loopbackAddress(remoteAddr)
+	if !ok {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	_, tunnelled := n.tunnelled[address]
+	return tunnelled
 }
 
 // flowNotes returns the process-wide notes, made on first use so a zero
@@ -191,22 +231,40 @@ func (e *Engine) flowNotes() *flowNotes {
 // CONNECT. The note is used up by the first CONNECT from that address,
 // whether the proxy serves that CONNECT or refuses it, so a second CONNECT on
 // the same connection needs a note of its own. A note nobody uses is
-// forgotten after about ten seconds; ForgetFlow drops it at once.
+// forgotten after about ten seconds, and at once when a tunnel is done with
+// the connection it was left for (TunnelConnection).
 //
 // A CONNECT nobody noted is a client that was given the proxy through its
 // environment. An error means the note was not kept, and the caller must not
-// hand the flow over: its CONNECT would be taken for such a client.
+// hand the flow over: its CONNECT would be taken for such a client. Only on a
+// connection a tunnel said is its own can the flow still go, for a
+// Connection's credential, since nothing of it is read.
 func (e *Engine) NoteFlow(remoteAddr string, flow FlowContext) error {
 	return e.flowNotes().note(remoteAddr, flow)
 }
 
-// ForgetFlow drops the note left for remoteAddr. A capture layer calls it
-// when the connection it noted ends without sending its CONNECT: the note
-// would otherwise wait out its ten seconds, and another program that
-// connected from the same address and port in that time would be taken for
-// the noted flow.
-func (e *Engine) ForgetFlow(remoteAddr string) {
-	e.flowNotes().forget(remoteAddr)
+// TunnelConnection tells the proxy that the connection a capture layer has
+// just opened to it, from remoteAddr (that connection's LocalAddr), is a
+// tunnel's, and returns what the capture layer calls when it is done with
+// that connection, whatever became of it. In between, what the proxy knows of
+// the address is that connection's alone:
+//
+//   - a CONNECT from it that finds no note is a tunnel's flow from no known
+//     tool: the credential of a Connection is still attached, and nothing is
+//     read. Without this such a CONNECT is taken for a client of the proxy
+//     environment, for which every listed host is read. That happens to a
+//     flow whose note was refused and which is handed over all the same,
+//     because it needs a Connection's credential, and to one whose CONNECT
+//     is read only after its note was forgotten;
+//   - a note its CONNECT never used goes with it. Left to wait out its ten
+//     seconds, the note would name the next program to connect from the same
+//     address and port, which the system hands out again.
+//
+// A tunnel calls it for every connection it opens to the proxy, before
+// NoteFlow, and calls what it returns before it closes the connection: while
+// the tunnel still holds the port, nothing else can connect from that address.
+func (e *Engine) TunnelConnection(remoteAddr string) (closed func()) {
+	return e.flowNotes().tunnel(remoteAddr)
 }
 
 // ReadHost is one host leak protection reads for a tool, on port 443.
@@ -263,11 +321,16 @@ func (p *httpProxy) ownFlow() FlowContext {
 
 // connectFlow says how a CONNECT reached the proxy. It reads the note for
 // the address the CONNECT came from and nothing of the request itself: no
-// header, target or credential can set a flow.
+// header, target or credential can set a flow. A tunnel's own connection with
+// no note left for it is still a tunnel's, and never the proxy's own client's:
+// nothing says whose flow it carries, so it is read for no tool.
 func (p *httpProxy) connectFlow(req *http.Request) FlowContext {
 	if p.flows != nil {
 		if flow, noted := p.flows.take(req.RemoteAddr); noted {
 			return flow
+		}
+		if p.flows.tunnels(req.RemoteAddr) {
+			return FlowContext{Capture: CaptureTunnel}
 		}
 	}
 	return p.ownFlow()
