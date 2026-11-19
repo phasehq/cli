@@ -75,7 +75,7 @@ type Entries struct {
 type Form struct {
 	// Part is empty for the value itself, "url-password" for a URL's password or
 	// the token that is its user, and "leaf:<n>" for the n-th string leaf of a
-	// JSON value.
+	// JSON value or the n-th value of text that is names and values.
 	Part   string `json:"part,omitempty"`
 	Form   string `json:"form"`
 	Length int    `json:"len"`
@@ -120,27 +120,19 @@ func IndexValue(key *Key, typ, id, value string) (*Entries, error) {
 	// named by position, not by key, so no part of the document leaves here.
 	if leaves := jsonLeaves(value); len(leaves) > 0 {
 		for i, l := range leaves {
-			part := partLeafPrefix + strconv.Itoa(i)
-			if looksPublic(l.value) {
-				b.skip(part, ReasonPublicLeaf)
-				continue
-			}
 			// Short leaves are labels such as "service_account" or a domain name,
 			// which turn up in ordinary text.
-			if len(l.value) < leafMinLength {
-				b.skip(part, ReasonShortLeaf)
-				continue
-			}
-			b.addValue(part, l.value)
-			if credential := urlCredential(l.value); credential != "" {
-				b.addValue(part, credential)
-			}
+			b.addLeaf(partLeafPrefix+strconv.Itoa(i), l.value, leafMinLength)
 		}
 		// Numbers are not indexed next to strings. Those that look like key
 		// material are listed, so that it is not silent.
 		for n := keyNumbers(value); n > 0 && len(b.entries.Unprotected) < maxUnprotected; n-- {
 			b.skip("", ReasonNumbers)
 		}
+		return b.finish()
+	}
+	// So is text that is names and values, such as a kubeconfig or an env file.
+	if b.addStructured(value) {
 		return b.finish()
 	}
 	b.addValue("", value)

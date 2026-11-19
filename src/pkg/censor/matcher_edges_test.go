@@ -737,6 +737,274 @@ func TestPathsAreBuiltOnlyForListedFindings(t *testing.T) {
 	}
 }
 
+// fakeCertificate and fakeOtherKey are made with an Ed25519 key. The keys of
+// fakePEM are on a NIST curve, and everything on one spells the same dozen
+// bytes for its algorithm: a certificate on such a curve holds a chunk of every
+// such key about one time in three, which is not what these tests are about.
+func fakeCertificate(t testing.TB) string {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "kubernetes"}, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+func fakeOtherKey(t testing.TB) string {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+}
+
+// wholeForm reports whether the entries hold the raw form of the whole value,
+// which is how plain text is indexed.
+func wholeForm(e *Entries, value string) bool {
+	for _, f := range e.Forms {
+		if f.Part == "" && f.Form == formRaw && f.Length == len(strings.TrimSpace(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func reasons(e *Entries) map[string]int {
+	count := map[string]int{}
+	for _, u := range e.Unprotected {
+		count[u.Reason]++
+	}
+	return count
+}
+
+// Text of several lines that is mostly names and values is indexed as a JSON
+// document is, value by value. Registering a kubeconfig or an env file then
+// protects what they hold, and leaves their names, and files of the same kind,
+// as they are.
+func TestStructuredTextIsIndexedByItsValues(t *testing.T) {
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redact := func(ix *Index, text string) string {
+		out, _ := ix.RedactWith([]byte(text), ScanOptions{Rules: only})
+		return string(out)
+	}
+	kubeconfig := func(authority, keyData, token, password, cluster, user string) string {
+		return "apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    certificate-authority-data: " + authority +
+			"\n    server: https://10.0.0.1:6443\n  name: " + cluster + "\nusers:\n- name: " + user + "\n  user:\n    client-key-data: " + keyData +
+			"\n    token: " + token + "\n    password: \"" + password + "\"\n"
+	}
+	authority := base64.StdEncoding.EncodeToString([]byte(fakeCertificate(t)))
+	keyData := base64.StdEncoding.EncodeToString([]byte(fakePEM(t)))
+	token, password := randomString(t, alnum, 40), randomString(t, alnum, 16)
+	config := kubeconfig(authority, keyData, token, password, "prod", "admin")
+	ix, entries := buildWithEntries(t, newKey(t), secret{ID: "kc", Value: config})
+	for _, f := range entries["kc"].Forms {
+		if !strings.HasPrefix(f.Part, partLeafPrefix) {
+			t.Fatalf("a %s form of the part %q: only values are indexed", f.Form, f.Part)
+		}
+	}
+	// v1, Config, prod and admin are under the floor, and the server's URL and
+	// the authority's certificate are public: each is listed, as a leaf of a
+	// JSON document is.
+	if got := reasons(entries["kc"]); got[ReasonShortLeaf] != 4 || got[ReasonPublicLeaf] != 2 || len(entries["kc"].Unprotected) != 6 {
+		t.Errorf("unprotected: %+v", entries["kc"].Unprotected)
+	}
+
+	// Files of the same kind, and words about them, are left as they are.
+	for name, text := range map[string]string{
+		"a manifest":       "apiVersion: v1\nkind: Service\nmetadata:\n  name: web\nspec:\n  ports:\n  - port: 80\n    server: https://10.0.0.1:6443\n",
+		"another manifest": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  replicas: 3\n",
+		"a sentence":       "Set certificate-authority-data in the cluster entry, then kind: Config is complete.\n",
+		"a certificate":    "  tls.crt: " + base64.StdEncoding.EncodeToString([]byte(fakeCertificate(t))) + "\n",
+	} {
+		if out := redact(ix, text); out != text {
+			t.Errorf("%s was changed:\n%s", name, out)
+		}
+	}
+	// So is another kubeconfig, with a key of another kind. One with a key of
+	// the same kind keeps all but that key's line: such keys begin alike.
+	other := kubeconfig(base64.StdEncoding.EncodeToString([]byte(fakeCertificate(t))), base64.StdEncoding.EncodeToString([]byte(fakeOtherKey(t))), randomString(t, alnum, 40), randomString(t, alnum, 16), "prod", "admin")
+	if out := redact(ix, other); out != other {
+		t.Errorf("another kubeconfig was changed:\n%s", out)
+	}
+	other = kubeconfig(base64.StdEncoding.EncodeToString([]byte(fakeCertificate(t))), base64.StdEncoding.EncodeToString([]byte(fakePEM(t))), randomString(t, alnum, 40), randomString(t, alnum, 16), "prod", "admin")
+	was, is := strings.Split(other, "\n"), strings.Split(redact(ix, other), "\n")
+	if len(was) != len(is) {
+		t.Fatalf("another kubeconfig has %d lines, had %d", len(is), len(was))
+	}
+	for i := range was {
+		if was[i] != is[i] && !strings.Contains(was[i], "client-key-data: ") {
+			t.Errorf("another kubeconfig was changed: %s", is[i])
+		}
+	}
+
+	// What it holds is found whole, cut out of it, and in pieces.
+	whole := redact(ix, "cat ~/.kube/config\n"+config)
+	if want := kubeconfig(authority, "ph:secret:kc", "ph:secret:kc", "ph:secret:kc", "prod", "admin"); whole != "cat ~/.kube/config\n"+want {
+		t.Errorf("the whole file:\n%s", whole)
+	}
+	for name, text := range map[string]string{
+		"the key data alone":    keyData + "\n",
+		"the key data's line":   "    client-key-data: " + keyData + "\n",
+		"a piece of key data":   "data: " + keyData[101:161] + "\n",
+		"the token alone":       token,
+		"the token's line":      "    token: " + token + "\n",
+		"a piece of the token":  "tok " + token[5:38] + "...",
+		"the token in a header": "Authorization: Bearer " + token + "\n",
+		"the password alone":    "the password is " + password + " for now",
+		"the password's line":   "    password: \"" + password + "\"\n",
+	} {
+		out := redact(ix, text)
+		if holdsPiece([]byte(out), keyData, 24) || holdsPiece([]byte(out), token, 24) || strings.Contains(out, password) || !strings.Contains(out, "ph:secret:kc") {
+			t.Errorf("%s: something of the kubeconfig was left\n%s", name, out)
+		}
+	}
+
+	// An env file: each value of 12 bytes or more is protected, and a name is
+	// left alone wherever else it is written.
+	database, stripe, session := randomString(t, alnum, 24), "sk_live_"+randomString(t, alnum, 40), randomString(t, alnum, 32)
+	env := "# production\nNODE_ENV=production\nPORT=5432\nexport DATABASE_URL=postgres://app:" + database + "@db.internal:5432/app\n" +
+		"STRIPE_SECRET_KEY=" + stripe + "\nSESSION_SECRET=\"" + session + "\"\nSENTRY_DSN=\n"
+	ix, entries = buildWithEntries(t, newKey(t), secret{ID: "env", Value: env})
+	if got := reasons(entries["env"]); wholeForm(entries["env"], env) || got[ReasonShortLeaf] != 2 || len(entries["env"].Unprotected) != 2 {
+		t.Errorf("the env file: unprotected %+v", entries["env"].Unprotected)
+	}
+	for name, text := range map[string]string{
+		"the whole file":         env,
+		"the database URL":       "psql postgres://app:" + database + "@db.internal:5432/app",
+		"the database password":  "PGPASSWORD=" + database + " psql",
+		"the Stripe key":         "curl -u " + stripe + ": https://api.stripe.com/v1/charges",
+		"a piece of the key":     "key ..." + stripe[10:44],
+		"the session secret":     "SESSION_SECRET=" + session,
+		"a piece of that secret": "secret " + session[:30] + "...",
+	} {
+		out := redact(ix, text)
+		if strings.Contains(out, database) || holdsPiece([]byte(out), stripe, 24) || holdsPiece([]byte(out), session, 24) || !strings.Contains(out, "ph:secret:env") {
+			t.Errorf("%s: a value of the env file was left\n%s", name, out)
+		}
+	}
+	if want := "# production\nNODE_ENV=production\nPORT=5432\nexport DATABASE_URL=ph:secret:env\nSTRIPE_SECRET_KEY=ph:secret:env\nSESSION_SECRET=\"ph:secret:env\"\nSENTRY_DSN=\n"; redact(ix, env) != want {
+		t.Errorf("the env file itself:\n%s", redact(ix, env))
+	}
+	// In base64, as a Kubernetes Secret holds a file, the run is decoded and
+	// its values found in it.
+	if out := redact(ix, "  .env: "+base64.StdEncoding.EncodeToString([]byte(env))+"\n"); out != "  .env: ph:secret:env\n" {
+		t.Errorf("the env file in base64:\n%s", out)
+	}
+	elsewhere := "NODE_ENV=production\nPORT=5432\nDATABASE_URL=postgres://reader@replica.internal:5432/app\nSTRIPE_SECRET_KEY=\nSESSION_SECRET=unset\n"
+	if out := redact(ix, elsewhere); out != elsewhere {
+		t.Errorf("the names of an env file were changed elsewhere:\n%s", out)
+	}
+
+	// A line that is neither a name and a value nor syntax is a value with no
+	// name: a password under a line that names its user is still protected.
+	bare := randomString(t, alnum, 9) + "!x#" + randomString(t, alnum, 8)
+	ix, entries = buildWithEntries(t, newKey(t), secret{ID: "login", Value: "user: admin\n" + bare})
+	if out := redact(ix, "login with "+bare+" now"); strings.Contains(out, bare) || wholeForm(entries["login"], "user: admin\n"+bare) {
+		t.Errorf("a password on a line of its own was left: %s", out)
+	}
+
+	// Text that is not mostly names and values is indexed as it was: whole.
+	for name, value := range map[string]string{
+		"two lines of words":       "correct horse battery staple\nseven more words to make it long",
+		"one name in three lines":  randomString(t, alnum, 37) + "\nkind: Config\n" + randomString(t, alnum, 37),
+		"a private key":            fakePEM(t),
+		"an encrypted private key": "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF0123456789ABCDEF\n\n" + randomString(t, alnum, 64) + "\n-----END RSA PRIVATE KEY-----",
+		"one line":                 "token: " + randomString(t, alnum, 40),
+	} {
+		ix, entries := buildWithEntries(t, newKey(t), secret{ID: "plain", Value: value})
+		if !wholeForm(entries["plain"], value) || len(entries["plain"].Unprotected) != 0 {
+			t.Errorf("%s is not indexed whole: %+v", name, entries["plain"].Unprotected)
+		}
+		for _, f := range entries["plain"].Forms {
+			if f.Part != "" {
+				t.Errorf("%s has a form of the part %q", name, f.Part)
+			}
+		}
+		if out, report := ix.RedactWith([]byte("# "+strings.TrimSpace(value)+"\n"), ScanOptions{Rules: only}); string(out) != "# ph:secret:plain\n" || report.Inventory != 1 || report.Findings[0].Partial {
+			t.Errorf("%s is not found whole: %+v\n%s", name, report.Findings, out)
+		}
+	}
+	// So is text with more values than one entry holds parts for.
+	var many strings.Builder
+	for i := 0; i < 800; i++ {
+		many.WriteString("K" + strconv.Itoa(i) + "=" + randomString(t, alnum, 24) + "\n")
+	}
+	e, err := IndexValue(newKey(t), "secret", "many", many.String())
+	if err != nil || !wholeForm(e, many.String()) {
+		t.Errorf("text with 800 values: %v, %d forms", err, len(e.Forms))
+	}
+}
+
+// What a line of structured text is read as.
+func TestLinesOfStructuredText(t *testing.T) {
+	run := "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
+	token := "Zq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3Pq5Vd"
+	for text, want := range map[string]textLine{
+		"apiVersion: v1":                   {lineNamed, "v1"},
+		"clusters:":                        {lineNamed, ""},
+		"- name: admin":                    {lineNamed, "admin"},
+		`"apiKey": "abc",`:                 {lineNamed, "abc"},
+		"export TOKEN='abc def'":           {lineNamed, "abc def"},
+		`KEY="line one\nline \"two\""`:     {lineNamed, "line one\nline \"two\""},
+		"key = value # note":               {lineNamed, "value # note"},
+		`key: "value" # note`:              {lineNamed, "value"},
+		"--token=abc":                      {lineNamed, "abc"},
+		"SENTRY_DSN=":                      {lineNamed, ""},
+		"Variable1=":                       {lineNamed, ""},
+		"# TOKEN=abc":                      {lineSyntax, ""},
+		"; a comment":                      {lineSyntax, ""},
+		"// a comment":                     {lineSyntax, ""},
+		"[default]":                        {lineSyntax, ""},
+		"---":                              {lineSyntax, ""},
+		"-----BEGIN PRIVATE KEY-----":      {lineSyntax, ""},
+		"},":                               {lineSyntax, ""},
+		"-":                                {lineSyntax, ""},
+		run:                                {lineRun, run},
+		"- " + token:                       {lineRun, token},
+		`"` + token + `",`:                 {lineRun, token},
+		"b3BlbnNzaC1rZXktdjEAAAAABG5vbmU=": {lineRun, "b3BlbnNzaC1rZXktdjEAAAAABG5vbmU="},
+		"the root password is hunter2":     {lineOther, "the root password is hunter2"},
+		"host:5432":                        {lineOther, "host:5432"},
+		"- 10.0.0.1":                       {lineOther, "10.0.0.1"},
+		"https://example.com/docs":         {lineOther, "https://example.com/docs"},
+		"a == b":                           {lineOther, "a == b"},
+		"ghp_" + token + ": deploy":        {lineOther, "ghp_" + token + ": deploy"},
+	} {
+		if got := readLine(text); got != want {
+			t.Errorf("%q is read as %+v, want %+v", text, got, want)
+		}
+	}
+	for value, want := range map[string]bool{
+		"user: admin\npassword: hunter2":                true,
+		"user: admin\n" + token:                         true,
+		"# notes\n\nuser: admin\n\npassword: hunter2\n": true,
+		"a: 1\nb: 2\nthree\nfour\nfive":                 false,
+		"user: admin":                                   false,
+		"user: admin\n\n\n":                             false,
+		"correct horse battery\nstaple and more":        false,
+		"-----BEGIN PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES\n-----END PRIVATE KEY-----": false,
+		`{"user": "admin", "password": "hunter2"}`:                                                      false,
+	} {
+		if _, got := structuredLines(value); got != want {
+			t.Errorf("%q is structured text: %v", value, got)
+		}
+	}
+}
+
 // A URL whose user is a token, with no password, is a credential like one with
 // a password: it is not left out as public, the token is protected on its own,
 // and the rest of the URL is structure.
@@ -756,6 +1024,7 @@ func TestAURLWithATokenForItsUserIsProtected(t *testing.T) {
 	for name, tc := range map[string]struct{ value, part string }{
 		"a leaf of a JSON value":      {document, "leaf:2"},
 		"a value on its own":          {remote, partURLPassword},
+		"a value of structured text":  {"BRANCH=main\nORIGIN=" + remote + "\n", "leaf:1"},
 		"with an empty password":      {"https://" + token + ":@github.com/acme/orders.git", partURLPassword},
 		"with an escape in the token": {"https://" + token + "%2Fx@github.com/acme/orders.git", ""},
 	} {
@@ -789,14 +1058,6 @@ func TestAURLWithATokenForItsUserIsProtected(t *testing.T) {
 			t.Errorf("the credential of %s is %q", value, got)
 		}
 	}
-}
-
-func reasons(e *Entries) map[string]int {
-	count := map[string]int{}
-	for _, u := range e.Unprotected {
-		count[u.Reason]++
-	}
-	return count
 }
 
 // Next to strings, the numbers of a JSON value are not indexed. Those that
@@ -838,38 +1099,6 @@ func TestNumbersThatLookLikeKeyMaterialAreListed(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-}
-
-// fakeCertificate and fakeOtherKey are made with an Ed25519 key. The keys of
-// fakePEM are on a NIST curve, and everything on one spells the same dozen
-// bytes for its algorithm: a certificate on such a curve holds a chunk of every
-// such key about one time in three, which is not what these tests are about.
-func fakeCertificate(t testing.TB) string {
-	t.Helper()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
-	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "kubernetes"}, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-}
-
-func fakeOtherKey(t testing.TB) string {
-	t.Helper()
-	_, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 }
 
 // A certificate is public, and every certificate begins and ends as the next
