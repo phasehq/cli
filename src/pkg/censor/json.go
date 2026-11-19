@@ -397,8 +397,11 @@ func (w *walker) handleString(start, end int, signed bool) {
 		}
 	}
 	if entry == nil {
+		starved := w.state.starved
 		entry = w.rewriteString(text, keyName)
-		if cacheable {
+		// What a scan found once the call's inflate budget was spent is not
+		// what another call would find, so it is not kept.
+		if cacheable && w.state.starved == starved {
 			w.ix.cache.put(key, len(text), entry)
 		}
 	}

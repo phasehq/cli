@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -231,5 +232,35 @@ func TestTextAfterADataURIIsRead(t *testing.T) {
 	out, report := ix.RewriteBinary(message, ScanOptions{})
 	if bytes.Contains(out, []byte(password)) || report.Inventory != 1 || len(out) != len(message) {
 		t.Errorf("text after an image in a message: %d found", report.Inventory)
+	}
+}
+
+// One call inflates only so much. A string scanned once that budget was spent
+// is not remembered as clean: the next request has a budget of its own, and
+// reads it.
+func TestAScanThatRanOutOfInflateBudgetIsNotCached(t *testing.T) {
+	password := randomString(t, alnum, 24)
+	ix := build(t, secret{ID: "pw", Value: password})
+	filler := strings.Repeat("ordinary log line number seven\n", 40)
+	blob := base64.StdEncoding.EncodeToString(gzipped(t, []byte(filler+"password: "+password+"\n"+filler)))
+	release := "helm release: " + blob + "\n" + strings.Repeat("release notes follow. ", 20)
+	if len(release) < cacheMinBlock {
+		t.Fatalf("the string is %d bytes, too short to be cached", len(release))
+	}
+	bomb := base64.StdEncoding.EncodeToString(gzipped(t, make([]byte, 1<<20)))
+	var texts []string
+	for i := 0; i < 80; i++ {
+		texts = append(texts, fmt.Sprintf("blob %d: %s", i, bomb))
+	}
+	if r := apply(ix, modelRequest(append(texts, release)...)); len(r.Hits) != 0 {
+		t.Fatalf("the budget was not spent before the release was read: %d hits", len(r.Hits))
+	}
+	r := apply(ix, modelRequest(release))
+	if len(r.Hits) != 1 || bytes.Contains(r.Out, []byte(blob)) || r.Report.CacheHits != 0 {
+		t.Errorf("the next request: %d hits, %d from the cache", len(r.Hits), r.Report.CacheHits)
+	}
+	// Read with a budget, it is cached like any other string.
+	if r := apply(ix, modelRequest(release)); len(r.Hits) != 1 || r.Report.CacheHits != 1 {
+		t.Errorf("a third request: %d hits, %d from the cache", len(r.Hits), r.Report.CacheHits)
 	}
 }

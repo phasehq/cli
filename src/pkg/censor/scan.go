@@ -60,6 +60,9 @@ type rep struct {
 // scanState is shared by everything one call scans.
 type scanState struct {
 	inflateLeft int
+	// starved counts the runs left as they were because the budget was spent:
+	// another call would have inflated and scanned them.
+	starved int
 }
 
 func newScanState() *scanState { return &scanState{inflateLeft: inflateBudget} }
@@ -591,13 +594,18 @@ func inflate(data []byte, st *scanState) ([]byte, string, bool) {
 	default:
 		return nil, "", false
 	}
-	limit := min(maxInflate, max(inflateFloor, inflateRatio*len(data)), st.inflateLeft)
+	own := min(maxInflate, max(inflateFloor, inflateRatio*len(data)))
+	limit := min(own, st.inflateLeft)
 	if limit <= 0 {
+		st.starved++
 		return nil, "", false
 	}
 	out, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
 	st.inflateLeft -= len(out)
 	if err != nil || len(out) > limit {
+		if err == nil && limit < own {
+			st.starved++
+		}
 		return nil, "", false
 	}
 	return out, kind, true
