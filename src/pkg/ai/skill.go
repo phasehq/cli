@@ -419,7 +419,8 @@ func recognizedReleasedSkill(content string) (skillVariant, bool) {
 func detectSkillVariant(content string) skillVariant {
 	if strings.HasPrefix(content, "---\n") {
 		frontmatterEnd := strings.Index(content[4:], "\n---\n")
-		if frontmatterEnd >= 0 && strings.Contains(content[:frontmatterEnd+4], "\nuser-invocable: true\n") {
+		// Keep the newline that ends the last frontmatter line.
+		if frontmatterEnd >= 0 && strings.Contains(content[:frontmatterEnd+5], "\nuser-invocable: true\n") {
 			return skillVariantUserInvocable
 		}
 		return skillVariantStandard

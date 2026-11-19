@@ -347,3 +347,12 @@ func TestUninstallSkillsLeavesALinkedSkillDirectory(t *testing.T) {
 		t.Fatalf("the link itself was removed: %v", err)
 	}
 }
+
+func TestDetectSkillVariantKeepsTheClaudeVariant(t *testing.T) {
+	if got := detectSkillVariant(claudeCodeSkill()); got != skillVariantUserInvocable {
+		t.Fatalf("Claude skill variant = %v, want user-invocable", got)
+	}
+	if got := detectSkillVariant(standardSkill()); got != skillVariantStandard {
+		t.Fatalf("standard skill variant = %v, want standard", got)
+	}
+}
