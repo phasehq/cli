@@ -185,7 +185,14 @@ function phaseApplyEnvironment(env) {
   phaseKick()
   const phaseEnv = phaseEnvironment()
   if (!phaseEnv) return
-  for (const key of phaseEnv.unset) delete env[key]
+  if (process.platform === "win32") {
+    // Windows variable names ignore case: drop every spelling, including
+    // ones that would otherwise sit beside the names set below.
+    const names = new Set([...phaseEnv.unset, ...Object.keys(phaseEnv.set), ...Object.keys(phaseEnv.proxy)].map((key) => String(key).toUpperCase()))
+    for (const key of Object.keys(env)) if (names.has(key.toUpperCase())) delete env[key]
+  } else {
+    for (const key of phaseEnv.unset) delete env[key]
+  }
   Object.assign(env, phaseEnv.set, phaseEnv.proxy)
 }
 

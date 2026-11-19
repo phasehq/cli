@@ -221,6 +221,13 @@ check(typeof hooks["shell:create.before"] === "function", "setup did not registe
 const shell = { command: "aws sts get-caller-identity", cwd: "/tmp", env: { AWS_PROFILE: "ambient" } }
 await hooks["shell:create.before"](shell)
 check(shell.env.AWS_ACCESS_KEY_ID === "AKIADECOY" && shell.env.HTTPS_PROXY && !("AWS_PROFILE" in shell.env) && shell.command === "aws sts get-caller-identity", "2.x shell environment was not applied: " + JSON.stringify(shell))
+// Windows matches variable names without regard to case.
+const platform = Object.getOwnPropertyDescriptor(process, "platform")
+Object.defineProperty(process, "platform", { value: "win32" })
+const windows = { env: { Aws_Profile: "ambient", https_proxy: "http://ambient", Keep: "1" } }
+await plugin["shell.env"]({}, windows)
+Object.defineProperty(process, "platform", platform)
+check(!Object.keys(windows.env).some((key) => key.toUpperCase() === "AWS_PROFILE") && windows.env.https_proxy === undefined && windows.env.HTTPS_PROXY && windows.env.Keep === "1", "Windows spellings were kept: " + JSON.stringify(windows.env))
 // A dead proxy PID keeps decoys and drops routing.
 writeFileSync(environmentFile, JSON.stringify({ ...live, pid: 999999999 }))
 const degraded = { env: {} }
