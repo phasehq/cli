@@ -68,6 +68,19 @@ var identifier = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 // The proxy answered: it is reachable, it just cannot protect more values.
 var ErrInventoryFull = errors.New("the leak protection inventory is full")
 
+// ErrNotListening is returned when nothing accepts connections at the
+// proxy's address: no proxy runs there. A proxy that is slow, or answers
+// with something this version does not read, is another error.
+var ErrNotListening = errors.New("nothing is listening at the Phase AI proxy's address")
+
+// unanswered is the error for a call the proxy did not answer.
+func unanswered(err error) error {
+	if connectionRefused(err) {
+		return ErrNotListening
+	}
+	return errors.New("the Phase AI proxy did not answer")
+}
+
 // Environment is what the package reads from the process's environment;
 // tests replace it.
 var Environment = os.Getenv
@@ -291,7 +304,7 @@ func proxyKey(ctx context.Context, client *http.Client, current string) (*censor
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, errors.New("the Phase AI proxy did not answer")
+		return nil, unanswered(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -326,7 +339,7 @@ func post(ctx context.Context, client *http.Client, batch registration) (Result,
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
-		return Result{}, errors.New("the Phase AI proxy did not answer")
+		return Result{}, unanswered(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

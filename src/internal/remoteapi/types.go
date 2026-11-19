@@ -110,13 +110,19 @@ type InventoryResponse struct {
 }
 
 // LeakProtectionStatus describes the proxy's leak protection. It never names a
-// value, an id or anything derived from a value.
+// value, a secret's id or anything derived from a value.
 type LeakProtectionStatus struct {
 	Mode           string   `json:"mode"`
 	SecretsKnown   int      `json:"secretsKnown"`
 	Unprotected    int      `json:"unprotected"`
 	InspectedHosts []string `json:"inspectedHosts"`
 	UnreadHosts    []string `json:"unreadHosts"`
+	// RulesSkipped counts the pattern rules the proxy is not applying: rules
+	// of its rule file that this version cannot apply, and rules it depends
+	// on that the file does not hold. SkippedRules names them by rule id.
+	// Both are absent when every rule applies, as with the shipped file.
+	RulesSkipped int      `json:"rulesSkipped,omitempty"`
+	SkippedRules []string `json:"skippedRules,omitempty"`
 }
 
 // ConnectionDetail is what an Agent may read about one of its Connections. It

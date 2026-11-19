@@ -25,7 +25,7 @@ func (h *controlHandler) leakStatus() *remoteapi.LeakProtectionStatus {
 	if h.leak == nil {
 		return nil
 	}
-	return h.leak.status(h.tool)
+	return h.leak.status()
 }
 
 // inventoryKey hands the key to a process of this session that is about to

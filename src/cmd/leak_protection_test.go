@@ -22,8 +22,10 @@ import (
 	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/censor"
+	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/phase"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
+	gokeyring "github.com/zalando/go-keyring"
 )
 
 // downSession makes the process look like it runs inside a Phase AI session
@@ -148,6 +150,49 @@ func TestStatusLineSummarisesLeakProtection(t *testing.T) {
 	}
 }
 
+// The status line counts the pattern rules that are not applied and names
+// none: the ids are in the status JSON for whoever needs them. phase ai status
+// prints the line as the proxy's status says it.
+func TestStatusLineCountsSkippedRulesAndNamesNone(t *testing.T) {
+	status := remoteapi.LeakProtectionStatus{
+		Mode: "censor", SecretsKnown: 3, Unprotected: 1, RulesSkipped: 2, SkippedRules: []string{"later-format", "phase-user-token"},
+		InspectedHosts: []string{"api.anthropic.com"}, UnreadHosts: []string{"cursor.sh"},
+	}
+	want := "censor (secrets in model traffic are replaced with placeholders); 3 secrets known, 1 too short or plain to protect; 2 pattern rules skipped; not inspected: cursor.sh"
+	if line := leakProtectionSummary(status); line != want || strings.Contains(line, "later-format") || strings.Contains(line, "phase-user-token") {
+		t.Fatalf("status line:\n%s\n%s", line, want)
+	}
+	status.RulesSkipped, status.Unprotected, status.UnreadHosts = 1, 0, nil
+	if line := leakProtectionSummary(status); line != "censor (secrets in model traffic are replaced with placeholders); 3 secrets known; 1 pattern rule skipped" {
+		t.Fatalf("one rule: %s", line)
+	}
+
+	// The whole command, against a proxy whose status says so. It reads the
+	// setup and the login, so both point at files of the test's own.
+	directory := withHookRuntimeDirectory(t)
+	withAICAKeystore(t, gokeyring.ErrNotFound)
+	originalAIConfig, originalConfig := config.AIConfigPath, config.ConfigFilePath
+	config.AIConfigPath = filepath.Join(t.TempDir(), "ai.json")
+	config.ConfigFilePath = filepath.Join(t.TempDir(), "config.json")
+	t.Cleanup(func() { config.AIConfigPath, config.ConfigFilePath = originalAIConfig, originalConfig })
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.String() != "http://phase.invalid/v1/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"schemaVersion":1,"kind":"phase.ai.status","safeToPrint":true,"connections":[],` +
+			`"leakProtection":{"mode":"censor","secretsKnown":3,"unprotected":0,"inspectedHosts":["api.anthropic.com"],"unreadHosts":[],` +
+			`"rulesSkipped":2,"skippedRules":["later-format","phase-user-token"]}}`))
+	}))
+	t.Cleanup(proxy.Close)
+	hookProxyState(t, directory, strings.Replace(proxy.URL, "http://", "http://phase:"+leakTestCapability+"@", 1), os.Getpid())
+	rendered := renderAIStatus(context.Background())
+	if !strings.Contains(rendered, "Leaks:       censor (secrets in model traffic are replaced with placeholders); 3 secrets known; 2 pattern rules skipped\n") ||
+		strings.Contains(rendered, "later-format") {
+		t.Fatalf("phase ai status:\n%s", rendered)
+	}
+}
+
 // A full inventory says so, for an Agent and for anyone else, and never
 // claims the proxy could not be reached.
 func TestAFullInventoryHasItsOwnMessage(t *testing.T) {
@@ -201,11 +246,17 @@ func TestAgentLoginOutsideASessionIsToldOnce(t *testing.T) {
 // proxy does for whoever holds its capability.
 type leakControlProxy struct {
 	mu       sync.Mutex
+	requests int
 	keyCalls int
 	posts    int
 	ids      []string
 	kinds    []string
 	full     bool
+	// keyStatus and keyBody make the key request fail: with a status, or
+	// with a body that is not the answer. stall holds every request back.
+	keyStatus int
+	keyBody   string
+	stall     time.Duration
 }
 
 const leakTestCapability = "runtime-capability"
@@ -225,10 +276,25 @@ func newLeakControlProxy(t *testing.T) (*leakControlProxy, string) {
 			return
 		}
 		fake.mu.Lock()
+		fake.requests++
+		stall := fake.stall
+		fake.mu.Unlock()
+		if stall > 0 {
+			time.Sleep(stall)
+		}
+		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/inventory/key":
 			fake.keyCalls++
+			if fake.keyStatus != 0 {
+				w.WriteHeader(fake.keyStatus)
+				return
+			}
+			if fake.keyBody != "" {
+				_, _ = w.Write([]byte(fake.keyBody))
+				return
+			}
 			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.Bytes()), Format: censor.EntriesVersion})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory":
 			fake.posts++
@@ -435,49 +501,120 @@ func TestWithNoProxyRunningACommandPaysOneFileCheck(t *testing.T) {
 	}
 }
 
-// A registration with the hook proxy that fails warns once and never refuses
-// the command, whoever is logged in: the command may have nothing to do with
-// an AI tool, and refusing it would break every shell on the machine.
-func TestAFailedRegistrationWithTheHookProxyWarnsOnceAndCarriesOn(t *testing.T) {
+// Runtime state that names an address nothing listens at is stale: its proxy
+// is gone, or its process id went to another program. That is no proxy
+// running, exactly as with no state at all: a human login hears nothing, and
+// an Agent login is told once that nothing is protected. A warning there
+// would be printed by every secrets command in every shell on the machine.
+func TestStaleRuntimeStateIsNoProxyRunning(t *testing.T) {
 	directory := withHookRuntimeDirectory(t)
 	noSession(t)
-	// The process that wrote the state is alive and its proxy does not answer.
-	hookProxyState(t, directory, "http://phase:"+leakTestCapability+"@"+closedAddress(t), os.Getpid())
+	// The process that wrote the state looks alive, and nothing listens.
+	stale := "http://phase:" + leakTestCapability + "@" + closedAddress(t)
+	hookProxyState(t, directory, stale, os.Getpid())
 	warnings := captureLeakWarnings(t)
+	if found, ok := leakguard.Locate(); !ok || found.URL != stale {
+		t.Fatalf("the state was not read: %+v %v", found, ok)
+	}
 	started := time.Now()
+	for i := 0; i < 3; i++ {
+		if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+			t.Fatalf("a human login was refused: %v", err)
+		}
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("a human login was warned about a proxy that is not running: %q", warnings.String())
+	}
 	for i := 0; i < 2; i++ {
-		for name, backend := range map[string]phase.SecretsBackend{"another login": nil, "an Agent login": &phase.AgentBackend{}} {
-			if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
-				t.Fatalf("%s was refused: %v", name, err)
-			}
+		if err := protectSecrets(context.Background(), &phase.AgentBackend{}, leakTestSecrets); err != nil {
+			t.Fatalf("an Agent login was refused: %v", err)
 		}
 	}
 	if err := protectValues(context.Background(), true, []leakguard.Value{{Type: "dynamic", ID: "lease-1", Value: leakTestSecrets[0].Value}}); err != nil {
 		t.Fatalf("an Agent's lease was refused: %v", err)
 	}
-	if got := warnings.String(); got != leakProtectionWarning+"\n" || strings.Contains(got, "sk_live") {
-		t.Fatalf("five failed registrations warned %q", got)
+	if elapsed := time.Since(started); elapsed > 3*leakguard.Timeout {
+		t.Fatalf("six commands with nothing listening took %v", elapsed)
 	}
-	if elapsed := time.Since(started); elapsed > 5*leakguard.Timeout {
-		t.Fatalf("five failed registrations took %v", elapsed)
-	}
+	withStale := warnings.String()
 
-	// A proxy that answers and is full says that, once, and refuses nobody.
-	fake, proxyURL := newLeakControlProxy(t)
-	fake.full = true
-	hookProxyState(t, directory, proxyURL, os.Getpid())
-	runtimeWarning = sync.Once{}
+	// With no state file at all the same commands say the same.
+	if err := os.Remove(filepath.Join(directory, hookRuntimeStateFile)); err != nil {
+		t.Fatal(err)
+	}
+	inactiveNotice = sync.Once{}
 	warnings.Reset()
-	for _, backend := range []phase.SecretsBackend{&phase.AgentBackend{}, nil, &phase.AgentBackend{}} {
-		if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
-			t.Fatalf("a full inventory refused a command outside a session: %v", err)
+	if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := protectSecrets(context.Background(), &phase.AgentBackend{}, leakTestSecrets); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if got := warnings.String(); got != leakInventoryFullWarning+"\n" {
-		t.Fatalf("a full inventory warned %q", got)
+	if withStale != warnings.String() || withStale != leakProtectionInactiveMsg+"\n" {
+		t.Fatalf("with stale state: %q\nwith no state:    %q", withStale, warnings.String())
 	}
-	if posts, _, _ := fake.registered(); posts != 3 {
-		t.Fatalf("%d registrations reached the proxy", posts)
+
+	// Inside a session nothing listening is still a failure: the session's
+	// own proxy is meant to be there.
+	environment := map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": stale}
+	leakguard.Environment = func(key string) string { return environment[key] }
+	warnings.Reset()
+	if err := protectSecrets(context.Background(), &phase.AgentBackend{}, leakTestSecrets); !errors.Is(err, errLeakProtectionUnreachable) {
+		t.Fatalf("an Agent login inside a session whose proxy is gone carried on: %v", err)
+	}
+	if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil || warnings.String() != leakProtectionWarning+"\n" {
+		t.Fatalf("another login inside a session whose proxy is gone: %v %q", err, warnings.String())
+	}
+}
+
+// Any other failure of the proxy found through the runtime state warns once
+// and never refuses the command, whoever is logged in: the proxy runs and
+// did not take the values, and the command may have nothing to do with an AI
+// tool.
+func TestAFailedRegistrationWithTheHookProxyWarnsOnceAndCarriesOn(t *testing.T) {
+	for name, c := range map[string]struct {
+		fail     func(*leakControlProxy)
+		warning  string
+		commands int
+	}{
+		"an HTTP error":                {func(f *leakControlProxy) { f.keyStatus = http.StatusInternalServerError }, leakProtectionWarning, 4},
+		"a capability it refuses":      {func(f *leakControlProxy) { f.keyStatus = http.StatusProxyAuthRequired }, leakProtectionWarning, 4},
+		"an answer that is not JSON":   {func(f *leakControlProxy) { f.keyBody = "<html>not the proxy</html>" }, leakProtectionWarning, 4},
+		"an answer of another version": {func(f *leakControlProxy) { f.keyBody = `{"schemaVersion":9,"key":"AAAA","format":1}` }, leakProtectionWarning, 4},
+		"a key that is no key":         {func(f *leakControlProxy) { f.keyBody = `{"schemaVersion":1,"key":"AAAA","format":1}` }, leakProtectionWarning, 4},
+		// One command only: each waits out the whole timeout.
+		"no answer in time": {func(f *leakControlProxy) { f.stall = leakguard.Timeout + 300*time.Millisecond }, leakProtectionWarning, 1},
+		"a full inventory":  {func(f *leakControlProxy) { f.full = true }, leakInventoryFullWarning, 4},
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory := withHookRuntimeDirectory(t)
+			noSession(t)
+			fake, proxyURL := newLeakControlProxy(t)
+			c.fail(fake)
+			hookProxyState(t, directory, proxyURL, os.Getpid())
+			warnings := captureLeakWarnings(t)
+			backends := []phase.SecretsBackend{nil, &phase.AgentBackend{}, nil, &phase.AgentBackend{}}
+			for _, backend := range backends[:c.commands] {
+				if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
+					t.Fatalf("a command outside a session was refused: %v", err)
+				}
+			}
+			if got := warnings.String(); got != c.warning+"\n" || strings.Contains(got, "sk_live") {
+				t.Fatalf("%d failed registrations warned %q", c.commands, got)
+			}
+			fake.mu.Lock()
+			reached := fake.requests
+			fake.mu.Unlock()
+			if reached == 0 {
+				t.Fatal("the proxy was never asked: the test shows nothing")
+			}
+			// The warning is said once; every command still tries to register.
+			if posts, _, _ := fake.registered(); c.warning == leakInventoryFullWarning && posts != c.commands {
+				t.Fatalf("%d of %d registrations reached the proxy", posts, c.commands)
+			}
+		})
 	}
 }
 

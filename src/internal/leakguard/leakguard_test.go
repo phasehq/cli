@@ -225,23 +225,76 @@ func TestRegisterFailsFastWhenTheProxyIsDown(t *testing.T) {
 	_ = listener.Close()
 	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": "http://phase:capability@" + address})
 	started := time.Now()
-	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); err == nil {
-		t.Fatal("a registration with no proxy succeeded")
+	// Nothing listens there: that is its own error, since it means no proxy
+	// runs rather than a proxy that failed.
+	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); !errors.Is(err, ErrNotListening) {
+		t.Fatalf("a registration with nothing listening came back as %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > 2*Timeout {
 		t.Fatalf("a failed registration took %v", elapsed)
 	}
 
-	// A proxy that refuses the key, or one off this machine, fails too.
+	// A proxy that refuses the key, or one off this machine, fails too, and
+	// neither is a proxy that is not running.
 	fake, server := newFakeProxy(t)
 	fake.keyStatus = http.StatusServiceUnavailable
 	withEnvironment(t, sessionEnvironment(server))
-	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); err == nil {
-		t.Fatal("a refused key request succeeded")
+	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); err == nil || errors.Is(err, ErrNotListening) {
+		t.Fatalf("a refused key request: %v", err)
 	}
 	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": "http://phase:capability@proxy.example.com:9543"})
-	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); err == nil {
-		t.Fatal("a remote proxy was used")
+	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); err == nil || errors.Is(err, ErrNotListening) {
+		t.Fatalf("a remote proxy: %v", err)
+	}
+	// A proxy that goes away between the key and the values is not running
+	// either.
+	fake, server = newFakeProxy(t)
+	withEnvironment(t, sessionEnvironment(server))
+	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); err != nil || fake.keyCalls != 1 {
+		t.Fatalf("the first registration: %v", err)
+	}
+	server.Close()
+	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "y", Value: "sk_" + "live_Z9yX8wV7uT6sR5qP4oN3mL2kJ1iH0gF"}}); !errors.Is(err, ErrNotListening) {
+		t.Fatalf("a registration with a proxy that went away came back as %v", err)
+	}
+}
+
+// A proxy that accepts the connection and does not answer in time is a proxy
+// that failed, not one that is not running.
+func TestAProxyThatDoesNotAnswerIsNotAProxyThatIsNotRunning(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	held := make(chan net.Conn, 4)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			held <- conn
+		}
+	}()
+	defer func() {
+		for {
+			select {
+			case conn := <-held:
+				_ = conn.Close()
+			default:
+				return
+			}
+		}
+	}()
+	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": "http://phase:capability@" + listener.Addr().String()})
+	started := time.Now()
+	_, err = Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}})
+	if err == nil || errors.Is(err, ErrNotListening) {
+		t.Fatalf("a proxy that did not answer: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < Timeout/2 || elapsed > 3*Timeout {
+		t.Fatalf("a proxy that did not answer was waited for %v", elapsed)
 	}
 }
 

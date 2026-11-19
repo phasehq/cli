@@ -7,10 +7,12 @@ import (
 )
 
 // Leak protection reads only the model traffic of known AI tools. The table
-// has one list per tool, holding every model host that tool talks to, and a
-// host is read for a tool's own processes only: another program's traffic to
-// the same host is left alone whenever the proxy knows whose it is. The shape
-// lets the Console serve the table instead of the binary.
+// has one list per tool, holding every model host that tool talks to. Behind
+// the environment proxy every program runs in an AI tool's process tree, so
+// any listed host is read there. A tunnel sees every program on the machine,
+// so there a host is read for a tool's own processes only, and another
+// program's traffic to the same host is left alone. The shape lets the
+// Console serve the table instead of the binary.
 
 const (
 	leakTreatmentInspect = "inspect"
@@ -80,16 +82,17 @@ var defaultLeakHosts = leakHostTable{
 }
 
 // leakStateKey is what leak protection remembers things under: a tool and a
-// host. The tool is the flow's own, empty for a program that is not known,
-// so what one tool does on a host says nothing about another tool there.
+// host. The tool is the one the flow is named as (a match's harness), so
+// what one tool does on a host says nothing about another tool there.
 type leakStateKey struct {
 	tool, host string
 }
 
 // leakHostMatch is what the table says about one host for one flow.
 type leakHostMatch struct {
-	// harness is the tool the entry is listed under: the flow's tool when it
-	// is known, otherwise the one inferred from the host.
+	// harness is the tool the flow is named as in events: the flow's own tool
+	// when that tool's list holds the host, otherwise the tool the host is
+	// first listed under.
 	harness string
 	rule    leakHostRule
 	flow    FlowContext
@@ -162,25 +165,22 @@ func (t leakHostTable) find(tool, host string) *leakHostMatch {
 }
 
 // lookupFlow finds a host for a flow:
-//   - the tool is known: only that tool's entries, whatever captured the flow;
-//   - the tool is not known and the client was given the proxy through its
-//     environment: the first entry that names the host;
-//   - the tool is not known and a tunnel captured the flow: nothing. A tunnel
-//     sees every program on the machine, and one that is not a listed tool is
-//     never read.
+//   - a client that was given the proxy through its environment: any listed
+//     host, whichever tool the proxy serves. A tool started inside another
+//     tool's session (Codex run from a Claude Code shell) sends conversation
+//     content through the same proxy and is read like its host. The tool only
+//     names the flow better: its own entry is used when its list holds the
+//     host, otherwise the first entry that names the host;
+//   - a tunnel's flow from a known tool: only that tool's entries;
+//   - a tunnel's flow from a program that is not a listed tool: nothing.
 func (t leakHostTable) lookupFlow(flow FlowContext, host string) *leakHostMatch {
-	var match *leakHostMatch
-	switch {
-	case flow.Tool != "":
-		match = t.lookupTool(flow.Tool, host)
-	case flow.capture() == CaptureTunnel:
-		return nil
-	default:
+	match := t.lookupTool(flow.Tool, host)
+	if match == nil && flow.capture() != CaptureTunnel {
 		match = t.lookup(host)
 	}
 	if match != nil {
 		match.flow = FlowContext{Capture: flow.capture(), Tool: flow.Tool}
-		match.key = leakStateKey{tool: flow.Tool, host: leakHostName(host)}
+		match.key = leakStateKey{tool: match.harness, host: leakHostName(host)}
 	}
 	return match
 }
@@ -210,15 +210,11 @@ func (t leakHostTable) toolFor(label string) string {
 	return ""
 }
 
-// hostNames lists the hosts with a treatment, a domain written as *.name:
-// those of one tool, or of every tool when tool is empty. A host listed under
-// several tools is named once.
-func (t leakHostTable) hostNames(tool, treatment string) []string {
+// hostNames lists the table's hosts by treatment, a domain written as *.name.
+// A host listed under several tools is named once.
+func (t leakHostTable) hostNames(treatment string) []string {
 	var names []string
 	for _, harness := range t {
-		if tool != "" && harness.Harness != tool {
-			continue
-		}
 		for _, rule := range harness.Hosts {
 			if rule.Treatment != treatment {
 				continue

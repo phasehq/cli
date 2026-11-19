@@ -532,7 +532,7 @@ func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
 		event.Detail["windowSeconds"] != float64(20) || event.Detail["harness"] != "claude" {
 		t.Fatalf("window event: %+v", event)
 	}
-	if status := rig.guard.status(""); !containsString(status.UnreadHosts, host) {
+	if status := rig.guard.status(); !containsString(status.UnreadHosts, host) {
 		t.Fatalf("status lists the host as inspected during the window: %+v", status)
 	}
 	// After the window a client that trusts Phase is read again, and its
@@ -885,7 +885,7 @@ func TestLeakProtectionRegistrationRoundTrip(t *testing.T) {
 	if err != nil || result.Added != 2 || result.Unprotected != 1 {
 		t.Fatalf("registration: %+v %v", result, err)
 	}
-	if status := rig.guard.status(""); status.SecretsKnown != 2 || status.Unprotected != 1 {
+	if status := rig.guard.status(); status.SecretsKnown != 2 || status.Unprotected != 1 {
 		t.Fatalf("status after registration: %+v", status)
 	}
 	postMessages(t, rig.client(rig.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(leakSecretOne+" "+leakSecretTwo), "")

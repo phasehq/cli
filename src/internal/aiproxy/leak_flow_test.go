@@ -23,12 +23,14 @@ import (
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/internal/remoteapi"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
-// The tests of who is calling: a host is read for the flows the table lists
-// it for, whichever way the connection reached the proxy.
+// The tests of who is calling. Behind the environment proxy any listed host
+// is read and the tool only names the flow; a tunnel's flow is read on the
+// hosts listed for its own tool and nowhere else.
 
 func tunnelFlow(tool string) FlowContext { return FlowContext{Capture: CaptureTunnel, Tool: tool} }
 
@@ -40,30 +42,44 @@ func TestLeakLookupFollowsTheFlow(t *testing.T) {
 		name    string
 		flow    FlowContext
 		host    string
-		harness string // "" means the host is not read for the flow
+		harness string // what the flow is named as; "" means the host is not read for it
 	}{
-		// The tool is known: only that tool's entries, however it was captured.
+		// A tunnel's flow from a known tool: only that tool's entries.
 		{"opencode calls Anthropic through a tunnel", tunnelFlow("opencode"), "api.anthropic.com", "opencode"},
-		{"opencode calls Anthropic through the proxy environment", proxyFlow("opencode"), "api.anthropic.com", "opencode"},
-		{"opencode calls OpenAI", tunnelFlow("opencode"), "api.openai.com", "opencode"},
-		{"opencode calls its hosted models", tunnelFlow("opencode"), "opencode.ai", "opencode"},
-		{"claude calls Anthropic", tunnelFlow("claude"), "api.anthropic.com", "claude"},
-		{"claude's processes on another tool's host", tunnelFlow("claude"), "api.openai.com", ""},
-		{"claude's processes on another tool's host, proxy environment", proxyFlow("claude"), "chatgpt.com", ""},
-		{"codex calls OpenAI", proxyFlow("codex"), "api.openai.com", "codex"},
-		{"codex's processes on Anthropic", tunnelFlow("codex"), "api.anthropic.com", ""},
-		{"cursor's host is listed and not read", tunnelFlow("cursor"), "api2.cursor.sh", ""},
-		{"a tool with no entries", tunnelFlow("goose"), "api.anthropic.com", ""},
-		// The tool is not known and the client was given the proxy through
-		// its environment: the first entry that names the host, as before.
+		{"opencode calls OpenAI through a tunnel", tunnelFlow("opencode"), "api.openai.com", "opencode"},
+		{"opencode calls its hosted models through a tunnel", tunnelFlow("opencode"), "opencode.ai", "opencode"},
+		{"claude calls Anthropic through a tunnel", tunnelFlow("claude"), "api.anthropic.com", "claude"},
+		{"claude's processes on another tool's host, tunnel", tunnelFlow("claude"), "api.openai.com", ""},
+		{"codex's processes on Anthropic, tunnel", tunnelFlow("codex"), "api.anthropic.com", ""},
+		{"cursor's host is listed and not read, tunnel", tunnelFlow("cursor"), "api2.cursor.sh", ""},
+		{"a tool with no entries, tunnel", tunnelFlow("goose"), "api.anthropic.com", ""},
+		// A tunnel's flow from a program that is not a listed tool: never read.
+		{"unknown, tunnel, Anthropic", tunnelFlow(""), "api.anthropic.com", ""},
+		{"unknown, tunnel, OpenAI", tunnelFlow(""), "api.openai.com", ""},
+		{"unknown, tunnel, OpenCode", tunnelFlow(""), "opencode.ai", ""},
+		// A client that was given the proxy through its environment: any
+		// listed host is read, whichever tool the proxy serves, as before. A
+		// tool started inside another tool's session is read like its host.
 		{"unknown, proxy environment, Anthropic", proxyFlow(""), "api.anthropic.com", "claude"},
 		{"unknown, proxy environment, OpenAI", proxyFlow(""), "api.openai.com", "codex"},
 		{"unknown, proxy environment, OpenCode", proxyFlow(""), "opencode.ai", "opencode"},
 		{"the zero flow is such a client", FlowContext{}, "api.anthropic.com", "claude"},
-		// The tool is not known and a tunnel captured the flow: never read.
-		{"unknown, tunnel, Anthropic", tunnelFlow(""), "api.anthropic.com", ""},
-		{"unknown, tunnel, OpenAI", tunnelFlow(""), "api.openai.com", ""},
-		{"unknown, tunnel, OpenCode", tunnelFlow(""), "opencode.ai", ""},
+		{"codex run inside claude's session", proxyFlow("claude"), "chatgpt.com", "codex"},
+		{"codex run inside claude's session, OpenAI", proxyFlow("claude"), "api.openai.com", "codex"},
+		{"claude run inside codex's session", proxyFlow("codex"), "api.anthropic.com", "claude"},
+		{"opencode's hosted models inside claude's session", proxyFlow("claude"), "opencode.ai", "opencode"},
+		{"a tool with no entries, proxy environment", proxyFlow("goose"), "api.anthropic.com", "claude"},
+		// The tool the proxy serves names the flow where its own list holds
+		// the host, and decides nothing else.
+		{"claude's own host in claude's session", proxyFlow("claude"), "api.anthropic.com", "claude"},
+		{"codex's own host in codex's session", proxyFlow("codex"), "api.openai.com", "codex"},
+		{"opencode's session calls Anthropic", proxyFlow("opencode"), "api.anthropic.com", "opencode"},
+		{"opencode's session calls OpenAI", proxyFlow("opencode"), "api.openai.com", "opencode"},
+		{"opencode's session, a host of codex's alone", proxyFlow("opencode"), "chatgpt.com", "codex"},
+		// A host listed as not read is not read in any session.
+		{"cursor's host in claude's session", proxyFlow("claude"), "api2.cursor.sh", ""},
+		{"cursor's host in cursor's session", proxyFlow("cursor"), "api2.cursor.sh", ""},
+		{"a host outside the table", proxyFlow("claude"), "example.com", ""},
 	}
 	for _, c := range cases {
 		match := guard.inspects(c.flow, c.host, 443)
@@ -73,15 +89,28 @@ func TestLeakLookupFollowsTheFlow(t *testing.T) {
 		case c.harness != "" && (match == nil || match.harness != c.harness):
 			t.Errorf("%s: %s is read as %+v, want %s", c.name, c.host, match, c.harness)
 		case match != nil:
-			// What is remembered about the host is kept under the flow's own
-			// tool, and the event says how the flow was captured.
-			if match.key != (leakStateKey{tool: c.flow.Tool, host: c.host}) || match.flow.Capture != c.flow.capture() {
-				t.Errorf("%s: kept under %+v, captured by %q", c.name, match.key, match.flow.Capture)
+			// What is remembered about the host is kept under the tool the
+			// flow is named as, and the event says how it was captured.
+			if match.key != (leakStateKey{tool: c.harness, host: c.host}) || match.flow.Capture != c.flow.capture() || match.flow.Tool != c.flow.Tool {
+				t.Errorf("%s: kept under %+v, flow %+v", c.name, match.key, match.flow)
 			}
 		}
 		// The answer is the same the second time, from what was remembered.
-		if again := guard.inspects(c.flow, c.host, 443); (again == nil) != (match == nil) {
+		if again := guard.inspects(c.flow, c.host, 443); again != match {
 			t.Errorf("%s: a second look disagrees", c.name)
+		}
+	}
+	// What is read for a client of the proxy environment is what was read
+	// before flows were told apart: the same hosts, the same rules.
+	for _, harness := range defaultLeakHosts {
+		for _, rule := range harness.Hosts {
+			want := defaultLeakHosts.lookup(rule.Host)
+			for _, tool := range []string{"", "claude", "codex", "opencode", "cursor", "goose"} {
+				got := guard.inspects(proxyFlow(tool), rule.Host, 443)
+				if (got != nil) != want.inspected() || (got != nil && !reflect.DeepEqual(got.rule, want.rule)) {
+					t.Errorf("%s in a session for %q: read as %+v, before as %+v", rule.Host, tool, got, want)
+				}
+			}
 		}
 	}
 	// A tunnel flow from an unknown program is not read even after the same
@@ -90,7 +119,7 @@ func TestLeakLookupFollowsTheFlow(t *testing.T) {
 		t.Fatal("what was remembered for one flow answered for another")
 	}
 	// Off the table's port nothing is read for any flow.
-	if guard.inspects(tunnelFlow("opencode"), "api.anthropic.com", 8443) != nil {
+	if guard.inspects(tunnelFlow("opencode"), "api.anthropic.com", 8443) != nil || guard.inspects(proxyFlow("claude"), "api.anthropic.com", 8443) != nil {
 		t.Fatal("a port other than 443 is read")
 	}
 }
@@ -108,14 +137,16 @@ func TestOpenCodeListsTheProvidersItCallsWithTheSameRules(t *testing.T) {
 		}
 	}
 	// Each host is named once in status, however many tools list it.
-	names := defaultLeakHosts.hostNames("", leakTreatmentInspect)
-	for i, name := range names {
-		if i > 0 && names[i-1] == name {
-			t.Fatalf("%s is named twice: %v", name, names)
-		}
+	names := defaultLeakHosts.hostNames(leakTreatmentInspect)
+	if !reflect.DeepEqual(names, []string{"api.anthropic.com", "api.openai.com", "chatgpt.com", "opencode.ai", "openrouter.ai"}) {
+		t.Fatalf("the inspected hosts: %v", names)
 	}
-	if got := defaultLeakHosts.hostNames("opencode", leakTreatmentInspect); !reflect.DeepEqual(got, []string{"api.anthropic.com", "api.openai.com", "opencode.ai", "openrouter.ai"}) {
-		t.Fatalf("opencode's hosts: %v", got)
+	var own []string
+	for _, rule := range defaultLeakHosts.rulesOf("opencode") {
+		own = append(own, rule.Host)
+	}
+	if !reflect.DeepEqual(own, []string{"openrouter.ai", "opencode.ai", "api.anthropic.com", "api.openai.com"}) {
+		t.Fatalf("opencode's hosts: %v", own)
 	}
 	// A harness label names its tool; anything else names none.
 	for label, tool := range map[string]string{
@@ -287,6 +318,21 @@ func (r *leakRig) sendAs(t *testing.T, host, path string, flow *FlowContext, hea
 	return replaced
 }
 
+// seenLeakEvent is what an event says of the flow it is about.
+type seenLeakEvent struct{ harness, capture, host string }
+
+func (r *leakRig) seenLeakEvents(t *testing.T) []seenLeakEvent {
+	t.Helper()
+	var seen []seenLeakEvent
+	for _, event := range r.leakEventsNow() {
+		if event.Outcome != outcomeCensored || event.Detail["placeholders"] != "ph:secret:stripe" {
+			t.Fatalf("event: %+v", event)
+		}
+		seen = append(seen, seenLeakEvent{fmt.Sprint(event.Detail["harness"]), fmt.Sprint(event.Detail["capture"]), event.Host})
+	}
+	return seen
+}
+
 // OpenCode's own processes are read on api.anthropic.com, while another
 // program's traffic to the same host through the tunnel passes untouched.
 func TestTunnelFlowsAreReadForTheirOwnToolOnly(t *testing.T) {
@@ -304,36 +350,28 @@ func TestTunnelFlowsAreReadForTheirOwnToolOnly(t *testing.T) {
 	}
 	// Neither is a tool's flow to a host listed for other tools only.
 	if rig.sendAs(t, "api.openai.com", "/v1/responses", &claude) {
-		t.Fatal("Claude's flow to api.openai.com was read")
+		t.Fatal("Claude's flow to api.openai.com was read through the tunnel")
 	}
 	if !rig.sendAs(t, host, path, &claude) {
 		t.Fatal("Claude's flow to api.anthropic.com was not read")
 	}
 	// A client that was given the proxy through its environment is read as
-	// before, whatever it is.
+	// before, whatever it is and whatever host of the table it calls.
 	if !rig.sendAs(t, host, path, nil) || !rig.sendAs(t, "api.openai.com", "/v1/responses", nil) {
 		t.Fatal("a client of the proxy environment was not read")
 	}
 
-	// Each tool's first sight of the value is its own event, and each says
-	// whose flow it was and how it was captured.
-	type seen struct{ harness, capture, host string }
-	var events []seen
-	for _, event := range rig.leakEventsNow() {
-		if event.Outcome != outcomeCensored || event.Detail["placeholders"] != "ph:secret:stripe" {
-			t.Fatalf("event: %+v", event)
-		}
-		events = append(events, seen{fmt.Sprint(event.Detail["harness"]), fmt.Sprint(event.Detail["capture"]), event.Host})
-	}
-	want := []seen{
+	// Each tool's first sight of the value on a host is its own event, and
+	// each says whose flow it was and how it was captured. The client of the
+	// proxy environment on api.anthropic.com is named claude, from the host:
+	// that tool and host have reported the value already.
+	want := []seenLeakEvent{
 		{"opencode", CaptureTunnel, host},
 		{"claude", CaptureTunnel, host},
-		// The tool is not known here: it is inferred from the host.
-		{"claude", CaptureProxy, host},
 		{"codex", CaptureProxy, "api.openai.com"},
 	}
-	if !reflect.DeepEqual(events, want) {
-		t.Fatalf("events: %+v\nwant:   %+v", events, want)
+	if got := rig.seenLeakEvents(t); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events: %+v\nwant:   %+v", got, want)
 	}
 }
 
@@ -342,21 +380,27 @@ func TestTunnelFlowsAreReadForTheirOwnToolOnly(t *testing.T) {
 func TestFlowCannotBeSetByAHeaderAndIsUsedOnce(t *testing.T) {
 	rig := newLeakRig(t, leakModeCensor)
 	rig.proxy.flows = newFlowNotes()
-	// This proxy was started for Claude: without a note, a connection is
-	// Claude's and api.openai.com is not read.
-	rig.proxy.tool = "claude"
 	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
-	spoof := []string{
-		"X-Phase-Tool: codex", "X-Phase-Flow: tunnel", "X-Phase-Capture: tunnel", "X-Phase-Harness: codex",
-		"Phase-Flow-Context: capture=tunnel; tool=codex", "Forwarded: for=127.0.0.1;by=tunnel", "X-Forwarded-For: 127.0.0.1",
-		"User-Agent: codex_cli_rs/1.0", "Proxy-Connection: tunnel",
+	const host, path = "api.anthropic.com", "/v1/messages"
+	unknown, codex := tunnelFlow(""), tunnelFlow("codex")
+
+	// A tunnel's flow from an unknown program is not read, and no header on
+	// its CONNECT names a tool for it.
+	claims := []string{
+		"X-Phase-Tool: claude", "X-Phase-Flow: proxy", "X-Phase-Capture: proxy", "X-Phase-Harness: claude",
+		"Phase-Flow-Context: capture=proxy; tool=claude", "Forwarded: for=127.0.0.1;by=proxy", "X-Forwarded-For: 127.0.0.1",
+		"User-Agent: claude-cli/2.0", "Proxy-Connection: keep-alive",
 	}
-	if rig.sendAs(t, "api.openai.com", "/v1/responses", nil, spoof...) {
-		t.Fatal("a header made the proxy read a host of another tool")
+	if rig.sendAs(t, host, path, &unknown, claims...) {
+		t.Fatal("a header made the proxy read a tunnel flow from an unknown program")
 	}
-	// Nor can a header take a flow out of reading.
-	if !rig.sendAs(t, "api.anthropic.com", "/v1/messages", nil, "X-Phase-Tool: ", "X-Phase-Capture: tunnel", "X-Phase-Flow: capture=tunnel") {
-		t.Fatal("a header kept the proxy from reading its own tool's host")
+	// Nor does a header make a tunnel flow of a client that sent no note.
+	hides := []string{"X-Phase-Tool: ", "X-Phase-Capture: tunnel", "X-Phase-Flow: capture=tunnel", "Phase-Flow-Context: capture=tunnel; tool="}
+	if !rig.sendAs(t, host, path, nil, hides...) {
+		t.Fatal("a header kept the proxy from reading a client of the proxy environment")
+	}
+	if got := rig.seenLeakEvents(t); !reflect.DeepEqual(got, []seenLeakEvent{{"claude", CaptureProxy, host}}) {
+		t.Fatalf("events: %+v", got)
 	}
 	// A user name is not a tool either: it selects a Connection and no more.
 	selecting := *rig.proxyURL
@@ -367,17 +411,24 @@ func TestFlowCannotBeSetByAHeaderAndIsUsedOnce(t *testing.T) {
 		t.Fatal("a proxy user name that selects no Connection was accepted")
 	}
 
-	// A note is for one CONNECT: the connection that left it is Codex's, and
-	// the next connection, from another address, is Claude's again.
-	codex := tunnelFlow("codex")
-	if !rig.sendAs(t, "api.openai.com", "/v1/responses", &codex) {
-		t.Fatal("the noted flow was not read as its tool")
+	// A note is for one CONNECT. The connection that left it is Codex's flow
+	// through the tunnel: not read on Anthropic's host, read on its own.
+	if rig.sendAs(t, host, path, &codex) {
+		t.Fatal("the noted flow was read on a host of another tool")
 	}
 	if len(rig.proxy.flows.notes) != 0 {
 		t.Fatal("the note outlived its CONNECT")
 	}
-	if rig.sendAs(t, "api.openai.com", "/v1/responses", nil) {
+	// The next connection, from another address, is a client of the proxy
+	// environment again.
+	if !rig.sendAs(t, host, path, nil) {
 		t.Fatal("a later connection inherited the note")
+	}
+	if !rig.sendAs(t, "api.openai.com", "/v1/responses", &codex) {
+		t.Fatal("the noted flow was not read on its own tool's host")
+	}
+	if got := rig.seenLeakEvents(t); len(got) != 2 || got[1] != (seenLeakEvent{"codex", CaptureTunnel, "api.openai.com"}) {
+		t.Fatalf("events: %+v", got)
 	}
 	// A CONNECT the proxy refuses uses its note up too.
 	raw, err := net.Dial("tcp", rig.proxyURL.Host)
@@ -398,37 +449,56 @@ func TestFlowCannotBeSetByAHeaderAndIsUsedOnce(t *testing.T) {
 	}
 }
 
-// A proxy started for one tool reads that tool's hosts for the clients it was
-// given to, and says so in status.
-func TestAProxyStartedForOneToolReadsThatToolsHosts(t *testing.T) {
-	rig := newLeakRig(t, leakModeCensor)
-	rig.proxy.tool, rig.proxy.control.tool = "opencode", "opencode"
-	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
-	if !rig.sendAs(t, "api.anthropic.com", "/v1/messages", nil) || !rig.sendAs(t, "openrouter.ai", "/api/v1/chat/completions", nil) {
-		t.Fatal("OpenCode's hosts were not read")
-	}
-	if rig.sendAs(t, "chatgpt.com", "/backend-api/codex/responses", nil) {
-		t.Fatal("a host of another tool was read")
-	}
-	for _, event := range rig.leakEventsNow() {
-		if event.Detail["harness"] != "opencode" || event.Detail["capture"] != CaptureProxy {
-			t.Fatalf("event: %+v", event)
-		}
-	}
-	recorder := controlCall(rig.proxy, http.MethodGet, "/v1/status", "", nil)
-	var status remoteapi.StatusResponse
-	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &status) != nil || status.LeakProtection == nil {
-		t.Fatalf("status: %d %s", recorder.Code, recorder.Body.String())
-	}
-	if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"api.anthropic.com", "api.openai.com", "opencode.ai", "openrouter.ai"}) {
-		t.Fatalf("inspected: %v", got)
-	}
-	if got := status.LeakProtection.UnreadHosts; !reflect.DeepEqual(got, []string{"*.cursor.sh", "chatgpt.com", "cursor.sh"}) {
-		t.Fatalf("not inspected: %v", got)
-	}
-	// A proxy that serves whatever reaches it lists every tool's hosts.
-	if all := rig.guard.status(""); !containsString(all.InspectedHosts, "chatgpt.com") || !reflect.DeepEqual(all.UnreadHosts, []string{"*.cursor.sh", "cursor.sh"}) {
-		t.Fatalf("status of a proxy for every tool: %+v", all)
+// A proxy started for one tool still reads every listed host for the clients
+// it was given to: a tool started inside another tool's session sends
+// conversation content through the same proxy. The tool only names the flow
+// where its own list holds the host.
+func TestAProxyStartedForOneToolStillReadsEveryListedHost(t *testing.T) {
+	for tool, labels := range map[string]map[string]string{
+		// OpenCode's own list holds Anthropic's API; chatgpt.com is Codex's.
+		"opencode": {"api.anthropic.com": "opencode", "openrouter.ai": "opencode", "chatgpt.com": "codex", "api.openai.com": "opencode"},
+		// Codex run from a Claude Code shell, and the reverse.
+		"claude": {"api.anthropic.com": "claude", "openrouter.ai": "opencode", "chatgpt.com": "codex", "api.openai.com": "codex"},
+		"codex":  {"api.anthropic.com": "claude", "openrouter.ai": "opencode", "chatgpt.com": "codex", "api.openai.com": "codex"},
+		// A proxy that serves whatever reaches it.
+		"": {"api.anthropic.com": "claude", "openrouter.ai": "opencode", "chatgpt.com": "codex", "api.openai.com": "codex"},
+	} {
+		t.Run("a session for "+tool, func(t *testing.T) {
+			rig := newLeakRig(t, leakModeCensor)
+			rig.proxy.tool = tool
+			registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+			paths := map[string]string{
+				"api.anthropic.com": "/v1/messages", "openrouter.ai": "/api/v1/chat/completions",
+				"chatgpt.com": "/backend-api/codex/responses", "api.openai.com": "/v1/responses",
+			}
+			for host, path := range paths {
+				if !rig.sendAs(t, host, path, nil) {
+					t.Fatalf("%s was not read", host)
+				}
+			}
+			named := map[string]string{}
+			for _, event := range rig.seenLeakEvents(t) {
+				if event.capture != CaptureProxy {
+					t.Fatalf("event: %+v", event)
+				}
+				named[event.host] = event.harness
+			}
+			if !reflect.DeepEqual(named, labels) {
+				t.Fatalf("the flows were named %v, want %v", named, labels)
+			}
+			// Status names every inspected host, whichever tool the session is for.
+			recorder := controlCall(rig.proxy, http.MethodGet, "/v1/status", "", nil)
+			var status remoteapi.StatusResponse
+			if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &status) != nil || status.LeakProtection == nil {
+				t.Fatalf("status: %d %s", recorder.Code, recorder.Body.String())
+			}
+			if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"api.anthropic.com", "api.openai.com", "chatgpt.com", "opencode.ai", "openrouter.ai"}) {
+				t.Fatalf("inspected: %v", got)
+			}
+			if got := status.LeakProtection.UnreadHosts; !reflect.DeepEqual(got, []string{"*.cursor.sh", "cursor.sh"}) {
+				t.Fatalf("not inspected: %v", got)
+			}
+		})
 	}
 }
 
@@ -439,7 +509,7 @@ func TestRefusedHandshakesOpenAWindowForOneToolOnly(t *testing.T) {
 	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 	tracker.now = func() time.Time { return now }
 	const host = "api.anthropic.com"
-	opencode, claude, unknown := leakStateKey{tool: "opencode", host: host}, leakStateKey{tool: "claude", host: host}, hostKey(host)
+	opencode, claude, codex := leakStateKey{tool: "opencode", host: host}, leakStateKey{tool: "claude", host: host}, leakStateKey{tool: "codex", host: host}
 	tracker.note(opencode, false)
 	// A refusal by another tool is not the second in a row.
 	if window := tracker.note(claude, false); window != 0 || tracker.bypassed(opencode) || tracker.bypassed(claude) {
@@ -448,7 +518,7 @@ func TestRefusedHandshakesOpenAWindowForOneToolOnly(t *testing.T) {
 	if window := tracker.note(opencode, false); window != handshakeBypassFirst {
 		t.Fatalf("a tool's second refusal opened a window of %v", window)
 	}
-	if !tracker.bypassed(opencode) || tracker.bypassed(claude) || tracker.bypassed(unknown) || tracker.bypassed(leakStateKey{tool: "opencode", host: "api.openai.com"}) {
+	if !tracker.bypassed(opencode) || tracker.bypassed(claude) || tracker.bypassed(codex) || tracker.bypassed(leakStateKey{tool: "opencode", host: "api.openai.com"}) {
 		t.Fatal("the window is not for one tool on one host")
 	}
 	// Another tool's success does not close it.
@@ -515,6 +585,53 @@ func TestAToolsWindowLeavesOtherToolsRead(t *testing.T) {
 	}
 }
 
+// A proxy's own clients are remembered under the tool they are named as, as
+// a tunnel's flows are: in a session started for OpenCode a refused
+// certificate on api.anthropic.com is OpenCode's, and Claude's flows to the
+// same host are still read.
+func TestAWindowIsKeptUnderTheToolTheFlowIsNamedAs(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	rig.proxy.flows = newFlowNotes()
+	rig.proxy.tool = "opencode"
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	const host, path = "api.anthropic.com", "/v1/messages"
+	key := leakStateKey{tool: "opencode", host: host}
+	for want := 1; want <= 2; want++ {
+		raw := rig.connectAs(t, host, nil)
+		if err := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: rig.providerRoots}).Handshake(); err == nil {
+			t.Fatal("a client that does not trust Phase completed TLS with the proxy")
+		}
+		_ = raw.Close()
+		for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			rig.guard.handshakes.mu.Lock()
+			state := rig.guard.handshakes.hosts[key]
+			counted := state != nil && state.failures >= want
+			rig.guard.handshakes.mu.Unlock()
+			if counted {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("refusal %d was not counted under the session's tool", want)
+			}
+		}
+	}
+	if !rig.guard.handshakes.bypassed(key) || rig.guard.handshakes.bypassed(leakStateKey{tool: "claude", host: host}) {
+		t.Fatal("the window is not kept under the tool the session's clients are named as")
+	}
+	claude := tunnelFlow("claude")
+	if rig.sendAs(t, host, path, nil) {
+		t.Fatal("the session's own client was read inside its window")
+	}
+	if !rig.sendAs(t, host, path, &claude) {
+		t.Fatal("Claude's flow was passed through by a window of the session's tool")
+	}
+	// A host the session's tool does not list is named after the host, and
+	// has no window.
+	if !rig.sendAs(t, "chatgpt.com", "/backend-api/codex/responses", nil) {
+		t.Fatal("another tool's host was not read in the session")
+	}
+}
+
 // What a capture layer is given to decide with, without a copy of the table.
 func TestEngineTellsACaptureLayerWhatToHandOver(t *testing.T) {
 	t.Setenv(LeakProtectionEnvironmentKey, "")
@@ -575,14 +692,41 @@ func TestEngineTellsACaptureLayerWhatToHandOver(t *testing.T) {
 	}
 }
 
-// The harness a session was started for reaches the proxy: its own clients
-// are that tool's, a flow a capture layer noted through the engine is
-// whatever the note says, and status names the hosts read.
-func TestEngineServesTheToolOfItsSession(t *testing.T) {
+// The harness a session was started for reaches the proxy as a name for its
+// own clients: every listed host is read for them, an event names the
+// session's tool where that tool's list holds the host, and status lists
+// every inspected host. A flow a capture layer noted through the engine is
+// whatever the note says.
+func TestEngineNamesItsClientsAfterTheToolOfItsSession(t *testing.T) {
 	t.Setenv(LeakProtectionEnvironmentKey, "")
-	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("{}")) }))
+	providerCA, providerPEM, _, err := phaseproxy.GenerateCA(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRoots := x509.NewCertPool()
+	providerRoots.AppendCertsFromPEM(providerPEM)
+	var received sync.Map // host -> the last body it was sent
+	provider := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received.Store(r.Host, body)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	provider.TLS = &tls.Config{GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return providerCA.CertificateForHost(hello.ServerName)
+	}}
+	provider.StartTLS()
 	defer provider.Close()
+
+	var eventsMu sync.Mutex
+	var shipped []agentapi.Event
 	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/events/") {
+			var batch agentapi.EventBatchRequest
+			_ = json.NewDecoder(r.Body).Decode(&batch)
+			eventsMu.Lock()
+			shipped = append(shipped, batch.Events...)
+			eventsMu.Unlock()
+		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"schemaVersion":1,"accepted":1,"duplicates":0}`))
 	}))
@@ -592,29 +736,35 @@ func TestEngineServesTheToolOfItsSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := emptyProxySession(t, client, "psx_sess_test_capability_0123456789")
-	_, certPEM, _, err := phaseproxy.GenerateCA(time.Hour)
+	phaseCA, phasePEM, _, err := phaseproxy.GenerateCA(time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
+	session.CA = phaseCA
+	phaseRoots := x509.NewCertPool()
+	phaseRoots.AppendCertsFromPEM(phasePEM)
 	directory := t.TempDir()
 	session.CAPaths = phaseproxy.CAPaths{Certificate: filepath.Join(directory, "ca.pem"), Bundle: filepath.Join(directory, "bundle.pem")}
 	for _, path := range []string{session.CAPaths.Certificate, session.CAPaths.Bundle} {
-		if err := os.WriteFile(path, certPEM, 0o600); err != nil {
+		if err := os.WriteFile(path, phasePEM, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// What phase ai run -- claude resolves.
-	session.HarnessLabel = "claude-code"
+	// What phase ai run -- opencode resolves.
+	session.HarnessLabel = "opencode"
 
 	engine := New()
 	engine.ListenAddress = unusedTestListenAddresses(t, "127.0.0.1")[0]
 	engine.RefreshInterval = time.Hour
+	engine.EventFlushInterval = 10 * time.Millisecond
 	engine.EventSpoolDirectory = t.TempDir()
-	engine.Transport = provider.Client().Transport
 	providerAddress := provider.Listener.Addr().String()
 	engine.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, providerAddress)
 	}
+	upstream := &http.Transport{DialContext: engine.DialContext, TLSClientConfig: &tls.Config{RootCAs: providerRoots, MinVersion: tls.VersionTLS12}}
+	defer upstream.CloseIdleConnections()
+	engine.Transport = upstream
 	started := make(chan Endpoints, 1)
 	engine.OnStarted = func(endpoints Endpoints) { started <- endpoints }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -628,25 +778,35 @@ func TestEngineServesTheToolOfItsSession(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the engine did not start")
 	}
-	var stop sync.Once
-	stopEngine := func() {
-		stop.Do(func() {
-			cancel()
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Error("the engine did not stop")
-			}
-		})
-	}
-	defer stopEngine()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the engine did not stop")
+		}
+	}()
 	proxyURL, _ := url.Parse(endpoints.ProxyURL.Reveal())
 	password, _ := proxyURL.User.Password()
 	authorization := base64.StdEncoding.EncodeToString([]byte("phase:" + password))
 
-	// readBy reports whether a CONNECT to host is answered with Phase's
-	// certificate (read) or the provider's own (left alone).
-	readBy := func(host string, flow *FlowContext) bool {
+	// The value is registered as the CLI registers one, through the engine's
+	// own control API.
+	environment := map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": proxyURL.String()}
+	previous := leakguard.Environment
+	leakguard.Environment = func(key string) string { return environment[key] }
+	defer func() { leakguard.Environment = previous }()
+	if result, err := leakguard.Register(context.Background(), []leakguard.Value{{Type: "secret", ID: "stripe", Value: leakSecretOne}}); err != nil || result.Added != 1 {
+		t.Fatalf("registration: %+v %v", result, err)
+	}
+
+	// send posts one model request over a tunnel and reports whether the
+	// proxy read it.
+	body := anthropicBody("the key is " + leakSecretOne)
+	both := x509.NewCertPool()
+	both.AppendCertsFromPEM(phasePEM)
+	both.AppendCertsFromPEM(providerPEM)
+	send := func(host, path string, flow *FlowContext) bool {
 		t.Helper()
 		raw, err := net.Dial("tcp", endpoints.ProxyAddress)
 		if err != nil {
@@ -663,24 +823,51 @@ func TestEngineServesTheToolOfItsSession(t *testing.T) {
 		if response, err := http.ReadResponse(bufio.NewReader(raw), &http.Request{Method: http.MethodConnect}); err != nil || response.StatusCode != http.StatusOK {
 			t.Fatalf("CONNECT %s: %v %v", host, response, err)
 		}
-		conn := tls.Client(raw, &tls.Config{ServerName: host, InsecureSkipVerify: true})
+		conn := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: both, NextProtos: []string{"http/1.1"}})
 		if err := conn.Handshake(); err != nil {
 			t.Fatalf("TLS with %s: %v", host, err)
 		}
-		return !conn.ConnectionState().PeerCertificates[0].Equal(provider.Certificate())
+		request := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", path, host, len(body), body)
+		if response, _ := exchange(t, conn, bufio.NewReader(conn), request); response.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d", host, response.StatusCode)
+		}
+		sent, _ := received.Load(host)
+		return !bytes.Contains(sent.([]byte), []byte(leakSecretOne))
 	}
+	// The session's own clients: every listed host, its tool's or not.
+	for host, path := range map[string]string{"api.anthropic.com": "/v1/messages", "chatgpt.com": "/backend-api/codex/responses", "openrouter.ai": "/api/v1/chat/completions"} {
+		if !send(host, path, nil) {
+			t.Fatalf("%s was not read for the session's own client", host)
+		}
+	}
+	// Flows noted through the engine: a tunnel's are read for their tool only.
 	codex, unknown := tunnelFlow("codex"), tunnelFlow("")
-	if !readBy("api.anthropic.com", nil) {
-		t.Fatal("the session's own tool was not read on its host")
+	if send("api.anthropic.com", "/v1/messages", &unknown) || send("api.anthropic.com", "/v1/messages", &codex) {
+		t.Fatal("a tunnel flow was read on a host that is not its tool's")
 	}
-	if readBy("api.openai.com", nil) {
-		t.Fatal("a host of another tool was read for the session's tool")
-	}
-	if !readBy("api.openai.com", &codex) {
+	if !send("api.openai.com", "/v1/responses", &codex) {
 		t.Fatal("a flow noted through the engine was not read as its tool")
 	}
-	if readBy("api.anthropic.com", &unknown) {
-		t.Fatal("a tunnel flow from an unknown program was read")
+
+	// The events name the session's tool where its list holds the host.
+	named := map[string]string{}
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		eventsMu.Lock()
+		for _, event := range shipped {
+			if event.EventType == leakEventType {
+				named[event.Host] = fmt.Sprint(event.Detail["harness"]) + " " + fmt.Sprint(event.Detail["capture"])
+			}
+		}
+		eventsMu.Unlock()
+		if len(named) >= 4 || time.Now().After(deadline) {
+			break
+		}
+	}
+	want := map[string]string{
+		"api.anthropic.com": "opencode proxy", "openrouter.ai": "opencode proxy", "chatgpt.com": "codex proxy", "api.openai.com": "codex tunnel",
+	}
+	if !reflect.DeepEqual(named, want) {
+		t.Fatalf("the flows were named %v, want %v", named, want)
 	}
 
 	request, _ := http.NewRequest(http.MethodGet, phaseproxy.ControlURL+"/v1/status", nil)
@@ -693,14 +880,15 @@ func TestEngineServesTheToolOfItsSession(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil || status.LeakProtection == nil {
 		t.Fatalf("status: %v", err)
 	}
-	if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"api.anthropic.com"}) {
-		t.Fatalf("a proxy started for Claude says it inspects %v", got)
+	if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"api.anthropic.com", "api.openai.com", "chatgpt.com", "opencode.ai", "openrouter.ai"}) {
+		t.Fatalf("a proxy started for one tool says it inspects %v", got)
 	}
 }
 
 // A host a Connection covers is terminated for the Connection whatever the
-// flow, and its credential is injected; the body is read only for the flows
-// the table lists the host for.
+// flow, and its credential is injected. The body is read for every client of
+// the proxy environment, and for a tunnel's flow only when the host is
+// listed for its tool.
 func TestAConnectionsHostIsReadForItsFlowOnly(t *testing.T) {
 	state := controlRuntimeState(t, unreachableConsoleClient(t), customSessionPayload("backend-custom", 1,
 		customConnectionPayload(customDecoyToken, customLiveToken)), "runtime-custom")
@@ -720,7 +908,7 @@ func TestAConnectionsHostIsReadForItsFlowOnly(t *testing.T) {
 		"another tool through a tunnel":       {tunnelFlow("claude"), false},
 		"the listed tool through a tunnel":    {tunnelFlow("test"), true},
 		"the listed tool, proxy environment":  {proxyFlow("test"), true},
-		"another tool, proxy environment":     {proxyFlow("claude"), false},
+		"a session for another tool":          {proxyFlow("claude"), true},
 		"a client of the proxy environment":   {proxyFlow(""), true},
 	} {
 		request, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items", strings.NewReader(body))
@@ -740,13 +928,14 @@ func TestAConnectionsHostIsReadForItsFlowOnly(t *testing.T) {
 			t.Errorf("%s: the forwarded body is %q", name, forwarded)
 		}
 	}
-	// A request outside any tunnel is the proxy's own client's.
+	// A request outside any tunnel is the proxy's own client's, and is read
+	// whichever tool the proxy was started for.
 	proxy.tool = "claude"
 	request, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items", strings.NewReader(body))
 	if result := processThrough(proxy, request); result.failure != nil {
 		t.Fatalf("the request was refused: %+v", result.failure)
 	}
-	if forwarded, _ := io.ReadAll(upstream.last.Load().Body); string(forwarded) != body {
-		t.Fatalf("a proxy started for another tool read the body: %q", forwarded)
+	if forwarded, _ := io.ReadAll(upstream.last.Load().Body); string(forwarded) != replaced {
+		t.Fatalf("a proxy started for another tool did not read the body: %q", forwarded)
 	}
 }

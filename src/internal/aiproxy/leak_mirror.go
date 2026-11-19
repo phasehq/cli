@@ -371,6 +371,9 @@ func (p *httpProxy) passThroughUnread(ctx context.Context, client net.Conn, read
 // that was passed through unread, and why. It says nothing of what the
 // connection carried: the proxy did not read it.
 func (p *httpProxy) noteUnreadTunnel(host string, port int, match *leakHostMatch, reason string) {
+	if p.observe != nil {
+		p.observe(leakObservation{host: host, connection: reason})
+	}
 	if p.events == nil || !p.leak.unread.fresh(match.key, reason) {
 		return
 	}

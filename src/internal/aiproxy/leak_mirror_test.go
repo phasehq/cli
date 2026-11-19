@@ -725,7 +725,7 @@ func TestMirrorCopiesTheHelloAClientSentWithoutASession(t *testing.T) {
 	if kept := rig.guard.mirrored.like(key, first); !bytes.Equal(kept, first) {
 		t.Fatal("the hello a client sent without a session was not kept")
 	}
-	if rig.guard.mirrored.like(leakStateKey{tool: "opencode", host: mirrorHost}, first) != nil || rig.guard.mirrored.like(hostKey("api.anthropic.com"), first) != nil {
+	if rig.guard.mirrored.like(leakStateKey{tool: "codex", host: mirrorHost}, first) != nil || rig.guard.mirrored.like(hostKey("api.anthropic.com"), first) != nil {
 		t.Fatal("a hello kept for one tool and host answers for another")
 	}
 
@@ -1590,7 +1590,7 @@ func TestUnreadTunnelsAreReportedOncePerHostAndReasonAMinute(t *testing.T) {
 		t.Fatal("another reason or another host was not reported")
 	}
 	// Another tool on the same host has a count of its own.
-	if !log.fresh(leakStateKey{tool: "opencode", host: mirrorHost}, leakReasonHelloResumption) || log.fresh(leakStateKey{tool: "opencode", host: mirrorHost}, leakReasonHelloResumption) {
+	if !log.fresh(leakStateKey{tool: "codex", host: mirrorHost}, leakReasonHelloResumption) || log.fresh(leakStateKey{tool: "codex", host: mirrorHost}, leakReasonHelloResumption) {
 		t.Fatal("another tool on the same host was not reported once")
 	}
 	now = now.Add(unreadPeriod)

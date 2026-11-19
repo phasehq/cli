@@ -783,7 +783,7 @@ func (e *labelEngine) Run(_ context.Context, session *ProxySession, _ []string) 
 }
 
 // A proxy started for one command is told which harness that command is, so
-// it can read model hosts for that tool alone. A proxy that serves whatever
+// it can name its clients' flows as that tool's. A proxy that serves whatever
 // reaches it is told nothing, whatever harness happened to start it.
 func TestTheEngineIsToldTheHarnessOnlyWhenItServesOne(t *testing.T) {
 	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

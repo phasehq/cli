@@ -253,6 +253,9 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, dow
 			scan := guard.newScan(match, "websocket", opts)
 			scan.leaveUnread(leakReasonOverLimit, leakScopeMessage)
 			p.emitLeakMessageEvent(request, host, port, scan)
+			if messageOpcode == wsOpText {
+				p.observeRead(scan, host, request.URL.EscapedPath(), nil, nil, false, time.Now())
+			}
 			held, message, compressed = nil, nil, false
 			passing = !frame.fin
 			continue
@@ -271,6 +274,8 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, dow
 		if !frame.fin {
 			continue
 		}
+		// The message is in hand: what follows is the inspection itself.
+		began := time.Now()
 		scan := guard.newScan(match, "websocket", opts)
 		var rewritten []byte
 		switch {
@@ -285,17 +290,21 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, dow
 			guard.readFixed(scan, leakPartBinary, message, "message")
 		}
 		out := held
-		switch scan.verdict(rewritten != nil) {
-		case leakBlock:
-			p.blockLeakMessage(request, host, port, scan, upstream, downstream)
-			return
-		case leakReplace:
+		verdict := scan.verdict(rewritten != nil)
+		if verdict == leakReplace {
 			replacement, err := maskedClientFrame(wsOpText, rewritten)
 			if err != nil {
 				return
 			}
 			out = [][]byte{replacement}
 			scan.changed = true
+		}
+		if messageOpcode == wsOpText {
+			p.observeRead(scan, host, request.URL.EscapedPath(), message, rewritten, verdict == leakBlock, began)
+		}
+		if verdict == leakBlock {
+			p.blockLeakMessage(request, host, port, scan, upstream, downstream)
+			return
 		}
 		p.emitLeakMessageEvent(request, host, port, scan)
 		if !write(out...) {

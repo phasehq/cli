@@ -357,10 +357,11 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	if err != nil {
 		return err
 	}
-	// A proxy started for one harness reads model hosts for that tool only.
-	// A label that names no listed tool leaves it unknown.
+	// A proxy started for one harness names its clients' flows as that tool's
+	// wherever the tool's own list holds the host. Every listed host is read
+	// either way. A label that names no listed tool leaves the tool unknown.
 	tool := leak.hosts.toolFor(session.HarnessLabel)
-	control := &controlHandler{state: state, environments: environments, leak: leak, tool: tool}
+	control := &controlHandler{state: state, environments: environments, leak: leak}
 	httpHandler := &httpProxy{
 		state: state, ca: session.CA, transport: transport,
 		dial: dial, lockdown: e.Lockdown, events: events, manifest: manifest, control: control, lifecycle: ctx,

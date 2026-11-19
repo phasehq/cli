@@ -216,6 +216,42 @@ func (s *leakScan) severity(blocked bool) string {
 	return ""
 }
 
+// leakObservation is one thing leak protection did, as a harness that
+// measures it is told through httpProxy.observe. It holds request content:
+// nothing in the proxy keeps one or sends one anywhere.
+type leakObservation struct {
+	// scan is what was found in a body or a message; nil for a connection.
+	scan       *leakScan
+	host, path string
+	// original is the body or message as it came, decoded, and forwarded what
+	// goes on in its place. Both are nil when it was too large to hold, and
+	// forwarded when it was blocked.
+	original, forwarded []byte
+	blocked             bool
+	// took is how long reading it and deciding took, once it was in hand.
+	took time.Duration
+	// connection is why a whole connection was passed through unread, and
+	// window why a pass-through window opened.
+	connection, window string
+}
+
+// observeRead tells the harness, when there is one, what was done to a body
+// or a message. rewritten is what replaces it when the scan changed it.
+func (p *httpProxy) observeRead(scan *leakScan, host, path string, original, rewritten []byte, blocked bool, began time.Time) {
+	if p.observe == nil {
+		return
+	}
+	observation := leakObservation{scan: scan, host: host, path: path, original: original, blocked: blocked, took: time.Since(began)}
+	switch {
+	case blocked:
+	case scan.changed:
+		observation.forwarded = rewritten
+	default:
+		observation.forwarded = original
+	}
+	p.observe(observation)
+}
+
 var leakMetaBuffers = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 // findInURL scans a request's path and query. It is run for every request
@@ -262,8 +298,8 @@ func (g *leakGuard) scanHeaders(scan *leakScan, header http.Header) {
 // injection, so nothing the proxy adds is scanned and a rewritten body is what
 // gets signed and sent. It changes upstream's body in place when it rewrites
 // it, and returns a result only when the request is refused. flow says how
-// the request's connection reached the proxy; a host is read only for the
-// flows the table lists it for.
+// the request's connection reached the proxy and whose it is, which is what
+// the table decides by (leakHostTable.lookupFlow).
 func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *binding, flow FlowContext, host string, port int, started time.Time) *processedResponse {
 	guard := p.leak
 	if guard == nil || req.URL == nil {
@@ -304,9 +340,13 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 		}{io.MultiReader(bytes.NewReader(body), upstream.Body), upstream.Body}
 		upstream.GetBody = nil
 		scan.leaveUnread(leakReasonOverLimit, leakScopeRequest)
-		return p.finishLeakScan(req, upstream, binding, host, port, scan, nil, "", started)
+		stopped := p.finishLeakScan(req, upstream, binding, host, port, scan, nil, "", started)
+		p.observeRead(scan, host, req.URL.EscapedPath(), nil, nil, stopped != nil, time.Now())
+		return stopped
 	}
 	setUpstreamBody(upstream, body, false)
+	// The body is in hand: what follows is the inspection itself.
+	began := time.Now()
 	guard.scanHeaders(scan, upstream.Header)
 
 	encodings := upstream.Header.Values("Content-Encoding")
@@ -318,15 +358,19 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 		err = errors.New("unsupported encoding")
 	}
 	var rewritten []byte
+	original := decoded
 	if err != nil {
 		scan.leaveUnread(leakReasonUndecodable, leakScopeRequest)
 		// The raw bytes are still looked at, so a value sent plainly in a body
 		// the proxy cannot decode is caught.
 		guard.readFixed(scan, leakPartOpaque, body, "body")
+		original = body
 	} else {
 		rewritten = guard.readPayload(scan, decoded, "body")
 	}
-	return p.finishLeakScan(req, upstream, binding, host, port, scan, rewritten, encoding, started)
+	stopped := p.finishLeakScan(req, upstream, binding, host, port, scan, rewritten, encoding, started)
+	p.observeRead(scan, host, req.URL.EscapedPath(), original, rewritten, stopped != nil, began)
+	return stopped
 }
 
 // finishLeakScan acts on what a request's inspection found: it refuses the
@@ -514,6 +558,9 @@ func joinWithin(values []string, limit int) string {
 // window ends.
 func (p *httpProxy) noteLeakHandshake(host string, port int, match *leakHostMatch, ok bool) {
 	window := p.leak.handshakes.note(match.key, ok)
+	if window != 0 && p.observe != nil {
+		p.observe(leakObservation{host: host, window: leakReasonTLSRefused})
+	}
 	if window == 0 || p.events == nil {
 		return
 	}

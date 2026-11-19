@@ -40,11 +40,17 @@ type httpProxy struct {
 	// leak is the process's leak protection; nil leaves model traffic alone.
 	leak *leakGuard
 	// tool is the one AI tool this proxy serves, in the leak protection
-	// table's ids, when the proxy was started for one; empty otherwise.
+	// table's ids, when the proxy was started for one; empty otherwise. It
+	// names the proxy's own clients in events and decides nothing else.
 	tool string
 	// flows holds what capture layers in this process said about connections
 	// that are about to send a CONNECT; nil when there are none.
 	flows *flowNotes
+	// observe, when set, is told what leak protection did to each body and
+	// text message it read, and of each connection it did not read. It is
+	// handed request content, so only a test harness that measures leak
+	// protection sets it; nil costs one check.
+	observe func(leakObservation)
 	// mirrorHelloWait is how long a client may take to send its TLS hello to a
 	// host whose hello is copied; zero means mirrorHelloTimeout.
 	mirrorHelloWait time.Duration
@@ -83,7 +89,7 @@ const eventIDHeader = "X-Phase-Event-Id"
 type tunnelAuthentication struct {
 	connectionID string
 	// flow says how the tunnel's connection reached the proxy and whose it
-	// is. Leak protection reads a host only for the flows it is listed for.
+	// is. A tunnel's flow is read only on the hosts listed for its tool.
 	flow FlowContext
 	// upstream, when set, sends every request of the tunnel. The tunnel is to
 	// a host that accepts only its own client's TLS, and these are connections
@@ -435,9 +441,9 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 			writeProxyError(w, failure)
 			return
 		}
-		// A model host is read for leak protection when the table lists it
-		// for this flow, unless that tool's client keeps refusing the proxy's
-		// certificate there.
+		// A model host is read for leak protection (for a tunnel's flow,
+		// when it is listed for the flow's tool), unless that tool's client
+		// keeps refusing the proxy's certificate there.
 		if match := p.leak.inspects(authentication.flow, host, port); match != nil && !p.leak.handshakes.bypassed(match.key) {
 			if err := p.state.availability(); err != nil {
 				writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})

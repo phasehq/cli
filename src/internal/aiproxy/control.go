@@ -41,9 +41,6 @@ type controlHandler struct {
 	state        *runtimeState
 	environments *connectionEnvironmentCompiler
 	leak         *leakGuard
-	// tool is the one AI tool the proxy serves, when it knows it; status
-	// names the hosts read for it.
-	tool string
 }
 
 // ServeProxyHTTP serves control routes at the reserved phase.invalid origin.

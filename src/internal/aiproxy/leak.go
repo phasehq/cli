@@ -52,7 +52,10 @@ type leakGuard struct {
 	// Phase's own token formats. Elsewhere a pattern rule could fire on the
 	// harness's own login or telemetry token and break it.
 	limitedRules *censor.Rules
-	reported     *placeholderLog
+	// skipped are the pattern rules this proxy is not applying. Status counts
+	// and names them.
+	skipped  []censor.SkippedRule
+	reported *placeholderLog
 
 	// matches remembers what the table says about the hosts seen, per flow, so
 	// the check every request makes allocates nothing.
@@ -80,23 +83,74 @@ type leakMatchKey struct {
 }
 
 func newLeakGuard(mode string) (*leakGuard, error) {
+	return newLeakGuardWithRules(mode, censor.DefaultRules())
+}
+
+// leakRuleAbsent is why a rule the proxy depends on is not applied when its
+// rule file does not hold it.
+const leakRuleAbsent = "the rule file does not hold this rule"
+
+// newLeakGuardWithRules makes the guard for a rule file. The file can be
+// newer or older than the binary, so a rule in it that this version cannot
+// apply, and a Phase token rule it does not hold, never stop the proxy: the
+// rules that do apply still protect, and status says what was left out.
+func newLeakGuardWithRules(mode string, rules *censor.Rules) (*leakGuard, error) {
 	key, err := censor.NewKey()
 	if err != nil {
 		return nil, err
 	}
-	index, err := censor.NewIndex(key, censor.IndexOptions{})
+	index, err := censor.NewIndex(key, censor.IndexOptions{Rules: rules})
 	if err != nil {
 		return nil, err
 	}
-	limited, err := censor.DefaultRules().Only(phaseTokenRules...)
+	limited, absent, err := phaseTokenRuleSet(rules)
 	if err != nil {
 		return nil, err
 	}
 	return &leakGuard{
 		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, limitedRules: limited,
+		skipped:  append(rules.Skipped(), absent...),
 		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, keyNamed: map[string]struct{}{},
 		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(),
 	}, nil
+}
+
+// phaseTokenRuleSet returns the rules that run on every path of an inspected
+// host: Phase's own token formats, as far as the rule file holds them. A rule
+// the file does not hold is returned as left out. One the file holds and this
+// version could not apply is left out too, and is already among the file's
+// skipped rules.
+func phaseTokenRuleSet(rules *censor.Rules) (*censor.Rules, []censor.SkippedRule, error) {
+	var held []string
+	var absent []censor.SkippedRule
+	for _, id := range phaseTokenRules {
+		one, err := rules.Only(id)
+		switch {
+		case err != nil:
+			// Only refuses an id the file never had.
+			absent = append(absent, censor.SkippedRule{ID: id, Reason: leakRuleAbsent})
+		case one.Len() > 0:
+			held = append(held, id)
+		}
+	}
+	limited, err := rules.Only(held...)
+	return limited, absent, err
+}
+
+// maxStatusRules bounds the rule ids status names; the count goes on past it.
+const maxStatusRules = 64
+
+// skippedRuleIDs names the rules that are not applied, for status. An id is
+// text from the rule file, so only one that is a plain identifier is named.
+func (g *leakGuard) skippedRuleIDs() []string {
+	var ids []string
+	for _, rule := range g.skipped {
+		if len(ids) < maxStatusRules && controlIdentifier.MatchString(rule.ID) && !slices.Contains(ids, rule.ID) {
+			ids = append(ids, rule.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // scanOptionsFor applies every rule where conversation content travels and
@@ -320,21 +374,12 @@ func (g *leakGuard) eventPlaceholders(placeholders []string) []string {
 	return written
 }
 
-// status is counts and host names only. tool is the one tool the proxy
-// serves, when it knows it: a host listed for another tool only is then not
-// read for the proxy's own clients, and is named as not inspected.
-func (g *leakGuard) status(tool string) *remoteapi.LeakProtectionStatus {
-	inspected := g.hosts.hostNames(tool, leakTreatmentInspect)
-	unread := g.hosts.hostNames(tool, leakTreatmentUnread)
-	if tool != "" {
-		for _, treatment := range []string{leakTreatmentInspect, leakTreatmentUnread} {
-			for _, host := range g.hosts.hostNames("", treatment) {
-				if !slices.Contains(inspected, host) && !slices.Contains(unread, host) {
-					unread = append(unread, host)
-				}
-			}
-		}
-	}
+// status is counts and names only: of hosts, and of pattern rules. Every
+// listed host is read for a client of the proxy environment, whichever tool
+// the proxy serves, so the hosts are the table's.
+func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
+	inspected := g.hosts.hostNames(leakTreatmentInspect)
+	unread := g.hosts.hostNames(leakTreatmentUnread)
 	if g.mode == leakModeOff {
 		unread = append(inspected, unread...)
 		inspected = []string{}
@@ -359,6 +404,7 @@ func (g *leakGuard) status(tool string) *remoteapi.LeakProtectionStatus {
 	return &remoteapi.LeakProtectionStatus{
 		Mode: g.mode, SecretsKnown: g.index.Stats().Secrets, Unprotected: g.unprotectedCount(),
 		InspectedHosts: inspected, UnreadHosts: unread,
+		RulesSkipped: len(g.skipped), SkippedRules: g.skippedRuleIDs(),
 	}
 }
 

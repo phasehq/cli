@@ -637,7 +637,7 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 			t.Fatalf("registration %d: %d %v", i, unprotected, err)
 		}
 	}
-	if count := guard.status("").Unprotected; count != 1 {
+	if count := guard.status().Unprotected; count != 1 {
 		t.Fatalf("one value registered 200 times is counted %d times", count)
 	}
 	// The index's own caps do not see a value with nothing to index, so the
@@ -647,7 +647,7 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if count := guard.status("").Unprotected; count != maxUnprotectedNames || len(guard.unprotected) != maxUnprotectedNames {
+	if count := guard.status().Unprotected; count != maxUnprotectedNames || len(guard.unprotected) != maxUnprotectedNames {
 		t.Fatalf("%d unprotectable values are counted, %d names kept, want %d", count, len(guard.unprotected), maxUnprotectedNames)
 	}
 	if guard.index.Stats().Secrets != 0 {
@@ -655,15 +655,15 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 	}
 	// One that is kept is still counted once, and stops counting when the
 	// same id is registered with a value that can be protected.
-	if _, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || guard.status("").Unprotected != maxUnprotectedNames {
+	if _, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || guard.status().Unprotected != maxUnprotectedNames {
 		t.Fatal("a value already counted was counted again")
 	}
 	long, err := censor.IndexValue(guard.key, "secret", "LOG_LEVEL", leakSecretOne)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added, _, err := guard.add([]*censor.Entries{long}, nil); err != nil || added != 1 || guard.status("").Unprotected != maxUnprotectedNames-1 {
-		t.Fatalf("a value that became protectable is still counted: %d", guard.status("").Unprotected)
+	if added, _, err := guard.add([]*censor.Entries{long}, nil); err != nil || added != 1 || guard.status().Unprotected != maxUnprotectedNames-1 {
+		t.Fatalf("a value that became protectable is still counted: %d", guard.status().Unprotected)
 	}
 }
 

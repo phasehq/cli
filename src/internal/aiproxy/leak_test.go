@@ -43,8 +43,15 @@ func newTestLeakGuard(t *testing.T, mode string) *leakGuard {
 // were told apart.
 var envFlow = FlowContext{Capture: CaptureProxy}
 
-// hostKey is what such a client's host is remembered under.
-func hostKey(host string) leakStateKey { return leakStateKey{host: host} }
+// hostKey is what such a client's host is remembered under: the tool the
+// host is first listed under, and the host.
+func hostKey(host string) leakStateKey {
+	key := leakStateKey{host: host}
+	if match := defaultLeakHosts.lookup(host); match != nil {
+		key.tool = match.harness
+	}
+	return key
+}
 
 // registerLeakValues indexes values as the CLI would and adds them.
 func registerLeakValues(t *testing.T, guard *leakGuard, values map[string]string) {
@@ -309,7 +316,7 @@ func TestHandshakeBypassIsPerHostAndNeedsTwoFailures(t *testing.T) {
 func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 	guard := newTestLeakGuard(t, leakModeCensor)
 	registerLeakValues(t, guard, map[string]string{"one": leakSecretOne, "two": leakSecretTwo, "short": "abc"})
-	status := guard.status("")
+	status := guard.status()
 	if status.Mode != leakModeCensor || status.SecretsKnown != 2 || status.Unprotected != 1 {
 		t.Fatalf("status counts are wrong: %+v", status)
 	}
@@ -320,7 +327,7 @@ func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 	}
 	guard.handshakes.note(hostKey("api.anthropic.com"), false)
 	guard.handshakes.note(hostKey("api.anthropic.com"), false)
-	status = guard.status("")
+	status = guard.status()
 	if containsString(status.InspectedHosts, "api.anthropic.com") || !containsString(status.UnreadHosts, "api.anthropic.com") {
 		t.Fatalf("a host in a pass-through window is still listed as inspected: %+v", status)
 	}
@@ -330,7 +337,7 @@ func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 			t.Fatalf("status names a value or an id: %s", payload)
 		}
 	}
-	off := newTestLeakGuard(t, leakModeOff).status("")
+	off := newTestLeakGuard(t, leakModeOff).status()
 	if len(off.InspectedHosts) != 0 || !containsString(off.UnreadHosts, "api.anthropic.com") {
 		t.Fatalf("off mode lists hosts as inspected: %+v", off)
 	}

@@ -92,6 +92,16 @@ func protectValues(ctx context.Context, agent bool, values []leakguard.Value) er
 	return protectValuesWith(ctx, proxy, found, agent, values)
 }
 
+// noProxyRunning is what a command does when there is no proxy to register
+// with: an Agent login is told once that nothing is protected, and nobody
+// else is told anything. An Agent login is not refused, since Agent tokens
+// are used from shells that do not load the Phase environment.
+func noProxyRunning(agent bool) {
+	if agent {
+		inactiveNotice.Do(func() { fmt.Fprintln(leakWarnings, leakProtectionInactiveMsg) })
+	}
+}
+
 // protectValuesWith registers values with the proxy that was found, and says
 // what a failure means:
 //   - inside a session, a failure refuses the command for an Agent login and
@@ -99,17 +109,16 @@ func protectValues(ctx context.Context, agent bool, values []leakguard.Value) er
 //   - a proxy found any other way is registered with as well, and a failure
 //     there warns once and never refuses, whoever is logged in: the command
 //     may have nothing to do with an AI tool;
-//   - with no proxy at all, an Agent login is told once that nothing is
-//     protected; it is not refused, since Agent tokens are used from shells
-//     that do not load the Phase environment.
+//   - a proxy found any other way that nothing listens at is no proxy: the
+//     state that named it is stale, or its process id went to another
+//     program. Warning then would warn on every command, in every shell;
+//   - with no proxy at all, see noProxyRunning.
 func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent bool, values []leakguard.Value) error {
 	if len(values) == 0 {
 		return nil
 	}
 	if !found {
-		if agent {
-			inactiveNotice.Do(func() { fmt.Fprintln(leakWarnings, leakProtectionInactiveMsg) })
-		}
+		noProxyRunning(agent)
 		return nil
 	}
 	if ctx == nil {
@@ -117,6 +126,10 @@ func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent 
 	}
 	_, err := leakRegister(ctx, proxy, values)
 	if err == nil {
+		return nil
+	}
+	if !proxy.InSession() && errors.Is(err, leakguard.ErrNotListening) {
+		noProxyRunning(agent)
 		return nil
 	}
 	full := errors.Is(err, leakguard.ErrInventoryFull)

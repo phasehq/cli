@@ -170,8 +170,9 @@ was found:
 | The proxy was found through | When the registration fails |
 |---|---|
 | the session's environment | An Agent-token login is refused before any value leaves. Any other login gets one warning line on stderr and carries on. |
-| the runtime state | One warning line on stderr, once per process, and the command carries on, whoever is logged in. |
-| nothing | Nothing is registered. An Agent-token login is told once that leak protection is not active. |
+| the runtime state, and its address refuses the connection | No proxy is running: the last row applies. Nothing listens there, so the state is stale or its process id now belongs to another program, and a warning would repeat on every command in every shell. |
+| the runtime state, any other failure | One warning line on stderr, once per process, and the command carries on, whoever is logged in. A timeout, an HTTP error, an answer that cannot be read and a full inventory are such failures: a proxy is there and did not take the values. |
+| nothing | Nothing is registered. An Agent-token login is told once that leak protection is not active; any other login is told nothing. |
 
 Every caller reaches the control API through one client,
 `phaseproxy.ControlClient`: `phase ai status`, the hooks and this registration.
@@ -206,11 +207,20 @@ Content-Type: application/json
 - A value too short or plain to protect is counted once for its type and id,
   however often it is registered, and at most 4096 such are remembered; past
   that the count stays where it is.
-- No route returns entries, hashes or ids. `GET /v1/status` adds
-  `leakProtection` with counts and host names only:
+- No route returns entries, hashes or the id of a secret. `GET /v1/status`
+  adds `leakProtection` with counts, host names and rule ids only:
   `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...]}`.
-  A proxy started for one tool lists that tool's hosts as inspected, and the
-  hosts listed for other tools only as unread.
+  `inspectedHosts` is every host the table reads, whichever tool the proxy
+  was started for. A host in a pass-through window, for any tool, is listed
+  under `unreadHosts` until the window ends.
+- A rule file can be newer or older than the binary. A pattern rule in it
+  that this version cannot apply, and one of Phase's own token rules that it
+  does not hold, never stop the proxy: the rules that do apply still protect,
+  and status adds `"rulesSkipped": 2, "skippedRules": ["<rule id>", ...]`.
+  `rulesSkipped` counts them all; `skippedRules` names at most 64, and only
+  ids that are plain identifiers. Both members are absent when every rule
+  applies, as with the rule file the CLI ships. `phase ai status` adds
+  `; 2 pattern rules skipped` to its `Leaks:` line and names none.
 - The mode comes from `PHASE_AI_LEAK_PROTECTION` in the proxy's environment:
   `censor` (default; anything unknown counts as censor), `observe`, `off`.
 
@@ -223,11 +233,21 @@ and `api.openai.com` are also in OpenCode's list). Every connection carries a
 flow: how it reached the proxy (`capture`) and which tool opened it, when that
 is known.
 
-| The tool is | Captured by | A host is read when |
+| Captured by | The tool is | A host is read when |
 |---|---|---|
-| known | either way | that tool's list has it |
-| not known | the proxy environment (`proxy`) | any tool's list has it, as its first entry says |
-| not known | a tunnel (`tunnel`) | never |
+| the proxy environment (`proxy`) | known or not | any tool's list has it |
+| a tunnel (`tunnel`) | known | that tool's list has it |
+| a tunnel (`tunnel`) | not known | never |
+
+Everything behind the proxy environment runs in an AI tool's process tree. A
+tool started inside another tool's session (Codex from a Claude Code shell, or
+the reverse) sends conversation content through the same proxy, so every
+listed host is read there, whichever tool the proxy was started for. The tool
+only names such a flow: `harness` in an event is the flow's own tool when
+that tool's list has the host, otherwise the tool the host is first listed
+under. A tunnel carries every program on the machine, so the strict rule
+applies to it alone: another program's traffic to the same host passes
+through untouched.
 
 A host that is read is answered with the proxy's certificate on port 443 even
 when no Connection covers it. A flow that is not read is not inspected at all.
@@ -247,14 +267,16 @@ Where a flow comes from:
   one the proxy was started for (`phase ai run -- claude` is `claude`,
   `phase ai exec` the harness that invoked it); the hook-managed proxy serves
   every harness and names none. A harness label that is not a listed tool
-  leaves the tool unknown.
+  leaves the tool unknown. For such a client the tool decides what the flow
+  is called, never whether a host is read.
 - `Engine.ShouldRead(tool, host)` and `Engine.ReadHosts(tool)` tell a capture
   layer which flows to hand over, without a copy of the table.
 
 What the proxy remembers about a host it remembers per tool and host: the
 pass-through windows, the once-a-minute limit on unread reports and the
-placeholders already reported. One tool's refused handshakes never open a
-window for another tool on the same host.
+placeholders already reported. The tool is the one the flow is named as
+(`harness` in its events). One tool's refused handshakes never open a window
+for another tool on the same host.
 
 #### What is read, and what happens to it
 
@@ -319,7 +341,7 @@ session unavailable. `detail` holds:
 | Member | Meaning |
 |---|---|
 | `mode` | `censor` or `observe` |
-| `harness` | the flow's tool when it is known, otherwise the tool inferred from the host |
+| `harness` | the flow's tool when that tool's list has the host, otherwise the tool the host is first listed under |
 | `capture` | `proxy` or `tunnel` |
 | `where` | `url`, `header`, `body`, `message`, comma-separated |
 | `inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` | counts; `signedFindings` is what was found in text the provider signed and left as it was |

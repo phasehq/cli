@@ -14,9 +14,10 @@ import (
 // was given the proxy through its environment sends its own CONNECT. A
 // capture layer in this process, such as a tunnel's router, sends a CONNECT
 // from loopback for a flow it took off the network, and knows which local
-// program opened that flow. What the proxy does with a request must not
-// depend on the way it came in, so the way is carried with each connection as
-// a FlowContext and nothing below assumes one of them.
+// program opened that flow. The two carry different traffic: the first only
+// what runs in an AI tool's process tree, the second everything on the
+// machine. So the way a connection came in travels with it as a FlowContext,
+// and nothing below assumes either of them.
 
 const (
 	// CaptureProxy is a client that was given the proxy through its
@@ -28,7 +29,11 @@ const (
 
 // FlowContext says how a connection reached the proxy and whose it is.
 type FlowContext struct {
-	// Capture is CaptureProxy or CaptureTunnel.
+	// Capture is CaptureProxy or CaptureTunnel. It decides how strictly a
+	// host is tied to a tool: behind the environment proxy every program is
+	// in an AI tool's process tree and any listed host is read; a tunnel
+	// carries every program on the machine, and a host is read only for the
+	// tool it is listed under.
 	Capture string
 	// Tool is the id of the AI tool that opened the connection, as the leak
 	// protection table names it (claude, codex, opencode, cursor). It is empty
@@ -228,8 +233,8 @@ func (e *Engine) ReadHosts(tool string) []ReadHost {
 }
 
 // ownFlow is a connection nobody noted: a client that was given the proxy
-// through its environment, opened by the one tool this proxy serves when it
-// knows it.
+// through its environment. It is named after the one tool this proxy serves,
+// when the proxy knows it; what is read does not depend on that.
 func (p *httpProxy) ownFlow() FlowContext {
 	return FlowContext{Capture: CaptureProxy, Tool: p.tool}
 }
