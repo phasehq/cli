@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -10,10 +12,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -239,13 +243,23 @@ func PrepareProcessCABundle(baseBundlePath string, environment []string, scopedT
 	return prepareProcessCABundle(baseBundlePath, environment, scopedTrustKeys, runtime.GOOS, nil)
 }
 
+// runtimeBundleMaxAge is how long a published bundle is kept after the last
+// session that asked for it started. Each start marks its bundle as used and
+// sessions are far shorter than this, so a bundle this old serves nobody.
+const runtimeBundleMaxAge = 30 * 24 * time.Hour
+
+// runtimeBundleName matches the bundles PrepareStableProcessCABundle publishes.
+var runtimeBundleName = regexp.MustCompile(`^runtime-ca-bundle-[0-9a-f]{32}\.pem$`)
+
 // PrepareStableProcessCABundle prepares the same certificate-only merged root
-// set as PrepareProcessCABundle, then atomically publishes it at a predictable
-// path beside the installation CA. phase ai run, phase ai exec and the hook daemons therefore
-// expose the same PHASE_AI_CA_BUNDLE path for the full proxy lifetime instead
-// of handing clients an ephemeral /tmp file. The published file contains only
+// set as PrepareProcessCABundle, then atomically publishes it beside the
+// installation CA, in a file named by a hash of its contents. phase ai run,
+// phase ai exec and the hook daemons therefore expose a PHASE_AI_CA_BUNDLE
+// path that holds for the full proxy lifetime instead of handing clients an
+// ephemeral /tmp file, and a session that inherits other CAs gets a file of
+// its own instead of replacing this one. The published file contains only
 // public certificates and intentionally remains available after the proxy
-// exits.
+// exits; one no session has asked for in runtimeBundleMaxAge is removed.
 func PrepareStableProcessCABundle(baseBundlePath string, environment []string, scopedTrustKeys []string) (PreparedCABundle, error) {
 	directory := filepath.Dir(baseBundlePath)
 	// Ensure publishes the base bundle under the same lock. Holding it from
@@ -270,19 +284,26 @@ func PrepareStableProcessCABundle(baseBundlePath string, environment []string, s
 	if _, err := readBoundedPublicCertificates(prepared.BundlePath); err != nil {
 		return PreparedCABundle{}, fmt.Errorf("validate prepared Phase AI CA bundle: %w", err)
 	}
+	digest := sha256.Sum256(bundle)
 	stable := PreparedCABundle{
-		BundlePath: filepath.Join(directory, "runtime-ca-bundle.pem"),
+		BundlePath: filepath.Join(directory, "runtime-ca-bundle-"+hex.EncodeToString(digest[:16])+".pem"),
 		Complete:   prepared.Complete,
 	}
-	if err := writeStableTrustFile(stable.BundlePath, bundle, runtime.GOOS); err != nil {
+	now := time.Now()
+	if err := writeStableTrustFile(stable.BundlePath, bundle, runtime.GOOS, now); err != nil {
 		return PreparedCABundle{}, fmt.Errorf("publish stable Phase AI CA bundle: %w", err)
 	}
+	removeStaleRuntimeBundles(directory, stable.BundlePath, now)
 	return stable, nil
 }
 
-func writeStableTrustFile(destination string, payload []byte, goos string) error {
+func writeStableTrustFile(destination string, payload []byte, goos string, now time.Time) error {
 	if info, err := os.Lstat(destination); err == nil && info.Mode().IsRegular() {
 		if existing, readErr := os.ReadFile(destination); readErr == nil && bytes.Equal(existing, payload) {
+			// The file's age is what removes it, so reusing it marks it as used.
+			if err := os.Chtimes(destination, now, now); err != nil {
+				return err
+			}
 			return os.Chmod(destination, 0o600)
 		}
 	}
@@ -298,6 +319,26 @@ func writeStableTrustFile(destination string, payload []byte, goos string) error
 		return removeErr
 	}
 	return writeFileAtomic0600(destination, payload)
+}
+
+// removeStaleRuntimeBundles removes the published bundles that no session has
+// asked for in runtimeBundleMaxAge, so they do not pile up as trust sets
+// change. A live session's bundle is never that old. Called with ca.lock held;
+// a file that cannot be removed is left for the next start.
+func removeStaleRuntimeBundles(directory, current string, now time.Time) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(directory, entry.Name())
+		if path == current || !entry.Type().IsRegular() || !runtimeBundleName.MatchString(entry.Name()) {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) > runtimeBundleMaxAge {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 func prepareProcessCABundle(baseBundlePath string, environment []string, scopedTrustKeys []string, goos string, systemPaths []string) (PreparedCABundle, func(), error) {

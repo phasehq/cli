@@ -934,7 +934,7 @@ func TestPrepareStableProcessCABundlePublishesPredictablePublicPath(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.BundlePath != filepath.Join(directory, "runtime-ca-bundle.pem") {
+	if filepath.Dir(prepared.BundlePath) != directory || !runtimeBundleName.MatchString(filepath.Base(prepared.BundlePath)) {
 		t.Fatalf("stable bundle path = %q", prepared.BundlePath)
 	}
 	if _, err := readBoundedPublicCertificates(prepared.BundlePath); err != nil {
@@ -954,6 +954,122 @@ func TestPrepareStableProcessCABundlePublishesPredictablePublicPath(t *testing.T
 	}
 	if repeated.BundlePath != prepared.BundlePath || string(first) != string(second) {
 		t.Fatal("repeat stable publication changed the public bundle or its path")
+	}
+}
+
+// Two terminals are two sessions. One that inherits a corporate CA and one
+// that does not each get a bundle of their own, so the second never takes the
+// corporate root out of the file the first one's clients read.
+func TestPrepareStableProcessCABundleKeepsEachTrustSetInItsOwnFile(t *testing.T) {
+	_, phaseCertificate, _, err := GenerateCA(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, corporateCertificate, _, err := GenerateCA(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	basePath := filepath.Join(t.TempDir(), "ca-bundle.pem")
+	corporatePath := filepath.Join(t.TempDir(), "corporate.pem")
+	for path, payload := range map[string][]byte{basePath: phaseCertificate, corporatePath: corporateCertificate} {
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	corporateEnvironment := []string{"REQUESTS_CA_BUNDLE=" + corporatePath}
+	holdsCorporateRoot := func(path string) bool {
+		t.Helper()
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes.Contains(payload, bytes.TrimSpace(corporateCertificate))
+	}
+
+	first, err := PrepareStableProcessCABundle(basePath, corporateEnvironment, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := PrepareStableProcessCABundle(basePath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BundlePath == second.BundlePath {
+		t.Fatalf("sessions with different trust sets share %s", first.BundlePath)
+	}
+	if !holdsCorporateRoot(first.BundlePath) {
+		t.Fatal("a later session removed the corporate root from the first session's bundle")
+	}
+	if holdsCorporateRoot(second.BundlePath) {
+		t.Fatal("a session that did not inherit the corporate root was given it")
+	}
+	again, err := PrepareStableProcessCABundle(basePath, corporateEnvironment, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.BundlePath != first.BundlePath {
+		t.Fatalf("the same trust set was published twice: %s and %s", first.BundlePath, again.BundlePath)
+	}
+}
+
+// Bundles of trust sets nobody uses any more are removed when a new one is
+// published. Only an old file with a published bundle's name goes: a bundle a
+// session started with recently, and any other file, stays.
+func TestPrepareStableProcessCABundleRemovesBundlesLongUnused(t *testing.T) {
+	_, phaseCertificate, _, err := GenerateCA(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	basePath := filepath.Join(directory, "ca-bundle.pem")
+	if err := os.WriteFile(basePath, phaseCertificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	current, err := PrepareStableProcessCABundle(basePath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(directory, "runtime-ca-bundle-"+strings.Repeat("a", 32)+".pem")
+	recent := filepath.Join(directory, "runtime-ca-bundle-"+strings.Repeat("b", 32)+".pem")
+	unrelated := filepath.Join(directory, "runtime-ca-bundle-notes.pem")
+	now := time.Now()
+	for path, age := range map[string]time.Duration{
+		stale: runtimeBundleMaxAge + time.Hour, recent: runtimeBundleMaxAge - time.Hour,
+		unrelated: runtimeBundleMaxAge + time.Hour, basePath: runtimeBundleMaxAge + time.Hour,
+		current.BundlePath: runtimeBundleMaxAge + time.Hour,
+	} {
+		if path != basePath && path != current.BundlePath {
+			if err := os.WriteFile(path, phaseCertificate, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chtimes(path, now.Add(-age), now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The session that starts now reuses its bundle, old as the file is.
+	reused, err := PrepareStableProcessCABundle(basePath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.BundlePath != current.BundlePath {
+		t.Fatalf("the bundle moved from %s to %s", current.BundlePath, reused.BundlePath)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("a bundle unused for longer than %s was kept: %v", runtimeBundleMaxAge, err)
+	}
+	for _, kept := range []string{recent, unrelated, basePath, current.BundlePath} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("%s was removed: %v", filepath.Base(kept), err)
+		}
+	}
+	info, err := os.Stat(current.BundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if now.Sub(info.ModTime()) > time.Minute {
+		t.Fatal("a session that reused its bundle did not mark it as used")
 	}
 }
 
