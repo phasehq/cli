@@ -388,3 +388,27 @@ func TestAPartialMatchIsWidenedByLessThanAChunk(t *testing.T) {
 		}
 	}
 }
+
+// A base64 match takes the whole run it sits in, and a run holds '=' only as
+// padding at its end. The name before an assignment is no part of it.
+func TestAnEncodedRunStopsAtAnAssignment(t *testing.T) {
+	password := randomString(t, alnum, 31)
+	ix := build(t, secret{ID: "pw", Value: password})
+	padded := base64.StdEncoding.EncodeToString([]byte(password))
+	if !strings.HasSuffix(padded, "==") {
+		t.Fatalf("the test needs padding: %s", padded)
+	}
+	bare, urlSafe := strings.TrimRight(padded, "="), base64.RawURLEncoding.EncodeToString([]byte("id-"+password))
+	for text, want := range map[string]string{
+		"CONFIG=" + padded + "\nNEXT=1":                       "CONFIG=ph:secret:pw\nNEXT=1",
+		"API_KEY=" + bare + "\nNEXT=1":                        "API_KEY=ph:secret:pw\nNEXT=1",
+		"export B64=" + padded:                                "export B64=ph:secret:pw",
+		"password: " + padded + "\n":                          "password: ph:secret:pw\n",
+		"https://example.com/cb?state=" + urlSafe + "&next=1": "https://example.com/cb?state=ph:secret:pw&next=1",
+		"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("deploy:"+password)): "Authorization: Basic ph:secret:pw",
+	} {
+		if out, report := ix.Redact([]byte(text)); string(out) != want || report.Inventory != 1 {
+			t.Errorf("%+v\n got  %s\n want %s", report.Findings, out, want)
+		}
+	}
+}

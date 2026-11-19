@@ -199,10 +199,15 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 	case f.wholeRun:
 		// A value encoded inside a larger blob, such as a dockerconfigjson or a
 		// Basic auth header, takes the whole blob, so no decodable piece is left.
-		for s > 0 && f.class[data[s-1]] {
+		// A blob holds '=' only as padding at its end: one before it is the
+		// sign of an assignment, and the name it follows stays.
+		for s > 0 && f.class[data[s-1]] && data[s-1] != '=' {
 			s--
 		}
-		for e < len(data) && f.class[data[e]] {
+		for e < len(data) && f.class[data[e]] && data[e] != '=' {
+			e++
+		}
+		for e < len(data) && f.class[data[e]] && data[e] == '=' {
 			e++
 		}
 	case full:
