@@ -200,7 +200,7 @@ func (p InventoryPrincipal) Is(other InventoryPrincipal) bool {
 }
 
 // InventoryStatus is what an opened inventory says of itself: counts of its
-// own tenant's records only, and nothing that moves with another tenant's.
+// own tenant's records only. Nothing of another tenant's is counted.
 type InventoryStatus struct {
 	// Durable reports that registered values are written to the store.
 	// Reason says why not.

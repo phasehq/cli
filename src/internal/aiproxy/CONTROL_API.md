@@ -405,7 +405,10 @@ a reboot still has its values replaced before anything registers them again:
   to make room. What a bound dropped of the proxy's own records since it
   started is counted (`dropped`): the inventory is stored, and those values
   are not in it. An entry not registered again for 30 days is dropped
-  whosever it is.
+  whosever it is. The bound on the whole file is shared, so it is the one
+  place a tenant can notice the others' volume: once other tenants have
+  filled the file, which takes several of them at their own bounds, what
+  this one registers is not stored, and `dropped` counts it.
 - What the running proxy holds is bounded the same way: the session's own
   login registers up to half the index (5000 values, half the chunks) and
   gets 507 past that, while guests still register. Guests hold a quarter
@@ -648,8 +651,8 @@ Content-Type: application/json
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
 - `inventory` says whether the values outlive the proxy, in counts of the
-  session's own tenant, none of which moves with what another host or
-  organisation stored:
+  session's own tenant. None counts what another host or organisation
+  stored:
   `{"storage":"stored","loaded":9,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":false}`,
   with `unstored` when commands that are not of the session's own login
   registered with this proxy (its guests): a count of those registrations, each one counted
