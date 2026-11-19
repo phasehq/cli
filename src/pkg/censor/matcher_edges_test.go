@@ -342,3 +342,28 @@ func TestTheFindingsCapNeverHidesAKindOfFinding(t *testing.T) {
 		}
 	}
 }
+
+// A piece of a value is looked for wherever one of its chunks verifies. A try
+// that came to nothing, at a token's type prefix say, does not keep a later
+// piece of the same value in the same place from being found.
+func TestAPieceAfterARejectedOneIsFound(t *testing.T) {
+	for name, prefix := range map[string]string{
+		"after a type prefix":  "common-pass-",
+		"after a random start": randomString(t, alnum, 12),
+		"after other text":     "",
+	} {
+		value := prefix + randomString(t, alnum, 36)
+		if prefix == "" {
+			value = randomString(t, alnum, 48)
+		}
+		ix := build(t, secret{ID: "v", Value: value})
+		masked := value[:12] + "************" + value[24:]
+		if prefix == "" {
+			masked = "xxxxxxxxxxxx************" + value[24:]
+		}
+		out, report := ix.Redact([]byte("log: " + masked + " done"))
+		if bytes.Contains(out, []byte(value[24:])) || report.Inventory == 0 {
+			t.Errorf("%s: the end of the value was left: %d found\n%s", name, report.Inventory, out)
+		}
+	}
+}

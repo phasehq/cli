@@ -89,7 +89,7 @@ func (ix *Index) findSpans(data []byte) []span {
 		return nil
 	}
 	h := k.roll(data[:c])
-	var tried map[tryKey]struct{}
+	var tried map[tryKey]int
 	// covered is how far each form's verified chunks already reach. A chunk
 	// inside them is part of a match already extended, so trying it again would
 	// only walk the same bytes, once per repeat of a repeating value.
@@ -111,7 +111,7 @@ func (ix *Index) findSpans(data []byte) []span {
 						continue
 					}
 					if tried == nil {
-						tried = map[tryKey]struct{}{}
+						tried = map[tryKey]int{}
 						covered = map[int32]int{}
 					}
 					if found, ok := ix.try(data, p, ref, tried); ok {
@@ -137,16 +137,17 @@ func (ix *Index) findSpans(data []byte) []span {
 // quote or white space). That removes the leftover partial chunk at each end, which
 // the hashes can't confirm, at the cost of at most chunk-1 neighbouring bytes on
 // each side when a value is followed directly by similar-looking text.
-func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]struct{}) (span, bool) {
+func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (span, bool) {
 	c := chunkSize
 	f := &ix.forms[ref.form]
 	start := p - int(ref.idx)*c
 	key := tryKey{form: ref.form, start: start}
-	if _, done := tried[key]; done {
+	// tried holds how far the chunks verified in a row the last time: a chunk
+	// past that is another piece of the value, whatever came of the first.
+	if end, done := tried[key]; done && p < end {
 		return span{}, false
 	}
 	// The caller has confirmed the chunk at p.
-	tried[key] = struct{}{}
 	n := len(f.macs)
 	lo, hi := int(ref.idx), int(ref.idx)
 	for j := lo - 1; j >= 0; j-- {
@@ -164,6 +165,7 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]struct{}
 		hi = j
 	}
 	s, e := start+lo*c, start+(hi+1)*c
+	tried[key] = e
 	full := false
 	if lo == 0 && hi == n-1 {
 		switch {
