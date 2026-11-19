@@ -11,6 +11,45 @@ import (
 	"testing"
 )
 
+// The findings cap keeps the first value a client registered as well as the
+// first a store handed over: a caller that stops a request for the one and
+// not for the other still sees it behind a crowd of other findings.
+func TestTheFindingsCapKeepsARegisteredValueBehindALoadedOne(t *testing.T) {
+	key := newKey(t)
+	ix, err := NewIndex(key, IndexOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, registered := strongValue(t, 24), strongValue(t, 24)
+	fromStore, _ := IndexValue(key, "secret", "stored", stored)
+	if err := ix.AddLoaded(key, fromStore, false); err != nil {
+		t.Fatal(err)
+	}
+	fromClient, _ := IndexValue(key, "secret", "registered", registered)
+	if err := ix.Add(fromClient); err != nil {
+		t.Fatal(err)
+	}
+	for _, headers := range []int{10, MaxFindings + 100} {
+		text := "pw " + stored + "\n" + strings.Repeat("-----BEGIN PRIVATE KEY-----\n", headers) + "pw " + registered + "\n"
+		matches := ix.Find([]byte(text))
+		if want := min(headers+2, MaxFindings); len(matches) != want {
+			t.Fatalf("%d headers: %d matches, want %d", headers, len(matches), want)
+		}
+		found := map[bool]string{}
+		for i, m := range matches {
+			if i > 0 && m.Start < matches[i-1].Start {
+				t.Fatalf("%d headers: the matches are out of order at %d", headers, i)
+			}
+			if m.Kind == kindInventory {
+				found[m.Loaded] = text[m.Start:m.End]
+			}
+		}
+		if found[true] != stored || found[false] != registered {
+			t.Errorf("%d headers: the value from the store or the one a client registered is not listed", headers)
+		}
+	}
+}
+
 // forged is entries of 63 one-chunk forms that all sit under one lookup value
 // and confirm nothing: what a client posts to fill a lookup value's bound.
 func forged(t testing.TB, id string, lookup []byte) *Entries {

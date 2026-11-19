@@ -569,6 +569,21 @@ func (ix *Index) macKeySlot(confirming *[32]byte) int32 {
 	return at
 }
 
+// namesID reports whether a placeholder of this index carries the id: a value
+// of the type is held with it, whichever principal's. A withheld id is not one.
+func (ix *Index) namesID(typ, id string) bool {
+	for who := range ix.principals {
+		secret := secretKey{int32(who), typ, id}
+		if _, held := ix.secrets[secret]; !held {
+			continue
+		}
+		if _, withheld := ix.withheldRefs[secret]; !withheld {
+			return true
+		}
+	}
+	return false
+}
+
 // newOwner puts an owner in a slot and counts its type.
 func (ix *Index) newOwner(added owner) int32 {
 	ix.types[added.typ]++
