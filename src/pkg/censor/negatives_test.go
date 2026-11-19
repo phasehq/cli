@@ -232,6 +232,16 @@ spec:
 }
 
 func longURLs(t testing.TB) string {
+	// Thirty random letters and dashes begin "xoxb-" once in two million draws,
+	// and are then a Slack token to the letter: with thirty anchors a file, a
+	// test that expects no finding here failed once in 67,000 runs.
+	anchor := func() string {
+		for {
+			if text := randomString(t, "abcdefghijklmnopqrstuvwxyz-", 30); !strings.Contains(text, "xox") {
+				return text
+			}
+		}
+	}
 	var b strings.Builder
 	for i := 0; i < 30; i++ {
 		fmt.Fprintf(&b, "- [design doc](https://docs.google.com/document/d/1%s/edit#heading=h.%s)\n", randomString(t, base64URL, 43), randomString(t, lowerDigits, 12))
@@ -242,7 +252,7 @@ func longURLs(t testing.TB) string {
 		fmt.Fprintf(&b, "- https://registry.npmjs.org/jsonwebtoken/-/jsonwebtoken-9.0.2.tgz and https://hooks.example.com/services/T%s/B%s/%s\n", randomString(t, upperDigits, 10), randomString(t, upperDigits, 10), randomString(t, alnum, 24))
 		fmt.Fprintf(&b, "- https://app.example.com/o/%s/projects/%s/issues/%s/events/%s/\n", randomString(t, decimal, 7), randomString(t, decimal, 7), randomString(t, decimal, 10), randomHex(t, 16))
 		fmt.Fprintf(&b, "- https://storage.googleapis.com/orders-artifacts/builds/%s/%s/orders-service.tar.gz\n", randomUUIDText(t), randomString(t, base64URL, 64))
-		fmt.Fprintf(&b, "- https://api.telegram.org/bots/api#available-methods and https://core.telegram.org/bots/api#%s\n", randomString(t, "abcdefghijklmnopqrstuvwxyz-", 30))
+		fmt.Fprintf(&b, "- https://api.telegram.org/bots/api#available-methods and https://core.telegram.org/bots/api#%s\n", anchor())
 	}
 	return b.String()
 }
@@ -257,4 +267,279 @@ func inlineImages(t testing.TB) string {
 		fmt.Fprintf(&b, "![chart](data:image/gif;base64,%s)\n", base64.RawURLEncoding.EncodeToString(randomBytes(t, 2000)))
 	}
 	return b.String()
+}
+
+// reviewedNegatives is ordinary text of the kinds a review found the rules
+// taking for credentials: Kubernetes manifests, Firebase and Auth0 configs,
+// CSS-module class maps, tokenizer and model names, and container image
+// references. Nothing in it may be replaced. A file may be reported, by the one
+// rule named for it: a Google web key in a Firebase config and a tag after
+// secret-token: are what their rules exist to report.
+func reviewedNegatives(t testing.TB) (files map[string]string, alerts map[string]string) {
+	t.Helper()
+	return map[string]string{
+		"k8s/orders.yaml":          kubernetesManifests(t),
+		"web/firebase.js":          firebaseConfig(t),
+		"web/auth0.env":            auth0Config(t),
+		"web/classes.json":         cssModuleMap(t),
+		"web/classes.js":           cssModuleScript(t),
+		"ml/tokenizer.json":        tokenizerConfig(t),
+		"ml/train.txt":             modelNames(t),
+		"deploy/images.txt":        imageReferences(t),
+		"app/google-services.json": googleServices(t),
+	}, map[string]string{
+		"web/firebase.js":          "google-api-key",
+		"app/google-services.json": "google-api-key",
+		"deploy/images.txt":        "secret-token-uri",
+	}
+}
+
+// webKey is a Google API key of the kind a web or mobile app ships.
+func webKey(t testing.TB) string {
+	return fresh(t, func() string { return "AI" + "za" + "Sy" + randomString(t, base64URL, 33) })
+}
+
+func kubernetesManifests(t testing.TB) string {
+	hash := func() string { return randomString(t, "bcdfghjklmnpqrstvwxz2456789", 10) }
+	tag := "2024.11." + randomString(t, "123456789", 1) + randomString(t, decimal, 1) + "-build." + randomString(t, decimal, 4)
+	return fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+spec:
+  template:
+    spec:
+      serviceAccountName: orders-api
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: regcred-ghcr-2024
+      containers:
+      - name: api
+        image: ghcr.io/acme/orders-service:%[1]s
+        envFrom:
+        - secretRef:
+            name: orders-secrets-%[2]s
+        env:
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: orders-secrets-%[2]s
+              key: stripe-secret-key
+        - name: TOKEN_FILE
+          value: /var/run/secrets/tokens/orders-%[3]s
+        volumeMounts:
+        - name: config
+          mountPath: /etc/orders
+      - name: auth-proxy
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0-alpine3.19
+      volumes:
+      - name: config
+        secret:
+          secretName: app-config-%[2]s
+      - name: tokens
+        projected:
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3607
+              path: orders-%[3]s
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+spec:
+  tls:
+  - hosts:
+    - shop.acme.io
+    secretName: shop-acme-io-tls-2024
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: orders-api
+spec:
+  secretName: orders-api-tls-v2-cert
+  issuerRef:
+    name: letsencrypt-prod
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: orders-db
+spec:
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  target:
+    name: orders-db-credentials-%[4]s
+  data:
+  - secretKey: password
+    remoteRef:
+      key: prod/orders/db-password-v3
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: default-token-%[5]s
+  annotations:
+    kubernetes.io/service-account.name: default
+type: kubernetes.io/service-account-token
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+secretGenerator:
+- name: app-config
+  files:
+  - config.env
+`, tag, hash(), hash(), randomString(t, lowerDigits, 4), randomString(t, lowerDigits, 5))
+}
+
+func firebaseConfig(t testing.TB) string {
+	key, project, sender := webKey(t), "orders-web-"+randomString(t, lowerDigits, 5), randomString(t, "123456789", 1)+randomString(t, decimal, 11)
+	return fmt.Sprintf(`import { initializeApp } from "firebase/app";
+
+const firebaseConfig = {
+  apiKey: "%[1]s",
+  authDomain: "%[2]s.firebaseapp.com",
+  projectId: "%[2]s",
+  storageBucket: "%[2]s.appspot.com",
+  messagingSenderId: "%[3]s",
+  appId: "1:%[3]s:web:%[4]s",
+  measurementId: "G-%[5]s"
+};
+
+export const app = initializeApp(firebaseConfig);
+
+// .env.local
+NEXT_PUBLIC_FIREBASE_API_KEY=%[1]s
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=%[2]s.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=%[2]s
+VITE_GOOGLE_MAPS_API_KEY=%[1]s
+
+<script async src="https://maps.googleapis.com/maps/api/js?key=%[1]s&callback=initMap"></script>
+`, key, project, sender, randomHex(t, 11), randomString(t, upperDigits, 10))
+}
+
+func googleServices(t testing.TB) string {
+	sender := randomString(t, "123456789", 1) + randomString(t, decimal, 11)
+	services, err := json.MarshalIndent(map[string]any{
+		"project_info": map[string]string{"project_number": sender, "project_id": "orders-web-" + randomString(t, lowerDigits, 5), "storage_bucket": "orders-web.appspot.com"},
+		"client": []any{map[string]any{
+			"client_info":  map[string]any{"mobilesdk_app_id": "1:" + sender + ":android:" + randomHex(t, 11), "android_client_info": map[string]string{"package_name": "io.acme.orders"}},
+			"oauth_client": []any{map[string]any{"client_id": sender + "-" + randomString(t, lowerDigits, 32) + ".apps.googleusercontent.com", "client_type": 3}},
+			"api_key":      []any{map[string]string{"current_key": webKey(t)}},
+		}},
+		"configuration_version": "1",
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(services) + "\n"
+}
+
+func auth0Config(t testing.TB) string {
+	tenant, client := "dev-"+randomString(t, lowerDigits, 8)+".us.auth0.com", randomString(t, alnum, 16)+"7"+randomString(t, alnum, 15)
+	return fmt.Sprintf(`AUTH0_DOMAIN=%[1]s
+AUTH0_CLIENT_ID=%[2]s
+AUTH0_AUDIENCE=https://api.acme.io
+AUTH0_ISSUER_BASE_URL=https://%[1]s
+AUTH0_BASE_URL=http://localhost:3000
+AUTH0_SCOPE=openid profile email
+VITE_AUTH0_DOMAIN=%[1]s
+VITE_AUTH0_CLIENT_ID=%[2]s
+GOOGLE_OAUTH_CLIENT_ID=482913376120-%[3]s.apps.googleusercontent.com
+
+<Auth0Provider domain="%[1]s" clientId="%[2]s" authorizationParams={{ redirect_uri: window.location.origin, audience: "https://api.acme.io" }}>
+
+{"domain": "%[1]s", "clientId": "%[2]s", "audience": "https://api.acme.io", "authDomain": "%[1]s", "tokenType": "Bearer-JWT-RS256-default"}
+`, tenant, client, randomString(t, lowerDigits, 32))
+}
+
+// A class map as css-loader and Next.js write one: the class as written, and
+// File_class__hash for it.
+var cssModuleClasses = []string{"container", "token", "tokenRow", "tokenInput", "tokenList", "passwordField", "passwordInput", "authForm", "authButton", "secretBadge", "apiKeyRow", "credentialCard"}
+
+func cssModuleMap(t testing.TB) string {
+	classes := map[string]string{}
+	for _, class := range cssModuleClasses {
+		classes[class] = "TokenInput_" + class + "__" + randomString(t, base64URL, 5)
+	}
+	encoded, err := json.Marshal(classes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded) + "\n"
+}
+
+func cssModuleScript(t testing.TB) string {
+	var b strings.Builder
+	b.WriteString("// extracted by mini-css-extract-plugin\nconst styles = {")
+	for _, class := range cssModuleClasses {
+		fmt.Fprintf(&b, "%s:%q,", class, "Login_"+class+"__"+randomString(t, base64URL, 5))
+	}
+	b.WriteString("};\nexport default styles;\n")
+	for _, class := range cssModuleClasses {
+		fmt.Fprintf(&b, ".Login_%s__%s{display:flex}\n", class, randomString(t, alnum, 5))
+	}
+	return b.String()
+}
+
+func tokenizerConfig(t testing.TB) string {
+	config, err := json.MarshalIndent(map[string]any{
+		"tokenizer_class": "LlamaTokenizerFast", "name_or_path": "meta-llama/Llama-3.2-11B-Vision-Instruct", "model_max_length": 131072,
+		"tokenizer": "bert-base-multilingual-cased-v2", "tokenizer_file": "tokenizers/llama-3.2-11b/tokenizer.json", "max_tokens": 4096,
+		"bos_token": "<|begin_of_text|>", "eos_token": "<|eot_id|>", "pad_token": "[PAD]", "unk_token": "<unk>", "clean_up_tokenization_spaces": true,
+		"auto_map":       map[string]any{"AutoTokenizer": []any{"tokenization_llama32.LlamaTokenizerV2", nil}},
+		"token_type_ids": []int{0, 0, 1}, "use_auth_token": false, "revision": randomHex(t, 20),
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(config) + "\n"
+}
+
+func modelNames(t testing.TB) string {
+	return fmt.Sprintf(`tokenizer_name: sentence-transformers/all-MiniLM-L6-v2
+model_name_or_path: mistralai/Mistral-7B-Instruct-v0.3
+max_new_tokens: 512
+token_type_ids: null
+use_auth_token: false
+
+tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2", revision="%[1]s")
+model = AutoModelForSequenceClassification.from_pretrained("google-bert/bert-base-multilingual-cased", num_labels=3)
+inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+
+python train.py --tokenizer_name google-bert/bert-base-multilingual-cased --tokenizer sentence-transformers/all-MiniLM-L6-v2 --model_name_or_path meta-llama/Llama-3.2-11B-Vision-Instruct
+
+llama_model_loader: - kv  14:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  15:                         tokenizer.ggml.pre str              = llama-bpe-v3
+llama_model_loader: - kv  16:                      tokenizer.ggml.tokens arr[str,128256]  = ["!", "\"", "#", "$", "%%", ...
+{"tokenizer": "cl100k_base-2024-05-13", "tokenizer_name": "o200k_base-%[2]s", "tokenRow": "TokenInput_tokenRow__%[3]s"}
+`, randomHex(t, 20), randomString(t, lowerDigits, 12), randomString(t, alnum, 5))
+}
+
+func imageReferences(t testing.TB) string {
+	tag := func() string {
+		return "2024.11." + randomString(t, "123456789", 1) + randomString(t, decimal, 1) + "-build." + randomString(t, decimal, 4)
+	}
+	sha := func() string { return "sha-" + randomHex(t, 8) }
+	return fmt.Sprintf(`services:
+  auth-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0-alpine3.19
+  token-exchange:
+    image: ghcr.io/acme/token-exchange:%[2]s
+  secrets-webhook:
+    image: ghcr.io/acme/secret-token:%[1]s
+  external-secrets:
+    image: ghcr.io/external-secrets/external-secrets:v0.10.4-ubi-boringssl
+  sealed-secrets:
+    image: docker.io/bitnami/sealed-secrets-controller:0.27.1
+  vault:
+    image: hashicorp/vault:1.17.2
+
+docker pull registry.acme.io/tools/secret-token:%[3]s
+docker tag orders-api:latest 482913376120.dkr.ecr.us-east-1.amazonaws.com/acme/password-reset-api:%[1]s
+docker push registry.gitlab.com/acme/platform/auth-service:main-%[4]s
+ghcr.io/acme/api-token-rotator@sha256:%[5]s
+`, tag(), sha(), sha(), randomHex(t, 4), randomHex(t, 32))
 }

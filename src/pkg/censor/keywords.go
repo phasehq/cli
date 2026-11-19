@@ -138,6 +138,187 @@ func valueAfterKeyword(data []byte, end, window int) (int, int, bool) {
 	return start, i, i > start
 }
 
+// nameEnd is where the name a keyword sits in ends: the keyword's own end, and
+// then as far as the name runs on (STRIPE_SECRET_KEY, secretName).
+func nameEnd(data []byte, end int) int {
+	i := end
+	for i < len(data) && i-end < 48 && isIdentByte(data[i]) {
+		i++
+	}
+	return i
+}
+
+// What a name says of its value when it runs on past the keyword. secretName
+// holds the name of a secret, token_file a path, tokenizer_name a model and
+// authDomain a host: none is the secret, and each is random enough to be taken
+// for one. The word right after the keyword decides, whichever way the name is
+// written (secretName, secret_name, SECRET-NAME, tokenizer), and so does the
+// word the name ends on when it is one that names a label rather than a place
+// (AUTH0_CLIENT_ID, password_policy_name): a name's last word is what the value
+// is. A place can still hold a credential, as a database URL does, so those
+// words count only right after the keyword, and a URL with a password in it
+// is taken under any name (AUTH_URL=https://admin:...@host).
+//
+// Anything else is still a secret's name: secretKey, tokenValue,
+// SECRET_KEY_BASE, API_TOKEN_SECRET, passwordHash.
+var (
+	wordsAfterKeyword = map[string]bool{
+		"name": true, "ref": true, "izer": true, "domain": true, "row": true, "id": true, "type": true, "file": true,
+		"path": true, "url": true, "uri": true, "endpoint": true, "count": true, "expiry": true, "ttl": true,
+	}
+	wordsEndingName = map[string]bool{
+		"name": true, "ref": true, "domain": true, "row": true, "id": true, "type": true, "count": true, "expiry": true, "ttl": true,
+	}
+)
+
+// namesNoSecret reports whether the name that the keyword keys[at] sits in says
+// its value is something other than the secret. The last keyword of the name
+// is the one whose rest is read: bearer_token_file is a file because of what
+// follows token, and token_file_password is a password. keys are in the order
+// of where they end.
+func namesNoSecret(data []byte, keys []keywordHit, at int) bool {
+	end := nameEnd(data, keys[at].end)
+	from := keys[at].end
+	for _, later := range keys[at+1:] {
+		if later.end > end {
+			break
+		}
+		from = later.end
+	}
+	// "password=" ends its name itself: what follows it is the value.
+	if from == 0 || !isIdentByte(data[from-1]) {
+		return false
+	}
+	return describesNoSecret(data[from:end])
+}
+
+// describesNoSecret reports whether the rest of a name, after the keyword in
+// it, says that the value is something other than the secret.
+func describesNoSecret(rest []byte) bool {
+	i := 0
+	// AUTH0 and OAUTH2 are the keyword still.
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	var first, last []byte
+	for i < len(rest) {
+		word := nameWord(rest[i:])
+		if len(word) == 0 {
+			i++ // a separator, or a digit inside the name
+			continue
+		}
+		i += len(word)
+		// secrets_path and credentialsFile: the plural is the keyword's.
+		if first == nil && len(word) == 1 && lowerTable[word[0]] == 's' {
+			continue
+		}
+		if first == nil {
+			first = word
+		}
+		last = word
+	}
+	return listedWord(wordsAfterKeyword, first) || listedWord(wordsEndingName, last)
+}
+
+// nameWord is the word a name begins with, as names are written: lower case,
+// upper case, or one capital and then lower case. In URLPath the last capital
+// of the run begins the next word.
+func nameWord(name []byte) []byte {
+	upper := func(b byte) bool { return b >= 'A' && b <= 'Z' }
+	lower := func(b byte) bool { return b >= 'a' && b <= 'z' }
+	n := 0
+	switch {
+	case len(name) == 0:
+	case lower(name[0]):
+		for n < len(name) && lower(name[n]) {
+			n++
+		}
+	case upper(name[0]):
+		for n < len(name) && upper(name[n]) {
+			n++
+		}
+		switch {
+		case n == 1:
+			for n < len(name) && lower(name[n]) {
+				n++
+			}
+		case n < len(name) && lower(name[n]):
+			n--
+		}
+	}
+	return name[:n]
+}
+
+// listedWord looks a word up whatever its case, and in the plural too.
+func listedWord(words map[string]bool, word []byte) bool {
+	if len(word) == 0 || len(word) > 16 {
+		return false
+	}
+	var buffer [16]byte
+	for i, b := range word {
+		buffer[i] = lowerTable[b]
+	}
+	text := buffer[:len(word)]
+	if words[string(text)] {
+		return true
+	}
+	return len(text) > 2 && text[len(text)-1] == 's' && words[string(text[:len(text)-1])]
+}
+
+// imageTag reports a container image and its tag, registry/path/name:tag, with
+// the keyword in the name, as in quay.io/acme/auth-proxy:v7.6.0-alpine3.19. The
+// name is the last part of a path and the tag follows its colon at once, in a
+// tag's own characters. After // the same shape is the user of a URL instead,
+// https://x-access-token:<token>@host, and that is a credential.
+func imageTag(data []byte, keyStart, nameEnd, valueStart, valueEnd int) bool {
+	if nameEnd >= len(data) || data[nameEnd] != ':' || valueStart != nameEnd+1 {
+		return false
+	}
+	begin := keyStart
+	for begin > 0 && keyStart-begin < 64 && isIdentByte(data[begin-1]) {
+		begin--
+	}
+	if begin == 0 || data[begin-1] != '/' || (begin > 1 && data[begin-2] == '/') {
+		return false
+	}
+	for _, b := range data[valueStart:valueEnd] {
+		if !isIdentByte(b) {
+			return false
+		}
+	}
+	return true
+}
+
+// dottedToken is a token written as three runs of base64url characters joined
+// by dots, 20 or more characters in all, as a Discord bot token is. The ignore
+// patterns would take it for a dotted name such as config.auth.token whenever
+// no part of it holds a '-'. A name it is not: its parts hold digits in more
+// than one place, which a chain of identifiers hardly ever does.
+func dottedToken(value []byte) bool {
+	parts, characters, digitRuns := 1, 0, 0
+	inDigits, partLength := false, 0
+	for _, b := range value {
+		digit := b >= '0' && b <= '9'
+		switch {
+		case b == '.':
+			if partLength == 0 {
+				return false
+			}
+			parts, partLength, inDigits = parts+1, 0, false
+			continue
+		case !digit && b != '-' && !isWordByte(b):
+			return false
+		}
+		if digit && !inDigits {
+			digitRuns++
+		}
+		inDigits = digit
+		partLength++
+		characters++
+	}
+	return parts == 3 && partLength > 0 && characters >= 20 && digitRuns >= 2
+}
+
 // pathKeyword is the shell's working directory variable (PWD, OLDPWD), which
 // shares its name with the pwd= of a connection string.
 func pathKeyword(word []byte) bool {
@@ -183,12 +364,9 @@ func wholeValue(data []byte, minLength int) (int, int, bool) {
 	return start, end, true
 }
 
-// plausibleSecret drops what is plainly not a value: placeholders this matcher wrote,
-// and words or identifiers, which have no digit.
+// plausibleSecret drops what is plainly not a value: words and identifiers,
+// which have no digit.
 func plausibleSecret(value []byte) bool {
-	if bytes.HasPrefix(value, []byte("ph:")) {
-		return false
-	}
 	var digit, letter bool
 	for _, b := range value {
 		switch {

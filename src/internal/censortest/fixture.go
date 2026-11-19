@@ -108,6 +108,26 @@ func randomHex(bytesLong int) string {
 	return hex.EncodeToString(raw)
 }
 
+// variedDigits is a random number of n digits in which no digit comes more than
+// three times. A number is a value like any other here, and has to be one a
+// matcher can be held to: about one random 21-digit number in a hundred repeats
+// its digits so much that it holds under 2.5 bits a byte, which pkg/censor
+// reports as too plain to protect and leaves where it is. That is right for the
+// matcher, and it made every test that plants such a number and expects it gone
+// fail once in a hundred runs.
+func variedDigits(n int) string {
+	for {
+		value := random(digits, n)
+		most := 0
+		for _, digit := range digits {
+			most = max(most, strings.Count(value, string(digit)))
+		}
+		if most <= 3 {
+			return value
+		}
+	}
+}
+
 func b64(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
 
 func b64url(raw []byte) string { return base64.RawURLEncoding.EncodeToString(raw) }
@@ -366,7 +386,7 @@ func (b *builder) cloudAndTools() {
 	account := indentJSON(map[string]string{
 		"type": "service_account", "project_id": project, "private_key_id": randomHex(20),
 		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
-		"client_email": "orders-deployer@" + project + ".iam.gserviceaccount.com", "client_id": random(digits, 21),
+		"client_email": "orders-deployer@" + project + ".iam.gserviceaccount.com", "client_id": variedDigits(21),
 		"auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
 		"auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
 		"client_x509_cert_url":        "https://www.googleapis.com/robot/v1/metadata/x509/orders-deployer%40" + project + ".iam.gserviceaccount.com",
@@ -461,8 +481,15 @@ jobs:
 }
 
 // keywordOnlyValue has no known prefix or shape: only a keyword nearby gives it away.
+// Random letters spell "dummy" in some case about once in a million values, and
+// a rule rightly leaves a value that says it is one.
 func keywordOnlyValue(n int) string {
-	return random(alnum, n-2) + random(digits, 1) + random("abcdefghijklmnopqrstuvwxyz", 1)
+	for {
+		value := random(alnum, n-2) + random(digits, 1) + random("abcdefghijklmnopqrstuvwxyz", 1)
+		if !strings.Contains(strings.ToLower(value), "dummy") {
+			return value
+		}
+	}
 }
 
 func (b *builder) logsAndHistory() {

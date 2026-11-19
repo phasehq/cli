@@ -77,6 +77,32 @@ func FuzzRewriteJSON(f *testing.F) {
 	})
 }
 
+// FuzzRewritingTwice holds the pattern rules to this: text they have rewritten
+// once is left as it is by a second pass. A first pass shortens the text and
+// writes labels and numbers into it, and none of that may make a candidate of
+// what was none before.
+func FuzzRewritingTwice(f *testing.F) {
+	key, _ := NewKey()
+	ix, _ := NewIndex(key, IndexOptions{})
+	for _, tc := range formatCases(f) {
+		for _, sample := range tc.positives {
+			f.Add([]byte(sample.text))
+		}
+	}
+	bare := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdmMifQ.c2lnbmF0dXJlLXNpZ25hdHVyZQ"
+	f.Add([]byte("refresh_token=Zq8vLm2Rt5Xw9Kp3Hd7Nf4BcQ1Zq8vLm2Rt5Xw9Kp3Hd7Nf4BcQ1Zq8vLm2Rt5Xw9 jwt=" + bare))
+	f.Add([]byte("auth: x/hf_" + "AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGh password: config.ghp_" + "Zq8vLm2Rt5Xw9Kp3Hd7Nf4BcQ1Zq8vLm2Rt5"))
+	f.Add([]byte("sk-" + "Zq8vLm2Rt5Xw9Kp3Hd7N" + "T3Blbk" + "FJ" + "Zq8vLm2Rt5Xw9Kp3Hd-----BEGIN PRIVATE KEY----------END PRIVATE KEY-----"))
+	f.Add([]byte("token=ph:secret:a secret ph:keyword_secret:12Zq8vLm2Rt5Xw9Kp3Hd7Nf4BcQ1 https://api.telegram.org/bot123456789:AAZq8vLm2Rt5Xw9Kp3Hd7Nf4BcQ1Zq8vLm2R/photos/file_17.jpg"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		once, _ := ix.Redact(data)
+		again, report := ix.Redact(once)
+		if !bytes.Equal(once, again) {
+			t.Fatalf("a second pass changed the text (%d redacted):\n%q\n%q\n%q", report.Redacted, data, once, again)
+		}
+	})
+}
+
 func mustJSON(s string) []byte {
 	out, _ := json.Marshal(s)
 	return out

@@ -143,7 +143,16 @@ func modelRequest(texts ...string) []byte {
 }
 
 // corpus is ordinary text and code: this module's Go sources, plus git hashes,
-// UUIDs and the kind of base64 a request carries.
+// UUIDs and the kind of base64 a request carries. The base64 is of random
+// bytes. It used to be of hex text, which made the test that reads this fail
+// about once in 330 runs: twelve characters of base64 over hex hold only 36
+// bits, the test indexes about a thousand such chunks of its hex secrets, and
+// megabytes of the same kind of text sooner or later repeat one. What that
+// showed about the matcher is pinned by TestOneThinChunkIsNoMatch.
+//
+// Random base64 can spell the one key prefix that needs no punctuation: a blob
+// holding "AIza" is drawn again, because 35 letters and digits after it make a
+// Google API key to the letter, about once in forty thousand corpora.
 func corpus(t testing.TB, size int) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
@@ -162,9 +171,12 @@ func corpus(t testing.TB, size int) []byte {
 		return nil
 	})
 	for buffer.Len() < size {
+		blob := base64.StdEncoding.EncodeToString(randomBytes(t, 48))
+		if strings.Contains(blob, "AI"+"za") {
+			continue
+		}
 		fmt.Fprintf(&buffer, "commit %s\nMerge: %s\nid=%s-%s-4%s-a%s-%s\nblob %s\n",
-			randomHex(t, 20), randomHex(t, 4), randomHex(t, 4), randomHex(t, 2), randomHex(t, 2)[1:], randomHex(t, 2)[1:], randomHex(t, 6),
-			base64.StdEncoding.EncodeToString([]byte(randomHex(t, 24))))
+			randomHex(t, 20), randomHex(t, 4), randomHex(t, 4), randomHex(t, 2), randomHex(t, 2)[1:], randomHex(t, 2)[1:], randomHex(t, 6), blob)
 	}
 	return buffer.Bytes()[:size]
 }

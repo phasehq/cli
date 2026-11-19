@@ -77,9 +77,11 @@ type formatSample struct {
 
 // formatCase is what one rule must do: replace its positives, and leave its
 // near-misses and its documentation or test-mode values exactly as they were.
+// A rule that only alerts reports its positives and leaves them as they were.
 type formatCase struct {
 	rule, label string
-	score       int // of every positive
+	score       int  // of every positive
+	alert       bool // the rule never replaces
 	positives   []formatSample
 	nearMisses  map[string]string
 	examples    map[string]string
@@ -121,7 +123,6 @@ func formatCases(t testing.TB) []formatCase {
 	})
 	const hooks = "https://hooks.slack.com/services/"
 	sendgrid := token(func() string { return "SG" + "." + random(base64URL, 22) + "." + random(base64URL, 43) })
-	twilio := token(func() string { return "SK" + random(mixedHex, 32) })
 	telegram := token(func() string { return random("123456789", 1) + random(decimal, 9) + ":AA" + random(base64URL, 33) })
 	webhookSecret := token(func() string { return "whsec" + "_" + random(alnum, 32) })
 	restricted := token(func() string { return "rk_" + "live_" + random(alnum, 32) })
@@ -135,7 +136,8 @@ func formatCases(t testing.TB) []formatCase {
 	azure := token(func() string { return random(base64Std, 86) + "==" })
 	// The storage emulator's account key, which every Azure developer has seen.
 	emulatorKey := "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50u" + "SRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
-	secretToken := token(func() string { return strings.ToUpper(randomUUIDText(t)) + "%20" + random(alnum, 6) })
+	secretWords := token(func() string { return random(asciiLetters, 12) + "-" + random(asciiLetters, 12) })
+	imageTagText := "2024.11." + random("123456789", 1) + random(decimal, 1) + "-build." + random(decimal, 4)
 	awsID := token(func() string { return "AKIA" + random("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16) })
 	npmrc := checksummed(t, "npm_")
 
@@ -158,12 +160,12 @@ func formatCases(t testing.TB) []formatCase {
 		},
 		{
 			rule: "openai-api-key", label: "openai_api_key", score: 60,
-			positives: []formatSample{inText(openai("proj", 74)), inText(openai("svcacct", 58)), inText(openai("admin", 74))},
+			positives: []formatSample{inText(openai("proj", 74)), inText(openai("svcacct", 58)), inText(openai("admin", 74)), inText(openai("proj", 20)), inText(openai("svcacct", 43))},
 			nearMisses: map[string]string{
 				"no marker":        plain("sk-" + "proj-" + random(base64URL, 156)),
-				"57 after marker":  plain("sk-" + "proj-" + random(base64URL, 74) + marker + random(base64URL, 57)),
+				"19 after marker":  plain("sk-" + "proj-" + random(base64URL, 74) + marker + random(base64URL, 19)),
 				"75 after marker":  plain("sk-" + "proj-" + random(base64URL, 74) + marker + random(base64URL, 75)),
-				"57 before marker": plain("sk-" + "proj-" + random(alnum, 57) + marker + random(base64URL, 74)),
+				"19 before marker": plain("sk-" + "proj-" + random(alnum, 19) + marker + random(base64URL, 74)),
 				"another kind":     plain("sk-" + "team-" + random(alnum, 74) + marker + random(alnum, 74)),
 			},
 			examples: map[string]string{"placeholder": plain("sk-" + "proj-" + x(74) + marker + x(74))},
@@ -186,8 +188,15 @@ func formatCases(t testing.TB) []formatCase {
 			examples:   map[string]string{"one repeated character": plain("sk-" + "or-v1-" + zeros(64))},
 		},
 		{
-			rule: "google-api-key", label: "google_api_key", score: 60,
-			positives:  []formatSample{inText(google), {text: `{"apiUrl":"https://maps.example.com/js?key=` + google + `&v=3"}`, secret: google}},
+			// Replaced under a name that says Gemini or Google AI, and only there:
+			// TestGoogleKeysAreReportedUnlessTheNameSaysGemini has the other names.
+			rule: "google-api-key", label: "google_api_key", score: 70,
+			positives: []formatSample{
+				after("GEMINI_API_KEY=", google),
+				{text: `export GOOGLE_API_KEY="` + google + `"`, secret: google},
+				{text: `curl -H "x-goog-api-key: ` + google + `" https://example.com/v1beta/models`, secret: google},
+				{text: `genai.configure(api_key="` + google + `")`, secret: google},
+			},
 			nearMisses: map[string]string{"34 characters": plain(google[:len(google)-1]), "36 characters": plain(google + "Q"), "inside a word": plain("x" + google)},
 			examples:   map[string]string{"placeholder": plain("AI" + "za" + strings.Repeat("X", 35))},
 		},
@@ -268,12 +277,6 @@ func formatCases(t testing.TB) []formatCase {
 			positives:  []formatSample{inText(sendgrid)},
 			nearMisses: map[string]string{"42 at the end": plain(sendgrid[:len(sendgrid)-1]), "44 at the end": plain(sendgrid + "Q"), "21 in the middle": plain("SG" + "." + random(alnum, 21) + "." + random(alnum, 43)), "a method call": "logger.info(MSG.format(name, value)); SG.send(message, callback)"},
 			examples:   map[string]string{"placeholder": plain("SG" + "." + x(22) + "." + x(43))},
-		},
-		{
-			rule: "twilio-api-key-sid", label: "twilio_api_key", score: 70,
-			positives:  []formatSample{after("TWILIO_API_KEY=", twilio), after(`const client = twilio(apiKeySid: "`, twilio), {text: "api_key: " + twilio + ".", secret: twilio}},
-			nearMisses: map[string]string{"no keyword": plain(twilio), "no keyword, as an id": "created " + twilio + " for the support app"},
-			examples:   map[string]string{"one repeated character": "TWILIO_API_KEY=SK" + zeros(32), "placeholder": "TWILIO_API_KEY=SK" + x(32)},
 		},
 		{
 			rule: "telegram-bot-token", label: "telegram_bot_token", score: 70,
@@ -377,25 +380,33 @@ func formatCases(t testing.TB) []formatCase {
 				after("AZURE_STORAGE_KEY=", azure),
 				{text: `account_key: "` + azure + `"`, secret: azure},
 				{text: `{"storageAccountKey" : '` + azure + `'}`, secret: azure},
+				// The az CLI's own flag, and a .NET config file's attribute pair.
+				{text: "az storage blob list --account-name ordersprod --account-key " + azure + " -c backups", secret: azure},
+				{text: `az storage container list --account-key "` + azure + `"`, secret: azure},
+				{text: `<add key="StorageAccountKey" value="` + azure + `" />`, secret: azure},
+				{text: `<add key='AccountKey' value = '` + azure + `'/>`, secret: azure},
 			},
 			nearMisses: map[string]string{
-				"no name before it": plain(azure),
-				"85 characters":     "AccountKey=" + random(alnum, 85) + "==;",
-				"87 characters":     "AccountKey=" + random(alnum, 87) + "==;",
-				"one = at the end":  "AccountKey=" + random(alnum, 87) + "=;",
-				"a name far before": "AccountKey is rotated monthly, the current blob is " + azure,
+				"no name before it":         plain(azure),
+				"a space after a name":      "AccountKey " + azure,
+				"another flag":              "az storage blob list --account-name " + azure,
+				"another attribute between": `<add key="AccountKey" name="x" value="` + azure + `" />`,
+				"85 characters":             "AccountKey=" + random(alnum, 85) + "==;",
+				"87 characters":             "AccountKey=" + random(alnum, 87) + "==;",
+				"one = at the end":          "AccountKey=" + random(alnum, 87) + "=;",
+				"a name far before":         "AccountKey is rotated monthly, the current blob is " + azure,
 			},
 			examples: map[string]string{"the storage emulator's key": "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=" + emulatorKey + ";BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"},
 		},
 		{
-			rule: "azure-storage-key-keyword", label: "azure_storage_key", score: 70,
-			positives:  []formatSample{{text: `primary_access_key = "` + azure + `"`, secret: azure}, after("AZURE_STORAGE_ACCESS_KEY=", azure)},
-			nearMisses: map[string]string{"no keyword": "the blob " + azure + " was uploaded"},
-			examples:   map[string]string{"the storage emulator's key": "storage_access_key=" + emulatorKey},
-		},
-		{
-			rule: "secret-token-uri", label: "secret_token", score: 90,
-			positives:  []formatSample{{text: "the hook sends secret-token:" + secretToken + " as its password", secret: secretToken}},
+			// It only reports. The value in these has no digit or is an image's
+			// tag, so the keyword rule does not replace it either; a random value
+			// after the scheme is the keyword rule's, in TestRulesThatOnlyRelabelAreGone.
+			rule: "secret-token-uri", label: "secret_token", score: 90, alert: true,
+			positives: []formatSample{
+				{text: "the hook sends secret-token:" + secretWords + " as its password", secret: secretWords},
+				{text: "    image: ghcr.io/acme/secret-token:" + imageTagText + "\n", secret: imageTagText},
+			},
 			nearMisses: map[string]string{"15 characters": "use secret-token:" + random(lowerHex, 15) + " for now", "an image tag": "image: registry.example.com/tools/secret-token:v1.2.3"},
 			examples:   map[string]string{"the RFC's own": "Authorization: Bearer secret-token:" + "E92FB7EB-D882-47A4-A265-A0B6135DC842%20foo"},
 		},
@@ -438,6 +449,12 @@ func TestTokenFormats(t *testing.T) {
 				if sample.score != 0 {
 					score = sample.score
 				}
+				if tc.alert {
+					if hit.Rule != tc.rule || hit.Label != tc.label || hit.Action != actionAlert || hit.Placeholder != "" || hit.Score != score || string(result.Out) != sample.text {
+						t.Fatalf("positive %d: %+v and %q, want an alert of rule %s, score %d, and nothing changed", i, hit, result.Out, tc.rule, score)
+					}
+					continue
+				}
 				if hit.Rule != tc.rule || hit.Label != tc.label || hit.Action != actionRedact || hit.Placeholder != "ph:"+tc.label+":1" || hit.Score != score {
 					t.Fatalf("positive %d: %+v, want rule %s label %s score %d", i, hit, tc.rule, tc.label, score)
 				}
@@ -472,6 +489,9 @@ func TestTokenFormatsInARequest(t *testing.T) {
 	var lines, secrets []string
 	distinct := map[string]bool{}
 	for _, tc := range formatCases(t) {
+		if tc.alert {
+			continue
+		}
 		for _, sample := range tc.positives {
 			lines = append(lines, sample.text)
 			secrets = append(secrets, sample.secret)
@@ -511,19 +531,21 @@ func TestTokenFormatsInARequest(t *testing.T) {
 // shape after the same keyword is left to the general keyword rule.
 func TestShapedKeywordRules(t *testing.T) {
 	ix := build(t)
-	sid := fresh(t, func() string { return "SK" + randomString(t, lowerHex, 32) })
-	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]any{"role": "user", "content": map[string]string{"apiKeySid": sid, "note": sid}}}})
+	bot := fresh(t, func() string {
+		return randomString(t, "123456789", 1) + randomString(t, decimal, 9) + ":AA" + randomString(t, base64URL, 33)
+	})
+	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]any{"role": "user", "content": map[string]string{"botToken": bot, "note": bot}}}})
 	result := apply(ix, body)
-	if len(result.Rules) != 1 || result.Rules[0].Rule != "twilio-api-key-sid" || result.Rules[0].Path != "/messages/0/content/apiKeySid" || strings.Count(string(result.Out), sid) != 1 {
+	if len(result.Rules) != 1 || result.Rules[0].Rule != "telegram-bot-token" || result.Rules[0].Path != "/messages/0/content/botToken" || strings.Count(string(result.Out), bot) != 1 {
 		t.Fatalf("as a JSON value under a keyword: %+v %s", result.Rules, result.Out)
 	}
-	hit, out, ok := ruleHit(t, ix, "TWILIO_API_KEY=SK"+"9f8e7d6c5b4a39281706f5e4d3c2b1a")
-	if !ok || hit.Label != "keyword_secret" || hit.Action != actionRedact || !strings.HasPrefix(out, "TWILIO_API_KEY=ph:keyword_secret:") {
+	hit, out, ok := ruleHit(t, ix, "TELEGRAM_BOT_TOKEN=12345:"+"AA9f8e7d6c5b4a39281706f5e4d3c2b1a")
+	if !ok || hit.Label != "keyword_secret" || hit.Action != actionRedact || !strings.HasPrefix(out, "TELEGRAM_BOT_TOKEN=ph:keyword_secret:") {
 		t.Fatalf("a value of another shape after the keyword: %+v %s", hit, out)
 	}
 	// With several keywords before one value it is still one finding.
-	hit, out, _ = ruleHit(t, ix, "auth token secret: "+sid)
-	if hit.Rule != "twilio-api-key-sid" || out != "auth token secret: "+hit.Placeholder {
+	hit, out, _ = ruleHit(t, ix, "auth token secret: "+bot)
+	if hit.Rule != "telegram-bot-token" || out != "auth token secret: "+hit.Placeholder {
 		t.Fatalf("%+v %s", hit, out)
 	}
 }

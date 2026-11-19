@@ -32,6 +32,36 @@
 # which every match contains: a rule with hints runs only on text that holds one. A
 # regex with no literal beginning needs them, because it runs over the whole of such
 # text. Exact inventory matches don't go through any of this: they always redact.
+#
+# Options a rule can carry besides its pattern:
+#
+#   charset   with a regex, the token's own alphabet. When more of it follows a match
+#             the token ran on past the length the regex allows, and the whole run is
+#             replaced; a run longer than 512 bytes is no token and nothing is taken.
+#             A prefix rule's charset does the same. Only for a rule that begins with
+#             a literal.
+#   keywords  names of the rule's own, used instead of the keywords below for this
+#             rule's bonus: it is earned when one of them ends within keyword_window
+#             bytes before the candidate on the same line, or is in the JSON key
+#             holding it. keywords_except lists words that cancel it when the same
+#             name holds one. A rule with keywords of its own decides alone about a
+#             value of its format: a keyword_value rule does not take that value too.
+#
+# How candidates are settled. Where candidates that will be replaced overlap, their
+# union is replaced, under the label of the one that scored highest; a candidate that
+# only alerts never widens a replacement. Nothing is a candidate that begins at a
+# placeholder (ph:<label>:<n> or ph:<type>:<id>) or inside one, and a keyword inside one
+# is no keyword, so text that was already rewritten is left as it is. An escape just
+# before a place a rule can begin is read as the character it stands for: \n, \t and
+# \r as white space and %XX as its byte, so a token after one is found as it would be
+# in the text unescaped.
+#
+# A rule file is held to this: an id is 1 to 64 of a-z, 0-9 and '-', beginning with a
+# letter or digit; a key this version does not know costs the rule, which is left out
+# and reported; a validator it does not know is dropped and the rule applied without
+# it, and reported; a scoring number left out takes the value it has here; an ignore
+# entry under 4 bytes, or an ignore pattern that matches the empty string, is an error,
+# as are more than 512 rules.
 scoring:
   keyword_window: 40
   keyword_bonus: 30
@@ -98,6 +128,10 @@ scoring:
   # Things written after a keyword that aren't secrets: references to one, URLs
   # without credentials, cloud resource names, and code identifiers. These apply to
   # keyword_value candidates only; the values and substrings above apply to all rules.
+  # One kind of value they never drop: three runs of base64url characters joined by
+  # dots, 20 or more characters in all, with digits in more than one place. That is a
+  # token of the kind Discord issues, and reads like a dotted name whenever none of
+  # its parts holds a '-'.
   ignore_patterns:
     - '^(?:process\.env|os\.environ|os\.Getenv|ENV\[|env\.|secrets\.|vars\.|\$\{?[A-Za-z_])'
     - '^[a-z][a-z0-9+.-]*://[^@]*$'
@@ -106,6 +140,8 @@ scoring:
     - '^[A-Za-z_]+\d{0,4}$'
     # a base64 PEM certificate, such as a kubeconfig's certificate-authority-data
     - '^LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS'
+    # a CSS-module class name as bundlers write it, File_class__hash
+    - '^[A-Za-z][A-Za-z0-9]*_[A-Za-z][A-Za-z0-9-]*__[A-Za-z0-9_-]{5,8}$'
 
 rules:
   # Phase tokens: pss_<kind>:v<version>:<64 hex>, followed by up to three more
@@ -115,18 +151,21 @@ rules:
     description: Phase personal access token
     regex: '\bpss_user:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
     hints: ['pss_user:']
+    charset: '0-9a-f:'
     validator: phase-token
     label: phase_pat
   - id: phase-service-token
     description: Phase service or service account token
     regex: '\bpss_service:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
     hints: ['pss_service:']
+    charset: '0-9a-f:'
     validator: phase-token
     label: phase_service_token
   - id: phase-agent-token
     description: Phase Agent token
     regex: '\bpss_agent:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
     hints: ['pss_agent:']
+    charset: '0-9a-f:'
     validator: phase-token
     label: phase_agent_token
 
@@ -143,26 +182,26 @@ rules:
     min_entropy: 3.5
     hints: [ws_secret_access_key, WS_SECRET_ACCESS_KEY, ws_Secret_Access_Key]
     label: aws_secret_access_key
+  # A key of this shape is public by design in a Firebase or Maps web app, and a secret
+  # when it is a Gemini key: only the name it sits under tells them apart. So it is
+  # reported wherever it is found and replaced only under a name that says Gemini or
+  # Google AI, never one that also says it is public.
   - id: google-api-key
-    description: Google API key (AIza and 35 characters)
+    description: Google API key (AIza and 35 characters), replaced under a Gemini or Google AI name
     regex: '\b(?P<secret>AIza[A-Za-z0-9_-]{35})(?:[^A-Za-z0-9_-]|$)'
     min_entropy: 3.0
+    score: 40
+    keywords: [gemini, google_api_key, google_ai, google_generative_ai, genai, generativelanguage, x-goog-api-key]
+    keywords_except: [public, firebase]
     label: google_api_key
   # An Azure storage account key has no prefix: 64 bytes in base64, so 86 characters
-  # and ==. It is taken only after a name that says what it is, here or (below) after
-  # a keyword.
+  # and ==. It is taken only after a name that says what it is: name = value or
+  # name: value, the az CLI's --account-key and a space, and the attribute pair of a
+  # .NET config file, key="StorageAccountKey" value="...".
   - id: azure-storage-key
     description: Azure storage account key after an AccountKey, account_key or storage_key name
-    regex: '(?i:account|storage)[_.-]?(?i:key)["'']?[ \t]{0,3}[=:][ \t]{0,3}["'']?(?P<secret>[A-Za-z0-9+/]{86}==)'
+    regex: '(?:--account-key[ \t]{1,3}["'']?|(?i:account|storage)[_.-]?(?i:key)(?:["'']?[ \t]{0,3}[=:][ \t]{0,3}["'']?|["''][ \t]{1,3}value[ \t]{0,3}=[ \t]{0,3}["'']))(?P<secret>[A-Za-z0-9+/]{86}==)'
     min_entropy: 3.5
-    label: azure_storage_key
-  - id: azure-storage-key-keyword
-    description: Azure storage account key as the value after a keyword
-    keyword_value: true
-    regex: '^[A-Za-z0-9+/]{86}==$'
-    min_length: 88
-    min_entropy: 3.5
-    score: 40
     label: azure_storage_key
   - id: digitalocean-token
     description: DigitalOcean personal access, OAuth or refresh token
@@ -178,8 +217,8 @@ rules:
     label: anthropic_api_key
   # T3BlbkFJ is "OpenAI" in base64, and sits in the middle of every OpenAI key.
   - id: openai-api-key
-    description: OpenAI project, service account or admin key
-    regex: '\b(?P<secret>sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{58,74}T3BlbkFJ[A-Za-z0-9_-]{58,74})(?:[^A-Za-z0-9_-]|$)'
+    description: OpenAI project, service account or admin key, 20 to 74 characters either side of T3BlbkFJ
+    regex: '\b(?P<secret>sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,74}T3BlbkFJ[A-Za-z0-9_-]{20,74})(?:[^A-Za-z0-9_-]|$)'
     min_entropy: 3.0
     label: openai_api_key
   - id: openai-legacy-api-key
@@ -278,21 +317,14 @@ rules:
     regex: '\b(?P<secret>SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})(?:[^A-Za-z0-9_-]|$)'
     min_entropy: 3.0
     label: sendgrid_api_key
-  # SK and 32 hex is too common a shape to act on alone.
-  - id: twilio-api-key-sid
-    description: Twilio API key SID as the value after a keyword
-    keyword_value: true
-    regex: '^(?P<secret>SK[0-9a-fA-F]{32})(?:[^0-9A-Za-z_]|$)'
-    min_length: 34
-    min_entropy: 2.5
-    score: 40
-    label: twilio_api_key
   # A bot token is the bot's numeric id, a colon and 35 characters. It is taken as the
   # value after a keyword, or in a Bot API URL, which is where it is mostly written.
+  # After a keyword it has to be the whole value: a value that goes on past it is
+  # something else, and the general keyword rule takes all of it.
   - id: telegram-bot-token
     description: Telegram bot token as the value after a keyword
     keyword_value: true
-    regex: '^(?P<secret>[0-9]{8,10}:A[A-Za-z0-9_-]{34})(?:[^A-Za-z0-9_-]|$)'
+    regex: '^[0-9]{8,10}:A[A-Za-z0-9_-]{34}$'
     min_length: 44
     min_entropy: 3.0
     score: 40
@@ -339,6 +371,7 @@ rules:
   - id: vault-token
     description: HashiCorp Vault service (hvs.) or batch (hvb.) token
     regex: '\bhv(?:s\.[A-Za-z0-9_-]{90,120}|b\.[A-Za-z0-9_-]{138,300})'
+    charset: A-Za-z0-9_-
     min_entropy: 3.0
     label: vault_token
   - id: postman-api-key
@@ -362,11 +395,14 @@ rules:
     min_entropy: 3.0
     label: doppler_token
 
-  # RFC 8959: a URI scheme whose whole purpose is to mark what follows as a secret.
+  # RFC 8959: a URI scheme whose whole purpose is to mark what follows as a secret. The
+  # same text is also how a container image named secret-token is tagged, so this only
+  # reports; a random value after it is replaced by the keyword rule below.
   - id: secret-token-uri
-    description: an RFC 8959 secret-token URI; what follows the scheme is replaced
+    description: an RFC 8959 secret-token URI; what follows the scheme is reported
     regex: '\bsecret-token:(?P<secret>[A-Za-z0-9._~%!$&*+=:@-]{15,511}[A-Za-z0-9_~=+-])'
     min_entropy: 2.5
+    action: alert
     label: secret_token
 
   - id: jwt
@@ -380,7 +416,13 @@ rules:
 
   # Fires only through scoring: a high-entropy value with a letter and a digit,
   # assigned right after a keyword. With no keyword nearby there is no candidate at
-  # all, so git hashes, UUIDs and base64 images elsewhere never reach it.
+  # all, so git hashes, UUIDs and base64 images elsewhere never reach it. Nor is there
+  # one when the name goes on past its last keyword to say that the value is something
+  # else: into Name, Ref, izer, Domain, Row, Id, Type, File, Path, Url, Uri, Endpoint,
+  # Count, Expiry or Ttl as the next word (secretName, token_file, tokenizer), or
+  # ending on one of those that names a label (AUTH0_CLIENT_ID), unless the value is a
+  # URL with a password in it; or when the keyword is in the name of a container image
+  # and the value is its tag.
   - id: keyword-high-entropy
     description: a high-entropy value assigned right after a secret-sounding name
     keyword_value: true

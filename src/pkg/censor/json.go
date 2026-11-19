@@ -90,12 +90,25 @@ func (ix *Index) RewriteJSON(body []byte, opts ScanOptions) ([]byte, *Report, er
 // and refuses an edited one, which breaks every later request of the session.
 // The provider wrote that text, so removing a value from it protects nothing.
 // Such strings are scanned so a finding is reported, and never changed.
+//
+// The exemption holds only where the providers put such text, because the same
+// keys anywhere else are a tool's or a user's own: the thinking, signature and
+// data strings of a thinking or redacted_thinking block that is an item of a
+// message's content (/messages/<n>/content/<m>), and an encrypted_content
+// string directly on an item of the input (/input/<n>/encrypted_content). A
+// tool result, a tool's input or metadata that merely looks the same is
+// scanned and rewritten like any other text.
 var (
 	signedBlockTypes = map[string]bool{"thinking": true, "redacted_thinking": true}
 	signedBlockKeys  = map[string]bool{"thinking": true, "signature": true, "data": true}
 )
 
-const encryptedContentKey = "encrypted_content"
+const (
+	encryptedContentKey = "encrypted_content"
+	messagesKey         = "messages"
+	contentKey          = "content"
+	inputKey            = "input"
+)
 
 type segment struct {
 	key   string
@@ -139,14 +152,21 @@ func (w *walker) apply() []byte {
 	return append(out, w.data[last:]...)
 }
 
-// underEncryptedContent reports a value under a key named encrypted_content.
-func (w *walker) underEncryptedContent() bool {
-	for _, s := range w.stack {
-		if !s.array && s.key == encryptedContentKey {
-			return true
-		}
-	}
-	return false
+// atContentBlock reports that the value being walked is an item of a
+// message's content in the request body itself: /messages/<n>/content/<m>.
+func (w *walker) atContentBlock() bool {
+	s := w.stack
+	return w.top && len(s) == 4 && !s[0].array && s[0].key == messagesKey && s[1].array &&
+		!s[2].array && s[2].key == contentKey && s[3].array
+}
+
+// atEncryptedContent reports that the value being walked is the
+// encrypted_content of an item of the request body's input:
+// /input/<n>/encrypted_content.
+func (w *walker) atEncryptedContent() bool {
+	s := w.stack
+	return w.top && len(s) == 3 && !s[0].array && s[0].key == inputKey && s[1].array &&
+		!s[2].array && s[2].key == encryptedContentKey
 }
 
 // pointer is the JSON pointer (RFC 6901) of the current value.
@@ -219,7 +239,8 @@ func (w *walker) object() {
 		return
 	}
 	// Whether the object is a signed block depends on its type member, which
-	// may come after the members it decides about; those wait for it.
+	// may come after the members it decides about; those wait for it. Only an
+	// item of a message's content can be one.
 	type held struct {
 		key        string
 		start, end int
@@ -227,6 +248,7 @@ func (w *walker) object() {
 	var typ string
 	typeKnown := false
 	var waiting []held
+	block := w.atContentBlock()
 	for {
 		w.ws()
 		keyStart := w.pos
@@ -237,12 +259,12 @@ func (w *walker) object() {
 		w.ws()
 		w.stack = append(w.stack, segment{key: key})
 		switch {
-		case w.data[w.pos] == '"' && key == "type":
+		case block && w.data[w.pos] == '"' && key == "type":
 			start := w.pos
 			end := w.str()
 			typ, typeKnown = decodeKey(w.data[start:end]), true
 			w.handleString(start, end, false)
-		case w.data[w.pos] == '"' && signedBlockKeys[key]:
+		case block && w.data[w.pos] == '"' && signedBlockKeys[key]:
 			start := w.pos
 			end := w.str()
 			if typeKnown {
@@ -322,8 +344,8 @@ func decodeKey(literal []byte) string {
 	return key
 }
 
-// handleString scans one string literal. A signed one, in the request body
-// itself, is scanned for the report only and left exactly as it was.
+// handleString scans one string literal. A signed one is scanned for the report
+// only and left exactly as it was.
 func (w *walker) handleString(start, end int, signed bool) {
 	literal := w.data[start:end]
 	inner := literal[1 : len(literal)-1]
@@ -382,10 +404,11 @@ func (w *walker) handleString(start, end int, signed bool) {
 	if len(entry.hits) == 0 {
 		return
 	}
-	// Only the request's own structure can hold what the provider signed. JSON
-	// found inside a string is text a tool or a file produced, whatever its
-	// keys are called, so nothing in it is exempt.
-	signed = w.top && (signed || w.underEncryptedContent())
+	// Only the request's own structure can hold what the provider signed, and
+	// only in the places it puts it. JSON found inside a string is text a tool
+	// or a file produced, whatever its keys are called, so nothing in it is
+	// exempt.
+	signed = signed || w.atEncryptedContent()
 	here := w.pointer()
 	for _, h := range entry.hits {
 		h.path = here + h.path

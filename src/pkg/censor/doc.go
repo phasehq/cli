@@ -42,18 +42,37 @@
 // checksum or a structure of its own, a validator for it. A validator that
 // passes raises a match's score; one that fails never lowers it, so a value in
 // a format's shape is replaced whether or not its checksum could be confirmed.
-// A format with no prefix worth acting on is taken only after a keyword.
-// Documentation examples and test-mode values are left alone. A rule file may
-// be newer than this package: a rule it cannot apply is left out and listed by
-// Rules.Skipped, and the rest of the file applies.
+// A format with no prefix worth acting on is taken only after a keyword, and a
+// format that is a secret under one name and public under another, as a Google
+// API key is, only under a name that says which. A name that runs on past its
+// keyword to say the value is something else (secretName, token_file,
+// tokenizer) is not a secret's name. Documentation examples and test-mode
+// values are left alone.
+//
+// Where matches that will be replaced overlap, their union is replaced, under
+// the label of the one that scored highest, so that no part of a longer value
+// stays behind; a token that runs on in its own alphabet past the length its
+// rule allows is replaced whole. An escape just before a token (\n, \t, \r,
+// %XX) is read as the character it stands for, so a token in a log line
+// carried inside a string, or in an encoded URL, is found. No rule takes what
+// begins at a placeholder or inside one, and a keyword inside one is no
+// keyword: scanning text that was already rewritten changes nothing.
+//
+// A rule file may be newer than this package: a rule it cannot apply is left
+// out and listed by Rules.Skipped, and the rest of the file applies. A rule
+// whose validator alone is unknown is applied without it, and listed too. What
+// would switch protection off quietly is an error: see ParseRules.
 //
 // Text the provider signed or encrypted and the client sends back as it was is
-// scanned for the report only and never changed: the thinking, signature and
-// data strings of a thinking or redacted_thinking block, and any string under
-// an encrypted_content key, in the request body itself. The provider refuses
-// an edited block, and it wrote that text, so its findings have the action
-// "left". JSON held inside a string is a tool's or a file's text whatever its
-// keys are called, and nothing in it is exempt.
+// scanned for the report only and never changed. That holds in two places of
+// the request body, where the providers put such text, and nowhere else: the
+// thinking, signature and data strings of a thinking or redacted_thinking
+// block that is an item of a message's content (/messages/<n>/content/<m>),
+// and an encrypted_content string directly on an item of the input
+// (/input/<n>). The provider refuses an edited block, and it wrote that text,
+// so its findings have the action "left". The same keys anywhere else, in a
+// tool's input or result or in JSON held inside a string, are a tool's or a
+// file's text, and nothing there is exempt.
 //
 // A chunk that repeats within a form is indexed at its first place only, one
 // rolling hash leads to a bounded number of chunks across the index, and a
@@ -72,7 +91,18 @@
 //
 //   - A fragment of an indexed value is only certain to be caught when it is at
 //     least 23 bytes long (twice the chunk, less one); a fragment of 12 to 22
-//     bytes is caught at some offsets only, and a shorter one never.
+//     bytes is caught at some offsets only, and a shorter one never. Even at 23
+//     bytes it is not caught when the one chunk it holds whole is too plain to
+//     count (under 2.8 bits per byte, as about one chunk in 700 of a random
+//     value is): it then needs a second chunk, and is certain from 35 bytes.
+//   - A fragment of a base64 or hex form needs more when one chunk of the form
+//     carries under 48 bits of the value, because other text of the same kind
+//     then repeats such a chunk by chance. That is so for the base64 of a value
+//     made of hex digits, of digits, or of one case of letters with or without
+//     digits, and for the hex of any text. Such a fragment is caught only when
+//     it holds two whole chunks next to each other: for certain from 35
+//     characters, at some offsets from 24, and never below. The whole form is
+//     found as before.
 //   - A value transformed in any other way (reversed, split, re-encoded in a
 //     form not listed above, encrypted, compressed without base64 around it, or
 //     inside a base64 string of 16 KiB or more) is not found.

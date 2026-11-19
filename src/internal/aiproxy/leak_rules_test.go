@@ -14,7 +14,10 @@ import (
 
 // A rule file that is not the binary's own: one Phase token rule is there,
 // one is there and cannot be applied, one is missing, and two other rules
-// are from a later version.
+// are from a later version. The one that cannot be applied names its
+// validators under a key this version does not know. A rule with a key like
+// that is left out, because the key may be a constraint; one whose validator
+// alone is unknown is applied without it, and so would not do here.
 const laterRuleFile = `
 scoring:
   keywords: [token]
@@ -25,7 +28,7 @@ rules:
     label: phase_service_token
   - id: phase-agent-token
     regex: '\bpss_agent:v\d+:[0-9a-f]{64}(?::[0-9a-f]{64}){0,3}'
-    validator: phase-token-2031
+    validators: [phase-token-2031]
     label: phase_agent_token
   - id: later-format
     regex: '\blater_[a-z0-9]{20}\b'

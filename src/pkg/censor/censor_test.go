@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -113,9 +114,28 @@ func TestPointerEscapesKeys(t *testing.T) {
 	}
 }
 
+// everyChunkCounts is a random value none of whose 12-byte chunks is too plain
+// to count. About one random chunk in 700 repeats its characters until it is
+// under 2.8 bits a byte, which the index marks as carrying no partial match
+// alone: right for the index, and a failure once in 140 runs for a test of
+// what a piece of a 64-character value does at every offset.
+func everyChunkCounts(t testing.TB, alphabet string, n int) string {
+	t.Helper()
+	for {
+		value := randomString(t, alphabet, n)
+		plain := false
+		for at := 0; at+chunkSize <= n; at += chunkSize {
+			plain = plain || entropy(value[at:at+chunkSize]) < weakChunkEntropy
+		}
+		if !plain {
+			return value
+		}
+	}
+}
+
 // TestPartialLeaks measures what a contiguous piece of a value does at every offset.
 func TestPartialLeaks(t *testing.T) {
-	value := randomString(t, alnum+"-_", 64)
+	value := everyChunkCounts(t, alnum+"-_", 64)
 	ix := build(t, secret{ID: "token", Value: value})
 	for _, length := range []int{12, 16, 23, 24, 32} {
 		caught, total := 0, 0
@@ -144,16 +164,113 @@ func TestPartialLeaks(t *testing.T) {
 	}
 }
 
+// A chunk too plain to count carries no partial match alone, so a piece of a
+// value is caught for certain from 23 bytes only where the chunk it holds whole
+// is not such a one. Random values have one about once in 140, and this is
+// what it does.
+func TestAPlainChunkCarriesNoPieceAlone(t *testing.T) {
+	plain := "aabbccaabbcc"
+	if entropy(plain) >= weakChunkEntropy {
+		t.Fatalf("the test's chunk has %.2f bits a byte", entropy(plain))
+	}
+	head, tail := fixedText("plain chunk head", alnum, 24), fixedText("plain chunk tail", alnum, 24)
+	for _, chunk := range []string{head[:12], head[12:], tail[:12], tail[12:]} {
+		if entropy(chunk) < weakChunkEntropy {
+			t.Fatalf("the test's chunk %s is plain too", chunk)
+		}
+	}
+	value := head + plain + tail
+	ix := build(t, secret{ID: "token", Value: value})
+	for offset := 0; offset+23 <= len(value); offset++ {
+		piece := value[offset : offset+23]
+		result := apply(ix, []byte("the value starts with "+piece+" and that's all"))
+		// The plain chunk is the third: a piece of 23 bytes holds it whole,
+		// and no other, from offset 13 to 24.
+		if alone := offset >= 13 && offset <= 24; alone != (len(result.Hits) == 0) {
+			t.Errorf("the piece at offset %d: %d hits", offset, len(result.Hits))
+		}
+	}
+	// With a chunk that counts beside it, and in the whole value, it is found.
+	for _, piece := range []string{value[12:36], value[24:48], value} {
+		if result := apply(ix, []byte("the value starts with "+piece+" and that's all")); len(result.Hits) != 1 || string(result.Out) != "the value starts with ph:secret:token and that's all" {
+			t.Errorf("%d bytes of the value: %q", len(piece), result.Out)
+		}
+	}
+}
+
+// protectableDigits is a random number of n digits that is sure to be indexed.
+// About one random 21-digit number in a hundred repeats its digits so much
+// that it is under the 2.5 bits a byte a value needs, and IndexValue reports it
+// as too plain to protect. A test that expects every part of its key file to be
+// replaced failed that often for no other reason; what happens to such a
+// number is pinned by TestAPlainLeafIsReportedAndLeft instead.
+func protectableDigits(t testing.TB, n int) string {
+	t.Helper()
+	for {
+		if value := randomString(t, decimal, n); entropy(value) >= minValueEntropy+0.25 {
+			return value
+		}
+	}
+}
+
 func gcpKey(t testing.TB) (string, string) {
+	t.Helper()
+	return gcpKeyWith(t, protectableDigits(t, 21))
+}
+
+func gcpKeyWith(t testing.TB, clientID string) (string, string) {
 	t.Helper()
 	privateKey := fakePEM(t)
 	key, _ := json.MarshalIndent(map[string]string{
 		"type": "service_account", "project_id": "orders-prod-" + randomString(t, "0123456789", 6),
 		"private_key_id": randomHex(t, 20), "private_key": privateKey,
-		"client_email": "deployer@orders-prod.iam.gserviceaccount.com", "client_id": randomString(t, "0123456789", 21),
+		"client_email": "deployer@orders-prod.iam.gserviceaccount.com", "client_id": clientID,
 		"auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
 	}, "", "  ")
 	return string(key), privateKey
+}
+
+// A leaf of a key file that is too plain to protect is reported as such and
+// left in the request, while the rest of the file is replaced. A client id of
+// 21 digits is such a leaf about once in a hundred, when its digits repeat.
+// Nothing of it is in the entries or the index: what the scan cache then holds
+// is the request's own text, as it went out.
+func TestAPlainLeafIsReportedAndLeft(t *testing.T) {
+	plain := "100200300100200300100"
+	if entropy(plain) >= minValueEntropy {
+		t.Fatalf("the test's number has %.2f bits a byte", entropy(plain))
+	}
+	key, privateKey := gcpKeyWith(t, plain)
+	ix, entries := buildWithEntries(t, newKey(t), secret{ID: "gcp_sa", Type: "sealed", Value: key})
+	reported := 0
+	for _, u := range entries["gcp_sa"].Unprotected {
+		if u.Reason == ReasonLowEntropy && strings.HasPrefix(u.Part, partLeafPrefix) {
+			reported++
+		}
+	}
+	if reported != 1 || !entries["gcp_sa"].Protected() {
+		t.Fatalf("the plain leaf: %+v", entries["gcp_sa"].Unprotected)
+	}
+	wire, err := entries["gcp_sa"].Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := apply(ix, modelRequest(strings.Repeat("padding so the string is cached ", 10)+"\n"+key))
+	if !bytes.Contains(result.Out, []byte(plain)) || bytes.Contains(result.Out, []byte("PRIVATE KEY")) || len(result.Hits) < 2 {
+		t.Fatalf("the plain leaf should stay and the rest go: %+v", result.Hits)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(privateKey), "\n")[1:3] {
+		if bytes.Contains(result.Out, []byte(line)) {
+			t.Fatal("a key line survived")
+		}
+	}
+	if bytes.Contains(wire, []byte(plain[:8])) || bytes.Contains(reachableBytes(reflect.ValueOf(entries["gcp_sa"])), []byte(plain[:8])) {
+		t.Fatal("the entries hold the leaf that was not indexed")
+	}
+	// The index holds it only as part of the text it scanned and left as it was.
+	if held := reachableBytes(reflect.ValueOf(ix)); !bytes.Contains(held, []byte(`\"client_id\": \"`+plain)) {
+		t.Fatal("the cached text of the request does not hold the leaf it left")
+	}
 }
 
 func TestServiceAccountKeyFieldsAreProtectedOnTheirOwn(t *testing.T) {
@@ -504,6 +621,47 @@ func TestFalsePositivesOnOrdinaryText(t *testing.T) {
 		t.Errorf("as tool results: %d inventory and %d rule false positives, the first %+v", len(request.Hits), len(request.Rules), request.Report.Findings[:min(len(request.Report.Findings), 3)])
 	}
 	t.Logf("%d files of lock files, minified code, digests, names, URLs and images, %d bytes: 0 inventory and 0 rule hits", len(names), size)
+
+	// And for the kinds of text a review found the rules replacing. Nothing in
+	// them is replaced; a rule that exists to report, and is named for the
+	// file, may report.
+	reviewed, mayAlert := reviewedNegatives(t)
+	names = names[:0]
+	for name := range reviewed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	contents, size = contents[:0], 0
+	alerts := 0
+	allowed := func(name string, findings []Finding) {
+		t.Helper()
+		for _, f := range findings {
+			if f.Kind != kindRule || f.Action != actionAlert || f.Rule != mayAlert[name] {
+				t.Errorf("%s: %s %s %s (score %d)", name, f.Kind, f.Rule, f.Action, f.Score)
+			}
+			alerts++
+		}
+	}
+	for _, name := range names {
+		content := reviewed[name]
+		contents = append(contents, content)
+		size += len(content)
+		out, report := ix.Redact([]byte(content))
+		if string(out) != content || report.Inventory != 0 || report.Redacted != 0 {
+			t.Errorf("%s: %d inventory hits and %d replacements", name, report.Inventory, report.Redacted)
+		}
+		allowed(name, report.Findings)
+		// As the tool result of a request, where a JSON file is walked key by key.
+		result := apply(ix, modelRequest(content))
+		if result.Changed || len(result.Hits) != 0 || result.Report.Redacted != 0 {
+			t.Errorf("%s as a tool result: %d inventory hits and %d replacements", name, len(result.Hits), result.Report.Redacted)
+		}
+		allowed(name, result.Rules)
+	}
+	if request = apply(ix, modelRequest(contents...)); request.Changed || len(request.Hits) != 0 || request.Report.Redacted != 0 {
+		t.Errorf("as tool results: %d inventory hits and %d replacements", len(request.Hits), request.Report.Redacted)
+	}
+	t.Logf("%d files of manifests, Firebase and Auth0 configs, class maps, model names and image references, %d bytes: 0 inventory hits, 0 replacements, %d alerts", len(names), size, alerts)
 }
 
 func TestEveryInventorySecretIsFoundInARequest(t *testing.T) {

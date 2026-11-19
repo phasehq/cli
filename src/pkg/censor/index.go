@@ -55,6 +55,7 @@ type Index struct {
 	owners       []owner
 	ownerIndex   map[ownerKey]int32
 	secrets      map[secretKey]struct{}
+	types        map[string]struct{} // the types of the values indexed: the middle of their placeholders
 	fingerprints map[[32]byte]struct{}
 
 	ruleMu   sync.Mutex
@@ -123,6 +124,7 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 		chunks:       map[uint64][]chunkRef{},
 		ownerIndex:   map[ownerKey]int32{},
 		secrets:      map[secretKey]struct{}{},
+		types:        map[string]struct{}{},
 		fingerprints: map[[32]byte]struct{}{},
 		ruleNums:     map[[macSize]byte]int{},
 		ruleNext:     map[string]int{},
@@ -178,6 +180,7 @@ func (ix *Index) Add(e *Entries) error {
 	}
 
 	ix.secrets[secret] = struct{}{}
+	ix.types[e.Type] = struct{}{}
 	for _, p := range fresh {
 		ix.addForm(e.Type, e.ID, p.form)
 		ix.fingerprints[p.fingerprint] = struct{}{}

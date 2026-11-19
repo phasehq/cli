@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"io"
+	"math"
 	"sort"
 )
 
@@ -180,6 +181,14 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]struct{}
 		if !strong {
 			return span{}, false
 		}
+		// One chunk of a base64 or hex form covers nine or six bytes of the
+		// value. When those come from a small alphabet, as a hex value's do,
+		// the chunk can be had by chance: text that holds base64 over hex
+		// repeats such chunks. One of them alone is no match; a second
+		// verified next to it settles it.
+		if lo == hi && f.wholeRun && chunkBits(data[start+lo*c:start+(lo+1)*c], f.class) < minPartialBits {
+			return span{}, false
+		}
 	}
 	switch {
 	case f.wholeRun:
@@ -209,6 +218,117 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]struct{}
 		}
 	}
 	return span{start: s, end: e, form: ref.form, full: full, verified: hi - lo + 1, checked: start + (hi+1)*c}, true
+}
+
+// minPartialBits is the least a single verified chunk of a base64 or hex form
+// has to carry of the value it encodes for a partial match to rest on it.
+const minPartialBits = 48
+
+// chunkBits estimates how many bits of a value one chunk of its base64 or hex
+// form carries: the bytes the chunk encodes, times the bits a byte of their
+// alphabet can hold. The chunk is text of the scanned request that a keyed
+// hash has just confirmed, so nothing here is read from the index, and entries
+// indexed before this was asked are held to it too. A base64 form is indexed at
+// three alignments, so its chunk begins at one of three places in a byte of
+// the value: the reading that carries least is taken.
+func chunkBits(chunk []byte, class *[256]bool) float64 {
+	if class == &classHex {
+		decoded := make([]byte, hex.DecodedLen(len(chunk)))
+		if _, err := hex.Decode(decoded, chunk); err != nil {
+			return 8 * float64(len(chunk))
+		}
+		return float64(len(decoded)) * alphabetBits(decoded)
+	}
+	// Six bits a character, most significant first.
+	var bits []byte
+	for _, b := range chunk {
+		value, ok := base64Value(b)
+		if !ok {
+			return 8 * float64(len(chunk))
+		}
+		for shift := 5; shift >= 0; shift-- {
+			bits = append(bits, value>>shift&1)
+		}
+	}
+	least := math.MaxFloat64
+	for _, skip := range []int{0, 4, 6} {
+		var decoded []byte
+		for at := skip; at+8 <= len(bits); at += 8 {
+			var b byte
+			for _, bit := range bits[at : at+8] {
+				b = b<<1 | bit
+			}
+			decoded = append(decoded, b)
+		}
+		least = math.Min(least, float64(len(bits))/8*alphabetBits(decoded))
+	}
+	return least
+}
+
+func base64Value(b byte) (byte, bool) {
+	switch {
+	case b >= 'A' && b <= 'Z':
+		return b - 'A', true
+	case b >= 'a' && b <= 'z':
+		return b - 'a' + 26, true
+	case b >= '0' && b <= '9':
+		return b - '0' + 52, true
+	case b == '+' || b == '-':
+		return 62, true
+	case b == '/' || b == '_':
+		return 63, true
+	}
+	return 0, false
+}
+
+// alphabetBits is how many bits a byte of the alphabet these bytes are drawn
+// from can hold: the digits, the letters a to f or all of them in either case,
+// and punctuation, counting only the kinds that are there. Hex digits come to 4
+// bits and letters and digits to nearly 6; bytes that are not printable ASCII
+// count as 8.
+func alphabetBits(text []byte) float64 {
+	var digits, lowerHex, lower, upperHex, upper, other bool
+	for _, b := range text {
+		switch {
+		case b >= '0' && b <= '9':
+			digits = true
+		case b >= 'a' && b <= 'f':
+			lowerHex = true
+		case b >= 'g' && b <= 'z':
+			lower = true
+		case b >= 'A' && b <= 'F':
+			upperHex = true
+		case b >= 'G' && b <= 'Z':
+			upper = true
+		case b >= ' ' && b < 0x7f:
+			other = true
+		default:
+			return 8
+		}
+	}
+	size := 0
+	if digits {
+		size += 10
+	}
+	switch {
+	case lower:
+		size += 26
+	case lowerHex:
+		size += 6
+	}
+	switch {
+	case upper:
+		size += 26
+	case upperHex:
+		size += 6
+	}
+	if other {
+		size += 33
+	}
+	if size == 0 {
+		return 8
+	}
+	return math.Log2(float64(size))
 }
 
 // resolve merges overlapping spans. Each group is labelled by its best span: a full
