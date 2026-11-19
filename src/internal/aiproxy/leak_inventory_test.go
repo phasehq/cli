@@ -813,8 +813,14 @@ func TestKeyAnswerFollowsTheStatedIdentity(t *testing.T) {
 	own, ownB := statedKey(t, asA.proxy, leakLoginA), statedKey(t, asB.proxy, leakLoginB)
 	sent, _ := json.Marshal(own)
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(sent, &fields) != nil || len(fields) != 5 || fields["schemaVersion"] == nil || fields["key"] == nil || fields["confirmKey"] == nil || fields["format"] == nil || fields["keyId"] == nil {
+	if json.Unmarshal(sent, &fields) != nil || len(fields) != 7 || fields["schemaVersion"] == nil || fields["key"] == nil || fields["confirmKey"] == nil || fields["format"] == nil || fields["keyId"] == nil ||
+		fields["liveKey"] == nil || fields["liveFormat"] == nil {
 		t.Fatalf("the answer's fields: %s", sent)
+	}
+	// The live key is this process's, in the scheme from before a store, and
+	// is no part of what the store's keys are made of.
+	if own.LiveFormat != leakLiveScheme || own.LiveKey != base64.StdEncoding.EncodeToString(asA.guard.live.LookupBytes()) || own.LiveKey == own.Key || own.LiveKey == own.ConfirmKey || own.LiveKey == ownB.LiveKey {
+		t.Fatal("the answer to the session's own login does not hold its process's live key")
 	}
 	if own.Format != censor.EntriesVersion || own.Key != ownB.Key || own.ConfirmKey == ownB.ConfirmKey || own.ConfirmKey == own.Key || own.KeyID == ownB.KeyID {
 		t.Fatal("two logins of a tenant do not share a lookup key and differ by confirming key")
@@ -862,6 +868,9 @@ func TestKeyAnswerFollowsTheStatedIdentity(t *testing.T) {
 		if held := holds(answer, every...); held != "" {
 			t.Fatalf("a command of %s was handed %s", name, held)
 		}
+		if answer.LiveKey != "" || answer.LiveFormat != 0 {
+			t.Fatalf("a command of %s was handed a live key", name)
+		}
 		// A guest gets the same keys each time it asks, whatever it states.
 		if again := statedKey(t, asA.proxy, stated); again != answer {
 			t.Fatalf("a command of %s asking twice was handed other keys", name)
@@ -892,8 +901,12 @@ func TestKeyAnswerFollowsTheStatedIdentity(t *testing.T) {
 	if again := statedKey(t, next.proxy, otherTenantA); again.Key == guests["another organisation"].Key || again.ConfirmKey == guests["another organisation"].ConfirmKey {
 		t.Fatal("a guest's key outlived the proxy that made it")
 	}
-	if again := statedKey(t, next.proxy, leakLoginA); again != own {
+	again := statedKey(t, next.proxy, leakLoginA)
+	if storeKeys(again) != storeKeys(own) {
 		t.Fatal("the session's own key changed with the proxy")
+	}
+	if again.LiveKey == own.LiveKey || again.KeyID == own.KeyID {
+		t.Fatal("a live key outlived the proxy that made it")
 	}
 	// A client of A, with what it was handed, indexes B's value to hashes
 	// that are not the ones B's record holds: the registration adds a record.

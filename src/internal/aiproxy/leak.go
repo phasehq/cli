@@ -60,7 +60,11 @@ type leakGuard struct {
 	// command of that login, and no other, indexes with.
 	principal phaseproxy.InventoryPrincipal
 	key       *censor.Key
-	index     *censor.Index
+	// live is a key of this process alone that such a command indexes under
+	// as well, in leakLiveScheme: what the running proxy matches its values
+	// by. Nil with no identity, whose one key is the process's already.
+	live  *censor.Key
+	index *censor.Index
 	// inventory is where registered values are stored, and loaded is how
 	// many values it held that this proxy knew from its start.
 	inventory *phaseproxy.Inventory
@@ -191,7 +195,27 @@ func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phas
 	if err := guard.guests.start(); err != nil {
 		return nil, err
 	}
+	if identity.Known() {
+		if guard.live, err = censor.NewKey(); err != nil {
+			return nil, err
+		}
+	}
 	return guard, nil
+}
+
+// leakLiveScheme is the scheme a value registered with the running proxy is
+// matched under: the one from before there was a store, which finds every
+// piece that proxy found. The store's scheme cuts hex forms into longer
+// chunks, and is for what a proxy only remembers.
+const leakLiveScheme = 1
+
+// entriesScheme is the scheme of the entries a command makes under the key
+// it is handed: the store's, or the live one where nothing is stored.
+func (g *leakGuard) entriesScheme() int {
+	if !g.identity.Known() {
+		return leakLiveScheme
+	}
+	return censor.EntriesVersion
 }
 
 // leakGuests are the keys handed to every command that is not of the session's
@@ -232,14 +256,21 @@ func (l *leakGuests) key(stated phaseproxy.InventoryIdentity) (*censor.Key, erro
 // what it indexes with, and what the proxy does with what it sends.
 type leakPlace struct {
 	key *censor.Key
+	// live is the process key the session's own login's values are matched
+	// under while the proxy runs. Nil for a guest, and with no identity.
+	live *censor.Key
 	// own says the command is of the session's own login: its entries are
 	// stored and its ids written. Any other is a guest of this process.
 	own bool
 }
 
-// keyID names a place's keys without giving either away.
+// keyID names a place's keys without giving any away.
 func (p leakPlace) keyID() string {
-	sum := sha256.Sum256(append(append([]byte("phase-leak-key-id\x00"), p.key.LookupBytes()...), p.key.ConfirmBytes()...))
+	named := append(append([]byte("phase-leak-key-id\x00"), p.key.LookupBytes()...), p.key.ConfirmBytes()...)
+	if p.live != nil {
+		named = append(named, p.live.LookupBytes()...)
+	}
+	sum := sha256.Sum256(named)
 	return hex.EncodeToString(sum[:8])
 }
 
@@ -249,7 +280,7 @@ func (g *leakGuard) place(stated phaseproxy.InventoryIdentity) (leakPlace, error
 	// A proxy the Console named nobody for has one key for every command and
 	// keeps nothing, as before there was a store: fragments and ids included.
 	if !g.identity.Known() || stated.Is(g.identity) {
-		return leakPlace{key: g.key, own: true}, nil
+		return leakPlace{key: g.key, live: g.live, own: true}, nil
 	}
 	// Anyone else, another login of the tenant included: this process only,
 	// id withheld, never stored. What states no identity is one guest.
@@ -462,12 +493,14 @@ const maxUnprotectedNames = 4096
 
 // add indexes validated entries of a command of the session's own login.
 func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
-	return g.addAt(leakPlace{key: g.key, own: true}, entries, keyNamed)
+	return g.addAt(leakPlace{key: g.key, own: true}, entries, nil, keyNamed)
 }
 
 // addAt indexes validated entries where place says, up to a full index.
-// keyNamed says, entry by entry, that an id is a secret's key name.
-func (g *leakGuard) addAt(place leakPlace, entries []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
+// keyNamed says, entry by entry, that an id is a secret's key name. live,
+// when set, holds the same values' entries under the place's live key: those
+// are indexed, and entries only stored.
+func (g *leakGuard) addAt(place leakPlace, entries, live []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
 	// What was indexed is stored for the next proxy, and storing never fails
 	// a registration or holds its answer past leakStoreWait. Only the
 	// session's own login's entries are in a batch.
@@ -479,13 +512,21 @@ func (g *leakGuard) addAt(place leakPlace, entries []*censor.Entries, keyNamed [
 		named := i < len(keyNamed) && keyNamed[i]
 		var protected bool
 		var err error
-		if !place.own {
+		switch {
+		case !place.own:
 			if err = guests.Add(place.key, entry); err == nil && entry.Protected() {
 				protected = true
 				g.unstored.Add(1)
 			}
-		} else if protected, err = g.addOne(g.principal, entry, named, false); err == nil && protected {
-			stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named, Principal: g.principal})
+		case len(live) > 0:
+			// Matched by what was made for this process; kept by the other.
+			if protected, err = g.addLive(live[i], named); err == nil && protected && entry.Protected() {
+				stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named, Principal: g.principal})
+			}
+		default:
+			if protected, err = g.addOne(g.principal, entry, named, false); err == nil && protected {
+				stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named, Principal: g.principal})
+			}
 		}
 		switch {
 		case errors.Is(err, censor.ErrPublic):
@@ -524,6 +565,20 @@ func (g *leakGuard) addOne(principal phaseproxy.InventoryPrincipal, entry *censo
 	if withheld {
 		return err == nil && entry.Protected(), err
 	}
+	return g.named(entry, keyNamed, err)
+}
+
+// addLive indexes one entry a command of the session's own login made under
+// the process's live key: the login's own, by its id, pieces and all.
+func (g *leakGuard) addLive(entry *censor.Entries, keyNamed bool) (protected bool, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.named(entry, keyNamed, g.index.AddLive(g.live, entry, g.principal.Key()))
+}
+
+// named records what is known of the id of an entry the index was given, and
+// says whether the entry protects its value. Called with the guard's lock held.
+func (g *leakGuard) named(entry *censor.Entries, keyNamed bool, err error) (protected bool, _ error) {
 	name := entry.Type + ":" + entry.ID
 	// A host or a path of the model's own requests is not indexed, and is
 	// counted with the values too short or plain to protect.

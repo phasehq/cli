@@ -799,6 +799,13 @@ func statedKey(t *testing.T, proxy *httpProxy, stated phaseproxy.InventoryIdenti
 	return answer
 }
 
+// storeKeys is a key answer less what is one process's alone: the live key,
+// and the key id that names it with the others.
+func storeKeys(answer remoteapi.InventoryKeyResponse) remoteapi.InventoryKeyResponse {
+	answer.LiveKey, answer.KeyID = "", ""
+	return answer
+}
+
 // registerThroughControlAs is registerThroughControl for a command that
 // states another identity than the proxy's, or none.
 func registerThroughControlAs(t *testing.T, proxy *httpProxy, stated phaseproxy.InventoryIdentity, values []leakguard.Value, kinds []string) *remoteapi.InventoryResponse {
@@ -806,13 +813,33 @@ func registerThroughControlAs(t *testing.T, proxy *httpProxy, stated phaseproxy.
 	keyAnswer := statedKey(t, proxy, stated)
 	key := answeredKey(t, keyAnswer)
 	request := remoteapi.InventoryRequest{SchemaVersion: 1, IDKinds: kinds, Tenant: stated.Tenant, Login: stated.Login, KeyID: keyAnswer.KeyID}
+	// As the CLI does: entries in the scheme the proxy named, and, where it
+	// handed a live key, the same values' entries under that.
+	var live *censor.Key
+	if keyAnswer.LiveKey != "" {
+		raw, err := base64.StdEncoding.DecodeString(keyAnswer.LiveKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if live, err = censor.LookupKeyFromBytes(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, value := range values {
-		entry, err := censor.IndexValue(key, value.Type, value.ID, value.Value)
+		entry, err := censor.IndexValueScheme(key, keyAnswer.Format, value.Type, value.ID, value.Value)
 		if err != nil {
 			t.Fatal(err)
 		}
 		encoded, _ := entry.Marshal()
 		request.Entries = append(request.Entries, encoded)
+		if live != nil {
+			made, err := censor.IndexValueScheme(live, keyAnswer.LiveFormat, value.Type, value.ID, value.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, _ := made.Marshal()
+			request.LiveEntries = append(request.LiveEntries, encoded)
+		}
 	}
 	body, _ := json.Marshal(request)
 	recorder := controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body)

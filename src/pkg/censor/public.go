@@ -35,8 +35,8 @@ func (ix *Index) publicPieces(key *Key) publicSet {
 			}
 		}
 	}
-	// The index's own key and the few guests' lookup keys it takes.
-	if len(ix.publicSets) <= maxGuestKeys {
+	// The index's own key, its live key and the few guests' lookup keys.
+	if len(ix.publicSets) <= maxGuestKeys+1 {
 		ix.publicSets[key.lookup] = set
 	}
 	return set

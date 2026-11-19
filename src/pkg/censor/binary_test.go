@@ -1281,7 +1281,12 @@ func binaryRequest(b *testing.B, size int, secrets []secret) []byte {
 
 func benchmarkBinary(b *testing.B, size int, withSecrets bool) {
 	secrets := manySecrets(b, 300)
-	ix := build(b, secrets...)
+	benchmarkBinaryWith(b, build(b, secrets...), secrets, size, withSecrets)
+}
+
+// benchmarkBinaryWith rewrites a binary request of size bytes with an index
+// of secrets.
+func benchmarkBinaryWith(b *testing.B, ix *Index, secrets []secret, size int, withSecrets bool) {
 	planted := secrets
 	if !withSecrets {
 		planted = nil

@@ -688,7 +688,11 @@ func TestEveryInventorySecretIsFoundInARequest(t *testing.T) {
 
 func benchmarkApply(b *testing.B, size int, warm bool) {
 	secrets := manySecrets(b, 300)
-	ix := build(b, secrets...)
+	benchmarkApplyWith(b, build(b, secrets...), secrets, size, warm)
+}
+
+// benchmarkApplyWith scans a request of size bytes with an index of secrets.
+func benchmarkApplyWith(b *testing.B, ix *Index, secrets []secret, size int, warm bool) {
 	text := corpus(b, size)
 	// A request: the corpus as tool results of about 32 KB each, with a few secrets.
 	var results []string

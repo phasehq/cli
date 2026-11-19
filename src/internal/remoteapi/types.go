@@ -80,18 +80,23 @@ type InventoryKeyRequest struct {
 }
 
 // InventoryKeyResponse answers /v1/inventory/key: what a command indexes
-// values with. Format is the version of the entries the proxy reads.
+// values with. Format is the scheme of the entries made under Key.
 type InventoryKeyResponse struct {
 	SchemaVersion int `json:"schemaVersion"`
 	// Key is the lookup key: the proxy's tenant's for a command that states
 	// the proxy's own login, and one of this proxy process alone for any other.
 	Key string `json:"key"`
 	// ConfirmKey is the proxy's own login's confirming key for such a command,
-	// and a guest's of this process for any other. Scheme 1 alone sends none.
+	// and a guest's of this process for any other. Scheme 1 uses none.
 	ConfirmKey string `json:"confirmKey,omitempty"`
 	Format     int    `json:"format"`
-	// KeyID names the two keys without giving either: a registration sends
-	// it back.
+	// LiveKey is a key of this proxy process alone, handed to a command of
+	// the proxy's own login beside the stored keys above: entries made under
+	// it, in LiveFormat, are what the running proxy matches the value by,
+	// and are never stored. Absent, the entries under Key are matched.
+	LiveKey    string `json:"liveKey,omitempty"`
+	LiveFormat int    `json:"liveFormat,omitempty"`
+	// KeyID names the keys without giving any: a registration sends it back.
 	KeyID string `json:"keyId,omitempty"`
 }
 
@@ -100,6 +105,10 @@ type InventoryKeyResponse struct {
 type InventoryRequest struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Entries       []json.RawMessage `json:"entries"`
+	// LiveEntries are the same values' entries under the live key, entry by
+	// entry, from a command that was handed one: Entries then go to the store
+	// and these to the running proxy's index.
+	LiveEntries []json.RawMessage `json:"liveEntries,omitempty"`
 	// Tenant and Login say who the registering command is, as in
 	// InventoryKeyRequest, and KeyID which keys its entries were made under.
 	Tenant string `json:"tenant,omitempty"`

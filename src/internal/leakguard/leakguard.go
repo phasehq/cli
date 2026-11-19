@@ -274,8 +274,14 @@ func PlaceholderID(name string) string {
 // handedKey is what a proxy handed this command to index with.
 type handedKey struct {
 	key *censor.Key
-	// scheme is the matching scheme the proxy reads: this build's or an older one.
+	// scheme is the matching scheme of entries under key: this build's or an
+	// older one.
 	scheme int
+	// live is a key of the proxy's process alone, and liveScheme its scheme:
+	// the proxy matches a value by its entries under it, and stores those
+	// under key. Nil when the proxy matches by the entries under key.
+	live       *censor.Key
+	liveScheme int
 	// id names the keys to the proxy, which refuses entries made under others.
 	id string
 }
@@ -302,9 +308,11 @@ func Register(ctx context.Context, values []Value) (Result, error) {
 	return proxy.Register(ctx, values)
 }
 
-// registration is one POST: entries and, for each, what its id is.
+// registration is one POST: entries and, for each, what its id is and, from a
+// command handed a live key, its value's entries under that.
 type registration struct {
 	entries []json.RawMessage
+	live    []json.RawMessage
 	kinds   []string
 }
 
@@ -410,23 +418,24 @@ func registerWith(ctx context.Context, client *http.Client, address string, iden
 	var batch registration
 	size := 0
 	for _, value := range values {
-		entries, err := censor.IndexValueScheme(key, scheme, value.Type, value.ID, value.Value)
+		encoded, err := encodedEntries(key, scheme, value)
 		if err != nil {
-			return result, errors.New("a value could not be indexed for leak protection")
+			return result, err
 		}
-		encoded, err := entries.Marshal()
-		if err != nil {
-			return result, errors.New("a value could not be indexed for leak protection")
-		}
-		if len(encoded) > maxEntryBytes {
-			// Too large to register: the proxy counts it as unprotected.
-			tooLong := &censor.Entries{Version: scheme, Type: value.Type, ID: value.ID,
-				Forms: []censor.Form{}, Unprotected: []censor.Unprotected{{Reason: censor.ReasonTooLong}}}
-			if encoded, err = tooLong.Marshal(); err != nil {
-				return result, errors.New("a value could not be indexed for leak protection")
+		var live []byte
+		if handed.live != nil {
+			if live, err = encodedEntries(handed.live, handed.liveScheme, value); err != nil {
+				return result, err
+			}
+			// What the running proxy matches by comes first: entries too
+			// large to travel beside it are left out of the store.
+			if len(live)+len(encoded) > maxEntryBytes {
+				if encoded, err = tooLongEntries(scheme, value); err != nil {
+					return result, err
+				}
 			}
 		}
-		if size+len(encoded) > maxBatchBytes && len(batch.entries) > 0 {
+		if size+len(encoded)+len(live) > maxBatchBytes && len(batch.entries) > 0 {
 			batches, batch, size = append(batches, batch), registration{}, 0
 		}
 		kind := remoteapi.InventoryIDPhase
@@ -434,7 +443,10 @@ func registerWith(ctx context.Context, client *http.Client, address string, iden
 			kind = remoteapi.InventoryIDKeyName
 		}
 		batch.entries, batch.kinds = append(batch.entries, encoded), append(batch.kinds, kind)
-		size += len(encoded)
+		if live != nil {
+			batch.live = append(batch.live, live)
+		}
+		size += len(encoded) + len(live)
 	}
 	if len(batch.entries) > 0 {
 		batches = append(batches, batch)
@@ -450,6 +462,36 @@ func registerWith(ctx context.Context, client *http.Client, address string, iden
 		}
 	}
 	return result, nil
+}
+
+var errNotIndexed = errors.New("a value could not be indexed for leak protection")
+
+// encodedEntries indexes one value under a key and scheme, as it is sent.
+func encodedEntries(key *censor.Key, scheme int, value Value) ([]byte, error) {
+	entries, err := censor.IndexValueScheme(key, scheme, value.Type, value.ID, value.Value)
+	if err != nil {
+		return nil, errNotIndexed
+	}
+	encoded, err := entries.Marshal()
+	if err != nil {
+		return nil, errNotIndexed
+	}
+	if len(encoded) > maxEntryBytes {
+		return tooLongEntries(scheme, value)
+	}
+	return encoded, nil
+}
+
+// tooLongEntries is what is sent of a value whose entries are too large to
+// register: the proxy counts it as unprotected.
+func tooLongEntries(scheme int, value Value) ([]byte, error) {
+	tooLong := &censor.Entries{Version: scheme, Type: value.Type, ID: value.ID,
+		Forms: []censor.Form{}, Unprotected: []censor.Unprotected{{Reason: censor.ReasonTooLong}}}
+	encoded, err := tooLong.Marshal()
+	if err != nil {
+		return nil, errNotIndexed
+	}
+	return encoded, nil
 }
 
 // protectable drops config values, empty values and values whose type or id
@@ -523,13 +565,26 @@ func proxyKey(ctx context.Context, client *http.Client, current string, identity
 		return handedKey{}, errors.New("the Phase AI proxy sent a key this version of Phase does not read")
 	}
 	handed := handedKey{key: key, scheme: answer.Format, id: answer.KeyID}
+	if answer.LiveKey != "" {
+		// A key of the proxy's process, for what it matches the values by.
+		raw, err := base64.StdEncoding.DecodeString(answer.LiveKey)
+		if err != nil {
+			return handedKey{}, errors.New("the Phase AI proxy sent an invalid key")
+		}
+		if handed.live, err = censor.LookupKeyFromBytes(raw); err != nil {
+			return handedKey{}, errors.New("the Phase AI proxy sent an invalid key")
+		}
+		if handed.liveScheme = answer.LiveFormat; !handed.live.Supports(handed.liveScheme) {
+			return handedKey{}, errors.New("the Phase AI proxy sent a key this version of Phase does not read")
+		}
+	}
 	cachedKeys[keyFor{current, identity}] = handed
 	return handed, nil
 }
 
 func post(ctx context.Context, client *http.Client, identity phaseproxy.InventoryIdentity, keyID string, batch registration) (Result, error) {
 	body, err := json.Marshal(remoteapi.InventoryRequest{
-		SchemaVersion: agentapi.SchemaVersion, Entries: batch.entries, IDKinds: batch.kinds,
+		SchemaVersion: agentapi.SchemaVersion, Entries: batch.entries, LiveEntries: batch.live, IDKinds: batch.kinds,
 		Tenant: identity.Tenant, Login: identity.Login, KeyID: keyID,
 	})
 	if err != nil {

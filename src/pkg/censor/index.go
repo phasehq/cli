@@ -76,6 +76,8 @@ type Index struct {
 	// windows hold the chunks, by chunk size: see window.
 	windows    []*window
 	chunkCount int
+	// live is the lookup key of the one live key entries came under (AddLive).
+	live *[KeySize]byte
 	// macKeys are the confirming keys entries were added under: one per
 	// principal or guest, and scheme 1's. A form names its own by position.
 	macKeys     [][32]byte
@@ -199,11 +201,14 @@ type chunkRef struct {
 	idx  int32
 }
 
-// holding is how entries are held: see AddWithheld, AddLoaded and AddGuest.
+// holding is how entries are held: see AddWithheld, AddLoaded, AddLive and
+// AddGuest.
 type holding struct {
 	withheld, loaded bool
 	// batch is the registration a guest's entries are of, nil for anyone else's.
 	batch *GuestBatch
+	// of is the principal that entries under a live key are counted as.
+	of *Key
 }
 
 // guestEntry is what one AddGuest added: the unit the guests' share is
@@ -305,6 +310,18 @@ func (ix *Index) AddLoaded(key *Key, e *Entries, withheld bool) error {
 	return ix.add(key, e, holding{withheld: withheld, loaded: true})
 }
 
+// AddLive is AddKeyed for entries a client built under live, a key the daemon's
+// process made and keeps nowhere, of a value principal registered: they are
+// matched as they stand and counted and named as that principal's, beside any
+// the index holds of the same value under the principal's own key. An index
+// takes one live key.
+func (ix *Index) AddLive(live *Key, e *Entries, principal *Key) error {
+	if principal == nil {
+		return errors.New("live entries need the principal they are counted as")
+	}
+	return ix.add(live, e, holding{of: principal})
+}
+
 // AddGuest is AddWithheld for entries built under a key that shares nothing
 // with the index's, its lookup key included: a scan makes a pass of its own.
 func (ix *Index) AddGuest(key *Key, e *Entries) error { return ix.NewGuestBatch().Add(key, e) }
@@ -331,7 +348,12 @@ func (ix *Index) add(key *Key, e *Entries, how holding) error {
 		return err
 	}
 	guest := how.batch != nil
-	if key == nil || (key.lookup == ix.key.lookup) == guest {
+	own := key != nil && key.lookup == ix.key.lookup
+	if how.of != nil {
+		// A live key is no lookup key of the index, and its principal's is.
+		own = key != nil && !own && how.of.lookup == ix.key.lookup
+	}
+	if key == nil || own == guest {
 		return errors.New("the entries' key is not one this index takes them under")
 	}
 	s := schemes[e.Version]
@@ -341,6 +363,14 @@ func (ix *Index) add(key *Key, e *Entries, how holding) error {
 	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
+	// The principal is whose the entries are, whichever key they came under.
+	counted := key
+	if how.of != nil {
+		if ix.live != nil && *ix.live != key.lookup {
+			return errors.New("the index takes entries under one live key")
+		}
+		counted = how.of
+	}
 	public, value := ix.publicIn(key, s, confirming, e)
 	if value {
 		return ErrPublic
@@ -386,7 +416,7 @@ func (ix *Index) add(key *Key, e *Entries, how holding) error {
 	// those of the principal whose key they came under.
 	who := int32(len(ix.principals))
 	for at := range ix.principals {
-		if ix.principals[at].lookup == key.lookup && ix.principals[at].confirm == key.confirm {
+		if ix.principals[at].lookup == counted.lookup && ix.principals[at].confirm == counted.confirm {
 			who = int32(at)
 			break
 		}
@@ -405,7 +435,11 @@ func (ix *Index) add(key *Key, e *Entries, how holding) error {
 	}
 	macKey := ix.macKeySlot(confirming)
 	if int(who) == len(ix.principals) {
-		ix.principals = append(ix.principals, principal{lookup: key.lookup, confirm: key.confirm})
+		ix.principals = append(ix.principals, principal{lookup: counted.lookup, confirm: counted.confirm})
+	}
+	if how.of != nil && ix.live == nil {
+		ix.live = &[KeySize]byte{}
+		*ix.live = key.lookup
 	}
 	if !held {
 		ix.secrets[secret] = struct{}{}

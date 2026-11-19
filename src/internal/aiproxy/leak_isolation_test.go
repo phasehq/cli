@@ -67,7 +67,10 @@ func tenantView(t *testing.T, store *phaseproxy.InventoryStore, self phaseproxy.
 			t.Fatalf("%s: status: %d %s", when, recorder.Code, recorder.Body.String())
 		}
 		note(when+", status", status.LeakProtection)
-		note(when+", the key route", statedKey(t, proxy, self))
+		// The live key is random in each process: all of the answer but that.
+		keys := statedKey(t, proxy, self)
+		note(when+", the key route", storeKeys(keys))
+		note(when+", a live key", []any{keys.LiveKey != "", keys.LiveFormat})
 		out, report := proxy.leak.index.Redact(isolationProbe)
 		note(when+", a scan writes", string(out))
 		note(when+", a scan reports", report)

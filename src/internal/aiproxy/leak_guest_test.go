@@ -141,8 +141,13 @@ func TestACommandStatingAnotherLoginConfirmsNothingOfItsStore(t *testing.T) {
 	}
 	// Whatever the master gives is the same from both proxies, as the own
 	// login's keys are. What B's name gets is not: it comes from neither's store.
-	if statedKey(t, twin.proxy, leakLoginA) != statedKey(t, asA.proxy, leakLoginA) {
+	fromTwin, fromA := statedKey(t, twin.proxy, leakLoginA), statedKey(t, asA.proxy, leakLoginA)
+	if storeKeys(fromTwin) != storeKeys(fromA) {
 		t.Fatal("two proxies of one store hand their own login different keys")
+	}
+	// The live key is each process's own, and no command that says it is B gets one.
+	if fromA.LiveKey == "" || fromTwin.LiveKey == fromA.LiveKey || fromTwin.KeyID == fromA.KeyID || handed.LiveKey != "" || handed.LiveFormat != 0 {
+		t.Fatal("a live key is not one process's alone, for its own login alone")
 	}
 	if again := statedKey(t, twin.proxy, leakLoginB); again.Key == handed.Key || again.ConfirmKey == handed.ConfirmKey || again.KeyID == handed.KeyID {
 		t.Fatal("what a command that says it is B is handed follows from the store's master")

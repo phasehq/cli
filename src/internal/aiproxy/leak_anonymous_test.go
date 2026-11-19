@@ -38,7 +38,7 @@ func TestAnAnonymousProxyProtectsAsBeforeThereWasAStore(t *testing.T) {
 		if entry.Expect == "rule" {
 			continue
 		}
-		made, err := censor.IndexValue(key, entry.Type, entry.ID, entry.Value)
+		made, err := censor.IndexValueScheme(key, leakLiveScheme, entry.Type, entry.ID, entry.Value)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -65,6 +65,10 @@ type fakeProxy struct {
 	// keyID is what the proxy calls its keys now. A registration that sends
 	// another back is refused, as by a proxy whose keys changed.
 	keyID string
+	// live is the key of its process a proxy hands its own login beside the
+	// stored ones, and liveEntries what was registered under it.
+	live        *censor.Key
+	liveEntries []*censor.Entries
 }
 
 func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
@@ -102,6 +106,9 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 			if !fake.lookupOnly {
 				answer.ConfirmKey = base64.StdEncoding.EncodeToString(key.ConfirmBytes())
 			}
+			if fake.live != nil {
+				answer.LiveKey, answer.LiveFormat = base64.StdEncoding.EncodeToString(fake.live.LookupBytes()), 1
+			}
 			_ = json.NewEncoder(w).Encode(answer)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory":
 			body, _ := io.ReadAll(r.Body)
@@ -114,7 +121,8 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 			fake.sizes = append(fake.sizes, len(body))
 			fake.bodies = append(fake.bodies, body)
 			var request remoteapi.InventoryRequest
-			if json.Unmarshal(body, &request) != nil || len(body) > 4<<20 || len(request.IDKinds) != len(request.Entries) {
+			if json.Unmarshal(body, &request) != nil || len(body) > 4<<20 || len(request.IDKinds) != len(request.Entries) ||
+				(len(request.LiveEntries) != 0) != (fake.live != nil) || (fake.live != nil && len(request.LiveEntries) != len(request.Entries)) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -126,13 +134,21 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 			fake.stated = append(fake.stated, remoteapi.InventoryRequest{Tenant: request.Tenant, Login: request.Login, KeyID: request.KeyID})
 			fake.kinds = append(fake.kinds, request.IDKinds)
 			answer := remoteapi.InventoryResponse{SchemaVersion: 1}
-			for _, raw := range request.Entries {
+			for at, raw := range request.Entries {
 				entry, err := censor.ParseEntries(raw)
 				if err != nil {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
 				fake.entries = append(fake.entries, entry)
+				// What the running proxy matches by decides the answer.
+				if fake.live != nil {
+					if entry, err = censor.ParseEntries(request.LiveEntries[at]); err != nil {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					fake.liveEntries = append(fake.liveEntries, entry)
+				}
 				if entry.Protected() {
 					answer.Added++
 				} else {
@@ -327,6 +343,111 @@ func TestRegisterConfirmsWithTheKeyOfItsOwnLogin(t *testing.T) {
 		if !served && (err == nil || !strings.Contains(err.Error(), "does not read") || fake.posts != 0) {
 			t.Fatalf("scheme %d with no confirming key: %v, %d registrations", scheme, err, fake.posts)
 		}
+	}
+}
+
+// A proxy that keeps what its own login registers hands that login a key of
+// its process as well. The client then registers each value twice in one
+// request: under the stored keys for the store, and under the process's key,
+// in the scheme from before a store, for the running proxy to match by.
+func TestAClientHandedALiveKeyRegistersEachValueUnderBoth(t *testing.T) {
+	const hexKey = "3b7e1a9c5d2f4e6081a2b3c4d5e6f70812345678c0ffee11deadbeef01234567"
+	fake, server := newFakeProxy(t)
+	live, err := censor.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.live = live
+	withEnvironment(t, sessionEnvironment(server))
+	result, err := Register(context.Background(), []Value{{Type: "secret", ID: "one", Value: hexKey}, {Type: "secret", ID: "short", Value: "abc"}})
+	if err != nil || result.Added != 1 || result.Unprotected != 1 || fake.posts != 1 || fake.keyCalls != 1 {
+		t.Fatalf("%+v %v, %d registrations", result, err, fake.posts)
+	}
+	if len(fake.entries) != 2 || len(fake.liveEntries) != 2 {
+		t.Fatalf("%d entries and %d live entries for two values", len(fake.entries), len(fake.liveEntries))
+	}
+	for at, stored := range fake.entries {
+		if made := fake.liveEntries[at]; stored.Version != censor.EntriesVersion || made.Version != 1 || made.Type != stored.Type || made.ID != stored.ID || made.Protected() != stored.Protected() {
+			t.Fatalf("value %d: stored entries of scheme %d and live ones of scheme %d for %s", at, stored.Version, made.Version, made.ID)
+		}
+	}
+	// A piece no 24 characters hashed together lie in: found by what was made
+	// under the process's key, and not by what a store keeps.
+	piece := hexKey[3:40]
+	running, _ := censor.NewIndex(live, censor.IndexOptions{})
+	if err := running.Add(fake.liveEntries[0]); err != nil {
+		t.Fatal(err)
+	}
+	kept, _ := censor.NewIndex(fake.key, censor.IndexOptions{})
+	if err := kept.Add(fake.entries[0]); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		index *censor.Index
+		want  string
+	}{"the running proxy's": {running, "x ph:secret:one y ph:secret:one"}, "the store's": {kept, "x ph:secret:one y " + piece}} {
+		if out, _ := c.index.Redact([]byte("x " + hexKey + " y " + piece)); string(out) != c.want {
+			t.Fatalf("by %s entries: %q", name, out)
+		}
+	}
+	// The two sets of one value travel together, under the proxy's limit.
+	previous := maxBatchBytes
+	maxBatchBytes = 300 << 10
+	t.Cleanup(func() { maxBatchBytes = previous })
+	var values []Value
+	for i := 0; i < 6; i++ {
+		raw := make([]byte, 3<<10)
+		_, _ = rand.Read(raw)
+		values = append(values, Value{Type: "secret", ID: "big-" + string(rune('a'+i)), Value: base64.StdEncoding.EncodeToString(raw)[:4<<10]})
+	}
+	fake.posts, fake.sizes, fake.entries, fake.liveEntries = 0, nil, nil, nil
+	if result, err := Register(context.Background(), values); err != nil || result.Added != 6 || fake.posts < 3 || len(fake.liveEntries) != 6 {
+		t.Fatalf("large values: %+v %v, %d registrations", result, err, fake.posts)
+	}
+	for _, size := range fake.sizes {
+		if size > maxBatchBytes+maxBatchBytes/4 {
+			t.Fatalf("a registration of %d bytes is over the batch limit", size)
+		}
+	}
+}
+
+// A value whose two sets of entries do not fit one registration together is
+// still matched by the running proxy: what would have gone to the store is
+// sent as too long to keep.
+func TestAValueTooLargeToRegisterTwiceIsNotStored(t *testing.T) {
+	raw := make([]byte, censor.MaxValueLength)
+	_, _ = rand.Read(raw)
+	text := base64.StdEncoding.EncodeToString(raw)
+	var lines []string
+	for len(text) > 64 {
+		lines, text = append(lines, text[:64]), text[64:]
+	}
+	value := strings.Join(lines, "\n")[:censor.MaxValueLength-1]
+	fake, server := newFakeProxy(t)
+	live, err := censor.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.live = live
+	withEnvironment(t, sessionEnvironment(server))
+	sizes := map[int]int{}
+	for scheme, key := range map[int]*censor.Key{1: live, censor.EntriesVersion: fake.key} {
+		made, err := censor.IndexValueScheme(key, scheme, "secret", "large", value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, _ := made.Marshal()
+		sizes[scheme] = len(wire)
+	}
+	if sizes[1] > maxEntryBytes || sizes[censor.EntriesVersion] > maxEntryBytes || sizes[1]+sizes[censor.EntriesVersion] <= maxEntryBytes {
+		t.Fatalf("the value's entries are %v bytes: not one that fits alone and not together", sizes)
+	}
+	result, err := Register(context.Background(), []Value{{Type: "secret", ID: "large", Value: value}})
+	if err != nil || result.Added != 1 || fake.posts != 1 || len(fake.liveEntries) != 1 {
+		t.Fatalf("%+v %v, %d registrations", result, err, fake.posts)
+	}
+	if made, stored := fake.liveEntries[0], fake.entries[0]; !made.Protected() || stored.Protected() || len(stored.Unprotected) != 1 || stored.Unprotected[0].Reason != censor.ReasonTooLong || fake.sizes[0] > 4<<20 {
+		t.Fatalf("live entries protect: %v; stored entries: %+v; %d bytes sent", made.Protected(), stored.Unprotected, fake.sizes[0])
 	}
 }
 
