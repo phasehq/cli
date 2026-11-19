@@ -349,6 +349,39 @@ func TestLogoutRemovesTheLoginsStoredValues(t *testing.T) {
 	}
 }
 
+// Two Consoles under one origin, with the same organisation and account ids
+// as a copied database has: a logout from one leaves what the other stored.
+func TestLogoutLeavesAnotherConsoleOfTheOriginAlone(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
+	t.Setenv("PHASE_HOST", "")
+	gokeyring.MockInit()
+	original := aiCAStore
+	aiCAStore = phaseproxy.CAStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &memoryKeystore{values: map[string]string{}}}
+	t.Cleanup(func() { aiCAStore = original })
+
+	const one, two, root = "https://console.test/one", "https://console.test/two", "https://console.test"
+	organisation := "org-one"
+	// The saved login writes its Console with a slash after the path.
+	if err := config.AddUser(config.UserConfig{Host: one + "/", ID: "account-a", OrganizationID: &organisation}); err != nil {
+		t.Fatal(err)
+	}
+	identities := map[string]phaseproxy.InventoryIdentity{}
+	for id, host := range map[string]string{"at-one": one, "at-two": two, "at-the-root": root} {
+		identities[id] = phaseproxy.NewInventoryIdentity(host, organisation, phaseproxy.InventoryLoginUser, "account-a")
+		storeFor(t, aiInventoryStore(), identities[id], id)
+	}
+	if _, stderr, err := runPhaseCommand(t, "", "users", "logout"); err != nil || strings.Contains(stderr, "leak protection") {
+		t.Fatalf("logout: %v %s", err, stderr)
+	}
+	for id, want := range map[string]string{"at-one": "[]", "at-two": "[at-two]", "at-the-root": "[at-the-root]"} {
+		if got := fmt.Sprint(storedIDs(t, aiInventoryStore(), identities[id].Tenant)); got != want {
+			t.Errorf("after a logout from the Console at /one, the store holds %s for %q", got, identities[id].Tenant)
+		}
+	}
+}
+
 // A logout with nothing stored makes no key and no file.
 func TestLogoutWithNoInventoryWritesNothing(t *testing.T) {
 	console := newFakeAgentConsole(t)

@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// However a host is spelled, it is one tenant. Another host, port, scheme
-// or organisation is another.
+// However a Console's address is spelled, it is one tenant. Another host,
+// port, scheme, path or organisation is another.
 func TestInventoryIdentityHasOneFormPerTenant(t *testing.T) {
 	const organisation, account = "0b5e7c1a-1111-4222-8333-444455556666", "9f1c2d3e-aaaa-4bbb-8ccc-ddddeeeeffff"
 	want := NewInventoryIdentity("https://console.phase.dev", organisation, InventoryLoginUser, account)
@@ -45,6 +45,47 @@ func TestInventoryIdentityHasOneFormPerTenant(t *testing.T) {
 			t.Errorf("%q is the same tenant as console.phase.dev", host)
 		}
 	}
+	// A Console served under a path is its own tenant, in one form however the
+	// path is written, and not the one at the origin's root or under another.
+	under := NewInventoryIdentity("https://console.phase.dev/phase", organisation, InventoryLoginUser, account)
+	if !under.Known() || under.Tenant != "https://console.phase.dev/phase\norganisation\n"+organisation || under.Login != "https://console.phase.dev/phase\nuser\n"+account {
+		t.Fatalf("a Console under a path: %q %q", under.Tenant, under.Login)
+	}
+	for _, host := range []string{
+		"https://console.phase.dev/phase/", "HTTPS://CONSOLE.phase.dev:443/phase", "https://console.phase.dev./phase//", "https://console.phase.dev//phase",
+		"https://console.phase.dev/phase/service/public", "https://console.phase.dev/phase/service/public/", "https://console.phase.dev/phase/service/public/v1/agents",
+		"https://console.phase.dev/phase/service/public/v1/agents/", "https://console.phase.dev/other/../phase", "https://console.phase.dev/%70hase", "https://console.phase.dev/phase?x=1#y",
+	} {
+		if got := NewInventoryIdentity(host, organisation, InventoryLoginUser, account); got != under || !got.Is(under) {
+			t.Errorf("%q split the tenant under a path: %q", host, got.Tenant)
+		}
+	}
+	seen[under.Tenant] = "https://console.phase.dev/phase"
+	for _, host := range []string{
+		"https://console.phase.dev/other", "https://console.phase.dev/Phase", "https://console.phase.dev/phase/eu", "https://console.phase.dev/phase2",
+		"https://console.phase.dev/p/hase", "https://console.phase.dev:8443/phase", "https://phase.dev/phase", "https://console.phase.dev/a%20b", "https://console.phase.dev/a%2Fb/c",
+	} {
+		got := NewInventoryIdentity(host, organisation, InventoryLoginUser, account)
+		if !got.Known() {
+			t.Errorf("%q names no tenant", host)
+			continue
+		}
+		if first, merged := seen[got.Tenant]; merged {
+			t.Errorf("%q and %q are one tenant: %q", host, first, got.Tenant)
+		}
+		seen[got.Tenant] = host
+		if got.SameTenant(want) || got.SameTenant(under) || got.Is(under) {
+			t.Errorf("%q is the same tenant as another Console of its origin", host)
+		}
+		// The one form is its own: written again, it names the same tenant.
+		console, _, _ := strings.Cut(got.Tenant, "\n")
+		if again := NewInventoryIdentity(console, organisation, InventoryLoginUser, account); again != got {
+			t.Errorf("%q in its one form %q names another tenant: %q", host, console, again.Tenant)
+		}
+	}
+	if under.SameTenant(want) || want.SameTenant(under) || under.Is(want) {
+		t.Fatal("a Console under a path is the tenant of the one at its origin's root")
+	}
 	// The same host and another organisation, and the same organisation id
 	// on another host, are other tenants; another login is the same tenant.
 	other := NewInventoryIdentity("https://console.phase.dev", "another-organisation", InventoryLoginUser, account)
@@ -68,7 +109,11 @@ func TestInventoryIdentityUnknownIsEmpty(t *testing.T) {
 		"no id":              NewInventoryIdentity("https://console.phase.dev", "org", InventoryLoginUser, ""),
 		"an unknown kind":    NewInventoryIdentity("https://console.phase.dev", "org", "account", "id"),
 		"an id with a break": NewInventoryIdentity("https://console.phase.dev", "org\norganisation\nother", InventoryLoginUser, "id"),
-		"a long id":          NewInventoryIdentity("https://console.phase.dev", strings.Repeat("a", 129), InventoryLoginUser, "id"),
+		// The API's path twice may be a Console under /service/public or the
+		// one at the root: what can be read two ways names nobody.
+		"a path read two ways":  NewInventoryIdentity("https://console.phase.dev/service/public/service/public", "org", InventoryLoginUser, "id"),
+		"a path past its bound": NewInventoryIdentity("https://console.phase.dev/"+strings.Repeat("a", 600), "org", InventoryLoginUser, "id"),
+		"a long id":             NewInventoryIdentity("https://console.phase.dev", strings.Repeat("a", 129), InventoryLoginUser, "id"),
 	} {
 		if got != (InventoryIdentity{}) || got.Known() {
 			t.Errorf("%s made an identity: %q %q", name, got.Tenant, got.Login)
@@ -82,6 +127,9 @@ func TestInventoryIdentityUnknownIsEmpty(t *testing.T) {
 		"a login of another host":    {Tenant: good.Tenant, Login: "https://other.test\nagent\nagent-1"},
 		"a host not in its one form": {Tenant: "HTTPS://console.phase.dev\norganisation\norg", Login: "HTTPS://console.phase.dev\nagent\nagent-1"},
 		"a default port written":     {Tenant: "https://console.phase.dev:443\norganisation\norg", Login: "https://console.phase.dev:443\nagent\nagent-1"},
+		"a path not in its one form": {Tenant: "https://console.phase.dev/phase/\norganisation\norg", Login: "https://console.phase.dev/phase/\nagent\nagent-1"},
+		"the API's path written":     {Tenant: "https://console.phase.dev/service/public\norganisation\norg", Login: "https://console.phase.dev/service/public\nagent\nagent-1"},
+		"a login under another path": {Tenant: "https://console.phase.dev/one\norganisation\norg", Login: "https://console.phase.dev/two\nagent\nagent-1"},
 		"a fourth part":              {Tenant: good.Tenant + "\nmore", Login: good.Login},
 		"a tenant that is a login":   {Tenant: good.Login, Login: good.Login},
 		"a kind of no login":         {Tenant: good.Tenant, Login: "https://console.phase.dev\norganisation\norg"},

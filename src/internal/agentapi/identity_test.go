@@ -68,3 +68,39 @@ func TestSessionPayloadNamesItsOrganisationAndPrincipal(t *testing.T) {
 		}
 	}
 }
+
+// A client's host is where its Console is served, path and all, however much
+// of the API's own path the host was given with: its requests go under it.
+func TestClientHostIsWhereItsConsoleIsServed(t *testing.T) {
+	var asked string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.Path
+		_, _ = w.Write([]byte(`{"schemaVersion":1,"sessionUid":"session-1","sessionCredential":"a-session-capability","expiresAt":"` +
+			time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `","configGeneration":1,"configEnv":{},"connections":[]}`))
+	}))
+	defer server.Close()
+	for given, served := range map[string]string{
+		"": "", "/": "", "/service/public": "", "/service/public/": "", "/service/public/v1/agents": "", "/service/public/v1/agents/": "",
+		"/phase": "/phase", "/phase/": "/phase", "/phase/service/public": "/phase", "/phase/service/public/v1/agents/": "/phase",
+		"/one/two": "/one/two", "/two": "/two", "/a%20b/service/public": "/a%20b",
+	} {
+		client, err := NewClient(server.URL+given, identityToken("pss_agent:v1:"), server.Client())
+		if err != nil {
+			t.Fatalf("%q: %v", given, err)
+		}
+		if client.Host() != server.URL+served {
+			t.Errorf("given %q, the client's host is %q, want %q", given, client.Host(), server.URL+served)
+		}
+		if _, err := client.OpenSession(context.Background(), OpenSessionRequest{}); err != nil {
+			t.Fatalf("%q: %v", given, err)
+		}
+		if want := strings.ReplaceAll(served, "%20", " ") + "/service/public/v1/agents/sessions/"; asked != want {
+			t.Errorf("given %q, the client asked %q: its host %q is not where it asks", given, asked, client.Host())
+		}
+	}
+	for path, served := range map[string]string{"/phase/": "/phase", "/phase/service/public": "/phase", "/service/public/v1/agents": "", "/service/publicity": "/service/publicity", "/v1/agents": "/v1/agents"} {
+		if got := DeploymentPath(path); got != served {
+			t.Errorf("DeploymentPath(%q) = %q, want %q", path, got, served)
+		}
+	}
+}

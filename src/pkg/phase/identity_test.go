@@ -238,9 +238,13 @@ func TestACommandAndItsProxySayTheSameOfOneLogin(t *testing.T) {
 	// The Console's ids: a user token's user_id, on the route a login is saved
 	// from, is its organisation member's id, and so is its session's principal.
 	const organisation, member, agent = "0b5e7c1a-1111-4222-8333-444455556666", "9f1c2d3e-aaaa-4bbb-8ccc-ddddeeeeffff", "5d2a9c47-0000-4abc-8def-123456789abc"
+	// The Console is served at the origin's root and under a path as well.
+	const under = "/deployed/here"
 	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		kind, _, _ := strings.Cut(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), " ")
+		// Slashes are merged, as the web server in front of a Console does.
+		r.URL.Path = strings.ReplaceAll(strings.TrimPrefix(r.URL.Path, under), "//", "/")
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions/"):
 			principal := `{"type":"user","id":"` + member + `"}`
@@ -272,32 +276,46 @@ func TestACommandAndItsProxySayTheSameOfOneLogin(t *testing.T) {
 		"a saved Agent login":                   {testToken("pss_agent:"), "", "agent", agent, &config.UserConfig{ID: "agent-local", PrincipalType: config.PrincipalAgent, PrincipalID: agent, OrganizationID: &org}},
 		"an Agent's token from the environment": {testToken("pss_agent:"), "", "agent", agent, nil},
 	} {
-		if c.saved != nil {
-			c.saved.Host, c.saved.Token = console.URL, c.token
-			isolateLogins(t, *c.saved)
-		} else {
-			isolateLogins(t)
-			t.Setenv("PHASE_SERVICE_TOKEN", c.token)
-			t.Setenv("PHASE_HOST", console.URL)
-		}
-		if _, err := NewBackend(); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		command := LoginIdentity(context.Background())
-		client, err := agentapi.NewClient(console.URL, c.token, console.Client())
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		var proxy phaseproxy.InventoryIdentity
-		runtime := &airuntime.Runtime{Client: client, WorkflowID: c.workflow, CAStore: phaseproxy.CAStore{Directory: t.TempDir(), Keyring: memoryKeystore{}}}
-		if err := runtime.ServeManaged(context.Background(), identityEngine{&proxy}); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		want := phaseproxy.InventoryIdentity{
-			Tenant: console.URL + "\norganisation\n" + organisation, Login: console.URL + "\n" + c.kind + "\n" + c.id,
-		}
-		if command != want || proxy != want || !command.Is(proxy) {
-			t.Fatalf("%s: the command says %q of %q and its proxy %q of %q", name, command.Login, command.Tenant, proxy.Login, proxy.Tenant)
+		// The host as a login has it: at the root, and under a path with and
+		// without a slash after it. Each is one tenant to both, and the two
+		// Consoles of the origin are never the same one.
+		for host, served := range map[string]string{console.URL: console.URL, console.URL + under: console.URL + under, console.URL + under + "/": console.URL + under} {
+			if c.saved != nil {
+				saved := *c.saved
+				saved.Host, saved.Token = host, c.token
+				isolateLogins(t, saved)
+			} else {
+				isolateLogins(t)
+				t.Setenv("PHASE_SERVICE_TOKEN", c.token)
+				t.Setenv("PHASE_HOST", host)
+			}
+			if _, err := NewBackend(); err != nil {
+				t.Fatalf("%s at %s: %v", name, host, err)
+			}
+			command := LoginIdentity(context.Background())
+			client, err := agentapi.NewClient(host, c.token, console.Client())
+			if err != nil {
+				t.Fatalf("%s at %s: %v", name, host, err)
+			}
+			var proxy phaseproxy.InventoryIdentity
+			runtime := &airuntime.Runtime{Client: client, WorkflowID: c.workflow, CAStore: phaseproxy.CAStore{Directory: t.TempDir(), Keyring: memoryKeystore{}}}
+			if err := runtime.ServeManaged(context.Background(), identityEngine{&proxy}); err != nil {
+				t.Fatalf("%s at %s: %v", name, host, err)
+			}
+			want := phaseproxy.InventoryIdentity{
+				Tenant: served + "\norganisation\n" + organisation, Login: served + "\n" + c.kind + "\n" + c.id,
+			}
+			if command != want || proxy != want || !command.Is(proxy) {
+				t.Fatalf("%s at %s: the command says %q of %q and its proxy %q of %q", name, host, command.Login, command.Tenant, proxy.Login, proxy.Tenant)
+			}
+			// What a logout would forget is the same login's, by the same rule.
+			if c.saved != nil {
+				saved := *c.saved
+				saved.Host = host
+				if logout := SavedLoginIdentity(host, c.kind, saved); logout != want {
+					t.Fatalf("%s at %s: a logout would forget %q of %q", name, host, logout.Login, logout.Tenant)
+				}
+			}
 		}
 	}
 }

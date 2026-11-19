@@ -18,9 +18,10 @@
 // keyed hashes and lengths.
 //
 // A Key is two secrets with two roles. The lookup key keys the rolling hash,
-// and is one for every client of one tenant (for the Phase AI proxy, a Phase
-// host and an organisation), so a scan rolls one hash per position whoever
-// of the tenant registered what. The confirming key keys the SHA-256 that
+// and is one for every client of one tenant (for the Phase AI proxy, a
+// Console, by the whole address it is served at, and an organisation), so a
+// scan rolls one hash per position whoever of the tenant registered what.
+// The confirming key keys the SHA-256 that
 // confirms a chunk and the tail hash, and is one per principal: a login of
 // the tenant. The daemon that scans acts as one principal. It holds the
 // confirming key of every principal of its tenant, hands the lookup key and

@@ -154,6 +154,36 @@ func TestSessionIdentityIsWhatItsSessionSays(t *testing.T) {
 	}
 }
 
+// Two Consoles served under different paths of one origin, with the same
+// organisation and principal ids as a copied database has, are two tenants,
+// and each is one tenant however its address is written.
+func TestSessionsOfTwoConsolesOfOneOriginAreTwoTenants(t *testing.T) {
+	console := newIdentityConsole(t)
+	origin := strings.ToLower(console.server.URL)
+	identities := map[string]proxy.InventoryIdentity{}
+	for _, under := range []string{"", "/one", "/two", "/one/eu"} {
+		want := proxy.InventoryIdentity{Tenant: origin + under + "\norganisation\norg-1", Login: origin + under + "\nuser\nmember-1"}
+		for _, written := range []string{under, under + "/", under + "/service/public", under + "/service/public/v1/agents/"} {
+			client, err := agentapi.NewClient(console.server.URL+written, testToken("pss_user:v1:"), console.server.Client())
+			if err != nil {
+				t.Fatalf("%q: %v", written, err)
+			}
+			runtime := &Runtime{Client: client, WorkflowID: "workflow-1", CAStore: proxy.CAStore{Directory: t.TempDir(), Keyring: &memoryPrivateKeyStore{values: map[string]string{}}}}
+			if session := served(t, runtime); session.Identity != want || !session.Identity.Known() || session.Inventory.Tenant != want.Tenant {
+				t.Fatalf("a Console at %q, written %q: the session is %q, %q", under, written, session.Identity.Tenant, session.Identity.Login)
+			}
+		}
+		identities[under] = want
+	}
+	for under, one := range identities {
+		for elsewhere, other := range identities {
+			if under != elsewhere && (one.SameTenant(other) || one.Is(other) || one.Tenant == other.Tenant || one.Login == other.Login) {
+				t.Fatalf("the Consoles at %q and %q of one origin share a tenant or a login", under, elsewhere)
+			}
+		}
+	}
+}
+
 // A session that does not say whose it is, as an older Console's does not,
 // has no identity and its store no tenant. Nothing is asked or guessed for it.
 func TestSessionThatNamesNobodyHasNoIdentity(t *testing.T) {

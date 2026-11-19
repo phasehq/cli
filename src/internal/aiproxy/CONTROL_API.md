@@ -248,14 +248,24 @@ a reboot still has its values replaced before anything registers them again:
   cannot be read for any other reason (a locked keychain, a refused prompt, a
   value this version cannot parse), the proxy runs from memory
   (`key_unreadable`) and writes neither the keystore nor the file.
-- Everything is kept apart by tenant. A tenant is a Phase host and an
-  organisation id; a login is its kind (`user`, `service_account` or `agent`,
-  the principal types of a session) and its id: an Agent's id, a service
-  account's, and for a user the organisation member's id. One function writes
-  both, for the proxy and for every registering command
-  (`phaseproxy.NewInventoryIdentity`): the host is parsed, so its scheme and
-  name in any case, a default port written or not, and a trailing slash, dot
-  or path are one tenant, and another host, port or scheme is another.
+- Everything is kept apart by tenant. A tenant is a Console and an
+  organisation id, and a Console is the whole address it is served at:
+  scheme, host, port and the path it is served under. A login is its kind
+  (`user`, `service_account` or `agent`, the principal types of a session)
+  and its id: an Agent's id, a service account's, and for a user the
+  organisation member's id. One function writes both, for the proxy, for
+  every registering command and for a logout
+  (`phaseproxy.NewInventoryIdentity`): the address is parsed, so its scheme
+  and name in any case, a default port written or not, a trailing slash or
+  dot, and the API's own path written after it (`/service/public`,
+  `/service/public/v1/agents`) are one tenant. Another host, port, scheme or
+  path is another: two Consoles served under different paths of one origin
+  share nothing, even with the same organisation and account ids, as a
+  copied database has. The path is read as the client that opens the
+  session reads it (`agentapi.DeploymentPath`), so the proxy
+  (`agentapi.Client.Host`) and a command say the same of one login. An
+  address that can be read two ways (one that ends in the API's path twice)
+  names no tenant, and nothing is kept for such a login.
 - The proxy's identity is what the session it opened says
   (`airuntime.Runtime`): the response that opens a session carries
   `"organisation":{"id":...}` and `"principal":{"type":"agent"|"user","id":...}`,
@@ -311,7 +321,7 @@ a reboot still has its values replaced before anything registers them again:
     hash per position however many logins registered values;
   - a confirming key per principal, which keys the SHA-256 that confirms a
     chunk and the tail hashes. A principal is a login of the tenant: the
-    Phase host, the kind of login and its account or Agent id (never a
+    Console's address, the kind of login and its account or Agent id (never a
     token). It is named by a keyed tag of that login, and its confirming key
     is expanded from that tag. A proxy hands out one stored confirming key:
     its own session's login's, to a command that states that tenant and

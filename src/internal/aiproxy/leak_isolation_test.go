@@ -124,6 +124,15 @@ func TestWhatATenantReadsNeverDependsOnAnotherTenant(t *testing.T) {
 			phaseproxy.NewInventoryIdentity("https://console.test", organisation, phaseproxy.InventoryLoginUser, account),
 			phaseproxy.NewInventoryIdentity("https://phase.other.test", organisation, phaseproxy.InventoryLoginUser, account),
 		},
+		// Two Consoles of one origin, with the ids a copied database has.
+		"the same organisation and login ids under another path of the origin": {
+			phaseproxy.NewInventoryIdentity("https://console.test/one", organisation, phaseproxy.InventoryLoginUser, account),
+			phaseproxy.NewInventoryIdentity("https://console.test/two", organisation, phaseproxy.InventoryLoginUser, account),
+		},
+		"the same ids at the origin's root and under a path of it": {
+			phaseproxy.NewInventoryIdentity("https://console.test", organisation, phaseproxy.InventoryLoginUser, account),
+			phaseproxy.NewInventoryIdentity("https://console.test/one", organisation, phaseproxy.InventoryLoginUser, account),
+		},
 	}
 	// What the other registers before the tenant's proxy starts, while it
 	// runs, and before it starts again.
