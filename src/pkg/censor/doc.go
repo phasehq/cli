@@ -25,7 +25,10 @@
 //
 // RewriteJSON walks a JSON body and rewrites string values in place, leaving
 // every other byte as it was; JSON held inside a string is walked too, and
-// base64-only strings of 16 KiB or more are skipped as images or files. Redact
+// base64-only strings of 16 KiB or more are skipped as images or files. The
+// text of JSON held inside a string is also matched against the indexed values
+// as it stands: that finds a value that is JSON with no string in it, and puts
+// the placeholder where it was, so the string may no longer hold JSON. Redact
 // does the same for plain bytes, and Find reports byte ranges for bytes that
 // cannot be rewritten, such as a URL or a header. Base64 and hex runs of 24 or
 // more characters are decoded and rescanned, two levels deep, and gzip or zlib
@@ -184,7 +187,9 @@
 //   - A value transformed in any other way (reversed, split, re-encoded in a
 //     form not listed above, encrypted, compressed without base64 around it, or
 //     inside a base64 string of 16 KiB or more) is not found.
-//   - JSON object keys are not scanned, only values.
+//   - The body's JSON object keys are not scanned, only values. Numbers and
+//     keys of JSON held inside a string are matched against the indexed values
+//     and by no rule.
 //   - In a protobuf message a value is found inside one string or bytes field.
 //     One that a client splits over two fields is not, and neither is one
 //     under 12 bytes. A field that ends inside a value holds a fragment of it,

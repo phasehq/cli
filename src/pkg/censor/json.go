@@ -54,7 +54,8 @@ type ScanOptions struct {
 // RewriteJSON scans a JSON request body and replaces what it finds in place.
 // Every string value is decoded, scanned and, when anything was found,
 // re-encoded; every other byte of the body is left exactly as it was. A string
-// that itself holds JSON, such as tool call arguments, is walked the same way.
+// that itself holds JSON, such as tool call arguments, is walked the same way,
+// and its text is then matched against the indexed values as it stands.
 // The returned body is the input itself when nothing changed.
 func (ix *Index) RewriteJSON(body []byte, opts ScanOptions) ([]byte, *Report, error) {
 	report := &Report{JSON: true}
@@ -438,8 +439,20 @@ func (w *walker) rewriteString(text []byte, keyName string) *cacheEntry {
 			h.path = "#" + h.path
 			entry.hits = append(entry.hits, h)
 		}
+		out := text
 		if len(nested.reps) > 0 {
-			entry.literal = encodeString(nested.apply())
+			out = nested.apply()
+		}
+		// The walk reads strings only. A value that is JSON without one, such as
+		// an array of key bytes, is indexed whole, so the text is matched as it
+		// stands too. Decoding its runs was the walk's.
+		out, whole, _ := w.ix.inventoryPass(out, maxDecodeDepth, w.state)
+		for _, h := range whole {
+			h.path = "#"
+			entry.hits = append(entry.hits, h)
+		}
+		if len(nested.reps) > 0 || len(whole) > 0 {
+			entry.literal = encodeString(out)
 		}
 		return entry
 	}
