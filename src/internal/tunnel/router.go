@@ -538,6 +538,9 @@ func (r *Router) loops(dest netip.Addr) bool {
 // isn't handed over, and the error is errNotNoted. A flow that needs the proxy, for
 // a Connection's credential, still goes, with noted false: the proxy takes it as the
 // tunnel's, from no known tool, and reads nothing of it.
+//
+// However the connection ends, here or once the flow is over, it ends in one place:
+// bufferedConn.Close, which tells the proxy first.
 func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn, noted bool, err error) {
 	r.mu.RLock()
 	address, auth, reader := r.proxyAddress, r.proxyAuth, r.reader
@@ -549,16 +552,15 @@ func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn,
 	if err != nil {
 		return nil, false, err
 	}
-	closed := func() {}
+	held := &bufferedConn{Conn: conn, reader: bufio.NewReader(conn), closed: func() {}}
 	if reader != nil {
-		forget, noteErr := reader.NoteFlow(conn.LocalAddr().String(), tool)
-		if forget != nil {
-			closed = forget
+		closed, noteErr := reader.NoteFlow(conn.LocalAddr().String(), tool)
+		if closed != nil {
+			held.closed = closed
 		}
 		noted = noteErr == nil
 		if !noted && !needed {
-			_ = conn.Close()
-			closed()
+			_ = held.Close()
 			return nil, false, errNotNoted
 		}
 		if !noted {
@@ -566,16 +568,14 @@ func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn,
 		}
 	}
 	fail := func(err error) (net.Conn, bool, error) {
-		_ = conn.Close()
-		closed()
+		_ = held.Close()
 		return nil, false, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", authority, authority, auth); err != nil {
 		return fail(err)
 	}
-	buffered := bufio.NewReader(conn)
-	response, err := http.ReadResponse(buffered, nil)
+	response, err := http.ReadResponse(held.reader, nil)
 	if err != nil {
 		return fail(err)
 	}
@@ -583,7 +583,7 @@ func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn,
 		return fail(fmt.Errorf("the proxy answered %s", response.Status))
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &bufferedConn{Conn: conn, reader: buffered, closed: closed}, noted, nil
+	return held, noted, nil
 }
 
 // serveControl makes http://phase.invalid work with no proxy settings. port is the
@@ -644,8 +644,8 @@ func controlAuthority(authority string, port int) bool {
 	return strings.EqualFold(strings.TrimSuffix(name, "."), ControlHost)
 }
 
-// bufferedConn keeps bytes the CONNECT reader already buffered, and says when the
-// connection to the proxy has closed.
+// bufferedConn is a connection to the proxy. It keeps bytes the CONNECT reader
+// already buffered, and says when the router is done with the connection.
 type bufferedConn struct {
 	net.Conn
 	reader *bufio.Reader
@@ -655,10 +655,14 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
+// Close says the router is done with the connection, and then closes it. In that
+// order: the proxy knows the connection by the address it comes from, and while the
+// router still holds the port nothing else can connect from that address. Closed
+// first, the port could go to another program while the proxy still took a
+// connection from it for this one, with whatever was noted for it.
 func (c *bufferedConn) Close() error {
-	err := c.Conn.Close()
 	c.once.Do(c.closed)
-	return err
+	return c.Conn.Close()
 }
 
 func (c *bufferedConn) CloseWrite() error {

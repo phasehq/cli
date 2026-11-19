@@ -60,7 +60,8 @@ func (p proxyReader) ToolHosts() map[string][]string {
 // NoteFlow tells the proxy that the connection from connectFrom is the tunnel's, and
 // whose flow it carries. The first holds for as long as the connection is open and
 // can't fail, so even a flow whose note the proxy couldn't keep is never read as a
-// client of the proxy environment.
+// client of the proxy environment. What it returns ends both: the proxy forgets the
+// connection, and with it what was said of a flow whose CONNECT never came.
 func (p proxyReader) NoteFlow(connectFrom, tool string) (func(), error) {
 	closed := p.proxy.TunnelConnection(connectFrom)
 	if !p.reads {

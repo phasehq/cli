@@ -845,6 +845,36 @@ func TestTheReaderIsToldWhenAConnectionToTheProxyCloses(t *testing.T) {
 	}
 }
 
+// saidConn is a connection that says when it is closed.
+type saidConn struct {
+	net.Conn
+	closing func()
+}
+
+func (c saidConn) Close() error {
+	c.closing()
+	return nil
+}
+
+// The reader is told the router is done with a connection while the router still
+// holds it. The proxy knows the connection by the address it comes from, and once it
+// is closed that address can go to another program: told afterwards, the proxy would
+// take that program's connection for this one for a moment, with whatever was noted
+// for it. Every connection to the proxy is closed through here, however it ends.
+func TestTheReaderIsToldBeforeAConnectionToTheProxyIsClosed(t *testing.T) {
+	var order []string
+	conn := &bufferedConn{
+		Conn:   saidConn{closing: func() { order = append(order, "closed") }},
+		closed: func() { order = append(order, "told") },
+	}
+	_ = conn.Close()
+	// Closing it again tells nobody anything.
+	_ = conn.Close()
+	if !reflect.DeepEqual(order, []string{"told", "closed", "closed"}) {
+		t.Fatalf("a connection to the proxy went %v", order)
+	}
+}
+
 // address asks the router's resolver for a name, as the system would.
 func (s *readSetup) address(name string) (netip.Addr, bool) {
 	s.t.Helper()

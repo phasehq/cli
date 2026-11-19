@@ -32,8 +32,10 @@ type Reader interface {
 	// The router calls it for every CONNECT it sends. One the proxy was told nothing
 	// about would be taken for a program that was given the proxy through its
 	// environment, where any model host is read. An error means the proxy couldn't
-	// keep what it was told. closed is never nil, and is called once the connection
-	// from connectFrom is closed, whatever became of it.
+	// keep what it was told. closed is never nil. The router calls it once, when it is
+	// done with the connection from connectFrom, whatever became of it, and before it
+	// closes the connection: nothing else can connect from that address until then, so
+	// what was said of it is never taken for another connection's.
 	NoteFlow(connectFrom, tool string) (closed func(), err error)
 	// ToolHosts lists the hosts read for each tool, for status and for capturing them
 	// by name. A host that covers its subdomains is written "*.name".
