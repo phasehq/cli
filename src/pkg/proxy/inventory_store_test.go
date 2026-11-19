@@ -771,6 +771,89 @@ func TestInventoryDamagedFiles(t *testing.T) {
 	}
 }
 
+// A damaged header id, a damaged length or a damaged head costs the record it
+// is in and no other: every record whose head still opens under the key is
+// kept, whosever it is, and the file is whole again afterwards.
+func TestInventoryKeepsIntactRecordsPastDamage(t *testing.T) {
+	// Four records of one tenant, then one of another.
+	build := func(t *testing.T) (own, other InventoryStore, good []byte, starts []int) {
+		own = newInventoryTestStore(t)
+		other = own
+		other.Tenant = "https://console.test\norganisation\nanother-organisation"
+		inv, _ := openInventory(t, own)
+		var batch []StoredEntries
+		for i := 0; i < 4; i++ {
+			batch = append(batch, oneEntry(t, inv, fmt.Sprintf("own-%d", i))...)
+		}
+		inv.Add(batch)
+		theirs, _ := openInventory(t, other)
+		theirs.Add(oneEntry(t, theirs, "theirs"))
+		good = mustRead(t, inventoryFilePath(own))
+		for at := inventoryHeaderSize; at < len(good); at += 4 + int(binary.BigEndian.Uint32(good[at:])) {
+			starts = append(starts, at)
+		}
+		if len(starts) != 5 {
+			t.Fatalf("%d records in the file", len(starts))
+		}
+		return own, other, good, starts
+	}
+	for name, c := range map[string]struct {
+		damage      func(file []byte, starts []int) []byte
+		own, theirs int
+		// whole says the damage was to no record: the file is as it was after.
+		whole bool
+	}{
+		"a bit of the header's key id":        {func(file []byte, _ []int) []byte { file[len(inventoryMagic)+4] ^= 1; return file }, 4, 1, true},
+		"the last bit of the header's key id": {func(file []byte, _ []int) []byte { file[inventoryHeaderSize-1] ^= 0x80; return file }, 4, 1, true},
+		"a first length of zero": {func(file []byte, starts []int) []byte {
+			binary.BigEndian.PutUint32(file[starts[0]:], 0)
+			return file
+		}, 3, 1, false},
+		"a first length past the file": {func(file []byte, starts []int) []byte {
+			binary.BigEndian.PutUint32(file[starts[0]:], 0xffffffff)
+			return file
+		}, 3, 1, false},
+		"a length of zero in the middle": {func(file []byte, starts []int) []byte {
+			binary.BigEndian.PutUint32(file[starts[2]:], 0)
+			return file
+		}, 3, 1, false},
+		"another tenant's length of zero": {func(file []byte, starts []int) []byte {
+			binary.BigEndian.PutUint32(file[starts[4]:], 0)
+			return file
+		}, 4, 0, false},
+		"a bit of a head": {func(file []byte, starts []int) []byte { file[starts[1]+4+inventoryNonceSize+3] ^= 4; return file }, 3, 1, false},
+		"bytes that are no record between two": {func(file []byte, starts []int) []byte {
+			return append(append(append([]byte{}, file[:starts[2]]...), bytes.Repeat([]byte{0, 0, 1, 7}, 60)...), file[starts[2]:]...)
+		}, 4, 1, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			own, other, good, starts := build(t)
+			if err := os.WriteFile(inventoryFilePath(own), c.damage(append([]byte{}, good...), starts), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			inv, loaded := openInventory(t, own)
+			if status := inv.Status(); !status.Durable || status.OtherKey || status.Damaged != 1 || len(loaded) != c.own {
+				t.Fatalf("the tenant's proxy loaded %d of its records, want %d: %+v", len(loaded), c.own, status)
+			}
+			after := mustRead(t, inventoryFilePath(own))
+			if c.whole && !bytes.Equal(after, good) {
+				t.Fatalf("the file is %d bytes after damage to no record, and was %d", len(after), len(good))
+			}
+			if records := inventoryFileRecords(t, own); records != c.own+c.theirs {
+				t.Fatalf("%d records are left in the file, want %d", records, c.own+c.theirs)
+			}
+			// The other tenant's proxy, and the next of this one: the same
+			// records, and nothing damaged any more.
+			for which, want := range map[*InventoryStore]int{&own: c.own, &other: c.theirs} {
+				next, loaded := openInventory(t, *which)
+				if status := next.Status(); !status.Durable || status.Damaged != 0 || len(loaded) != want {
+					t.Fatalf("a later proxy of %q loaded %d records, want %d: %+v", which.Tenant, len(loaded), want, status)
+				}
+			}
+		})
+	}
+}
+
 // boundedRecord is a record of a size, a time, a tenant and a login, for the
 // bounds alone: nothing opens it.
 func boundedRecord(tenant, login byte, registered int64, size int) inventoryRecord {

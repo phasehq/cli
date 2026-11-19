@@ -458,7 +458,11 @@ a reboot still has its values replaced before anything registers them again:
 - A file that is damaged, cut short, too large or not what it claims never
   stops the proxy. Within a file this version can open, what can be
   authenticated and passes the same validation as a registration is loaded,
-  and the rest is counted and dropped. A file that exists and cannot be
+  and the rest is counted and dropped. A record is found by its head, which
+  is sealed under the key, and not by trusting the length before it: a
+  damaged length or head costs the record it is in, the records after it
+  are still read, whosever they are, and a damaged key id in the header of
+  a file whose heads open is put right. A file that exists and cannot be
   opened or understood at all (not an owner-only regular file of this user,
   too large, no inventory header) is never written over: the proxy runs
   from memory (`store_unreadable`) until `phase ai disable` or a logout

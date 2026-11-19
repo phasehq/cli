@@ -522,7 +522,7 @@ func (inv *Inventory) load(keyConfirmed bool) (loaded []StoredEntries, reason st
 	sweepInventoryTemporaries(inv.directory)
 	now := inv.store.now()
 	var kept []inventoryRecord
-	inv.status.Damaged, inv.status.OtherKey = file.damaged, file.otherKey > 0
+	inv.status.Damaged, inv.status.OtherKey = file.damaged, file.otherKey
 	for _, record := range file.records {
 		// Another tenant's record is carried over unopened, while it lasts,
 		// and nothing of it is counted: a count would tell this tenant of it.
@@ -549,7 +549,7 @@ func (inv *Inventory) load(keyConfirmed bool) (loaded []StoredEntries, reason st
 	inv.status.Loaded = len(loaded)
 	// What was dropped goes from the file now, and a first start leaves the
 	// file a later write expects to find.
-	if !file.present || len(kept) != len(file.records) || file.damaged > 0 || file.otherKey > 0 {
+	if !file.present || len(kept) != len(file.records) || file.damaged > 0 {
 		if err := inv.write(kept); err != nil {
 			return loaded, InventoryReasonUnusable
 		}
@@ -920,12 +920,15 @@ type inventoryFile struct {
 	// format, under this key.
 	present bool
 	// newer reports a file of a later store format, which is left alone.
-	newer    bool
-	records  []inventoryRecord
-	damaged  int
-	otherKey int
-	// foreign reports the file was written under another key.
-	foreign bool
+	newer   bool
+	records []inventoryRecord
+	// damaged counts the stretches of the file no record was read from, and
+	// what else was not as a writer leaves it.
+	damaged int
+	// foreign reports the file was written under another key: its header
+	// names another, and no head in it opens. otherKey says it held anything.
+	foreign  bool
+	otherKey bool
 	// unreadable reports a file that exists and could not be opened or
 	// understood. It is never written over.
 	unreadable bool
@@ -933,8 +936,8 @@ type inventoryFile struct {
 
 // read parses the file without trusting it: a file that is not a regular
 // owner-only file of this user, or that is too large, is not read at all,
-// and parsing stops at the first record that does not fit. Called with the
-// inventory lock held.
+// and only what a head sealed under this key stands before is a record.
+// Called with the inventory lock held.
 func (inv *Inventory) read() inventoryFile {
 	var file inventoryFile
 	data, err := readInventoryFile(inv.path(), maxInventoryFileBytes)
@@ -948,42 +951,32 @@ func (inv *Inventory) read() inventoryFile {
 		file.unreadable = true
 		return file
 	}
-	file.foreign = !bytes.Equal(data[len(inventoryMagic)+4:inventoryHeaderSize], inv.keyID[:])
-	file.present = !file.foreign
 	rest := data[inventoryHeaderSize:]
 	seen := map[[inventoryTagSize]byte]struct{}{}
+	// lost says the bytes being read are a stretch no record was found in. It
+	// is counted once and searched a byte at a time for the next head that
+	// opens, so one damaged length or head costs its own record and no other.
+	// unopened bounds the heads tried in such stretches.
+	lost, unopened := false, 0
 	for len(rest) > 0 {
-		if len(file.records)+file.otherKey >= maxInventoryRecords {
+		if len(file.records)+unopened >= maxInventoryRecords {
 			file.damaged++
 			break
 		}
-		if len(rest) < 4 {
-			file.damaged++
-			break
-		}
-		length := int(binary.BigEndian.Uint32(rest))
-		if length < inventoryRecordFixed+inventorySealOverhead+inventoryBodyFixed || length > maxInventoryRecordBytes || length > len(rest)-4 {
-			file.damaged++
-			break
-		}
-		raw := rest[:4+length]
-		rest = rest[4+length:]
-		if file.foreign {
-			file.otherKey++
+		record, tried, ok := inv.recordAt(rest)
+		if !ok {
+			if !lost {
+				file.damaged++
+				lost = true
+			}
+			if tried {
+				unopened++
+			}
+			rest = rest[1:]
 			continue
 		}
-		// The head says whose the record is; one that does not open is no
-		// record of this key's, whatever its length said.
-		sealed := raw[4+inventoryNonceSize : 4+inventoryNonceSize+inventoryHeadSize+inventorySealOverhead]
-		head, err := inv.file.Open(nil, raw[4:4+inventoryNonceSize], sealed, inv.header())
-		if err != nil {
-			file.damaged++
-			continue
-		}
-		record := inventoryRecord{raw: raw, head: head, scheme: binary.BigEndian.Uint32(head), registered: int64(binary.BigEndian.Uint64(head[4:]))}
-		copy(record.tenant[:], head[12:])
-		copy(record.login[:], head[12+inventoryTagSize:])
-		copy(record.content[:], head[12+2*inventoryTagSize:])
+		lost = false
+		rest = rest[len(record.raw):]
 		// No writer stores the same entries twice.
 		if _, twice := seen[record.content]; twice {
 			file.damaged++
@@ -992,7 +985,45 @@ func (inv *Inventory) read() inventoryFile {
 		seen[record.content] = struct{}{}
 		file.records = append(file.records, record)
 	}
+	// The header names the key the file is under, and so do the heads: one
+	// that opens was sealed under this key, whatever a damaged header says.
+	named := bytes.Equal(data[len(inventoryMagic)+4:inventoryHeaderSize], inv.keyID[:])
+	switch {
+	case named || len(file.records) > 0:
+		file.present = true
+		if !named {
+			file.damaged++
+		}
+	default:
+		file.foreign, file.damaged = true, 0
+		file.otherKey = len(data) > inventoryHeaderSize
+	}
 	return file
+}
+
+// recordAt reads the record rest begins with: a length that fits, and a head
+// that opens under this key. It says whose the record is; nothing whose head
+// does not open is a record of this key's, whatever its length said. tried
+// reports that a head was there to try.
+func (inv *Inventory) recordAt(rest []byte) (record inventoryRecord, tried, ok bool) {
+	if len(rest) < 4 {
+		return record, false, false
+	}
+	length := int(binary.BigEndian.Uint32(rest))
+	if length < inventoryRecordFixed+inventorySealOverhead+inventoryBodyFixed || length > maxInventoryRecordBytes || length > len(rest)-4 {
+		return record, false, false
+	}
+	raw := rest[:4+length]
+	sealed := raw[4+inventoryNonceSize : 4+inventoryNonceSize+inventoryHeadSize+inventorySealOverhead]
+	head, err := inv.file.Open(nil, raw[4:4+inventoryNonceSize], sealed, inv.header())
+	if err != nil {
+		return record, true, false
+	}
+	record = inventoryRecord{raw: raw, head: head, scheme: binary.BigEndian.Uint32(head), registered: int64(binary.BigEndian.Uint64(head[4:]))}
+	copy(record.tenant[:], head[12:])
+	copy(record.login[:], head[12+inventoryTagSize:])
+	copy(record.content[:], head[12+2*inventoryTagSize:])
+	return record, true, true
 }
 
 type recordVerdict int
