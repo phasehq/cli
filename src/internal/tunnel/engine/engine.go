@@ -30,6 +30,14 @@ const (
 	DefaultWireGuardPort   = 9555
 )
 
+// ErrNoKeystore stops the engine when the certificate authority's key can only be
+// kept in memory. Programs behind the tunnel trust the certificate authority through
+// the system trust store, and one that is new in every process is never in it, so
+// every Connection host would fail. The engine stops instead, and the helper steps
+// aside. The process keeps an in-memory certificate authority once it has made one,
+// so trying again in the same process would change nothing.
+var ErrNoKeystore = errors.New("the certificate authority's key can't be kept in a system keystore, so programs couldn't trust it; phase up has stopped")
+
 // Runtime opens backend sessions. airuntime.Runtime is one.
 type Runtime interface {
 	ServeManaged(context.Context, airuntime.Engine) error
@@ -166,7 +174,7 @@ func (e *engine) serve(ctx context.Context, session *sessionEngine) error {
 			e.cfg.Logf("the session changed; opening a new one")
 			attempt = 0
 			continue
-		case errors.Is(err, airuntime.ErrAuthenticationRequired):
+		case errors.Is(err, airuntime.ErrAuthenticationRequired), errors.Is(err, ErrNoKeystore):
 			e.setError(err)
 			return err
 		case err == nil:
@@ -205,6 +213,9 @@ func (s *sessionEngine) Run(context.Context, *airuntime.ProxySession, []string) 
 }
 
 func (s *sessionEngine) Serve(ctx context.Context, session *airuntime.ProxySession) error {
+	if session.CAPaths.MemoryOnly {
+		return ErrNoKeystore
+	}
 	rules := tunnel.RulesFromConnections(session.Config.Connections)
 	names := connectionNames(session.Config.Connections)
 	s.inner.OnStarted = func(endpoints aiproxy.Endpoints) {

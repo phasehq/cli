@@ -116,12 +116,24 @@ func runUp(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+var errTunnelNeedsKeystore = errors.New("phase up needs a system keystore to keep its certificate authority's key, and none is usable here; your network is unchanged")
+
 // ensureTunnelCATrust makes sure programs accept the proxy's certificates for
 // Connection hosts. It's the same certificate authority Phase AI uses.
 func ensureTunnelCATrust(out io.Writer) error {
-	_, paths, err := (phaseproxy.CAStore{}).Ensure()
+	// Programs behind the tunnel get no certificate settings of their own, so they
+	// can only trust a certificate authority that lasts and sits in the trust store.
+	// One whose key is kept in memory is new in every process, the engine's included.
+	if !aiCAStore.KeystoreAvailable() {
+		return errTunnelNeedsKeystore
+	}
+	_, paths, err := aiCAStore.Ensure()
 	if err != nil {
 		return fmt.Errorf("prepare Phase's certificate authority: %w", err)
+	}
+	if paths.MemoryOnly {
+		// The keystore answered, but wouldn't keep the key.
+		return errTunnelNeedsKeystore
 	}
 	if tool := phaseproxy.UserCATrustAvailability(goruntime.GOOS); tool != nil {
 		return fmt.Errorf("trust Phase's certificate authority: %s", phaseproxy.UserCATrustToolHint(tool))
