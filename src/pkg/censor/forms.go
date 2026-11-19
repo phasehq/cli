@@ -209,6 +209,36 @@ func entropy(value string) float64 {
 	return bitsPerByte
 }
 
+// secretLine reports whether a line of a multiline value is a secret in itself:
+// one run of base64, base64url or hex characters, padded or not, that mixes
+// digits with letters or the two cases of letters, as a line of a PEM body or of
+// an encoded key does. Words, names and key: value lines are none.
+func secretLine(line string) bool {
+	body := strings.TrimRight(line, "=")
+	if len(line)-len(body) > 2 {
+		return false
+	}
+	standard, urlSafe := true, true
+	var digit, lower, upper bool
+	for i := 0; i < len(body); i++ {
+		switch b := body[i]; {
+		case b >= '0' && b <= '9':
+			digit = true
+		case b >= 'a' && b <= 'z':
+			lower = true
+		case b >= 'A' && b <= 'Z':
+			upper = true
+		case b == '+' || b == '/':
+			urlSafe = false
+		case b == '-' || b == '_':
+			standard = false
+		default:
+			return false
+		}
+	}
+	return (standard || urlSafe) && ((digit && (lower || upper)) || (lower && upper))
+}
+
 type leaf struct{ path, value string }
 
 // jsonLeaves lists the string leaves of a JSON object or array, in a stable order.

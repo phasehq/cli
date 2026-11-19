@@ -2,6 +2,7 @@ package censor
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -80,6 +81,134 @@ func TestAURLWithAPasswordInAJSONValueIsProtected(t *testing.T) {
 	} {
 		if out, report := ix.RedactWith([]byte(text), ScanOptions{Rules: only}); string(out) != text || report.Inventory != 0 {
 			t.Errorf("a public URL was replaced: %s", out)
+		}
+	}
+}
+
+// holdsPiece reports whether out still holds n bytes in a row of the value.
+func holdsPiece(out []byte, value string, n int) bool {
+	for i := 0; i+n <= len(value); i++ {
+		if bytes.Contains(out, []byte(value[i:i+n])) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineForms(e *Entries) int {
+	lines := 0
+	for _, f := range e.Forms {
+		if f.Form == formLine {
+			lines++
+		}
+	}
+	return lines
+}
+
+// Of a value of several lines, only a line that is a secret in itself is
+// indexed on its own: a line of a PEM or base64 body, or a random token. A line
+// of words is not, or it would be replaced wherever it is written.
+func TestOnlySecretLinesOfAMultilineValueAreIndexedAlone(t *testing.T) {
+	for line, want := range map[string]bool{
+		"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj": true,
+		"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ==":                     true,
+		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08": true,
+		"Zq8Lm2-Zr6Tx4_Nb9Wc1":          true,
+		"JBSWY3DPEHPK3PXP":              true,
+		"apiVersion: v1":                false,
+		"kind: Config":                  false,
+		"server: https://10.0.0.1:6443": false,
+		"certificate-authority-data:":   false,
+		"kubernetes-admin":              false,
+		"NODE_ENV=production":           false,
+		"-----BEGIN PRIVATE KEY-----":   false,
+		"Zq8Lm2+Zr6Tx4_Nb9Wc1":          false,
+		"Zq8Lm2Zr6Tx4Nb9Wc1===":         false,
+	} {
+		if secretLine(line) != want {
+			t.Errorf("secretLine(%q) is %v", line, !want)
+		}
+	}
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redact := func(ix *Index, text string) []byte {
+		out, _ := ix.RedactWith([]byte(text), ScanOptions{Rules: only})
+		return out
+	}
+
+	// A line of words between two secrets, placed so that no chunk of another
+	// form lies whole inside it: only its own form could find it elsewhere.
+	first, last := randomString(t, alnum, 37), randomString(t, alnum, 37)
+	ix, entries := buildWithEntries(t, newKey(t), secret{ID: "notes", Value: first + "\nkind: Config\n" + last})
+	if got := lineForms(entries["notes"]); got != 2 {
+		t.Errorf("%d lines of the value are indexed alone, want its 2 tokens", got)
+	}
+	manifest := "apiVersion: v1\nkind: Config\nclusters: []\n"
+	if out := redact(ix, manifest); string(out) != manifest {
+		t.Errorf("a line of words was replaced elsewhere:\n%s", out)
+	}
+	for _, token := range []string{first, last} {
+		if out := redact(ix, "    "+token+"\n"); bytes.Contains(out, []byte(token)) {
+			t.Errorf("a token line was not found alone: %s", out)
+		}
+	}
+
+	// A private key: every line of its body is still found alone, and the
+	// armour is not.
+	privateKey := fakePEM(t)
+	body := strings.Split(strings.TrimSpace(privateKey), "\n")
+	body = body[1 : len(body)-1]
+	ix, entries = buildWithEntries(t, newKey(t), secret{ID: "tls", Value: privateKey})
+	if got := lineForms(entries["tls"]); got != len(body) {
+		t.Errorf("%d lines of the key are indexed alone, want %d", got, len(body))
+	}
+	for _, line := range body {
+		if out := redact(ix, "  "+line+"\n"); bytes.Contains(out, []byte(line)) {
+			t.Errorf("a line of the key was not found alone: %s", out)
+		}
+	}
+	if armour := "-----BEGIN PRIVATE KEY-----\n"; string(redact(ix, armour)) != armour {
+		t.Error("the armour was replaced")
+	}
+
+	// A service account key: the lines of the private key in it likewise.
+	account, accountKey := gcpKey(t)
+	ix = build(t, secret{ID: "gcp", Value: account})
+	for _, line := range strings.Split(strings.TrimSpace(accountKey), "\n") {
+		if strings.HasPrefix(line, "-----") {
+			continue
+		}
+		if out := redact(ix, line+"\n"); bytes.Contains(out, []byte(line)) {
+			t.Errorf("a line of the account's key was not found alone: %s", out)
+		}
+	}
+
+	// A kubeconfig has no line that is a secret in itself, so none is indexed
+	// alone. Its key data and its token are found all the same: whole, cut out
+	// of it, and in pieces.
+	keyData := base64.StdEncoding.EncodeToString([]byte(privateKey))
+	token := randomString(t, alnum, 40)
+	kubeconfig := "apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    certificate-authority-data: " +
+		base64.StdEncoding.EncodeToString(randomBytes(t, 300)) + "\n    server: https://10.0.0.1:6443\n  name: prod\nusers:\n- name: admin\n  user:\n    client-key-data: " +
+		keyData + "\n    token: " + token + "\n"
+	ix, entries = buildWithEntries(t, newKey(t), secret{ID: "kc", Value: kubeconfig})
+	if got := lineForms(entries["kc"]); got != 0 {
+		t.Errorf("%d lines of the kubeconfig are indexed alone", got)
+	}
+	for name, text := range map[string]string{
+		"the whole file":        "cat ~/.kube/config\n" + kubeconfig,
+		"the key data alone":    keyData + "\n",
+		"the key data's line":   "    client-key-data: " + keyData + "\n",
+		"a piece of key data":   "data: " + keyData[101:161] + "\n",
+		"the token alone":       token,
+		"the token's line":      "    token: " + token + "\n",
+		"the token in a header": "Authorization: Bearer " + token + "\n",
+	} {
+		out := redact(ix, text)
+		if holdsPiece(out, keyData, 24) || holdsPiece(out, token, 24) || !bytes.Contains(out, []byte("ph:secret:kc")) {
+			t.Errorf("%s: something of the kubeconfig was left\n%s", name, out)
 		}
 	}
 }

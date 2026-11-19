@@ -195,8 +195,10 @@ func (b *entriesBuilder) addValue(part, value string) {
 	if strings.Contains(value, "\n") {
 		for _, line := range strings.Split(value, "\n") {
 			line = strings.TrimSpace(line)
-			// Armour lines are the same in every PEM block and hold nothing secret.
-			if strings.HasPrefix(line, "-----") || len(line) < minValueLength || entropy(line) < minValueEntropy {
+			// Armour lines are the same in every PEM block and hold nothing secret,
+			// and a line of words, as apiVersion: v1 in a kubeconfig, would be
+			// replaced wherever it is written.
+			if strings.HasPrefix(line, "-----") || len(line) < minValueLength || entropy(line) < minValueEntropy || !secretLine(line) {
 				continue
 			}
 			if seenForm[line] {
