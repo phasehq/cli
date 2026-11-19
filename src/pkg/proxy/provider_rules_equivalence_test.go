@@ -23,6 +23,10 @@ import (
 // rules moved into the session payload (gzip, as it is large). These tests replay them through
 // Connections decoded from testdata/provider_rules, as a session payload
 // would carry them, and expect the same answers.
+//
+// The corpus was recorded once, by the last build that still had the compiled
+// tables, so it cannot be regenerated. A deliberate rule change means editing
+// the recorded answers it touches, or dropping them for tests of the new rule.
 
 const equivalenceCorpusPath = "testdata/provider_rules_equivalence.json.gz"
 
