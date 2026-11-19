@@ -56,6 +56,16 @@ type Config struct {
 	// them to reach stand-ins.
 	Upstream        *tunnel.Upstream
 	UpstreamRootCAs *x509.CertPool
+
+	// Routes replace the routes that capture everything, for a run that captures
+	// less. Model hosts are then captured by name too, as Connection hosts are, or
+	// they would never reach the tunnel.
+	Routes []string
+	// Reader gives the tunnel the proxy's say on model traffic: which hosts are read,
+	// and for which tool. Without one, no model host is read.
+	Reader func(*aiproxy.Engine) tunnel.Reader
+	// Owner finds the program that opened a flow. Tests replace it.
+	Owner tunnel.OwnerFunc
 }
 
 // Status is what `phase status` shows about the engine. It holds no credential.
@@ -71,6 +81,17 @@ type Status struct {
 	UDPBytes     int64          `json:"udpBytes"`
 	LastError    string         `json:"lastError,omitempty"`
 	HelperLinked bool           `json:"helperLinked"`
+
+	// Routes are what is captured in place of everything, when less was asked for.
+	Routes []string `json:"routes,omitempty"`
+	// ReadTools are the tools whose model traffic is read, each with its model hosts.
+	// It's the proxy's own table, and says nothing about what any program did. What
+	// programs did is in Counts, as numbers only: a flow to a model host is counted
+	// as "read" for the host's own tool, "unread_not_tool" for any other program,
+	// "owner_lookup_failed" when the program couldn't be found in time, and
+	// "unread_no_proxy" when the proxy couldn't take it. All but the first leave the
+	// flow unread.
+	ReadTools map[string][]string `json:"readTools,omitempty"`
 }
 
 // StatusPath is where a running engine writes its status.
@@ -126,6 +147,19 @@ func Run(ctx context.Context, cfg Config) error {
 		upstream = tunnel.NewUpstream()
 	}
 	router := tunnel.NewRouter(upstream, cfg.Logf)
+	if cfg.Owner != nil {
+		router.FindOwnersWith(cfg.Owner, 0)
+	}
+	proxy := aiproxy.New()
+	routes := cfg.Routes
+	if len(routes) == 0 {
+		routes = tunnel.FullRoutes
+	}
+	if cfg.Reader != nil {
+		// With everything captured, a model host is caught by the name in its TLS
+		// hello. With less, it only reaches the tunnel if it's captured by name.
+		router.Read(cfg.Reader(proxy), len(cfg.Routes) > 0)
+	}
 	stack, err := tunnel.NewStack(tunnel.Hooks{
 		Prepare: router.Prepare, TCP: router.HandleTCP, UDP: router.HandleUDP,
 		DNSAddr: tunnel.DNSAddress, DNS: router.AnswerDNS, Echo: router.Echo,
@@ -141,11 +175,21 @@ func Run(ctx context.Context, cfg Config) error {
 	defer device.Close()
 
 	e := &engine{cfg: cfg, router: router, started: time.Now()}
-	e.link = &helperLink{path: cfg.SocketPath, device: device, port: cfg.WireGuardPort, logf: cfg.Logf, ready: make(chan struct{})}
+	e.link = &helperLink{path: cfg.SocketPath, device: device, port: cfg.WireGuardPort, routes: routes, logf: cfg.Logf, ready: make(chan struct{})}
 	go e.link.run(ctx)
-	go e.writeStatus(ctx)
+	// The status file is gone, and nothing more is written to the state directory,
+	// by the time Run returns, however it ends.
+	statusContext, stopStatus := context.WithCancel(ctx)
+	statusStopped := make(chan struct{})
+	go func() {
+		defer close(statusStopped)
+		e.writeStatus(statusContext)
+	}()
+	defer func() {
+		stopStatus()
+		<-statusStopped
+	}()
 
-	proxy := aiproxy.New()
 	proxy.ListenAddress = cfg.ProxyAddress
 	proxy.PostgresListenAddress = cfg.PostgresAddress
 	transport := upstream.Transport()
@@ -223,7 +267,7 @@ func (s *sessionEngine) Serve(ctx context.Context, session *airuntime.ProxySessi
 			s.engine.setError(err)
 			return
 		}
-		domains := tunnel.Domains(rules)
+		domains := s.engine.router.CapturedDomains()
 		s.engine.mu.Lock()
 		s.engine.ready, s.engine.connections, s.engine.domains, s.engine.lastError = true, names, domains, ""
 		s.engine.mu.Unlock()
@@ -256,6 +300,7 @@ func (e *engine) writeStatus(ctx context.Context) {
 		status := Status{
 			PID: os.Getpid(), Started: e.started, Ready: e.ready, Interface: name,
 			Connections: e.connections, Domains: e.domains, Counts: e.router.Counts(),
+			Routes: e.cfg.Routes, ReadTools: e.router.ReadTools(),
 			TCPBytes:  e.router.Traffic.TCPUp.Load() + e.router.Traffic.TCPDown.Load(),
 			UDPBytes:  e.router.Traffic.UDPUp.Load() + e.router.Traffic.UDPDown.Load(),
 			LastError: e.lastError, HelperLinked: e.link.linked(),
@@ -281,6 +326,8 @@ type helperLink struct {
 	path   string
 	device *tunnel.EngineDevice
 	port   int
+	// routes are what the helper is asked to send into the tunnel.
+	routes []string
 	logf   func(string, ...any)
 
 	mu        sync.Mutex
@@ -344,7 +391,7 @@ func (l *helperLink) attach(ctx context.Context) error {
 	changed := l.changed
 	l.mu.Unlock()
 	reply, err := conn.Call(control.Request{Op: control.OpAttach, Attach: &control.Attach{
-		EnginePublicKey: l.device.PublicKey, EnginePort: l.port, Domains: domains, Routes: tunnel.FullRoutes,
+		EnginePublicKey: l.device.PublicKey, EnginePort: l.port, Domains: domains, Routes: l.routes,
 	}}, 15*time.Second)
 	if err != nil {
 		return err

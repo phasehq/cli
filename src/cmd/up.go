@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/internal/airuntime"
+	"github.com/phasehq/cli/internal/tunnel"
 	"github.com/phasehq/cli/internal/tunnel/control"
 	"github.com/phasehq/cli/internal/tunnel/engine"
 	"github.com/phasehq/cli/internal/tunnel/helper"
@@ -51,6 +54,9 @@ var statusCmd = &cobra.Command{
 func init() {
 	upCmd.Flags().String("workflow", "", "Agent Workflow whose Connections to use, for a user login (defaults to the one set with phase ai enable)")
 	upCmd.Flags().Bool("reinstall-helper", false, "Install the helper again, even if it's current")
+	// For trying phase up on part of the network before trusting it with all of it.
+	upCmd.Flags().String("routes", "", "Networks to send through Phase in place of everything, such as 192.0.2.0/24,198.51.100.0/24")
+	_ = upCmd.Flags().MarkHidden("routes")
 	downCmd.Flags().Bool("uninstall", false, "Also remove the helper")
 	rootCmd.AddCommand(upCmd, downCmd, statusCmd)
 }
@@ -64,6 +70,11 @@ func runUp(cmd *cobra.Command, _ []string) error {
 		return errors.New("run phase up as yourself, not with sudo; it asks for your password when it needs it")
 	}
 	workflow, _ := cmd.Flags().GetString("workflow")
+	routesFlag, _ := cmd.Flags().GetString("routes")
+	routes, err := parseTunnelRoutes(routesFlag)
+	if err != nil {
+		return err
+	}
 	runtimeInstance, err := airuntime.NewForUp(workflow)
 	if err != nil {
 		return err
@@ -90,9 +101,13 @@ func runUp(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintln(out, "\n🚇 Tunnel")
 	if pid, running := tunnelEnginePID(directory); running {
+		// A running engine keeps the routes it started with.
+		if current, err := engine.ReadStatus(directory); err == nil && !sameTunnelRoutes(current.Routes, routes) {
+			return errors.New("phase up is already running, and captures something else; run phase down first, then phase up again")
+		}
 		fmt.Fprintf(out, "   The engine is already running (pid %d).\n", pid)
 	} else {
-		pid, err := startTunnelEngine(directory, workflow)
+		pid, err := startTunnelEngine(directory, workflow, routes)
 		if err != nil {
 			return err
 		}
@@ -103,7 +118,11 @@ func runUp(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	engineStatus, _ := engine.ReadStatus(directory)
-	fmt.Fprintf(out, "   ✅ Everything on this Mac now goes through Phase, by %s.\n", status.Device)
+	if capturesEverything(status.Routes) {
+		fmt.Fprintf(out, "   ✅ Everything on this Mac now goes through Phase, by %s.\n", status.Device)
+	} else {
+		fmt.Fprintf(out, "   ✅ Traffic for %s, and for the names sent to Phase, now goes through it, by %s. Everything else is untouched.\n", strings.Join(status.Routes, ", "), status.Device)
+	}
 	if len(engineStatus.Connections) > 0 {
 		fmt.Fprintf(out, "   Connections: %s\n", strings.Join(engineStatus.Connections, ", "))
 	}
@@ -211,7 +230,7 @@ func tunnelEnginePID(directory string) (int, bool) {
 	return pid, true
 }
 
-func startTunnelEngine(directory, workflow string) (int, error) {
+func startTunnelEngine(directory, workflow string, routes []string) (int, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return 0, err
 	}
@@ -227,6 +246,9 @@ func startTunnelEngine(directory, workflow string) (int, error) {
 	args := []string{"tunnel", "engine"}
 	if workflow != "" {
 		args = append(args, "--workflow", workflow)
+	}
+	if len(routes) > 0 {
+		args = append(args, "--routes", strings.Join(routes, ","))
 	}
 	command := exec.Command(self, args...)
 	command.Stdout, command.Stderr = logFile, logFile
@@ -313,6 +335,56 @@ func runDown(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// parseTunnelRoutes reads the networks to send through Phase in place of everything.
+// None means everything, and so do the routes that capture everything, written out.
+func parseTunnelRoutes(value string) ([]string, error) {
+	var routes []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(part)
+		if err != nil {
+			return nil, fmt.Errorf("--routes: %q isn't a network, such as 192.0.2.0/24", part)
+		}
+		// Capturing everything takes each half of the address space and leaves the
+		// default route alone, which the local network and other VPNs depend on.
+		if prefix.Bits() == 0 {
+			return nil, fmt.Errorf("--routes: %s would replace the default route; leave --routes out to send everything through Phase", part)
+		}
+		route := prefix.Masked().String()
+		if !seen[route] {
+			seen[route] = true
+			routes = append(routes, route)
+		}
+	}
+	if capturesEverything(routes) {
+		return nil, nil
+	}
+	return routes, nil
+}
+
+// capturesEverything reports whether routes are the ones that send everything through
+// Phase. No routes means the same: it's what the helper takes them to be.
+func capturesEverything(routes []string) bool {
+	return len(routes) == 0 || sameTunnelRoutes(routes, tunnel.FullRoutes)
+}
+
+// sameTunnelRoutes compares two sets of routes, where none means everything.
+func sameTunnelRoutes(left, right []string) bool {
+	normal := func(routes []string) string {
+		if len(routes) == 0 {
+			routes = tunnel.FullRoutes
+		}
+		sorted := append([]string(nil), routes...)
+		sort.Strings(sorted)
+		return strings.Join(sorted, ",")
+	}
+	return normal(left) == normal(right)
+}
+
 func runStatus(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	if !helper.Supported() {
@@ -322,27 +394,43 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	reply, err := control.Ask(helper.SocketPath, control.Request{Op: control.OpStatus}, 5*time.Second)
+	var helperStatus *control.Status
+	if reply, err := control.Ask(helper.SocketPath, control.Request{Op: control.OpStatus}, 5*time.Second); err == nil {
+		helperStatus = reply.Status
+	}
+	var engineStatus *engine.Status
+	pid, running := tunnelEnginePID(directory)
+	if status, err := engine.ReadStatus(directory); running && err == nil {
+		engineStatus = &status
+	}
+	printTunnelStatus(out, helperStatus, pid, engineStatus, time.Now())
+	return nil
+}
+
+// printTunnelStatus writes what phase status shows. A helper or an engine that isn't
+// running is nil.
+func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, status *engine.Status, now time.Time) {
 	switch {
-	case err != nil:
+	case helperStatus == nil:
 		fmt.Fprintln(out, "🚇 Phase isn't in the path: the helper isn't running. Run phase up to start.")
-	case reply.Status.Capturing:
-		fmt.Fprintf(out, "🚇 Everything goes through Phase, by %s, since %s.\n", reply.Status.Device, reply.Status.Since.Local().Format("15:04"))
+	case helperStatus.Capturing && capturesEverything(helperStatus.Routes):
+		fmt.Fprintf(out, "🚇 Everything goes through Phase, by %s, since %s.\n", helperStatus.Device, helperStatus.Since.Local().Format("15:04"))
+	case helperStatus.Capturing:
+		fmt.Fprintf(out, "🚇 Only %s, and the names sent to Phase, go through it, by %s, since %s. Everything else is untouched.\n",
+			strings.Join(helperStatus.Routes, ", "), helperStatus.Device, helperStatus.Since.Local().Format("15:04"))
 	default:
-		reason := reply.Status.Reason
+		reason := helperStatus.Reason
 		if reason == "" {
 			reason = "phase up hasn't been run"
 		}
 		fmt.Fprintf(out, "🚇 Phase isn't in the path: %s.\n", reason)
-		if !reply.Status.Retry.IsZero() && reply.Status.Retry.After(time.Now()) {
-			fmt.Fprintf(out, "   It tries again at %s.\n", reply.Status.Retry.Local().Format("15:04:05"))
+		if !helperStatus.Retry.IsZero() && helperStatus.Retry.After(now) {
+			fmt.Fprintf(out, "   It tries again at %s.\n", helperStatus.Retry.Local().Format("15:04:05"))
 		}
 	}
-	pid, running := tunnelEnginePID(directory)
-	status, statusErr := engine.ReadStatus(directory)
-	if !running || statusErr != nil {
+	if status == nil {
 		fmt.Fprintln(out, "   Engine: not running.")
-		return nil
+		return
 	}
 	fmt.Fprintf(out, "   Engine: running as you (pid %d), leaving by %s.\n", pid, status.Interface)
 	if len(status.Connections) > 0 {
@@ -356,5 +444,28 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	}
 	proxied := status.Counts["proxy"] + status.Counts["proxy_by_tls_name"] + status.Counts["postgres"]
 	fmt.Fprintf(out, "   Flows: %d to Connection hosts, %d passed through unread.\n", proxied, status.Counts["tcp"]+status.Counts["udp"])
-	return nil
+	printModelTraffic(out, status)
+}
+
+// printModelTraffic says which tools' model traffic is read, and how many flows were.
+// It names the tools and their model hosts, which come from Phase's own table. What
+// any program on the machine did appears only as a count.
+func printModelTraffic(out io.Writer, status *engine.Status) {
+	tools := make([]string, 0, len(status.ReadTools))
+	for tool, hosts := range status.ReadTools {
+		if len(hosts) > 0 {
+			tools = append(tools, fmt.Sprintf("%s (%s)", tool, strings.Join(hosts, ", ")))
+		}
+	}
+	if len(tools) == 0 {
+		fmt.Fprintln(out, "   Model traffic: not read.")
+		return
+	}
+	sort.Strings(tools)
+	fmt.Fprintf(out, "   Model traffic is read for each tool's own processes: %s\n", strings.Join(tools, "; "))
+	fmt.Fprintf(out, "   Model flows: %d read, %d left unread for other programs, %d left unread because the program wasn't found in time.\n",
+		status.Counts["read"], status.Counts["unread_not_tool"], status.Counts["owner_lookup_failed"])
+	if missed := status.Counts["unread_no_proxy"]; missed > 0 {
+		fmt.Fprintf(out, "   %d more went on unread because Phase's proxy couldn't take them.\n", missed)
+	}
 }

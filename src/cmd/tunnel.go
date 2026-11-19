@@ -55,6 +55,11 @@ var tunnelEngineCmd = &cobra.Command{
 			return errors.New("the engine holds credentials, so it must not run as root")
 		}
 		workflow, _ := cmd.Flags().GetString("workflow")
+		routesFlag, _ := cmd.Flags().GetString("routes")
+		routes, err := parseTunnelRoutes(routesFlag)
+		if err != nil {
+			return err
+		}
 		runtimeInstance, err := airuntime.NewForUp(workflow)
 		if err != nil {
 			return err
@@ -66,7 +71,12 @@ var tunnelEngineCmd = &cobra.Command{
 		logger := log.New(os.Stderr, "", log.LstdFlags)
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		return engine.Run(ctx, engine.Config{Runtime: runtimeInstance, SocketPath: helper.SocketPath, StateDirectory: directory, Logf: logger.Printf})
+		// Reader is where the proxy's say on model traffic comes in. Until it's set, the
+		// tunnel reads no model host for any program.
+		return engine.Run(ctx, engine.Config{
+			Runtime: runtimeInstance, SocketPath: helper.SocketPath, StateDirectory: directory, Logf: logger.Printf,
+			Routes: routes,
+		})
 	},
 }
 
@@ -100,6 +110,7 @@ func tunnelStateDirectory() (string, error) {
 func init() {
 	tunnelHelperCmd.Flags().Int("uid", 0, "the user the helper serves")
 	tunnelEngineCmd.Flags().String("workflow", "", "Agent Workflow, for a user login")
+	tunnelEngineCmd.Flags().String("routes", "", "networks to capture in place of everything")
 	tunnelInstallCmd.Flags().Int("uid", 0, "the user the helper serves")
 	tunnelCmd.AddCommand(tunnelHelperCmd, tunnelEngineCmd, tunnelInstallCmd, tunnelUninstallCmd)
 	rootCmd.AddCommand(tunnelCmd)

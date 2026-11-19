@@ -21,6 +21,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/phasehq/cli/internal/agentapi"
+	"github.com/phasehq/cli/internal/tunnel/owner"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
@@ -86,14 +87,25 @@ type Router struct {
 	counts          map[string]int
 	lastFailure     time.Time
 	logf            func(string, ...any)
+
+	// What decides whether a model host is read. See read.go.
+	reader    Reader
+	readNames bool
+	owner     OwnerFunc
+	ownerWait time.Duration
+	lookups   chan struct{}
 }
 
 // NewRouter starts with no Connections. Until Update, Connection hosts aren't captured.
+// Until Read, no model host is read.
 func NewRouter(upstream *Upstream, logf func(string, ...any)) *Router {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Router{Upstream: upstream, names: newNameTable(namePool), counts: map[string]int{}, logf: logf}
+	return &Router{
+		Upstream: upstream, names: newNameTable(namePool), counts: map[string]int{}, logf: logf,
+		owner: owner.Lookup, ownerWait: ownerWait, lookups: make(chan struct{}, ownerLookups),
+	}
 }
 
 // Update points the router at a proxy session's front doors and Connections.
@@ -111,6 +123,29 @@ func (r *Router) Update(proxyURL, postgresAddress string, rules []Rule) error {
 	r.postgresAddress = postgresAddress
 	r.rules = append([]Rule(nil), rules...)
 	return nil
+}
+
+// CapturedDomains are the names the helper sends to the tunnel's resolver: the
+// Connections' hosts and, when model hosts are captured by name, those as well.
+func (r *Router) CapturedDomains() []string {
+	r.mu.RLock()
+	rules, reader, byName := append([]Rule(nil), r.rules...), r.reader, r.readNames
+	r.mu.RUnlock()
+	domains := Domains(rules)
+	if reader == nil || !byName {
+		return domains
+	}
+	seen := map[string]bool{}
+	for _, domain := range domains {
+		seen[domain] = true
+	}
+	for _, domain := range ReadDomains(reader.ToolHosts()) {
+		if !seen[domain] {
+			domains = append(domains, domain)
+		}
+	}
+	sort.Strings(domains)
+	return domains
 }
 
 // Counts reports how many flows took each route.
@@ -165,7 +200,8 @@ func (r *Router) capturedName(name string) bool {
 }
 
 // AnswerDNS answers for Connection hosts with a tunnel address, and asks the network's
-// own servers about everything else that reaches it.
+// own servers about everything else that reaches it. A model host captured by name
+// gets a tunnel address too.
 func (r *Router) AnswerDNS(query []byte) []byte {
 	var parser dnsmessage.Parser
 	header, err := parser.Start(query)
@@ -177,7 +213,7 @@ func (r *Router) AnswerDNS(query []byte) []byte {
 		return nil
 	}
 	name := strings.TrimSuffix(strings.ToLower(question.Name.String()), ".")
-	if !r.capturedName(name) {
+	if !r.capturedName(name) && !r.readByName(name) {
 		return r.Upstream.Forward(query)
 	}
 	reply := dnsmessage.Message{
@@ -271,39 +307,105 @@ func (r *Router) HandleTCP(client net.Conn, flow Flow) {
 		defer upstream.Close()
 		relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
 	default:
-		r.count("proxy")
-		upstream, err := r.connect(net.JoinHostPort(name, strconv.Itoa(port)))
-		if err != nil {
-			return
-		}
-		defer upstream.Close()
-		relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
+		r.byName(client, flow, name, port)
 	}
 }
 
-// passThrough relays a flow with no Connection. The only thing read is the name in a
-// TLS hello, to catch a Connection host reached by a real address: a program with its
-// own DNS, or a hard-coded address, never asks the system resolver.
+// byName handles a flow to one of the tunnel's own addresses, whose name is known
+// from the DNS answer that handed the address out.
+func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
+	authority := net.JoinHostPort(name, strconv.Itoa(port))
+	connection := r.capturedName(name)
+	reader, _ := r.reading()
+	reads := reader != nil && reader.ReadsHost(name)
+	var note func(string)
+	read := false
+	if reads {
+		toProxy := connection
+		if port == 443 {
+			toProxy, read, note = r.handOver(flow, name, connection)
+		}
+		if !toProxy {
+			// A model host, and not its own tool's flow: it leaves from here unread.
+			r.relayOut(client, authority)
+			return
+		}
+	}
+	if connection || !reads {
+		r.count("proxy")
+	}
+	upstream, err := r.connect(authority, note)
+	if err != nil {
+		if reads && !connection {
+			r.count("unread_no_proxy")
+			r.relayOut(client, authority)
+		}
+		return
+	}
+	defer upstream.Close()
+	if read {
+		r.count("read")
+	}
+	relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
+}
+
+// relayOut reaches a named host from here and relays the flow unread. It's for a flow
+// that came to a tunnel address, so there was no real address to reach beforehand.
+func (r *Router) relayOut(client net.Conn, authority string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	upstream, err := r.Upstream.DialContext(ctx, "tcp", authority)
+	cancel()
+	if err != nil {
+		r.count("tcp_failed")
+		return
+	}
+	defer upstream.Close()
+	r.relayUnread(client, upstream, nil)
+}
+
+// passThrough relays a flow that came to a real address. The only thing read is the
+// name in a TLS hello, to catch a host the proxy should have: a Connection host
+// reached by a program with its own DNS or a hard-coded address, which never asks the
+// system resolver, and a model host opened by the tool it is read for.
 func (r *Router) passThrough(client, upstream net.Conn, flow Flow) {
 	var head []byte
 	if flow.Dest.Port() == 443 {
 		var name string
 		name, head = peekClientHello(client)
-		if captured, protocol := r.captured(name, 443); captured && protocol != "postgres" && protocol != "control" {
-			r.count("proxy_by_tls_name")
-			_ = upstream.Close()
-			proxied, err := r.connect(net.JoinHostPort(name, "443"))
-			if err != nil {
+		captured, protocol := r.captured(name, 443)
+		connection := captured && protocol != "postgres" && protocol != "control"
+		if toProxy, read, note := r.handOver(flow, name, connection); toProxy {
+			if connection {
+				r.count("proxy_by_tls_name")
+			}
+			proxied, err := r.connect(net.JoinHostPort(name, "443"), note)
+			if err == nil {
+				_ = upstream.Close()
+				defer proxied.Close()
+				if read {
+					r.count("read")
+				}
+				if _, err := proxied.Write(head); err != nil {
+					return
+				}
+				relayTCP(client, proxied, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
 				return
 			}
-			defer proxied.Close()
-			if _, err := proxied.Write(head); err != nil {
+			if connection {
+				// It can't go on without the credential only the proxy holds.
 				return
 			}
-			relayTCP(client, proxied, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
-			return
+			// A model host needs nothing from the proxy to work. When the proxy can't
+			// take the flow, it goes on unread rather than fail.
+			r.count("unread_no_proxy")
 		}
 	}
+	r.relayUnread(client, upstream, head)
+}
+
+// relayUnread carries a flow to its destination untouched, sending on first whatever
+// was read of it to find its name.
+func (r *Router) relayUnread(client, upstream net.Conn, head []byte) {
 	r.count("tcp")
 	r.Traffic.ActiveTCP.Add(1)
 	defer r.Traffic.ActiveTCP.Add(-1)
@@ -352,7 +454,10 @@ func (r *Router) Echo(dest netip.Addr, sequence uint16, payload []byte) bool {
 // connect opens a CONNECT tunnel through the proxy, as a program with proxy settings
 // would. The proxy's password is presented here on the program's behalf, so behind a
 // tunnel the decoy is the only thing a program has to hold.
-func (r *Router) connect(authority string) (net.Conn, error) {
+//
+// note, when it isn't nil, is told the address the CONNECT leaves from before it is
+// sent, so the proxy knows who opened the flow by the time the CONNECT arrives.
+func (r *Router) connect(authority string, note func(connectFrom string)) (net.Conn, error) {
 	r.mu.RLock()
 	address, auth := r.proxyAddress, r.proxyAuth
 	r.mu.RUnlock()
@@ -362,6 +467,9 @@ func (r *Router) connect(authority string) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
 		return nil, err
+	}
+	if note != nil {
+		note(conn.LocalAddr().String())
 	}
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", authority, authority, auth); err != nil {
