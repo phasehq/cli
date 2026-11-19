@@ -179,3 +179,27 @@ func TestARefusingClientsWindowLeavesTheToolsOtherClientsRead(t *testing.T) {
 		t.Fatalf("%d window events, want 1", windows)
 	}
 }
+
+// With leak protection off the proxy reads no host, and names none to the
+// session's NO_PROXY.
+func TestReadHostNamesAreNoneWhenLeakProtectionIsOff(t *testing.T) {
+	off, err := newLeakGuard(leakModeOff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := off.readHostNames(); len(names) != 0 {
+		t.Fatalf("a proxy that reads nothing names %v", names)
+	}
+	for _, mode := range []string{leakModeCensor, leakModeObserve} {
+		guard, err := newLeakGuard(mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := guard.readHostNames()
+		for _, host := range []string{"api.anthropic.com", "api.openai.com", "chatgpt.com", "cursor.sh", "*.cursor.sh"} {
+			if !containsString(names, host) {
+				t.Fatalf("%s: %s is read and not named: %v", mode, host, names)
+			}
+		}
+	}
+}

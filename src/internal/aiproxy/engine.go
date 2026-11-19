@@ -335,6 +335,9 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	session.CAPaths.Bundle = preparedCABundle.BundlePath
 	session.CAPaths.BundleComplete = preparedCABundle.Complete
+	// A model host named in an inherited NO_PROXY would never reach the
+	// proxy, and nothing sent to it would be read.
+	session.ReadHosts = leak.readHostNames()
 	processEnvironment, environmentErr := session.CompileProcessEnvironment(proxyURL, baseEnvironment, adapters.environment)
 	if environmentErr != nil {
 		return environmentErr

@@ -65,6 +65,10 @@ type ProxySession struct {
 	// phase ai run and phase ai exec resolve it. It is empty for a proxy that
 	// serves whatever harness reaches it, such as the hook-managed daemon.
 	HarnessLabel string
+	// ReadHosts are the hosts the proxy reads for leak protection, as the
+	// engine names them. Like a Connection's own hosts they must reach the
+	// proxy, so an inherited NO_PROXY entry that covers one is dropped.
+	ReadHosts []string
 }
 
 func New(workflowOverride string) (*Runtime, error) {
@@ -318,7 +322,7 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 	credentialEnvironment := make([]string, 0)
 	scopedTrustKeys := make([]string, 0)
 	environmentBindings := make([]proxy.EnvironmentBinding, 0)
-	proxyRequiredHosts := make([]string, 0)
+	proxyRequiredHosts := append(make([]string, 0), s.ReadHosts...)
 	for _, connection := range s.Config.Connections {
 		if err := agentapi.ValidateCredentialEnvironment(connection.CredentialEnvironment); err != nil {
 			return processEnvironmentInputs{}, fmt.Errorf("Agent connection %s: %w", connection.ConnectionID, err)

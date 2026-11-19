@@ -460,6 +460,46 @@ func TestCanonicalOpenFixtureExportsReservedNamesAndScopedTrust(t *testing.T) {
 	}
 }
 
+// A NO_PROXY the session inherits may not take a host the proxy reads for
+// leak protection off the proxy: the entry is dropped, as one that covers a
+// Connection's host is, and every other entry stays.
+func TestInheritedNoProxyCannotExemptHostsTheProxyReads(t *testing.T) {
+	payload, err := os.ReadFile("../agentapi/testdata/open_session_response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response agentapi.OpenSessionResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"NO_PROXY=api.openai.com,.anthropic.com,internal.example.test,api2.cursor.sh,10.0.0.0/8"}
+	entries := func(session *ProxySession) []string {
+		t.Helper()
+		plan, err := session.CompileProcessEnvironment("http://phase:capability@127.0.0.1:9543", base, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Split(plan.Set["NO_PROXY"], ",")
+	}
+	session := &ProxySession{Config: &response, CAPaths: proxy.CAPaths{Bundle: "/phase/ca-bundle.pem"}}
+	// A proxy that reads nothing, as with leak protection off, leaves them.
+	if got := entries(session); !containsEnvironment(got, "api.openai.com") || !containsEnvironment(got, ".anthropic.com") {
+		t.Fatalf("NO_PROXY lost entries nothing asked to drop: %v", got)
+	}
+	session.ReadHosts = []string{"api.anthropic.com", "api.openai.com", "cursor.sh", "*.cursor.sh"}
+	got := entries(session)
+	for _, exempt := range []string{"api.openai.com", ".anthropic.com", "api2.cursor.sh"} {
+		if containsEnvironment(got, exempt) {
+			t.Fatalf("NO_PROXY still exempts %s, a host the proxy reads: %v", exempt, got)
+		}
+	}
+	for _, kept := range []string{"127.0.0.1", "localhost", "internal.example.test", "10.0.0.0/8"} {
+		if !containsEnvironment(got, kept) {
+			t.Fatalf("NO_PROXY lost %s: %v", kept, got)
+		}
+	}
+}
+
 func TestProxySessionRejectsLiveMaterialInAgentVisibleEnvironment(t *testing.T) {
 	const live = "live-upstream-credential-value"
 	newSession := func(t *testing.T) *ProxySession {

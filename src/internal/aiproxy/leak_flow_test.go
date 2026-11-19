@@ -1081,6 +1081,11 @@ func TestEngineNamesItsClientsAfterTheToolOfItsSession(t *testing.T) {
 	proxyURL, _ := url.Parse(endpoints.ProxyURL.Reveal())
 	password, _ := proxyURL.User.Password()
 	authorization := base64.StdEncoding.EncodeToString([]byte("phase:" + password))
+	// The session's NO_PROXY was compiled with the hosts the proxy reads, so
+	// an inherited entry cannot take one of them off the proxy.
+	if !containsString(session.ReadHosts, "api.anthropic.com") || !containsString(session.ReadHosts, "*.cursor.sh") {
+		t.Fatalf("the engine did not name the hosts it reads to the session's environment: %v", session.ReadHosts)
+	}
 
 	// The value is registered as the CLI registers one, through the engine's
 	// own control API.

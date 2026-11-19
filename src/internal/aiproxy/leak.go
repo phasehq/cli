@@ -427,6 +427,15 @@ func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
 	return status
 }
 
+// readHostNames names the hosts the table reads, a domain also as *.name:
+// none when leak protection is off.
+func (g *leakGuard) readHostNames() []string {
+	if g.mode == leakModeOff {
+		return nil
+	}
+	return g.hosts.hostNames(leakTreatmentInspect)
+}
+
 // notReadNow names the hosts the table reads that are not being read at this
 // moment, each with why: nil when there are none.
 func (g *leakGuard) notReadNow() map[string][]string {
