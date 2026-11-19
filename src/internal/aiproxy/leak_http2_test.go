@@ -559,6 +559,16 @@ func TestCursorConnectCallsAreConversationContent(t *testing.T) {
 		t.Fatalf("traces were not read for registered values and Phase's tokens only: %q", body)
 	}
 
+	// A Connect or gRPC call whose messages are JSON is a call all the same.
+	message := []byte(`{"text":"` + text + `"}`)
+	for _, contentType := range []string{"application/connect+json", "application/grpc+json"} {
+		postConnect(t, client, "https://"+cursorAPIHost+"/aiserver.v1.AnyService/AnyCall", contentType, connectEnvelope(0, message), nil)
+		body = string(bytes.Join(service.last(t).envelopes, nil))
+		if strings.Contains(body, token) || strings.Contains(body, leakSecretOne) || strings.Contains(body, phase) || !strings.Contains(body, "ph:github_token:") {
+			t.Fatalf("a %s call was not read with every rule: %q", contentType, body)
+		}
+	}
+
 	// The kinds the table knows, and that only a host that speaks Connect is
 	// asked what its Content-Type says.
 	cursor := rig.guard.inspects(envFlow, cursorAPIHost, 443)
@@ -597,8 +607,8 @@ func TestCursorConnectCallsAreConversationContent(t *testing.T) {
 			t.Errorf("%q on a host that does not speak Connect is read as %d", contentType, got)
 		}
 	}
-	if !leakBodyProtobuf.conversation() || !leakBodyProtobufStream.conversation() || !leakBodyGRPC.conversation() || leakBodyJSONStream.conversation() ||
-		leakBodyGRPCJSON.conversation() || leakBodyAsItReads.conversation() || leakBodyText.conversation() || leakBodyBinary.conversation() || leakBodyUnframed.conversation() {
+	if !leakBodyProtobuf.conversation() || !leakBodyProtobufStream.conversation() || !leakBodyGRPC.conversation() || !leakBodyJSONStream.conversation() ||
+		!leakBodyGRPCJSON.conversation() || leakBodyAsItReads.conversation() || leakBodyText.conversation() || leakBodyBinary.conversation() || leakBodyUnframed.conversation() {
 		t.Fatal("which bodies carry conversation content")
 	}
 	for kind, want := range map[leakBody][3]bool{

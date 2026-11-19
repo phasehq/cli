@@ -117,10 +117,14 @@ func isGRPCType(mediaType string) bool {
 }
 
 // conversation reports whether a body of this kind carries conversation
-// content whatever the path: on a host that speaks Connect, every protobuf
-// call does.
+// content whatever the path: on a host that speaks Connect, every call does,
+// whether its messages are protobuf or JSON.
 func (b leakBody) conversation() bool {
-	return b == leakBodyProtobuf || b == leakBodyProtobufStream || b == leakBodyGRPC
+	switch b {
+	case leakBodyProtobuf, leakBodyProtobufStream, leakBodyGRPC, leakBodyJSONStream, leakBodyGRPCJSON:
+		return true
+	}
+	return false
 }
 
 // stream reports whether the body is a sequence of envelopes, read one at a
