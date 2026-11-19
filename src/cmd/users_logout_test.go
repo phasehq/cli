@@ -2,11 +2,17 @@ package cmd
 
 import (
 	"errors"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/phasehq/cli/internal/tunnel/control"
 	"github.com/phasehq/cli/pkg/config"
 	gokeyring "github.com/zalando/go-keyring"
 )
@@ -113,5 +119,164 @@ func TestLogoutPurgeNamesAPhaseRootLeftInTheTrustStore(t *testing.T) {
 	caTrustLeftover = func() string { return "" }
 	if stdout, _ := purgeWithPhaseAIData(t, true); strings.Contains(stdout, "root certificate") || !strings.HasSuffix(stdout, "Logged out and purged all local data.\n") {
 		t.Fatalf("a purge with no root in the trust store: %q", stdout)
+	}
+}
+
+// phase up's engine keeps a session and its credentials in memory. Purging has to
+// stop it as phase down would, not delete its state and leave it running.
+func TestLogoutPurgeStopsThePhaseUpEngine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the engine is found with ps, and phase up doesn't run on Windows")
+	}
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	gokeyring.MockInit()
+	home := filepath.Dir(config.PhaseSecretsDir)
+	directory := filepath.Join(home, "tunnel")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.AddUser(config.UserConfig{Host: console.server.URL, ID: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Something the pid file can point at that looks like the engine and stops when
+	// asked, as the engine does.
+	engineProcess := exec.Command("/bin/sh", "-c", `sleep 120 & child=$!; trap "kill $child; exit 0" TERM; wait`, "phase tunnel engine")
+	if err := engineProcess.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := engineProcess.Process.Pid
+	exited := make(chan struct{})
+	go func() {
+		_ = engineProcess.Wait()
+		close(exited)
+	}()
+	t.Cleanup(func() { _ = engineProcess.Process.Kill() })
+	if err := os.WriteFile(tunnelEnginePIDPath(directory), []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "engine.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The engine is recognised by its command line, as ps shows it. phase up runs on
+	// macOS only for now, and a ps elsewhere may not be able to say.
+	if found, running := tunnelEnginePID(directory); !running || found != pid {
+		if runtime.GOOS != "darwin" {
+			t.Skip("ps here can't show a process's command line by its pid")
+		}
+		t.Fatalf("the stand-in engine (pid %d) wasn't recognised: %d, %v", pid, found, running)
+	}
+
+	// A helper that notes when it's asked to step aside, and whether the engine was
+	// still there to carry traffic until then.
+	socketDirectory, err := os.MkdirTemp("", "pu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(socketDirectory) })
+	listener, err := net.Listen("unix", filepath.Join(socketDirectory, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	steppedAside := make(chan bool, 4)
+	go func() {
+		for {
+			raw, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn := control.Wrap(raw)
+			var request control.Request
+			if err := conn.Receive(&request, 5*time.Second); err == nil && request.Op == control.OpDown {
+				steppedAside <- processIsAlive(pid)
+			}
+			_ = conn.Send(control.Reply{})
+			_ = raw.Close()
+		}
+	}()
+	originalDirectory, originalSocket := tunnelStateDirectory, tunnelHelperSocket
+	tunnelStateDirectory = func() (string, error) { return directory, nil }
+	tunnelHelperSocket = filepath.Join(socketDirectory, "s")
+	t.Cleanup(func() { tunnelStateDirectory, tunnelHelperSocket = originalDirectory, originalSocket })
+
+	if _, stderr, err := runPhaseCommand(t, "", "users", "logout", "--purge"); err != nil || stderr != "" {
+		t.Fatalf("purge: %v %s", err, stderr)
+	}
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the engine is still running after a purge")
+	}
+	select {
+	case engineWasRunning := <-steppedAside:
+		if !engineWasRunning {
+			t.Fatal("the engine was stopped before the helper stepped aside")
+		}
+	default:
+		t.Fatal("the helper was never asked to step aside")
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("%s still exists after purge: %v", home, err)
+	}
+}
+
+// With no engine running there's nothing to stop, and the helper isn't spoken to.
+func TestLogoutPurgeLeavesTheHelperAloneWhenPhaseUpIsNotRunning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("phase up doesn't run on Windows")
+	}
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	gokeyring.MockInit()
+	home := filepath.Dir(config.PhaseSecretsDir)
+	directory := filepath.Join(home, "tunnel")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.AddUser(config.UserConfig{Host: console.server.URL, ID: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+	// A pid file left by an engine that has gone.
+	if err := os.WriteFile(tunnelEnginePIDPath(directory), []byte("2147483646"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socketDirectory, err := os.MkdirTemp("", "pu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(socketDirectory) })
+	listener, err := net.Listen("unix", filepath.Join(socketDirectory, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	asked := make(chan struct{}, 4)
+	go func() {
+		for {
+			raw, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			asked <- struct{}{}
+			_ = raw.Close()
+		}
+	}()
+	originalDirectory, originalSocket := tunnelStateDirectory, tunnelHelperSocket
+	tunnelStateDirectory = func() (string, error) { return directory, nil }
+	tunnelHelperSocket = filepath.Join(socketDirectory, "s")
+	t.Cleanup(func() { tunnelStateDirectory, tunnelHelperSocket = originalDirectory, originalSocket })
+
+	if _, stderr, err := runPhaseCommand(t, "", "users", "logout", "--purge"); err != nil || stderr != "" {
+		t.Fatalf("purge: %v %s", err, stderr)
+	}
+	select {
+	case <-asked:
+		t.Fatal("the helper was spoken to with no engine running")
+	default:
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("%s still exists after purge: %v", home, err)
 	}
 }

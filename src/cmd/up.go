@@ -182,7 +182,7 @@ func caTrusted(certificate string) bool {
 }
 
 func ensureTunnelHelper(out io.Writer, interactive, reinstall bool) error {
-	reply, err := control.Ask(helper.SocketPath, control.Request{Op: control.OpStatus}, 5*time.Second)
+	reply, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpStatus}, 5*time.Second)
 	current := err == nil && reply.Status != nil && reply.Status.Protocol == control.ProtocolVersion
 	if current && !reinstall {
 		fmt.Fprintln(out, "   ✅ The Phase helper is installed and running.")
@@ -270,7 +270,7 @@ func waitForCapture(directory string, wait time.Duration) (control.Status, error
 	deadline := time.Now().Add(wait)
 	var last control.Status
 	for time.Now().Before(deadline) {
-		if reply, err := control.Ask(helper.SocketPath, control.Request{Op: control.OpStatus}, 5*time.Second); err == nil && reply.Status != nil {
+		if reply, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpStatus}, 5*time.Second); err == nil && reply.Status != nil {
 			last = *reply.Status
 			if last.Capturing {
 				return last, nil
@@ -300,25 +300,13 @@ func runDown(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := control.Ask(helper.SocketPath, control.Request{Op: control.OpDown}, 15*time.Second); err == nil {
+	steppedAside, stopped := stopTunnel(directory)
+	if steppedAside {
 		fmt.Fprintln(out, "✅ Phase has stepped aside: your network works as it did before phase up.")
 	}
-	if pid, running := tunnelEnginePID(directory); running {
-		if process, err := os.FindProcess(pid); err == nil {
-			_ = process.Signal(syscall.SIGTERM)
-			for range 50 {
-				if !processIsAlive(pid) {
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			if processIsAlive(pid) {
-				_ = process.Kill()
-			}
-		}
+	if stopped {
 		fmt.Fprintln(out, "✅ Stopped the engine.")
 	}
-	_ = os.Remove(tunnelEnginePIDPath(directory))
 	if uninstall, _ := cmd.Flags().GetBool("uninstall"); uninstall && helper.Installed() {
 		self, err := os.Executable()
 		if err != nil {
@@ -333,6 +321,38 @@ func runDown(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "✅ Removed the Phase helper.")
 	}
 	return nil
+}
+
+// stopTunnel asks the helper to step aside, then stops the engine. It reports which
+// of the two it did.
+func stopTunnel(directory string) (steppedAside, stoppedEngine bool) {
+	if tunnelHelperSocket != "" {
+		_, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpDown}, 15*time.Second)
+		steppedAside = err == nil
+	}
+	if pid, running := tunnelEnginePID(directory); running {
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Signal(syscall.SIGTERM)
+			for range 50 {
+				if !processIsAlive(pid) {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if processIsAlive(pid) {
+				_ = process.Kill()
+				for range 20 {
+					if !processIsAlive(pid) {
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+			}
+		}
+		stoppedEngine = true
+	}
+	_ = os.Remove(tunnelEnginePIDPath(directory))
+	return steppedAside, stoppedEngine
 }
 
 // parseTunnelRoutes reads the networks to send through Phase in place of everything.
@@ -395,7 +415,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	var helperStatus *control.Status
-	if reply, err := control.Ask(helper.SocketPath, control.Request{Op: control.OpStatus}, 5*time.Second); err == nil {
+	if reply, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpStatus}, 5*time.Second); err == nil {
 		helperStatus = reply.Status
 	}
 	var engineStatus *engine.Status

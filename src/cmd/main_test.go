@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/phasehq/cli/internal/leakguard"
@@ -19,6 +20,10 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	hookRuntimeDir = func() (string, error) { return directory, nil }
+	// The same for phase up: no test may read the real engine's state, or speak to
+	// the helper that holds this machine's routes.
+	tunnelStateDirectory = func() (string, error) { return filepath.Join(directory, "tunnel"), nil }
+	tunnelHelperSocket = filepath.Join(directory, "no-helper.sock")
 	aiCAStore = phaseproxy.CAStore{Directory: directory, Keyring: fixedKeyring{err: gokeyring.ErrNotFound}}
 	// The stale-skill notice reads the home directory's skill paths; only its
 	// own tests, which set a temporary HOME, may run it.

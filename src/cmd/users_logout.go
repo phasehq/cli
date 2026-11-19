@@ -49,6 +49,18 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
 		}
 		cancel()
+		// phase up's engine holds a session and its credentials in memory, and keeps
+		// its state in the same directory. It stops the way phase down stops it: the
+		// helper steps aside first, so the machine's traffic goes direct again, and
+		// nothing is left running with its state deleted from under it.
+		if directory, err := tunnelStateDirectory(); err == nil {
+			if pid, running := tunnelEnginePID(directory); running {
+				stopTunnel(directory)
+				if processIsAlive(pid) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop phase up's engine (pid %d); run phase down.\n", pid)
+				}
+			}
+		}
 		if err := phaseproxy.DeleteStoredCAKey(); errors.Is(err, phaseproxy.ErrKeystoreUnreachable) {
 			// Only a machine that made a Phase AI CA can have stored its key.
 			if directory, dirErr := hookRuntimeDir(); dirErr == nil {

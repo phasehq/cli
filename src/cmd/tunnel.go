@@ -74,7 +74,7 @@ var tunnelEngineCmd = &cobra.Command{
 		// Reader is where the proxy's say on model traffic comes in. Until it's set, the
 		// tunnel reads no model host for any program.
 		return engine.Run(ctx, engine.Config{
-			Runtime: runtimeInstance, SocketPath: helper.SocketPath, StateDirectory: directory, Logf: logger.Printf,
+			Runtime: runtimeInstance, SocketPath: tunnelHelperSocket, StateDirectory: directory, Logf: logger.Printf,
 			Routes: routes,
 		})
 	},
@@ -99,13 +99,18 @@ var tunnelUninstallCmd = &cobra.Command{
 	},
 }
 
-func tunnelStateDirectory() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+// tunnelStateDirectory is where the engine keeps its state, and tunnelHelperSocket is
+// where the helper listens. They're variables so a test can never reach the real ones.
+var (
+	tunnelStateDirectory = func() (string, error) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".phase", "tunnel"), nil
 	}
-	return filepath.Join(home, ".phase", "tunnel"), nil
-}
+	tunnelHelperSocket = helper.SocketPath
+)
 
 func init() {
 	tunnelHelperCmd.Flags().Int("uid", 0, "the user the helper serves")
