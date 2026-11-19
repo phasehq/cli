@@ -669,6 +669,70 @@ func customEnvironmentConnection(t *testing.T, id, environmentName, decoy string
 	return connection
 }
 
+// identifierConnection is a Connection that exports one of its identifiers.
+func identifierConnection(t *testing.T, id, serviceType, source, environmentName, value string) agentapi.Connection {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"grantId": "grant-" + id, "connectionId": id, "credentialId": id, "credentialName": id, "credentialProvider": serviceType,
+		"serviceType": serviceType, "protocol": "http",
+		"hosts": []any{map[string]any{"match": "exact", "value": id + ".example.test", "port": 443}},
+		"injections": []any{map[string]any{
+			"action": "set_header", "name": "Authorization", "valueFormat": "Bearer {value}",
+			"valueFrom": map[string]any{"source": "credential", "field": "token"}, "whenAbsent": "attach",
+		}},
+		"identifiers": map[string]string{"username": value}, "decoyMaterial": map[string]string{"token": "decoy-" + id + "-0123456789", "username": value},
+		"configEnv": map[string]string{}, "agentEnv": map[string]string{environmentName: value},
+		"environmentBindings": []any{map[string]any{
+			"name": environmentName, "action": "set", "source": source, "sourceField": "username", "sensitive": false, "systemManaged": false,
+		}},
+		"secretMaterial": map[string]string{"token": "live-" + id + "-abcdefghijklmnop"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connection agentapi.Connection
+	if err := json.Unmarshal(payload, &connection); err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+// Two Connections that export one name the same way with the same value
+// agree, and the session starts with that value. A name they would set to
+// different values, or export in different ways, still stops the session.
+func TestConnectionsThatExportTheSameNameAndValueAgree(t *testing.T) {
+	plan := func(connections ...agentapi.Connection) (proxy.ProcessEnvironmentPlan, error) {
+		session := &ProxySession{Config: &agentapi.OpenSessionResponse{SessionConfig: agentapi.SessionConfig{
+			ConfigEnv: map[string]string{}, Connections: connections,
+		}}}
+		return session.ProviderProcessEnvironment()
+	}
+	for name, serviceTypes := range map[string][2]string{
+		"custom Connections":   {agentapi.CustomHTTPServiceType, agentapi.CustomHTTPServiceType},
+		"packaged Connections": {"github", "gitlab"},
+	} {
+		same, err := plan(
+			identifierConnection(t, "one", serviceTypes[0], "identifier", "SERVICE_USER", "shared-user"),
+			identifierConnection(t, "two", serviceTypes[1], "identifier", "SERVICE_USER", "shared-user"),
+		)
+		if err != nil || same.Set["SERVICE_USER"] != "shared-user" {
+			t.Fatalf("%s that agree on SERVICE_USER: %q, %v", name, same.Set["SERVICE_USER"], err)
+		}
+	}
+	if _, err := plan(
+		identifierConnection(t, "one", "github", "identifier", "SERVICE_USER", "first-user"),
+		identifierConnection(t, "two", "gitlab", "identifier", "SERVICE_USER", "second-user"),
+	); err == nil {
+		t.Fatal("two Connections set SERVICE_USER to different values and the session started")
+	}
+	if _, err := plan(
+		identifierConnection(t, "one", "github", "identifier", "SERVICE_USER", "shared-user"),
+		identifierConnection(t, "two", "gitlab", "decoy", "SERVICE_USER", "shared-user"),
+	); err == nil {
+		t.Fatal("two Connections export SERVICE_USER in different ways and the session started")
+	}
+}
+
 // Custom HTTP Connections share one service type but are different services,
 // so each exports its own decoy. Only a name two of them disagree on is left
 // for explicit per-Connection selection.

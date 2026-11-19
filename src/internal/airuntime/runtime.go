@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -322,6 +323,7 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 	credentialEnvironment := make([]string, 0)
 	scopedTrustKeys := make([]string, 0)
 	environmentBindings := make([]proxy.EnvironmentBinding, 0)
+	exportedBindings := make([]exportedBinding, 0)
 	proxyRequiredHosts := append(make([]string, 0), s.ReadHosts...)
 	for _, connection := range s.Config.Connections {
 		if err := agentapi.ValidateCredentialEnvironment(connection.CredentialEnvironment); err != nil {
@@ -372,19 +374,40 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 			}
 			agentEnv[key] = value
 		}
+		agentValues := connection.AgentEnv.Clone()
 		for _, binding := range connection.EnvironmentBindings {
 			if contested.claims(connection, binding.Name) {
 				continue
 			}
-			environmentBindings = append(environmentBindings, proxy.EnvironmentBinding{
-				Name: binding.Name, Action: string(binding.Action), Source: string(binding.Source), SourceField: binding.SourceField,
-			})
+			exported := exportedBinding{
+				binding: proxy.EnvironmentBinding{
+					Name: binding.Name, Action: string(binding.Action), Source: string(binding.Source), SourceField: binding.SourceField,
+				},
+				value: connection.ConfigEnv[binding.Name],
+			}
+			if value, set := agentValues[binding.Name]; set {
+				exported.value = value
+			}
+			// Two Connections may export one name the same way with the same
+			// value. Anything else under one name is kept, and the plan
+			// refuses it as a duplicate.
+			if slices.Contains(exportedBindings, exported) {
+				continue
+			}
+			exportedBindings = append(exportedBindings, exported)
+			environmentBindings = append(environmentBindings, exported.binding)
 		}
 	}
 	return processEnvironmentInputs{
 		configEnv: configEnv, agentEnv: agentEnv, credentialEnvironment: credentialEnvironment, scopedTrustKeys: scopedTrustKeys,
 		environmentBindings: environmentBindings, proxyRequiredHosts: proxyRequiredHosts,
 	}, nil
+}
+
+// exportedBinding is one Connection's binding with the value it resolves to.
+type exportedBinding struct {
+	binding proxy.EnvironmentBinding
+	value   string
 }
 
 // defaultIdentity groups the Connections that compete to be the default
