@@ -12,8 +12,8 @@ type Tool struct {
 
 // Match is one way to recognise a tool, from the executable it was started from.
 // Every field that is set has to hold, and names and paths are compared exactly as
-// written. A Match that says nothing about the executable recognises nothing: an
-// argument alone is never enough.
+// written. A Match that says nothing about the executable recognises nothing: a
+// script alone is never enough.
 type Match struct {
 	// File is the executable's file name.
 	File string `json:"file,omitempty"`
@@ -21,9 +21,12 @@ type Match struct {
 	FilePrefix string `json:"filePrefix,omitempty"`
 	// Path is a part of the executable's path.
 	Path string `json:"path,omitempty"`
-	// Argument is a part of one of the arguments. It's for a tool that runs as a
-	// script, where the executable is only the runtime, such as node.
-	Argument string `json:"argument,omitempty"`
+	// Package is the folder the tool is installed in, such as "@openai/codex". It's
+	// for a tool that runs as a script, where the executable is only the runtime,
+	// such as node: one of the arguments has to be a path that goes through that
+	// folder. An argument that only mentions the name is no such path, and any
+	// program can be given one.
+	Package string `json:"package,omitempty"`
 }
 
 // Tools is the table Identify uses. The first tool that matches wins.
@@ -35,18 +38,20 @@ var Tools = []Tool{
 		{File: "claude"},
 		// The installer keeps each release in a file named after its version.
 		{Path: "/claude/versions/"},
-		{File: "node", Argument: "@anthropic-ai/claude-code"},
-		{File: "bun", Argument: "@anthropic-ai/claude-code"},
+		{File: "node", Package: "@anthropic-ai/claude-code"},
+		{File: "bun", Package: "@anthropic-ai/claude-code"},
 	}},
 	{Name: "codex", Match: []Match{
 		{File: "codex"},
-		{FilePrefix: "codex-"},
-		{File: "node", Argument: "@openai/codex"},
+		// Its package keeps a binary for each platform, named after the platform.
+		// Outside the package, a name that starts the same is some other program.
+		{FilePrefix: "codex-", Path: "/@openai/codex/"},
+		{File: "node", Package: "@openai/codex"},
 	}},
 	{Name: "opencode", Match: []Match{
 		{File: "opencode"},
-		{File: "node", Argument: "opencode-ai"},
-		{File: "bun", Argument: "opencode-ai"},
+		{File: "node", Package: "opencode-ai"},
+		{File: "bun", Package: "opencode-ai"},
 	}},
 	{Name: "cursor", Match: []Match{
 		{Path: "/Cursor.app/"},
@@ -89,9 +94,9 @@ func (m Match) holds(process Process) bool {
 	if m.Path != "" && !strings.Contains(process.Executable, m.Path) {
 		return false
 	}
-	if m.Argument != "" {
+	if folder := strings.Trim(m.Package, "/"); folder != "" {
 		for _, argument := range process.Args {
-			if strings.Contains(argument, m.Argument) {
+			if strings.Contains(argument, "/"+folder+"/") {
 				return true
 			}
 		}

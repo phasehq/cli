@@ -26,7 +26,7 @@ func TestIdentify(t *testing.T) {
 		{name: "OpenCode from Homebrew", executable: "/opt/homebrew/bin/opencode", want: "opencode"},
 		{name: "OpenCode in the Cellar", executable: "/opt/homebrew/Cellar/opencode/2.0.25/bin/opencode", want: "opencode"},
 		{name: "OpenCode from npm, run by node", executable: "/usr/local/bin/node", args: []string{"node", "/usr/local/lib/node_modules/opencode-ai/bin/opencode"}, want: "opencode"},
-		{name: "OpenCode from npm, run by bun", executable: home + "/.bun/bin/bun", args: []string{"bun", "x", "opencode-ai@latest"}, want: "opencode"},
+		{name: "OpenCode from npm, run by bun", executable: home + "/.bun/bin/bun", args: []string{"bun", home + "/.bun/install/global/node_modules/opencode-ai/bin/opencode"}, want: "opencode"},
 		{name: "Cursor's extension host", executable: "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)", args: []string{"Cursor Helper (Plugin): extension-host [1-2]"}, want: "cursor"},
 		{name: "Cursor in the user's Applications", executable: home + "/Applications/Cursor.app/Contents/MacOS/Cursor", want: "cursor"},
 		{name: "Cursor's command-line agent, its own node started through its link", executable: home + "/.local/share/cursor-agent/versions/2026.11.19-f005e9d/node", args: []string{home + "/.local/bin/cursor-agent"}, want: "cursor"},
@@ -57,6 +57,18 @@ func TestIdentify(t *testing.T) {
 		{name: "a codex look-alike without the dash", executable: "/usr/local/bin/codexplorer"},
 		{name: "a folder named like a tool", executable: "/Users/someone/claude/bin/server"},
 		{name: "node itself, named like a runtime only", executable: "/opt/homebrew/bin/nodemon", args: []string{"nodemon", "@anthropic-ai/claude-code"}},
+		// A tool's name among the arguments says what a program was told, not what it
+		// is. Only a script under the tool's own folder is the tool.
+		{name: "a node script told a tool's package name", executable: "/opt/homebrew/bin/node", args: []string{"node", home + "/reports/deps.js", "@openai/codex"}},
+		{name: "a node script told a tool's package and version", executable: "/opt/homebrew/bin/node", args: []string{"node", "audit.js", "--package=@anthropic-ai/claude-code@2.1.0"}},
+		{name: "a script in a folder that only starts like a tool's", executable: "/opt/homebrew/bin/node", args: []string{"node", home + "/notes/@openai/codex-notes/run.js"}},
+		{name: "a script in a file named like a tool's folder", executable: "/opt/homebrew/bin/node", args: []string{"node", home + "/bin/opencode-ai"}},
+		// bun asked for a package by name only fetches and starts it. What it starts
+		// is known by its own executable, or by the script it runs.
+		{name: "bun asked to fetch and run a package", executable: home + "/.bun/bin/bun", args: []string{"bun", "x", "opencode-ai@latest"}},
+		// Codex's platform binaries are named codex-, and so can anything else be.
+		{name: "a program whose name starts like Codex's binaries", executable: "/usr/local/bin/codex-release-notes"},
+		{name: "the same, in a folder named after Codex", executable: home + "/src/codex/bin/codex-release-notes"},
 		{name: "nothing known about it"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -73,9 +85,9 @@ func TestATableEntryThatSaysNothingAboutTheExecutableMatchesNothing(t *testing.T
 	var tools []Tool
 	if err := json.Unmarshal([]byte(`[
 		{"name": "empty", "match": [{}]},
-		{"name": "argument-only", "match": [{"argument": "serve"}]},
+		{"name": "package-only", "match": [{"package": "serve"}]},
 		{"name": "none", "match": []},
-		{"name": "real", "match": [{"file": "aider", "argument": "--model"}, {"filePrefix": "aider-"}, {"path": "/aider/bin/"}]}
+		{"name": "real", "match": [{"file": "python3", "package": "/site-packages/aider/"}, {"filePrefix": "aider-"}, {"path": "/aider/bin/"}]}
 	]`), &tools); err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +95,10 @@ func TestATableEntryThatSaysNothingAboutTheExecutableMatchesNothing(t *testing.T
 		process Process
 		want    string
 	}{
-		{Process{Executable: "/usr/bin/curl", Args: []string{"curl", "serve"}}, ""},
-		{Process{Executable: "/usr/local/bin/aider", Args: []string{"aider"}}, ""},
-		{Process{Executable: "/usr/local/bin/aider", Args: []string{"aider", "--model=x"}}, "real"},
+		{Process{Executable: "/usr/bin/curl", Args: []string{"curl", "/srv/serve/index.js"}}, ""},
+		{Process{Executable: "/usr/bin/python3", Args: []string{"python3", "-m", "aider"}}, ""},
+		{Process{Executable: "/usr/bin/python3", Args: []string{"python3", "notes.py", "site-packages/aider"}}, ""},
+		{Process{Executable: "/usr/bin/python3", Args: []string{"python3", "/opt/venv/lib/python3.13/site-packages/aider/main.py", "--model=x"}}, "real"},
 		{Process{Executable: "/usr/local/bin/aider-nightly"}, "real"},
 		{Process{Executable: "/opt/aider/bin/python3.13"}, "real"},
 	} {
