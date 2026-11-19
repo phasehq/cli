@@ -1,16 +1,19 @@
 // Package leakguard registers secret values the CLI is about to hand out with
-// the leak protection of a running Phase AI proxy. It indexes each value
-// locally with the proxy's key and sends only keyed hashes; the proxy then
+// the leak protection of every running Phase AI proxy. It indexes each value
+// locally with a proxy's key and sends only keyed hashes; the proxy then
 // replaces the value with ph:<type>:<id> wherever it appears in model traffic.
+// The type and the id are the caller's and nothing of a proxy's key goes into
+// them, so a value has the same placeholder at every proxy that knows it.
 //
-// The proxy is found through an ordered list of sources: the session a
-// command runs in names it in the environment, and other sources find one
-// that runs on the machine for commands whose shell does not carry that
-// environment. When no source finds one it does nothing and makes no call,
-// unless the environment still carries the session's marker: a registration
-// then fails, as it does when the session's proxy is down.
-// A source can also say its proxy is restarting; a registration then waits
-// for it, for Timeout in all.
+// The proxies are found through an ordered list of sources: the session a
+// command runs in names its proxy in the environment, and other sources find
+// one that runs on the machine. Each reads model traffic the others do not
+// see, so a value is registered with every one that is found, one after
+// another. When no source finds one the package does nothing and makes no
+// call, unless the environment still carries the session's marker: a
+// registration then fails, as it does when the session's proxy is down. A
+// source can also say its proxy is restarting; a registration then waits for
+// it, for Timeout in all.
 package leakguard
 
 import (
@@ -27,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +43,8 @@ import (
 
 // Timeout bounds one registration, key fetch included. A command that hands
 // out values waits at most this long for the proxy, and, before that, at most
-// this long for a proxy that is restarting to come back.
+// this long for a proxy that is restarting to come back. With more than one
+// proxy to register with it is also what they share: see Proxy.Register.
 const Timeout = time.Second
 
 // dialTimeout bounds the connection to the proxy's address, which is always
@@ -98,8 +103,10 @@ var ErrNotListening = errors.New("nothing is listening at the Phase AI proxy's a
 
 // ErrRestarting is returned when the proxy's process runs but took no
 // registration in time: it was starting, or between two sessions with its
-// listener closed, and did not come back within Timeout. Its values are not
-// protected; unlike ErrNotListening it does not mean no proxy runs.
+// listener closed, and did not come back in the time the registration had,
+// which is Timeout unless other proxies were registered with before it. Its
+// values are not protected; unlike ErrNotListening it does not mean no proxy
+// runs.
 var ErrRestarting = errors.New("the Phase AI proxy is restarting and did not come back in time")
 
 // restartPoll is how often a proxy that is restarting is looked for again.
@@ -176,8 +183,9 @@ type Source struct {
 
 var (
 	sourcesMu sync.RWMutex
-	// sources are tried in order. The session's own environment comes first:
-	// a command inside a session registers with that session's proxy.
+	// sources are asked in order. The session's own environment comes first:
+	// a command inside a session registers with that session's proxy before
+	// any other.
 	sources = []Source{{Name: SourceSession, Find: sessionProxy}}
 )
 
@@ -188,7 +196,7 @@ func sessionProxy() (string, bool) {
 	return proxyURL(), true
 }
 
-// AddSource adds a way to find a running proxy, tried after the ones already
+// AddSource adds a way to find a running proxy, asked after the ones already
 // there.
 func AddSource(source Source) {
 	if source.Name == "" || source.Find == nil {
@@ -208,6 +216,36 @@ type Proxy struct {
 	Source string
 	// source is that source, asked again while the proxy is restarting.
 	source *Source
+	// turns is what the proxies found together share: the time one command
+	// spends registering with them.
+	turns *turns
+}
+
+// turns is shared by the proxies one Locate found. It holds when the first
+// registration with any of them began, which is what the time of the
+// registrations after it is counted from.
+type turns struct {
+	mu    sync.Mutex
+	began time.Time
+}
+
+// next says how long the registration that begins now may spend on its proxy.
+// The first has a registration's usual bounds and no limit of its own. Each
+// one after it has what is left of Timeout since the first began, and never
+// less than one dial timeout: a proxy that is slow, or away, costs the proxies
+// after it nothing but that.
+func (t *turns) next() (allowed time.Duration, limited bool) {
+	if t == nil {
+		return 0, false
+	}
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.began.IsZero() {
+		t.began = now
+		return 0, false
+	}
+	return max(t.began.Add(Timeout).Sub(now), dialTimeout), true
 }
 
 // InSession reports a proxy named by the process's own environment: the
@@ -215,31 +253,54 @@ type Proxy struct {
 // by the model unless the proxy removes it.
 func (p Proxy) InSession() bool { return p.Source == SourceSession }
 
-// Locate returns the proxy to register with: the first one a source finds,
-// or says is restarting.
+// Locate returns every proxy to register with, in the order of the sources:
+// each one a source finds, or says is restarting. Inside a session the
+// session's own proxy is the first of them. None means no proxy runs.
+//
+// Every source is asked each time, the session's or not: a proxy that runs on
+// the machine reads the model traffic of tools the session's proxy never
+// sees, and a value handed out in the session can reach those too. A proxy
+// two sources find is one proxy, and is returned once, as the earlier
+// source's: a shell that loads the environment of the proxy the harness hooks
+// keep running has that proxy as its session's own.
 //
 // A session whose environment kept the marker and lost the proxy is still a
 // session: what a command hands out there is in front of the model. When no
 // source finds a proxy for it, it is returned as the session's proxy with no
 // address, so a registration fails as it does for a session whose proxy is
 // down, and is not taken for a shell outside any session.
-func Locate() (Proxy, bool) {
+//
+// The proxies returned were found together, and share the time one command
+// spends registering (Proxy.Register).
+func Locate() []Proxy {
 	sourcesMu.RLock()
 	ordered := sources
 	sourcesMu.RUnlock()
+	var (
+		proxies []Proxy
+		shared  *turns
+	)
 	for index := range ordered {
 		source := &ordered[index]
-		if found, ok := source.Find(); ok && found != "" {
-			return Proxy{URL: found, Source: source.Name, source: source}, true
+		found, ok := source.Find()
+		if !ok || found == "" {
+			if source.Restarting == nil || !source.Restarting() {
+				continue
+			}
+			// Away for a moment: Register waits for its source to find it.
+			found = ""
+		} else if slices.ContainsFunc(proxies, func(earlier Proxy) bool { return earlier.URL == found }) {
+			continue
 		}
-		if source.Restarting != nil && source.Restarting() {
-			return Proxy{Source: source.Name, source: source}, true
+		if shared == nil {
+			shared = &turns{}
 		}
+		proxies = append(proxies, Proxy{URL: found, Source: source.Name, source: source, turns: shared})
 	}
-	if marked() {
-		return Proxy{Source: SourceSession}, true
+	if len(proxies) == 0 && marked() {
+		return []Proxy{{Source: SourceSession, turns: &turns{}}}
 	}
-	return Proxy{}, false
+	return proxies
 }
 
 func proxyURL() string {
@@ -268,21 +329,35 @@ func PlaceholderID(name string) string {
 	return "k" + hex.EncodeToString(sum[:8])
 }
 
+// maxCachedKeys bounds the keys kept. They are as many as the proxies a
+// process registers with, and one more each time one of them comes back from
+// a restart as another process.
+const maxCachedKeys = 16
+
 var (
-	keyMu     sync.Mutex
-	cachedKey *censor.Key
-	keyProxy  string
+	keyMu sync.Mutex
+	// cachedKeys holds the key of each proxy this process fetched one from,
+	// by the proxy's address with its capability.
+	cachedKeys = map[string]*censor.Key{}
 )
 
-// Register protects values with the leak protection of the proxy Locate
-// finds. It does nothing when none is found, or when there is nothing to
-// protect.
+// Register protects values with the leak protection of every proxy Locate
+// finds, one after another. It does nothing when none is found, or when there
+// is nothing to protect. What it returns is what the first of them came to,
+// which inside a session is the session's own proxy; a caller that has to
+// know of each registers with the proxies Locate returns itself.
 func Register(ctx context.Context, values []Value) (Result, error) {
-	proxy, found := Locate()
-	if !found {
-		return Result{}, nil
+	var (
+		result Result
+		failed error
+	)
+	for index, proxy := range Locate() {
+		registered, err := proxy.Register(ctx, values)
+		if index == 0 {
+			result, failed = registered, err
+		}
 	}
-	return proxy.Register(ctx, values)
+	return result, failed
 }
 
 // registration is one POST: entries and, for each, what its id is.
@@ -302,6 +377,16 @@ type registration struct {
 // cut short where the wait ends. If the proxy is not back in time the error
 // is ErrRestarting. A source that says nothing of the kind leaves
 // ErrNotListening, after one dial.
+//
+// The proxies one Locate found are registered with one after another, and a
+// command must not wait on each of them in turn as long as it would on one.
+// So only the first registration with any of them has the bounds above. Each
+// one after it has what is left of Timeout since the first began, for its
+// wait and its calls together, and never less than one dial timeout. Its dial
+// is given at most half of what it has: it is then the dial that runs out
+// first, and is seen to, so nothing listening is still told from a proxy that
+// did not answer. A proxy that runs answers in a fraction of either. Indexing
+// is local work and is not counted.
 func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 	values = protectable(values)
 	if len(values) == 0 {
@@ -310,8 +395,15 @@ func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	address, dial := p.URL, dialTimeout
-	deadline := time.Now().Add(Timeout)
+	// wait is how long a proxy that is restarting is waited for, and whole the
+	// longest a dial is given: one given less was cut short by the wait's end.
+	wait, whole := Timeout, dialTimeout
+	allowed, limited := p.turns.next()
+	if limited {
+		wait, whole = allowed, min(dialTimeout, allowed/2)
+	}
+	address, dial := p.URL, whole
+	deadline := time.Now().Add(wait)
 	for {
 		if address == "" && p.source != nil {
 			if found, ok := p.source.Find(); ok {
@@ -319,11 +411,15 @@ func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 			}
 		}
 		if address != "" {
-			result, err := register(ctx, address, values, dial)
+			calls := bounds{dial: dial, key: Timeout, values: Timeout}
+			if limited {
+				calls = bounds{dial: dial, key: time.Until(deadline), shared: true}
+			}
+			result, err := register(ctx, address, values, calls)
 			if !errors.Is(err, ErrNotListening) {
 				return result, err
 			}
-			if dial < dialTimeout && time.Until(deadline) <= 0 {
+			if dial < whole && time.Until(deadline) <= 0 {
 				// The end of the wait cut this dial short, so running out of
 				// time says nothing of what listens there: the proxy may be
 				// back and not have been given the time to take the
@@ -349,26 +445,38 @@ func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 		// The next dial ends with the wait at the latest: where a dial to an
 		// address nothing listens at takes its whole timeout, a few of them
 		// would otherwise carry the wait past its end.
-		dial = min(dialTimeout, left)
+		dial = min(whole, left)
 		// Its source is asked again: the proxy may come back at another
 		// address, or as another process with another capability.
 		address = ""
 	}
 }
 
+// bounds are how long the calls of one registration may take: the connection
+// to be made, the key request, and the registrations of the values together.
+// With shared set the registrations have what the key request left of key.
+type bounds struct {
+	dial, key, values time.Duration
+	shared            bool
+}
+
 // register sends values, already filtered, to the proxy at address, its URL
-// with its capability. dial is how long the connection may take to be made.
-func register(ctx context.Context, address string, values []Value, dial time.Duration) (Result, error) {
+// with its capability, within the bounds given.
+func register(ctx context.Context, address string, values []Value, within bounds) (Result, error) {
 	var result Result
-	client, err := controlClient(address, dial, Timeout)
+	client, err := controlClient(address, within.dial, Timeout)
 	if err != nil {
 		return result, err
 	}
-	keyContext, cancelKey := context.WithTimeout(ctx, Timeout)
+	asked := time.Now()
+	keyContext, cancelKey := context.WithTimeout(ctx, within.key)
 	key, err := proxyKey(keyContext, client, address)
 	cancelKey()
 	if err != nil {
 		return result, err
+	}
+	if within.shared {
+		within.values = within.key - time.Since(asked)
 	}
 	// Indexing is local work, so only the calls to the proxy count against
 	// the timeout: the key above, and the registrations below together.
@@ -405,7 +513,7 @@ func register(ctx context.Context, address string, values []Value, dial time.Dur
 	if len(batch.entries) > 0 {
 		batches = append(batches, batch)
 	}
-	postContext, cancelPost := context.WithTimeout(ctx, Timeout)
+	postContext, cancelPost := context.WithTimeout(ctx, within.values)
 	defer cancelPost()
 	for _, batch := range batches {
 		added, err := post(postContext, client, batch)
@@ -442,8 +550,8 @@ func protectable(values []Value) []Value {
 func proxyKey(ctx context.Context, client *http.Client, current string) (*censor.Key, error) {
 	keyMu.Lock()
 	defer keyMu.Unlock()
-	if cachedKey != nil && keyProxy == current {
-		return cachedKey, nil
+	if key := cachedKeys[current]; key != nil {
+		return key, nil
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, phaseproxy.ControlURL+"/v1/inventory/key", nil)
 	if err != nil {
@@ -470,7 +578,10 @@ func proxyKey(ctx context.Context, client *http.Client, current string) (*censor
 	if err != nil {
 		return nil, errors.New("the Phase AI proxy sent an invalid key")
 	}
-	cachedKey, keyProxy = key, current
+	if len(cachedKeys) >= maxCachedKeys {
+		clear(cachedKeys)
+	}
+	cachedKeys[current] = key
 	return key, nil
 }
 

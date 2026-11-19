@@ -148,12 +148,14 @@ revision.
 ### GET /v1/inventory/key and POST /v1/inventory (leak protection)
 
 Used by the CLI itself (`internal/leakguard`), never by the Agent's own tools.
-Before a command hands out secret values it looks for a running proxy, fetches
-that proxy's key, indexes each value locally with `pkg/censor`, and registers
-the entries. The entries carry keyed hashes and lengths, never a value.
+Before a command hands out secret values it looks for the running proxies,
+and with each one fetches that proxy's key, indexes each value locally with
+`pkg/censor`, and registers the entries. The entries carry keyed hashes and
+lengths, never a value.
 
-The proxy is looked for through an ordered list of sources, and the first one
-that finds a proxy is used (`leakguard.AddSource` adds another):
+The proxies are looked for through an ordered list of sources
+(`leakguard.AddSource` adds another). Every source is asked, and every proxy
+found is registered with, one after another in this order:
 
 1. The session the command runs in: `PHASE_AI_ENABLED=1` and the proxy
    variables in its environment.
@@ -162,6 +164,14 @@ that finds a proxy is used (`leakguard.AddSource` adds another):
    that wrote it is alive. This is what covers a command in a shell that does
    not load the Phase environment: Codex's and Cursor's shells, or another
    terminal.
+
+One proxy is not enough, because each reads model traffic the others do not
+see: a value handed out inside a session can reach a harness whose traffic
+only the hook-managed proxy reads. A value has the same placeholder at every
+proxy that knows it. The type and the id are the CLI's own, and only the
+hashes are made with each proxy's key. A proxy two sources find is one proxy,
+registered with once as the earlier source's: in a shell that loads the
+hook-managed proxy's environment that proxy is the session's own.
 
 The hook-managed proxy is away for some seconds whenever its daemon starts or
 recycles its session: the listener closes, the state is withdrawn, and both
@@ -192,20 +202,31 @@ each. Stale state so costs a command a quarter of a second at most on any
 system. A proxy that took the connection and did not answer in time is
 another matter: it is there, and failed.
 
+The command does not wait on each proxy in turn as long as it would on one.
+The first registration has the bounds above: a second for a proxy that is
+restarting, and a second each for the key and for the values. Each one after
+it has what is left of one second (`leakguard.Timeout`) counted from when the
+first began, for its wait and its calls together, and never less than the
+250 ms of a dial; its dial is given at most half of what it has, so nothing
+listening is still told from no answer. A proxy that is away or does not
+answer so costs the ones after it 250 ms each at the most, and they are
+registered with all the same. A proxy that runs answers in a few
+milliseconds.
+
 With no proxy and no daemon the lookup costs two file checks, of the state
-and of the lock: nothing is read, nothing is called and nothing is waited
-for. Process liveness is all the lock is judged by, so a lock and state left
-by a daemon that was killed, whose process id another program now holds,
-read as a daemon between two sessions. What a failed registration means
-depends on how the proxy was found:
+and of the lock, inside a session as outside one: nothing is read, nothing is
+called and nothing is waited for. Process liveness is all the lock is judged
+by, so a lock and state left by a daemon that was killed, whose process id
+another program now holds, read as a daemon between two sessions. What a
+failed registration means depends on how the proxy was found:
 
 | The proxy was found through | When the registration fails |
 |---|---|
-| the session's environment | An Agent-token login is refused before any value leaves. Any other login gets one warning line on stderr and carries on. Nothing listening there is such a failure too: the session's own proxy is meant to be there. |
-| the runtime state, and nothing listens at its address (the connection is refused, or is not made within 250 ms) | No proxy is running: the last row applies. Nothing listens there, so the state is stale or its process id now belongs to another program, and a warning would repeat on every command in every shell. |
-| the runtime lock or state of a daemon that is starting or recycling, and it is not back within the second | The next row applies: a proxy is there and could not be reached. It is never taken for no proxy. |
-| the runtime state, any other failure | One warning line on stderr, once per process, and the command carries on, whoever is logged in. A timeout, an HTTP error, an answer that cannot be read and a full inventory are such failures: a proxy is there and did not take the values. |
-| nothing | Nothing is registered. An Agent-token login is told once that leak protection is not active; any other login is told nothing. |
+| the session's environment | An Agent-token login is refused before any value leaves, and before any other proxy is registered with. Any other login gets one warning line on stderr and carries on, to the other proxies too. Nothing listening there is such a failure too: the session's own proxy is meant to be there. |
+| the runtime state, and nothing listens at its address (the connection is refused, or is not made within the dial's time) | No proxy runs there, and nothing is said of it; when no other proxy runs either, the last row applies. Nothing listens there, so the state is stale or its process id now belongs to another program, and a warning would repeat on every command in every shell. |
+| the runtime lock or state of a daemon that is starting or recycling, and it is not back in time | The next row applies: a proxy is there and could not be reached. It is never taken for no proxy. |
+| the runtime state, any other failure | One warning line on stderr, once per process, and the command carries on, whoever is logged in, inside a session or not. A timeout, an HTTP error, an answer that cannot be read and a full inventory are such failures: a proxy is there and did not take the values. When the command found more than one proxy the line names the hook-managed proxy and speaks of the model traffic that proxy reads: another proxy may have taken the values. |
+| nothing, or only state that nothing listens at | Nothing is registered. An Agent-token login is told once that leak protection is not active; any other login is told nothing. |
 
 Every caller reaches the control API through one client,
 `phaseproxy.ControlClient`: `phase ai status`, the hooks and this registration.
