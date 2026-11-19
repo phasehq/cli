@@ -177,6 +177,20 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 		}
 	})
 
+	// A flow the proxy took and only relayed isn't among the ones that were read.
+	t.Run("flows the proxy only relayed", func(t *testing.T) {
+		relayed := *running
+		relayed.Counts = map[string]int{"read": 4, "unread_by_proxy": 3}
+		got := print(capturing(nil), &relayed)
+		if !strings.HasSuffix(got, "   Model flows: 4 read, 0 left unread for other programs, 0 left unread because the program wasn't found in time.\n"+
+			"   3 more went through Phase's proxy unread: it stops reading a host for a while when the tool keeps refusing Phase's certificate there.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "proxy unread") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
 	// A flow let go before its hello came is a read that may have been missed, and is
 	// said apart from the flows that passed through as they should.
 	t.Run("flows whose hello never came", func(t *testing.T) {

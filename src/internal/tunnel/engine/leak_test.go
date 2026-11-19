@@ -388,6 +388,36 @@ func TestModelTrafficIsReadForItsOwnToolOnly(t *testing.T) {
 	})
 }
 
+// A tool that trusts only its provider's certificates refuses Phase's. Once it has
+// done so twice in a row, the proxy relays that tool's flows to the host for a while
+// rather than fail every one. Such a flow reaches the model as the tool sent it, and
+// status counts it as that: it isn't one that was read.
+func TestAFlowTheProxyOnlyRelaysIsNotCountedAsRead(t *testing.T) {
+	e, provider := startLeakEngine(t, nil)
+	e.registerAsACommandDoes(t, "deploy-key", handedOut)
+	e.owners.next(claudeCode, nil)
+	refused := 0
+	for deadline := time.Now().Add(30 * time.Second); ; refused++ {
+		err := e.ask(t, realClaudeHost, claudeHost, claudePath, e.providerRoots)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the proxy still answers with its own certificate after %d refusals: %v", refused, err)
+		}
+	}
+	if refused < 2 {
+		t.Fatalf("the proxy relayed the tool's flow after %d refusals", refused)
+	}
+	// It went through the proxy, which reached the provider by name, and nothing of
+	// it was read: the provider completed the tool's own handshake.
+	wasUntouched(t, provider.next(t), claudeHost, "by name")
+	status := e.status(t, func(status Status) bool { return status.Counts["unread_by_proxy"] == 1 })
+	if status.Counts["read"] != refused || status.Counts["tcp"] != 0 {
+		t.Fatalf("%d flows were refused and one relayed, and status counts %v", refused, status.Counts)
+	}
+}
+
 // With less than everything routed in, the proxy's model hosts are captured by name,
 // and the same rule holds for a flow that comes in that way.
 func TestModelHostsCapturedByNameAreReadForTheirOwnToolOnly(t *testing.T) {

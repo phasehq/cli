@@ -365,7 +365,7 @@ func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
 	if needed {
 		r.count("proxy")
 	}
-	upstream, noted, err := r.connect(flow.peer(), authority, tool, needed)
+	upstream, err := r.connect(flow.peer(), authority, tool, needed)
 	if err != nil {
 		if !needed {
 			r.count(unreadBecause(err))
@@ -374,9 +374,6 @@ func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
 		return
 	}
 	defer upstream.Close()
-	if tool != "" && noted {
-		r.count("read")
-	}
 	relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
 }
 
@@ -414,13 +411,10 @@ func (r *Router) passThrough(client, upstream net.Conn, flow Flow) {
 			if connection {
 				r.count("proxy_by_tls_name")
 			}
-			proxied, noted, err := r.connect(flow.peer(), net.JoinHostPort(name, "443"), tool, connection)
+			proxied, err := r.connect(flow.peer(), net.JoinHostPort(name, "443"), tool, connection)
 			if err == nil {
 				_ = upstream.Close()
 				defer proxied.Close()
-				if tool != "" && noted {
-					r.count("read")
-				}
 				if _, err := proxied.Write(head); err != nil {
 					return
 				}
@@ -546,23 +540,29 @@ func (r *Router) loops(dest netip.Addr) bool {
 //
 // When the proxy can't keep what it was told, a flow that is only there to be read
 // isn't handed over, and the error is errNotNoted. A flow that needs the proxy, for
-// a Connection's credential, still goes, with noted false: the proxy takes it as the
-// tunnel's, from no known tool, and reads nothing of it.
+// a Connection's credential, still goes: the proxy takes it as the tunnel's, from no
+// known tool, and reads nothing of it.
+//
+// A flow that was handed over for a tool is counted here, by what the proxy did with
+// it. The proxy's answer says whether it serves the tunnel itself, which is where it
+// reads, or only relays it, as it does for a while when the tool keeps refusing its
+// certificate at that host. Only the first is a flow that was read.
 //
 // However the connection ends, here or once the flow is over, it ends in one place:
 // bufferedConn.Close, which tells the proxy first.
-func (r *Router) connect(peer, authority, tool string, needed bool) (proxied net.Conn, noted bool, err error) {
+func (r *Router) connect(peer, authority, tool string, needed bool) (net.Conn, error) {
 	r.mu.RLock()
 	address, auth, reader := r.proxyAddress, r.proxyAuth, r.reader
 	r.mu.RUnlock()
 	if address == "" {
-		return nil, false, fmt.Errorf("the proxy isn't ready")
+		return nil, fmt.Errorf("the proxy isn't ready")
 	}
 	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	held := &bufferedConn{Conn: conn, reader: bufio.NewReader(conn), closed: func() {}}
+	noted := false
 	if reader != nil {
 		closed, noteErr := reader.NoteFlow(conn.LocalAddr().String(), peer, tool)
 		if closed != nil {
@@ -571,15 +571,15 @@ func (r *Router) connect(peer, authority, tool string, needed bool) (proxied net
 		noted = noteErr == nil
 		if !noted && !needed {
 			_ = held.Close()
-			return nil, false, errNotNoted
+			return nil, errNotNoted
 		}
 		if !noted {
 			r.count("proxy_not_noted")
 		}
 	}
-	fail := func(err error) (net.Conn, bool, error) {
+	fail := func(err error) (net.Conn, error) {
 		_ = held.Close()
-		return nil, false, err
+		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", authority, authority, auth); err != nil {
@@ -593,7 +593,14 @@ func (r *Router) connect(peer, authority, tool string, needed bool) (proxied net
 		return fail(fmt.Errorf("the proxy answered %s", response.Status))
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return held, noted, nil
+	if tool != "" && noted {
+		if response.Header.Get(phaseproxy.TunnelHeader) == phaseproxy.TunnelTerminated {
+			r.count("read")
+		} else {
+			r.count(unreadByProxy)
+		}
+	}
+	return held, nil
 }
 
 // serveControl makes http://phase.invalid work with no proxy settings. port is the

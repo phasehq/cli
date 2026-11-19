@@ -22,6 +22,7 @@ import (
 
 	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/internal/tunnel/owner"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 const (
@@ -205,6 +206,9 @@ type fakeEnds struct {
 	// refuse makes the proxy turn every CONNECT away, as it does while it can't
 	// vouch for its session.
 	refuse atomic.Bool
+	// relay makes the proxy take every CONNECT and only relay its tunnel, as it does
+	// for a tool that keeps refusing its certificate.
+	relay atomic.Bool
 }
 
 func startFakeEnds(t *testing.T, notes *fakeReader) *fakeEnds {
@@ -244,7 +248,13 @@ func startFakeEnds(t *testing.T, notes *fakeReader) *fakeEnds {
 			ends.atProxy <- seen
 			return
 		}
-		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		// The proxy says so when it serves a tunnel itself, and says nothing of one
+		// it only relays.
+		serves := phaseproxy.TunnelHeader + ": " + phaseproxy.TunnelTerminated + "\r\n"
+		if ends.relay.Load() {
+			serves = ""
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n"+serves+"\r\n")
 		seen.hello = readRecord(conn)
 		ends.atProxy <- seen
 	})
@@ -696,6 +706,41 @@ func TestAToolsFlowGoesOnUnreadWhenTheProxyCannotTakeIt(t *testing.T) {
 		case <-time.After(300 * time.Millisecond):
 		}
 		setup.counts(map[string]int{"proxy": 1})
+	})
+}
+
+// For a while after a tool has refused its certificate at a host, the proxy takes that
+// tool's flows there and only relays them. Such a flow went through the proxy and was
+// read by nobody, so it is counted by what the proxy did with it.
+func TestAFlowTheProxyOnlyRelaysIsNotCountedAsRead(t *testing.T) {
+	t.Run("caught by the name in its hello", func(t *testing.T) {
+		setup := newReadSetup(t)
+		setup.owners.process = claudeCode
+		setup.ends.relay.Store(true)
+		setup.open(modelHost)
+		seen := setup.arrives(setup.ends.atProxy)
+		if seen.authority != modelHost+":443" || !seen.noted || seen.tool != "claude" {
+			t.Fatalf("CONNECT %s, noted %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
+		}
+		wholeHello(t, seen.hello, modelHost)
+		setup.counts(map[string]int{"unread_by_proxy": 1})
+	})
+	t.Run("captured by name", func(t *testing.T) {
+		setup := newReadSetup(t)
+		setup.router.Read(setup.reader, true)
+		setup.owners.process = claudeCode
+		setup.ends.relay.Store(true)
+		setup.openByName(modelHost, 443)
+		wholeHello(t, setup.arrives(setup.ends.atProxy).hello, modelHost)
+		setup.counts(map[string]int{"unread_by_proxy": 1})
+	})
+	// A flow that was never handed over to be read says nothing of the proxy.
+	t.Run("another program's flow to a Connection's host", func(t *testing.T) {
+		setup := newReadSetup(t, modelConnection())
+		setup.ends.relay.Store(true)
+		setup.open(modelHost)
+		setup.arrives(setup.ends.atProxy)
+		setup.counts(map[string]int{"proxy_by_tls_name": 1, "unread_not_tool": 1})
 	})
 }
 

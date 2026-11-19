@@ -603,7 +603,9 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 	p.track(client, true)
 	defer p.track(client, false)
 	defer client.Close()
-	_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	// The answer says this tunnel is the proxy's to serve. One that is only
+	// relayed says nothing, so whoever handed the flow over can tell the two apart.
+	_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n" + phaseproxy.TunnelHeader + ": " + phaseproxy.TunnelTerminated + "\r\n\r\n")
 	if buffered.Flush() != nil {
 		return
 	}

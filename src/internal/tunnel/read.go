@@ -135,6 +135,10 @@ func (r *Router) handOver(flow Flow, host string, connection bool) (toProxy bool
 // flow wasn't handed to it.
 var errNotNoted = errors.New("the proxy couldn't be told whose flow this is")
 
+// unreadByProxy counts a tool's model flow that the proxy took and only relayed: it
+// went through the proxy, and nothing of it was read.
+const unreadByProxy = "unread_by_proxy"
+
 // unreadBecause names the count for a model flow that went on unread because the
 // proxy didn't take it.
 func unreadBecause(err error) string {

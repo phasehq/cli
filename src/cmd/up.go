@@ -673,4 +673,8 @@ func printModelTraffic(out io.Writer, status *engine.Status) {
 	if missed := status.Counts["unread_no_proxy"] + status.Counts["unread_not_noted"]; missed > 0 {
 		fmt.Fprintf(out, "   %d more went on unread because Phase's proxy couldn't take them.\n", missed)
 	}
+	// The proxy took the flow and only relayed it.
+	if relayed := status.Counts["unread_by_proxy"]; relayed > 0 {
+		fmt.Fprintf(out, "   %d more went through Phase's proxy unread: it stops reading a host for a while when the tool keeps refusing Phase's certificate there.\n", relayed)
+	}
 }

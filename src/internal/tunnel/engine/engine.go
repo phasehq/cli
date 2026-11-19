@@ -95,8 +95,10 @@ type Status struct {
 	// as "read" for the host's own tool, "unread_not_tool" for any other program,
 	// "owner_lookup_failed" when the program couldn't be found in time,
 	// "unread_no_peer_rule" when the peer it came from has no way to name its tool,
-	// "unread_no_proxy" when the proxy couldn't take it, and "unread_not_noted" when
-	// the proxy couldn't be told whose it was. All but the first leave the flow
+	// "unread_no_proxy" when the proxy couldn't take it, "unread_not_noted" when
+	// the proxy couldn't be told whose it was, and "unread_by_proxy" when the proxy
+	// took it and only relayed it, as it does for a while when the tool keeps
+	// refusing its certificate at that host. All but the first leave the flow
 	// unread. "proxy_not_noted" is a Connection's flow that went to the proxy for its
 	// credential without that word, and was read for nobody. "unread_no_hello" is a
 	// flow to port 443 whose TLS hello didn't come in time: its host was never

@@ -26,6 +26,14 @@ const (
 	ManifestURL  = "http://" + ManifestHost + ManifestPath
 	ControlURL   = "http://" + ManifestHost
 
+	// TunnelHeader is in the proxy's answer to a CONNECT whose tunnel it serves
+	// itself, with its own certificate, and TunnelTerminated is its value. A
+	// CONNECT it only relays to its target is answered without the header:
+	// nothing in that tunnel is read. A capture layer that handed a flow over to
+	// be read learns from it whether the flow was.
+	TunnelHeader     = "X-Phase-Tunnel"
+	TunnelTerminated = "terminated"
+
 	maxCABundleBytes       = 16 << 20
 	maxMergedCABundleBytes = 32 << 20
 	maxCABundleSources     = 32
