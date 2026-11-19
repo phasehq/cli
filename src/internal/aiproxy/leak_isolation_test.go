@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -32,9 +33,11 @@ const (
 	isolationTheirs = "Uy6Rt2Ew8Qa4Sd0Fg5Hj1Kl7Zx3Cv9Bn"
 )
 
-// isolationProbe holds every one of them, whole and encoded, as a request might.
+// isolationProbe holds every one of them, whole, encoded and in pieces, as a
+// request might.
 var isolationProbe = []byte("a " + isolationOwn + " b " + isolationShared + " c " + isolationTheirs + " d " + isolationLater +
-	" e " + hex.EncodeToString([]byte(isolationTheirs)) + " f " + base64.StdEncoding.EncodeToString([]byte(isolationShared)))
+	" e " + hex.EncodeToString([]byte(isolationTheirs)) + " f " + base64.StdEncoding.EncodeToString([]byte(isolationShared)) +
+	" g " + isolationOwn[3:29] + " h " + isolationShared[1:] + " i " + isolationTheirs[:31] + " j " + hex.EncodeToString([]byte(isolationShared))[5:41])
 
 // tenantView is all a tenant's session and its commands can read while they
 // use a store: its proxy's answers, what a scan writes and reports, what an
@@ -446,5 +449,122 @@ func TestADocumentOneLoginRegisteredAfterARestart(t *testing.T) {
 	}
 	if id := named(receivedY, asY.shippedPayloads(), []byte(statusBodyY)); id != "" {
 		t.Fatalf("another tenant's proxy named %q", id)
+	}
+}
+
+// What a running proxy matches its own login's values by, the entries made
+// under its process's key, and what a guest registered with it, give another
+// login and another tenant nothing: no key, no id and no piece. Another login
+// of the tenant knows the stored values whole, by their type; another tenant
+// knows none of it; a guest's value is known to the one process it went to.
+func TestWhatARunningProxyMatchesByGivesAnotherLoginOrTenantNothing(t *testing.T) {
+	store := newTestInventoryStore(t)
+	hexKey, token, guests := freshHex40, randomLeakValue(t, 40), randomLeakValue(t, 36)
+	// A piece only entries of the process find, one the store's find too, and
+	// one of the guest's value.
+	hexPiece, tokenPiece, guestPiece := hexKey[1:], token[5:38], guests[3:30]
+	asA := newStoredLeakRigAs(t, store, leakLoginA)
+	if result := registerWithClient(t, asA, leakLoginA, []leakguard.Value{{Type: "secret", ID: "hex-of-a", Value: hexKey}, {Type: "secret", ID: "token-of-a", Value: token}}); result.Added != 2 {
+		t.Fatalf("A's registration: %+v", result)
+	}
+	if result := registerWithClient(t, asA, otherTenantB, []leakguard.Value{{Type: "secret", ID: "guest-id", Value: guests}}); result.Added != 1 {
+		t.Fatalf("the guest's registration: %+v", result)
+	}
+	content := "whole " + hexKey + " " + token + " " + guests + " pieces " + hexPiece + " " + tokenPiece + " " + guestPiece + " end"
+	if sent := sentFor(t, asA, content); sent != "whole ph:secret:hex-of-a ph:secret:token-of-a ph:secret pieces ph:secret:hex-of-a ph:secret:token-of-a "+guestPiece+" end" {
+		t.Fatalf("A's own proxy sent %q", sent)
+	}
+	// The file holds A's two values in the stored scheme, and nothing made
+	// under the process's key or for the guest.
+	_, kept, err := openLeakInventory(store, leakLoginA)
+	if err != nil || len(kept) != 2 || storedRecords(t, store) != 2 {
+		t.Fatalf("the store holds %d values: %v", len(kept), err)
+	}
+	live := map[string]*censor.Entries{}
+	for id, value := range map[string]string{"hex-of-a": hexKey, "token-of-a": token} {
+		if live[id], err = censor.IndexValueScheme(asA.guard.live, leakLiveScheme, "secret", id, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, stored := range kept {
+		if stored.Entries.Version != censor.EntriesVersion || confirmedBy(live[stored.Entries.ID], stored.Entries) != 0 {
+			t.Fatalf("the store holds entries of scheme %d that the process's key confirms", stored.Entries.Version)
+		}
+	}
+	file, err := os.ReadFile(filepath.Join(store.Directory, "leak-inventory.bin"))
+	if err != nil || opensARecord(file, asA.guard.live.LookupBytes()) {
+		t.Fatalf("the process's key opens a record of the store: %v", err)
+	}
+	liveKey := asA.guard.live.LookupBytes()
+	names := func(text ...[]byte) string {
+		for _, one := range text {
+			for _, id := range []string{"hex-of-a", "token-of-a", "guest-id"} {
+				if bytes.Contains(one, []byte(id)) {
+					return id
+				}
+			}
+		}
+		return ""
+	}
+	// Every other proxy of the store, while A's still runs.
+	for name, c := range map[string]struct {
+		identity phaseproxy.InventoryIdentity
+		want     string
+	}{
+		"another login of the tenant": {leakLoginB, "whole ph:secret ph:secret " + guests + " pieces " + hexPiece + " " + tokenPiece + " " + guestPiece + " end"},
+		"the guest's own tenant":      {otherTenantB, content},
+		"another login of it":         {otherTenantA, content},
+		"the tenant on another host":  {otherHostTenant, content},
+	} {
+		rig := newStoredLeakRigAs(t, store, c.identity)
+		sent := sentFor(t, rig, content)
+		if sent != c.want {
+			t.Errorf("the proxy of %s sent %q", name, sent)
+		}
+		_, statusBody := rawStatus(t, rig)
+		if id := names(rig.lastReceived().body, rig.shippedPayloads(), []byte(statusBody)); id != "" {
+			t.Errorf("the proxy of %s named %q", name, id)
+		}
+		// Whoever a command says it is there, it is handed nothing of A's process.
+		for _, stated := range []phaseproxy.InventoryIdentity{c.identity, leakLoginA, {}} {
+			if answer := statedKey(t, rig.proxy, stated); keyAnswerHolds(t, answer, liveKey) || answer.LiveKey == base64.StdEncoding.EncodeToString(liveKey) {
+				t.Errorf("the proxy of %s handed out the key of A's process", name)
+			}
+		}
+		if c.want != content {
+			continue
+		}
+		// Another tenant's proxy does what one that never saw the store does.
+		never := newStoredLeakRigAs(t, newTestInventoryStore(t), c.identity)
+		if sentFor(t, never, content) != sent || !bytes.Equal(never.lastReceived().body, rig.lastReceived().body) {
+			t.Errorf("the proxy of %s sent other bytes than one that never saw the store", name)
+		}
+		if status, _ := rawStatus(t, rig); status.SecretsKnown != 0 || status.Inventory.Loaded != 0 {
+			t.Errorf("the proxy of %s counts %+v", name, status.Inventory)
+		}
+	}
+	// At A's proxy, a command of anyone else is handed no key of the process,
+	// and what it can make of a guess confirms nothing the process matches by.
+	for name, stated := range map[string]phaseproxy.InventoryIdentity{"another login of the tenant": leakLoginB, "another tenant": otherTenantA, "nobody": {}} {
+		answer := statedKey(t, asA.proxy, stated)
+		if answer.LiveKey != "" || keyAnswerHolds(t, answer, liveKey) {
+			t.Fatalf("a command of %s was handed the key of A's process", name)
+		}
+		for _, scheme := range censor.SupportedSchemes() {
+			guess, err := censor.IndexValueScheme(answeredKey(t, answer), scheme, "secret", "hex-of-a", hexKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if confirmed := confirmedBy(live["hex-of-a"], guess); confirmed != 0 {
+				t.Fatalf("a command of %s confirms %d hashes of A's value with what it was handed", name, confirmed)
+			}
+		}
+	}
+	// The process ends: what the guest registered is known nowhere, and A's
+	// next proxy starts from the store.
+	asA.proxy.CloseHijacked()
+	next := newStoredLeakRigAs(t, store, leakLoginA)
+	if sent := sentFor(t, next, content); sent != "whole ph:secret:hex-of-a ph:secret:token-of-a "+guests+" pieces "+hexPiece+" ph:secret:token-of-a "+guestPiece+" end" {
+		t.Fatalf("A's next proxy sent %q", sent)
 	}
 }
