@@ -87,6 +87,71 @@
 // the life of the Index. Reports hold counts, placeholders, labels, form names
 // and JSON pointers, never matched content.
 //
+// # Bytes whose length must not change
+//
+// A protobuf message records the length of every string and nested message it
+// holds, so a placeholder of another length cannot be put into one. For such
+// bytes RewriteBinary overwrites what it finds where it sits. It reads the
+// input as a protobuf message without a schema: a length-delimited field whose
+// bytes parse completely as a message is descended into, anything else is a
+// leaf, and each leaf is scanned on its own with the matcher above. Input that
+// does not parse as a message is scanned whole. An extent of n bytes is
+// overwritten with
+//
+//   - the placeholder, when it is n bytes long;
+//   - the placeholder and then '*' up to n bytes, when it is shorter;
+//   - the first n bytes of the placeholder, when it is longer. An extent is at
+//     least 12 bytes for an indexed value and for every shipped rule, so this
+//     is ph: and nine or more characters of the type and the id. A rule of
+//     another file can match less: the extent is cut the same way, down to
+//     "ph" or "p" for one of two bytes or one.
+//
+// A whole base64 or hex run that hides a value is one extent, as it is one
+// replacement elsewhere. In a leaf that is valid UTF-8 an extent that would
+// begin or end inside a character is widened to the character's edge. Text
+// the provider signed is not known here: nothing is exempt.
+//
+// What it guarantees:
+//
+//   - The output is exactly as long as the input.
+//   - Every byte outside a replaced extent is the input's. An extent found
+//     in a leaf lies inside that leaf: it never crosses a field boundary and
+//     never takes in a tag or a length.
+//   - The output parses as the same protobuf structure as the input: every
+//     field at every level that was descended into has the number, the wire
+//     type and the length it had.
+//   - A second pass over the output changes nothing. Placeholders and their
+//     padding are never matched again: text that reads ph:<type>:<id> with any
+//     '*' after it, or 12 or more bytes of the start of that, is left out of
+//     every scan when the type is one this index writes (the type of an
+//     indexed value, a rule's label, or secret, sealed or dynamic), and each
+//     stretch between two of them is scanned on its own. One call looks again
+//     at what it changed until a look changes nothing, so its last look is the
+//     first look of the next call. It stops after eight looks; only a value
+//     broken into more pieces than that, each found once the one before it was
+//     overwritten, is left for a later pass to finish.
+//
+// One case needs more than leaves. A short string of letters and digits
+// parses as a message fairly often (a 20-character key id about once in
+// forty, 64 hex characters about once in a hundred), and a value that is such
+// a string would be looked for in the pieces between what read as its tags,
+// and missed. So a message of up to 4 KiB that is also text is read as the
+// one string it may be as well, for what only a string can hold: the verified
+// bytes of an indexed value, or a regex rule's match, lying across what read
+// as its fields. That is overwritten in every byte but those that make the
+// string a message (its tags, its lengths and its varints of more than one
+// byte), with the placeholder spelled by the bytes that are written. The
+// output is still as long, still parses as it did, and a second pass still
+// changes nothing; the few characters of the value that sit on a tag or a
+// length stay. A real message is not touched by this: none holds twelve bytes
+// of a registered value across a tag, and a token at the end of one of its
+// strings is that string's own to find.
+//
+// The walk reads tags and lengths only, a step per field, each leaf is
+// scanned once, and whether a message is text is settled for each byte once,
+// so the cost is linear in the input however the fields are nested. Messages
+// are followed 100 deep, and what lies deeper is a leaf.
+//
 // # Limits
 //
 //   - A fragment of an indexed value is only certain to be caught when it is at
@@ -107,6 +172,9 @@
 //     form not listed above, encrypted, compressed without base64 around it, or
 //     inside a base64 string of 16 KiB or more) is not found.
 //   - JSON object keys are not scanned, only values.
+//   - In a protobuf message a value is found inside one string or bytes field.
+//     One that a client splits over two fields is not, and neither is one
+//     under 12 bytes.
 //   - A value under 12 bytes, or with little entropy, is not protected at all.
 //   - Pattern rules see a format only when it is written plainly; a random value
 //     with no known format is found by them only next to a keyword.
