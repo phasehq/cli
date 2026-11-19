@@ -283,8 +283,27 @@ func (h *controlHandler) createRequest(w http.ResponseWriter, req *http.Request)
 		writeControlError(w, http.StatusBadGateway, "approved_request_refresh_failed", "The request was approved, but the Phase proxy could not safely apply the updated Connection configuration or credential. Do not retry the connection until Phase status reports it as ready.", true)
 		return
 	}
+	h.screenResolutionNote(response)
 	h.writeForwardStatus(w, response, statusCode, err)
 	h.applyRequestRuntimeAction(response, err)
+}
+
+// withheldResolutionNote stands in for a member's note the Agent may not read.
+const withheldResolutionNote = "Phase withheld this note because it held a credential value."
+
+// screenResolutionNote keeps a member's note on a request from the Agent when
+// it holds a live credential value or the session's own credential, the same
+// values the answers of /v1/context and /v1/capabilities are screened for.
+// Only the note is withheld: the request's outcome still reaches the Agent.
+// It runs after an approval's refresh, so a value that approval just made
+// live is screened for as well.
+func (h *controlHandler) screenResolutionNote(response *agentapi.RequestResponse) {
+	if response == nil || response.ResolutionNote == "" {
+		return
+	}
+	if containsAny(response.ResolutionNote, append(h.state.manifestForbiddenSecrets(), h.state.currentBackendCredential().Reveal())) {
+		response.ResolutionNote = withheldResolutionNote
+	}
 }
 
 func validCreateRequest(request agentapi.CreateRequestRequest) bool {
@@ -385,6 +404,7 @@ func (h *controlHandler) pollRequest(w http.ResponseWriter, req *http.Request, r
 		writeControlError(w, http.StatusBadGateway, "approved_request_refresh_failed", "The request was approved, but the Phase proxy could not safely apply the updated Connection configuration or credential. Do not retry the connection until Phase status reports it as ready.", true)
 		return
 	}
+	h.screenResolutionNote(response)
 	h.writeForward(w, response, err)
 	h.applyRequestRuntimeAction(response, err)
 }
@@ -869,6 +889,7 @@ func (h *controlHandler) cancelRequest(w http.ResponseWriter, req *http.Request,
 		}
 		response, err = h.finishRequestWithin(req, response, nil, false)
 	}
+	h.screenResolutionNote(response)
 	h.writeForward(w, response, err)
 	h.applyRequestRuntimeAction(response, err)
 }

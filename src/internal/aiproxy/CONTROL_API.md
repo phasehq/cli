@@ -1176,6 +1176,11 @@ Denied:
 `cooldown: true` can accompany a denial or a repeated `dedupKey`: Console is
 refusing to re-ask the human for a while.
 
+`resolutionNote` is a member's own words. When it holds a live credential
+value of the session, or the session's credential, the proxy replaces the
+note with one sentence saying it was withheld; everything else in the answer
+is as the Console sent it.
+
 ### GET /v1/requests/{requestId}?wait=300
 
 Poll one request. `wait` long-polls up to 300 s and returns `pending` when the
