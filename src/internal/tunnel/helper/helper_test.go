@@ -40,8 +40,10 @@ type fakeSystem struct {
 	// counts the times it was asked to remove any.
 	stuck    map[string]bool
 	removals int
-	// taken are domains that already have a DNS entry of someone else's.
-	taken map[string]bool
+	// taken are domains that already have a DNS entry of someone else's, and installs
+	// counts the times the helper asked for its entries to be written.
+	taken    map[string]bool
+	installs int
 }
 
 func (f *fakeSystem) note(entry string) { f.log = append(f.log, entry) }
@@ -119,6 +121,7 @@ func (f *fakeSystem) routeState() (ours, lost []string) {
 func (f *fakeSystem) InstallResolvers(domains []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.installs++
 	f.resolvers = nil
 	for _, domain := range domains {
 		if f.taken[domain] {
@@ -725,7 +728,11 @@ func TestStatusNamesOnlyTheDomainsThatWereWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The update has been handled once the helper has asked for the entries again.
-	time.Sleep(500 * time.Millisecond)
+	h.waitFor("the update to be handled", func() bool {
+		system.mu.Lock()
+		defer system.mu.Unlock()
+		return system.installs == 2
+	})
 	status := h.status()
 	_, _, resolvers := system.state()
 	if !status.Capturing || !reflect.DeepEqual(resolvers, []string{"a.example.com"}) || !reflect.DeepEqual(status.Domains, resolvers) {
