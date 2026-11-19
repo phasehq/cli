@@ -2,6 +2,7 @@ package censor
 
 import (
 	"bytes"
+	"slices"
 	"sort"
 	"unicode/utf8"
 )
@@ -29,6 +30,10 @@ const (
 	// written earlier: the shortest extent the matcher's own minimum allows.
 	minPlaceholder = chunkSize
 	maxIdentifier  = 64
+	maxRuleDigits  = 10
+	// idWindow is how far past an id this index does not know the matcher
+	// reads, to find a value that begins inside what reads as the id.
+	idWindow = 512
 
 	// maxTextView is the longest message that is also read as one string. A
 	// string that only happens to parse as a message is short.
@@ -59,9 +64,11 @@ var placeholderTypes = []string{"secret", "sealed", "dynamic"}
 // An extent is overwritten with its placeholder followed by '*' up to the
 // extent's length, with the placeholder alone when the two are equally long,
 // and with as much of the start of the placeholder as fits when the extent is
-// the shorter. In a leaf that is valid UTF-8 an extent that begins or ends
-// inside a character is widened to the character's edge first. Where the
-// matcher takes a whole base64 or hex run, the whole run is one extent.
+// the shorter. In a leaf that is UTF-8 an extent that begins or ends inside a
+// character is widened to the character's edge first, and one that reaches
+// into a character the leaf's end cuts stops before it (see settleExtents).
+// Where the matcher takes a whole base64 or hex run, the whole run is one
+// extent.
 //
 // A second call on the output changes nothing: placeholders and their padding
 // are never matched again, and one call looks again at what it changed until
@@ -107,8 +114,8 @@ type binaryWalk struct {
 	owned bool
 
 	round int
-	// wrote is what this round overwrote. changed is what the round before
-	// did, in order, when this round looks only at that again.
+	// wrote is the leaves and viewed messages this round wrote to. changed is
+	// those of the round before, in order, when this round looks only at them.
 	wrote, changed [][2]int
 	partial        bool
 
@@ -233,8 +240,14 @@ func (w *binaryWalk) leaf(start, end int) {
 		}
 		return
 	}
+	changed := false
 	for _, found := range w.extents(start, end) {
-		w.write(found, nil)
+		changed = w.write(found, nil) || changed
+	}
+	if changed {
+		// All of it: a leaf that parses as a message once it is written to is
+		// read field by field next, and none of those was read on its own.
+		w.wrote = append(w.wrote, [2]int{start, end})
 	}
 }
 
@@ -248,13 +261,89 @@ func (w *binaryWalk) leaf(start, end int) {
 // varints of more than one byte. Whichever of the two it is, it still parses
 // as it did, and all but those bytes of the value are gone.
 func (w *binaryWalk) view(start, end, depth int) {
-	for _, found := range w.proof(start, end, depth) {
-		free := make([]bool, found.end-found.start)
-		w.free(start, end, depth, found.start, found.end, free)
-		if w.write(found, free) {
+	found, layout := w.proof(start, end, depth)
+	changed := false
+	for _, found := range found {
+		if w.write(found, layout.free[found.start-start:found.end-start]) {
 			w.report.add(found.hit)
+			changed = true
 		}
 	}
+	if changed {
+		w.wrote = append(w.wrote, [2]int{start, end})
+	}
+}
+
+// viewLayout is a viewed message's leaves, in order, read once for the view:
+// asking the message again for every match made a view cost its square.
+type viewLayout struct {
+	start  int
+	leaves [][2]int
+	// free marks the bytes no tag, length or longer varint is made of: ASCII
+	// written there leaves every field number, wire type and length as it was.
+	free []bool
+	// rules is what the rules find in a leaf read from one place on, by that
+	// place, so no leaf is read twice for one view.
+	rules map[int][]rep
+}
+
+func (w *binaryWalk) layout(start, end, depth int) *viewLayout {
+	layout := &viewLayout{start: start, free: make([]bool, end-start)}
+	w.lay(layout, start, end, depth)
+	return layout
+}
+
+func (w *binaryWalk) lay(layout *viewLayout, start, end, depth int) {
+	for at := start; at < end; {
+		field, ok := readProtoField(w.cur[start:end], at-start)
+		if !ok {
+			return
+		}
+		valueStart, valueEnd := start+field.start, start+field.end
+		at = valueEnd
+		switch {
+		case field.wire == protoBytes && depth+1 < maxBinaryDepth && isProtoMessage(w.cur[valueStart:valueEnd]):
+			w.lay(layout, valueStart, valueEnd, depth+1)
+			continue
+		case field.wire == protoBytes:
+			layout.leaves = append(layout.leaves, [2]int{valueStart, valueEnd})
+		case field.wire == protoVarintType && valueEnd-valueStart > 1:
+			// Its last byte is the one without the high bit: none may change.
+			continue
+		}
+		for i := valueStart; i < valueEnd; i++ {
+			layout.free[i-layout.start] = true
+		}
+	}
+}
+
+// leaf returns the leaf that holds the byte at, or an empty range at it when
+// that byte is part of a tag, a length or a number.
+func (l *viewLayout) leaf(at int) (int, int) {
+	i := sort.Search(len(l.leaves), func(i int) bool { return l.leaves[i][1] > at })
+	if i < len(l.leaves) && l.leaves[i][0] <= at {
+		return l.leaves[i][0], l.leaves[i][1]
+	}
+	return at, at
+}
+
+// ruleFindsAt reports whether the rule finds something at a place when the
+// leaf that holds it is read on its own from stretch on, as its own scan does.
+func (w *binaryWalk) ruleFindsAt(layout *viewLayout, stretch, leafEnd, at int, rule string) bool {
+	alone, read := layout.rules[stretch]
+	if !read {
+		_, _, alone = w.ix.rulePass(w.cur[stretch:leafEnd], "", w.rules)
+		if layout.rules == nil {
+			layout.rules = map[int][]rep{}
+		}
+		layout.rules[stretch] = alone
+	}
+	for _, other := range alone {
+		if stretch+other.start == at && other.hit.rule == rule {
+			return true
+		}
+	}
+	return false
 }
 
 // proof returns what in the message at cur[start:end], read as one string,
@@ -270,9 +359,17 @@ func (w *binaryWalk) view(start, end, depth int) {
 //
 // A value after a keyword and a run that only decodes to a value are no
 // proof: where they end is a guess. The ranges are in order, apart, and end
-// at character edges; cur[start:end] is text.
-func (w *binaryWalk) proof(start, end, depth int) []extent {
+// at character edges; cur[start:end] is text. The layout is set when anything
+// was found.
+func (w *binaryWalk) proof(start, end, depth int) ([]extent, *viewLayout) {
 	var found []extent
+	var layout *viewLayout
+	leafOf := func(at int) (int, int) {
+		if layout == nil {
+			layout = w.layout(start, end, depth)
+		}
+		return layout.leaf(at)
+	}
 	block := func(from, to int) {
 		if to-from < chunkSize {
 			return
@@ -287,7 +384,7 @@ func (w *binaryWalk) proof(start, end, depth int) []extent {
 			case s.full:
 				last += form.tailLen
 			}
-			if !w.inOneLeaf(start, end, depth, from+first, from+last) {
+			if _, leafEnd := leafOf(from + first); leafEnd < from+last {
 				found = append(found, extent{start: from + first, end: from + last, hit: w.ix.hitFor(s)})
 			}
 		}
@@ -296,19 +393,14 @@ func (w *binaryWalk) proof(start, end, depth int) []extent {
 		}
 		_, _, reps := w.ix.rulePass(data, "", w.rules)
 		for _, r := range reps {
-			if r.hit.placeholder == "" || w.rules.afterKeyword(r.hit.rule) || w.inOneLeaf(start, end, depth, from+r.start, from+r.end) {
+			if r.hit.placeholder == "" || w.rules.afterKeyword(r.hit.rule) {
 				continue
 			}
-			inLeaf := false
-			if leafEnd := w.leafEnd(start, end, depth, from+r.start); leafEnd > from+r.start {
-				_, _, alone := w.ix.rulePass(w.cur[from:leafEnd], "", w.rules)
-				for _, other := range alone {
-					inLeaf = inLeaf || (other.start == r.start && other.hit.rule == r.hit.rule)
-				}
+			leafStart, leafEnd := leafOf(from + r.start)
+			if leafEnd >= from+r.end || (leafEnd > from+r.start && w.ruleFindsAt(layout, max(leafStart, from), leafEnd, from+r.start, r.hit.rule)) {
+				continue
 			}
-			if !inLeaf {
-				found = append(found, extent{start: from + r.start, end: from + r.end, hit: r.hit})
-			}
+			found = append(found, extent{start: from + r.start, end: from + r.end, hit: r.hit})
 		}
 	}
 	from := start
@@ -318,7 +410,7 @@ func (w *binaryWalk) proof(start, end, depth int) []extent {
 	}
 	block(from, end)
 	sort.SliceStable(found, func(i, j int) bool { return found[i].start < found[j].start })
-	return settleExtents(w.cur, start, end, found)
+	return settleExtents(w.cur, start, end, found), layout
 }
 
 // afterKeyword reports whether the rule with this id takes the value after a
@@ -330,63 +422,6 @@ func (r *Rules) afterKeyword(id string) bool {
 		}
 	}
 	return false
-}
-
-// inOneLeaf reports whether [from, to) lies inside one leaf of the message at
-// [start, end).
-func (w *binaryWalk) inOneLeaf(start, end, depth, from, to int) bool {
-	return w.leafEnd(start, end, depth, from) >= to
-}
-
-// leafEnd returns where the leaf of the message at [start, end) that holds
-// the byte at ends, or at itself when that byte is part of a tag, a length or
-// a number.
-func (w *binaryWalk) leafEnd(start, end, depth, at int) int {
-	for next := start; next < end; {
-		field, ok := readProtoField(w.cur[start:end], next-start)
-		if !ok {
-			break
-		}
-		valueStart, valueEnd := start+field.start, start+field.end
-		next = valueEnd
-		if at < valueStart || at >= valueEnd {
-			continue
-		}
-		if field.wire != protoBytes {
-			break
-		}
-		if depth+1 < maxBinaryDepth && isProtoMessage(w.cur[valueStart:valueEnd]) {
-			return w.leafEnd(valueStart, valueEnd, depth+1, at)
-		}
-		return valueEnd
-	}
-	return at
-}
-
-// free marks the bytes of [from, to) that no field of the message at
-// [start, end) is made of: what its leaves and its fixed-width values hold,
-// and its one-byte varints. Overwriting those with ASCII leaves every field
-// number, wire type and length as it was.
-func (w *binaryWalk) free(start, end, depth, from, to int, marks []bool) {
-	for at := start; at < end; {
-		field, ok := readProtoField(w.cur[start:end], at-start)
-		if !ok {
-			return
-		}
-		valueStart, valueEnd := start+field.start, start+field.end
-		at = valueEnd
-		switch {
-		case valueEnd <= from || valueStart >= to:
-		case field.wire == protoBytes && depth+1 < maxBinaryDepth && isProtoMessage(w.cur[valueStart:valueEnd]):
-			w.free(valueStart, valueEnd, depth+1, from, to, marks)
-		case field.wire == protoVarintType && valueEnd-valueStart > 1:
-			// Its last byte is the one without the high bit: none may change.
-		default:
-			for i := max(valueStart, from); i < min(valueEnd, to); i++ {
-				marks[i-from] = true
-			}
-		}
-	}
 }
 
 // extents returns what scanning cur[start:end] as one leaf finds to
@@ -404,22 +439,32 @@ func (w *binaryWalk) extents(start, end int) []extent {
 	return settleExtents(w.cur, start, end, w.block(from, end, found))
 }
 
-// settle makes ranges found in data[start:end], in order, ready to overwrite.
-// A range the matcher cut inside a character would leave half of it, so in
-// bytes that are UTF-8 each is widened to the character's edge; ranges that
-// meet after that become one.
+// settleExtents makes ranges found in data[start:end], in order, ready to
+// overwrite. A range the matcher cut inside a character would leave half of
+// it, so in bytes that are UTF-8 each is widened to the character's edge;
+// ranges that meet after that become one. A range that reaches into a last
+// character the leaf's end cuts stops before it (see textEnd).
 func settleExtents(data []byte, start, end int, found []extent) []extent {
 	if len(found) == 0 {
 		return nil
 	}
-	if utf8.Valid(data[start:end]) {
-		for i := range found {
-			for found[i].start > start && !utf8.RuneStart(data[found[i].start]) {
-				found[i].start--
+	if text := textEnd(data[start:end]); text >= 0 {
+		text += start
+		kept := found[:0]
+		for _, next := range found {
+			for next.start > start && next.start < text && !utf8.RuneStart(data[next.start]) {
+				next.start--
 			}
-			for found[i].end < end && !utf8.RuneStart(data[found[i].end]) {
-				found[i].end++
+			next.end = min(next.end, text)
+			for next.end < text && !utf8.RuneStart(data[next.end]) {
+				next.end++
 			}
+			if next.start < next.end {
+				kept = append(kept, next)
+			}
+		}
+		if found = kept; len(found) == 0 {
+			return nil
 		}
 	}
 	apart := found[:1]
@@ -431,6 +476,23 @@ func settleExtents(data []byte, start, end int, found []extent) []extent {
 		apart = append(apart, next)
 	}
 	return apart
+}
+
+// textEnd returns how much of data is UTF-8: all, or all but a last character
+// its end cuts, as a field of a string that parses as a message can end; else -1.
+func textEnd(data []byte) int {
+	if utf8.Valid(data) {
+		return len(data)
+	}
+	for cut := len(data) - 1; cut >= 0 && cut >= len(data)-(utf8.UTFMax-1); cut-- {
+		if utf8.RuneStart(data[cut]) {
+			if !utf8.FullRune(data[cut:]) && utf8.Valid(data[:cut]) {
+				return cut
+			}
+			break
+		}
+	}
+	return -1
 }
 
 // block scans one stretch that holds no placeholder: indexed values first,
@@ -513,11 +575,8 @@ func (w *binaryWalk) write(found extent, free []bool) bool {
 			w.cur[at], changed = b, true
 		}
 	}
-	if changed {
-		w.wrote = append(w.wrote, [2]int{found.start, found.end})
-		if w.overwritten != nil {
-			w.overwritten(found.start, found.end)
-		}
+	if changed && w.overwritten != nil {
+		w.overwritten(found.start, found.end)
 	}
 	return changed
 }
@@ -532,7 +591,7 @@ func (w *binaryWalk) placeholders(start, end int) [][2]int {
 			break
 		}
 		i += at
-		if length := w.placeholderLength(data[i:]); length >= minPlaceholder {
+		if length, whole := w.placeholderLength(data[i:]); whole {
 			placed = append(placed, [2]int{start + i, start + i + length})
 			at = i + length
 			continue
@@ -543,30 +602,33 @@ func (w *binaryWalk) placeholders(start, end int) [][2]int {
 }
 
 // placeholderLength is how much of text, which begins "ph:", is a placeholder
-// as write leaves one: ph:<type>:<id> with any padding after it, the id
-// perhaps cut short, or the start of one cut short inside its type. The type
-// has to be one this index writes, so that text which merely holds "ph:" (a
-// name ending in ph before a colon, then a password) is not taken for one and
-// left unread. It returns 0 for anything else.
-func (w *binaryWalk) placeholderLength(text []byte) int {
+// as write leaves one: ph:<type>:<id> or ph:<label>:<n> with any padding after
+// it, the id perhaps cut short, or the start of one cut short inside its type.
+// The type has to be one this index writes, so that text which merely holds
+// "ph:" (a name ending in ph before a colon, then a password) is not taken for
+// one and left unread. It says whether that is a placeholder: one as long as
+// the shortest extent, or ph:<type>: with a value where its id would begin,
+// which the rules read only when it is not handed to them after that.
+func (w *binaryWalk) placeholderLength(text []byte) (int, bool) {
 	rest := text[len(placeholderLead):]
 	name := 0
 	for name < len(rest) && name < maxIdentifier && identifierByte(rest[name]) {
 		name++
 	}
 	if name < len(rest) && rest[name] == ':' && w.writesType(rest[:name]) {
-		n := name + 1
-		for id := 0; n < len(rest) && id < maxIdentifier && identifierByte(rest[n]); n, id = n+1, id+1 {
-			// An id cut short is followed by whatever followed the value,
-			// which may be the next placeholder.
-			if bytes.HasPrefix(rest[n:], placeholderLead) {
-				break
+		n, value := name+1, false
+		if typ := string(rest[:name]); w.valueType(typ) {
+			id, cut := w.idLength(typ, rest[n:])
+			n, value = n+id, cut
+		} else {
+			// A rule numbers what it finds: digits, and nothing else.
+			for digits := 0; n < len(rest) && digits < maxRuleDigits && rest[n] >= '0' && rest[n] <= '9'; n, digits = n+1, digits+1 {
 			}
 		}
 		for n < len(rest) && rest[n] == placeholderPad {
 			n++
 		}
-		return len(placeholderLead) + n
+		return len(placeholderLead) + n, value || len(placeholderLead)+n >= minPlaceholder
 	}
 	longest := 0
 	for _, known := range w.knownTypes() {
@@ -576,7 +638,48 @@ func (w *binaryWalk) placeholderLength(text []byte) int {
 		}
 		longest = max(longest, shared)
 	}
-	return len(placeholderLead) + longest
+	return len(placeholderLead) + longest, len(placeholderLead)+longest >= minPlaceholder
+}
+
+// valueType reports whether a placeholder's first part is the type of an
+// indexed value, whose id is a name, and not a rule's label.
+func (w *binaryWalk) valueType(name string) bool {
+	_, indexed := w.ix.types[name]
+	return indexed || slices.Contains(placeholderTypes, name)
+}
+
+// idLength is how much of rest, after ph:<type>:, is the id, and whether a
+// value ended it. A value right after a placeholder is not part of its id.
+func (w *binaryWalk) idLength(typ string, rest []byte) (int, bool) {
+	run := 0
+	// An id cut short may be followed by the next placeholder.
+	for run < len(rest) && run < maxIdentifier && identifierByte(rest[run]) && !bytes.HasPrefix(rest[run:], placeholderLead) {
+		run++
+	}
+	// A registered id ends where it ends, whatever follows it.
+	for n := run; n > 0; n-- {
+		if _, registered := w.ix.secrets[secretKey{typ: typ, id: string(rest[:n])}]; registered {
+			return n, false
+		}
+	}
+	if run == 0 {
+		return 0, false
+	}
+	// Unknown to this index, or cut short: it ends where a value begins.
+	whole := run
+	window := rest[:min(len(rest), run+idWindow)]
+	for _, s := range w.ix.findSpans(window) {
+		run = min(run, s.start)
+	}
+	if w.rules != nil {
+		_, _, reps := w.ix.rulePass(window, "", w.rules)
+		for _, r := range reps {
+			if r.hit.placeholder != "" {
+				run = min(run, r.start)
+			}
+		}
+	}
+	return run, run < whole
 }
 
 func identifierByte(b byte) bool {

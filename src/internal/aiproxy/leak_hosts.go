@@ -47,6 +47,8 @@ type leakHostRule struct {
 	// stream, is then a protobuf message: it is read field by field and what
 	// is found is overwritten where it sits, since no length in it may
 	// change. Such a call carries conversation content whatever its path.
+	// Any other body there is overwritten in place too unless its type says
+	// text or JSON, and nothing found in a body stops a request.
 	Connect bool `json:"connect,omitempty"`
 	// Reason says why an unread host is not inspected.
 	Reason string `json:"reason,omitempty"`

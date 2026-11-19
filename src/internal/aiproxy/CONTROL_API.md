@@ -360,9 +360,12 @@ stream are read by it alike. What a body or a message is, is read from its
 bytes and from nothing the client calls it: valid JSON is JSON, other valid
 UTF-8 with no NUL byte is text, and anything else is not text, whatever the
 `Content-Type` and whichever opcode (text or binary) a message was framed
-with. Protobuf is the one kind the bytes do not show: it is what a host whose
-entry says `connect` sends as `application/proto` or in an
-`application/connect+proto` stream (below), and nowhere else.
+with. Protobuf is the one kind the bytes do not show, and protobuf that
+happens to be text must not be rewritten as text. So on a host whose entry
+says `connect`, and nowhere else, the `Content-Type` says what a body is
+(below): only a type that says text or JSON is read as text, every other body
+and everything there that is not text is read as protobuf, and nothing found
+in a body or a message stops a request.
 
 | Found in | A registered value or a Phase token | Anything else |
 |---|---|---|
@@ -370,8 +373,9 @@ entry says `connect` sends as `application/proto` or in an
 | a header | reported | reported |
 | JSON, or other text (a body, a message) | replaced | replaced or reported, as the rule says |
 | bytes that are not text (a body, a message) | blocks | reported |
-| a protobuf message (a Connect call's body, a message of its stream) | overwritten where it sits, by the placeholder padded or cut to its length; never blocks | overwritten or reported, as the rule says |
+| a protobuf message, or any bytes that are not text, on a host that speaks Connect (a body, a message of a stream) | overwritten where it sits, by the placeholder padded or cut to its length; never blocks | overwritten or reported, as the rule says |
 | a body or message that cannot be decoded (an encoding the proxy does not undo, a message compressed against the handshake) | blocks, and it is reported as unread | reported as unread |
+| a body that cannot be decoded, on a host that speaks Connect | reported, and it is reported as unread; never blocks | reported as unread |
 | a body or message over 16 MiB, or a message in more than 4096 frames | not read: passes, reported as unread | |
 
 `observe` reads the same way and never replaces or blocks. A blocked request
@@ -471,20 +475,29 @@ whatever its entry says. On an HTTP/2 tunnel:
   refused with 403 `connect_authority_mismatch`;
 - a request's body is not waited for. It is forwarded as it arrives and the
   answer goes back as it comes, each piece flushed, so a stream that both
-  ends keep open works. The end of either direction is passed on, trailers
+  ends keep open works. A unary body whose length the client did not state
+  (`application/proto`, `application/x-protobuf`, `application/protobuf`,
+  JSON and text types) ends, and is waited for and read whole; when no byte
+  of it comes for 30 seconds, what came is sent on with the rest, unread:
+  `body_streamed`, `scope` `request`. A body of any other type that is not
+  read envelope by envelope may never end: it is sent on at once, with the
+  same report. The end of either direction is passed on, trailers
   are copied (the answer's whether announced or not; the request's when the
   client announced them), and an end that gives up, by reset or by closing
   the connection, ends the other;
 - what is forwarded is what was sent, less the headers of one hop
   (`Connection` and what it names, `Keep-Alive`, `Proxy-Authenticate`,
   `Proxy-Authorization`, `Proxy-Connection`, `TE`, `Trailer`,
-  `Transfer-Encoding`, `Upgrade`) and `Expect`. Nothing is added: no `Accept-Encoding`, so an answer is never
+  `Transfer-Encoding`, `Upgrade`) and `Expect`. `TE: trailers` from a client
+  that spoke HTTP/2 is kept: gRPC refuses a call without it. Nothing is added: no `Accept-Encoding`, so an answer is never
   decompressed on its way back, and no `User-Agent` when the client sent
   none. That holds for the HTTP/1.1 clients of such a host as well;
 - the service is reached with the proxy's own TLS and dialer for hosts no
   Connection covers, over HTTP/2 when it offers it;
 - when the tunnel's connection ends, every stream on it ends, and the proxy
-  lets go of the tunnel once the last one has.
+  lets go of the tunnel once the last one has. The proxy ends the connection
+  itself when the session is revoked, expires or is no longer validated, as
+  it ends a raw tunnel.
 
 **Bodies.** On a host whose entry says `connect` the `Content-Type` says what
 a body is (the type alone: `application/connect+proto; charset=utf-8` is
@@ -494,19 +507,29 @@ a body is (the type alone: `application/connect+proto; charset=utf-8` is
 |---|---|
 | `application/proto` | one protobuf message. Read whole (16 MiB), any `Content-Encoding` undone as for other bodies, overwritten in place, encoded again the same way |
 | `application/connect+proto` | a stream of protobuf messages, read as it is sent (below) |
-| `application/connect+json` | a stream of JSON messages: each is read as JSON is anywhere, so a placeholder there is not padded and the envelope states the new length. One that is not text and holds a registered value or a Phase token cannot be rewritten: the request is refused (403 `secret_in_request`) or, once it is under way, its stream is reset |
-| anything else (`application/json`, ...) | what its bytes say, as on every other host |
+| `application/connect+json` | a stream of JSON messages: each is read as JSON is anywhere, so a placeholder there is not padded and the envelope states the new length. One that is not text is overwritten in place |
+| `application/grpc`, `application/grpc-web`, either with `+proto` or another name | a stream of protobuf messages in the same envelopes; the encoding of a compressed one is what `Grpc-Encoding` names |
+| `application/grpc+json`, `application/grpc-web+json` | the same with JSON messages |
+| `application/json`, `+json`, `text/*`, `application/x-ndjson`, `application/x-www-form-urlencoded` | what its bytes say; bytes that are not text are overwritten in place |
+| `application/x-protobuf`, `application/protobuf` | one protobuf message with the rules of its path: read whole (16 MiB), overwritten in place |
+| anything else (`application/octet-stream`, `application/grpc-web-text`, none) | bytes whose length must not change: overwritten in place when their length is stated, sent on unread over HTTP/2 when it is not |
 
-The two protobuf kinds carry conversation content whatever their path, so
-every pattern rule applies to them. Everything else on such a host, traces
-for one, is read for registered values and Phase's own tokens only.
+Connect and gRPC calls in protobuf carry conversation content whatever their
+path, so every pattern rule applies to them. Everything else on such a host,
+traces for one, is read for registered values and Phase's own tokens only,
+with the rules of its path.
 
-A Connect stream is a sequence of envelopes: a flag byte, the payload's
-length in four bytes, big-endian, and the payload, which is one message. The
-proxy hands on one envelope at a time and holds no more than that one. For
-each:
+A stream is a sequence of envelopes: a flag byte, the payload's length in
+four bytes, big-endian, and the payload, which is one message. The proxy
+hands on one envelope at a time and holds no more than that one. For each:
 
-- flag bit 1, the end of a stream: forwarded as it came, unread;
+- flag bit 1, the end of a stream, which only a service sends: forwarded as
+  it came and reported as `unread`, `message_flags_unexpected`, `scope`
+  `message`, with what was found in it;
+- a first byte with a bit set that no envelope has (any but bits 0, 1 and 7):
+  the body is not what its type says, and its length field means nothing.
+  That byte and everything after it goes on as it comes:
+  `body_not_enveloped`, `scope` `request`;
 - flag bit 0, compressed: inflated with the encoding `Connect-Content-Encoding`
   names when that is gzip. Any other encoding, or none named, is
   `message_encoding_unsupported`; a payload that does not inflate, or
@@ -527,7 +550,7 @@ answer and is read whole, so what is sent states the length it then has; any
 other is forwarded as it comes, and a stated length over 16 MiB is dropped in
 `censor` mode, since a compressed message may come out another length. An
 envelope the client never finished goes on as far as it came, and the stream
-ends as the client's did.
+ends as the client's did: `message_truncated`, `scope` `message`.
 
 **The overwrite** (`censor.RewriteBinary`). Protobuf writes the length of
 every string and nested message it holds, so nothing in a message may change

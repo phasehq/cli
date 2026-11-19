@@ -108,8 +108,12 @@
 //
 // A whole base64 or hex run that hides a value is one extent, as it is one
 // replacement elsewhere. In a leaf that is valid UTF-8 an extent that would
-// begin or end inside a character is widened to the character's edge. Text
-// the provider signed is not known here: nothing is exempt.
+// begin or end inside a character is widened to the character's edge. A leaf
+// that is UTF-8 up to a last character its end cuts, as a field of a string
+// that parses as a message can be, is treated the same up to that character,
+// and an extent that reaches into it stops before it, so what was UTF-8 at
+// any level still is. Text the provider signed is not known here: nothing is
+// exempt.
 //
 // What it guarantees:
 //
@@ -125,9 +129,12 @@
 //     '*' after it, or 12 or more bytes of the start of that, is left out of
 //     every scan when the type is one this index writes (the type of an
 //     indexed value, a rule's label, or secret, sealed or dynamic), and each
-//     stretch between two of them is scanned on its own. One call looks again
-//     at what it changed until a look changes nothing, so its last look is the
-//     first look of the next call. It stops after eight looks; only a value
+//     stretch between two of them is scanned on its own. A rule's placeholder
+//     ends with its digits and a registered id where it ends; an id this index
+//     does not know runs as far as an id can and stops where the matcher finds
+//     a value beginning, so a value written right after a placeholder is read.
+//     One call looks again at every leaf it wrote to, whole, until a look
+//     changes nothing, so its last look is the first look of the next call. It stops after eight looks; only a value
 //     broken into more pieces than that, each found once the one before it was
 //     overwritten, is left for a later pass to finish.
 //

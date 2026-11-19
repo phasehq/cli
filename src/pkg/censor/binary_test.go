@@ -158,27 +158,78 @@ func (g *messageMaker) plant() (string, string) {
 }
 
 // accident is text that parses as a message from its first byte to its last:
-// printable tags, each with the value its wire type needs.
-func (g *messageMaker) accident(fields int) []byte {
+// printable tags, each with the value its wire type needs. Some of its fields
+// read as strings, with values in them; it returns the ids of those values.
+func (g *messageMaker) accident(fields int) ([]byte, []string) {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	var out []byte
+	var planted []string
 	for i := 0; i < fields; i++ {
 		var tags string
 		width := 0
-		switch g.rng.Intn(3) {
+		switch g.rng.Intn(5) {
 		case 0:
 			tags, width = "(08@HPX`hpx", 1
 		case 1:
 			tags, width = "!)19AIQYaiqy", 8
-		default:
+		case 2:
 			tags, width = "%-5=EMU]emu}", 4
+		default:
+			text, id := g.accidentText()
+			if id != "" {
+				planted = append(planted, id)
+			}
+			out = append(out, text...)
+			continue
 		}
 		out = append(out, tags[g.rng.Intn(len(tags))])
 		for j := 0; j < width; j++ {
 			out = append(out, letters[g.rng.Intn(len(letters))])
 		}
 	}
-	return out
+	return out, planted
+}
+
+// accidentText reads as one string field: a printable tag and length, then
+// text. One time in three the field ends two bytes into a character of three.
+func (g *messageMaker) accidentText() ([]byte, string) {
+	const tags = "2:BJRZbjrz*\""
+	length := 32 + g.rng.Intn(95)
+	cut := g.rng.Intn(3) == 0
+	room := length
+	if cut {
+		room -= 2
+	}
+	id, text := "", g.words(1+g.rng.Intn(8))
+	if g.rng.Intn(2) == 0 {
+		if plantedID, planted := g.plant(); len(planted) <= room {
+			id, text = plantedID, planted
+		}
+	}
+	payload := []byte(text)
+	for len(payload) > room {
+		_, size := utf8.DecodeLastRune(payload)
+		payload = payload[:len(payload)-size]
+	}
+	for len(payload) < room {
+		payload = append(payload, ' ')
+	}
+	if value := g.values[g.rng.Intn(len(g.values))].value; cut && id == "" && len(value) < room {
+		// The start of a value, or all of it, right up to the cut character.
+		piece := value[:min(len(value), chunkSize+g.rng.Intn(len(value)))]
+		payload = append(append(bytes.Repeat([]byte("é"), (room-len(piece)-1)/2), ' '), piece...)
+		if len(payload) < room {
+			payload = append([]byte{'.'}, payload...)
+		}
+	}
+	out := append([]byte{tags[g.rng.Intn(len(tags))], byte(length)}, payload...)
+	if cut {
+		// The first two bytes of a character end the field; its third and a
+		// letter are the tag of four bytes that follow.
+		out = append(out, "日M"...)
+		out = append(out, "wxyz"...)
+	}
+	return out, id
 }
 
 func (g *messageMaker) message(depth int) *builtMessage {
@@ -214,7 +265,8 @@ func (g *messageMaker) message(depth int) *builtMessage {
 			}
 			m.leaf(number, "packed", packed)
 		case kind == 10:
-			m.leaf(number, "accident", g.accident(2+g.rng.Intn(12)))
+			text, planted := g.accident(2 + g.rng.Intn(12))
+			m.leaf(number, "accident", text, planted...)
 		default:
 			switch g.rng.Intn(3) {
 			case 0:
@@ -305,6 +357,26 @@ func sameShape(before, after []byte, depth int) error {
 	return nil
 }
 
+// staysText reports whether everything that was UTF-8 still is: the input and
+// every field of it down to depth, a string or what only reads as a message.
+func staysText(before, after []byte, depth int) error {
+	if utf8.Valid(before) && !utf8.Valid(after) {
+		return fmt.Errorf("%d bytes of UTF-8 are no longer UTF-8: %q", len(before), after)
+	}
+	fields, ok := shapeOf(before)
+	if !ok || depth == 0 {
+		return nil
+	}
+	for _, field := range fields {
+		if field.wire == 2 {
+			if err := staysText(before[field.start:field.end], after[field.start:field.end], depth-1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // rewriteChecked runs RewriteBinary and checks everything it guarantees
 // whatever the input is. It returns the output and the ranges written to.
 func rewriteChecked(t testing.TB, ix *Index, input []byte, opts ScanOptions) ([]byte, *Report, [][2]int) {
@@ -340,6 +412,9 @@ func rewriteChecked(t testing.TB, ix *Index, input []byte, opts ScanOptions) ([]
 	}
 	if err := sameShape(input, out, maxBinaryDepth); err != nil {
 		t.Fatalf("the output is not the message the input was: %v", err)
+	}
+	if err := staysText(input, out, maxBinaryDepth); err != nil {
+		t.Fatal(err)
 	}
 	again, second := ix.RewriteBinary(out, opts)
 	if !bytes.Equal(again, out) || second.Changed || second.Found() {
@@ -880,9 +955,185 @@ func TestBinaryRulesOption(t *testing.T) {
 	}
 }
 
+// A string that parses as a message can have a field that ends inside a
+// character. A value next to it is overwritten up to it: the string stays UTF-8.
+func TestBinaryStringThatParsesAsAMessageStaysUTF8(t *testing.T) {
+	var value string
+	for plain := true; plain; {
+		value = randomString(t, alnum, 48)
+		plain = false
+		for at := 0; at < len(value); at += chunkSize {
+			plain = plain || entropy(value[at:at+chunkSize]) < weakChunkEntropy+0.2
+		}
+	}
+	ix := build(t, secret{ID: "k", Value: value})
+	reached := 0
+	for cut := 12; cut <= 48; cut++ {
+		for _, inside := range []string{"", "é ", "日本 "} {
+			// A string field whose last two bytes begin 日; the third reads as
+			// the tag of the four bytes after it.
+			payload := "the key " + inside + value[:cut] + "\xe6\x97"
+			for len(payload) < 64 {
+				payload = "x" + payload
+			}
+			text := "2" + string(rune(len(payload))) + payload + "\xa5Mwxyz" + "2 a second string of 32 bytes here"
+			fields, ok := shapeOf([]byte(text))
+			if !ok || len(fields) != 3 || !utf8.ValidString(text) || utf8.ValidString(payload) {
+				t.Fatalf("the string is not UTF-8 that parses as three fields: %q", text)
+			}
+			for _, input := range [][]byte{[]byte(text), protoString(protoNumber(nil, 1, 3), 2, []byte(text))} {
+				out, report, written := rewriteChecked(t, ix, input, ScanOptions{})
+				got := out[len(out)-len(text):]
+				if !utf8.Valid(got) || !bytes.Contains(got, []byte("日Mwxyz")) {
+					t.Fatalf("cut %d: the string is no longer UTF-8, or lost a character: %q", cut, got)
+				}
+				if bytes.Contains(got, []byte(value[:12])) || report.Inventory == 0 {
+					t.Fatalf("cut %d: the value was left: %q", cut, got)
+				}
+				for _, extent := range written {
+					if extent[1] == len(out)-len(text)+2+len(payload)-2 {
+						reached++
+					}
+				}
+			}
+		}
+	}
+	if reached == 0 {
+		t.Fatal("no extent ran up to the character the field's end cuts")
+	}
+	// The same bytes with no string around them are no UTF-8 at all, and an
+	// extent in them is left as the matcher made it.
+	raw := append([]byte{0xff}, value[:24]...)
+	rewriteChecked(t, ix, protoString(nil, 1, append(raw, 0xe6, 0x97)), ScanOptions{})
+	if textEnd([]byte("ab\xe6\x97")) != 2 || textEnd([]byte("ab\xe6")) != 2 || textEnd([]byte("ab日")) != 5 || textEnd([]byte("a\xffb\xe6")) != -1 || textEnd([]byte("ab\xa5")) != -1 || textEnd(nil) != 0 {
+		t.Fatal("where text ends")
+	}
+}
+
+// A value written right after a placeholder is read: a registered id ends
+// where it ends, and one this index does not know ends where a value begins.
+func TestBinaryValueRightAfterAPlaceholderIsRead(t *testing.T) {
+	value := randomString(t, alnum, 40)
+	token := "gh" + "p_" + randomString(t, alnum, 36)
+	ix := build(t, secret{ID: "later", Value: value}, secret{ID: "db", Value: randomString(t, alnum, 32)}, secret{ID: "db.prod", Value: randomString(t, alnum, 32)})
+	for text, want := range map[string]string{
+		"see ph:secret:" + value:                         value,
+		"DB=ph:secret:a-much-lon" + value + " end":       value,
+		"DB=ph:secret:db.prod-" + value + " end":         value,
+		"DB=ph:secret:db" + value + " end":               value,
+		"DB=ph:secret:db.prod" + value:                   value,
+		"DB=ph:secret:db.prod******" + value + " end":    value,
+		"DB=ph:sealed:unknown-id_" + value + "ph:secret": value,
+		"see ph:secret:" + token + " end":                token,
+		"see ph:secret:gone-" + token + " end":           token,
+		"key ph:github_token:12" + value + " end":        value,
+		"key ph:github_token:" + value + " end":          value,
+		"key ph:github_token:3***" + token + " end":      token,
+	} {
+		for _, input := range [][]byte{protoString(nil, 1, []byte(text)), []byte(text)} {
+			out, report, _ := rewriteChecked(t, ix, input, ScanOptions{})
+			if bytes.Contains(out, []byte(want)) || bytes.Contains(out, []byte(want[len(want)-12:])) || !report.Found() {
+				t.Errorf("%q: the value after the placeholder was left: %q", strings.Replace(text, want, "<value>", 1), out)
+			}
+		}
+	}
+	// What an id is made of is still not read when no value begins in it.
+	for _, text := range []string{
+		"DB=ph:secret:db.prod-eu-west-1.replica_7 and more text after it",
+		"DB=ph:secret:3f2a9c1e-7b64-4d0a-9e51-0c8d2f6a4b17 of an index that is gone",
+		"DB=ph:secret:db.prod***************** and ph:secret:db************",
+	} {
+		if out, report, _ := rewriteChecked(t, ix, protoString(nil, 1, []byte(text)), ScanOptions{}); report.Found() {
+			t.Errorf("%q was matched: %q (%+v)", text, out, report)
+		}
+	}
+}
+
+// tokenFields is size bytes of messages of text, eighty strings with a token
+// each. across puts each token over the tag and length between two strings.
+func tokenFields(t testing.TB, size int, across bool) []byte {
+	rng := rand.New(rand.NewSource(11))
+	random := func(n int) string {
+		out := make([]byte, n)
+		for i := range out {
+			out[i] = alnum[rng.Intn(len(alnum))]
+		}
+		return string(out)
+	}
+	var message []byte
+	for len(message) < size {
+		var inner []byte
+		for i := 0; i < 80; i++ {
+			payload := " gh" + "p_" + random(36) + " and so"
+			switch {
+			case across && i == 79:
+				payload = random(19) + " and that is the last of them"
+			case across:
+				payload = random(19) + " and then gh" + "p_" + random(15)
+			}
+			inner = append(append(inner, 'B', byte(len(payload))), payload...)
+		}
+		if len(inner) > maxTextView || firstNonText(inner) >= 0 || !isProtoMessage(inner) {
+			t.Fatal("the fields are not a message of text that is read as a string")
+		}
+		message = protoString(message, 2, inner)
+	}
+	return message
+}
+
+// Reading a message of text as a string costs one more scan of it, however
+// many tokens lie across its fields: 16 MiB go at the rate of tokens inside.
+func TestBinaryTextViewCostStaysLinear(t *testing.T) {
+	if testing.Short() {
+		t.Skip("reads 32 MiB")
+	}
+	ix := build(t, manySecrets(t, 50)...)
+	timed := func(message []byte) time.Duration {
+		best := time.Hour
+		for i := 0; i < 2; i++ {
+			started := time.Now()
+			out, report := ix.RewriteBinary(message, ScanOptions{})
+			best = min(best, time.Since(started))
+			// A random token now and then reads as a made-up one and is left.
+			if tokens := bytes.Count(message, []byte("gh"+"p_")); report.Redacted < tokens*99/100 || bytes.Count(out, []byte("gh"+"p_")) > tokens/100 {
+				t.Fatalf("%d of %d tokens were overwritten", report.Redacted, tokens)
+			}
+		}
+		return best
+	}
+	size := 16 << 20
+	if raceEnabled {
+		size = 1 << 20
+	}
+	inside, across := timed(tokenFields(t, size, false)), timed(tokenFields(t, size, true))
+	t.Logf("%d MiB with tokens inside its strings in %v, across them in %v", size>>20, inside, across)
+	if across > 3*inside {
+		t.Fatalf("tokens across fields took %v, over three times the %v of tokens inside them", across, inside)
+	}
+}
+
+// becomesAMessage is no message until a value in it is overwritten and the
+// padding reads as a tag. Its first field then shows more of the value, in hex.
+const becomesAMessage = "Zc00000000000000394B70334864374e663442630000 000000000000000000000000000000000000000000000000000000002a" +
+	"0000000000000000000000000000000000000000000000000000000000000000000000000000Zq8vLm2Rt5Xw00000000000000000000000000000000000000010000000000100"
+
+// A leaf that parses as a message once it is written to is read field by
+// field in the same call, every field of it, so a second call finds nothing.
+func TestBinaryLeafThatBecomesAMessageIsFinishedInOneCall(t *testing.T) {
+	ix := build(t, secret{ID: "a", Value: "Zq8vLm2Rt5Xw9Kp3Hd7Nf4BcQ1"})
+	if _, ok := shapeOf([]byte(becomesAMessage)); ok {
+		t.Fatal("the text parses as a message to begin with")
+	}
+	out, report, written := rewriteChecked(t, ix, []byte(becomesAMessage), ScanOptions{})
+	if _, ok := shapeOf(out); !ok || len(written) != 2 || report.Inventory != 2 || bytes.Contains(out, []byte("394B7033")) {
+		t.Fatalf("%d extents, %+v: %q", len(written), report, out)
+	}
+}
+
 // FuzzRewriteBinary holds the walk to its guarantees on whatever the fuzzer
-// makes of real messages: it never panics, never changes a length or a field,
-// and a second pass changes nothing.
+// makes of real messages and of strings that parse as messages: it never
+// panics, never changes a length or a field, leaves UTF-8 what was UTF-8, and
+// a second pass changes nothing.
 func FuzzRewriteBinary(f *testing.F) {
 	key, _ := NewKey()
 	ix, _ := NewIndex(key, IndexOptions{})
@@ -896,7 +1147,12 @@ func FuzzRewriteBinary(f *testing.F) {
 		f.Add(maker.message(3).data)
 	}
 	f.Add([]byte("token " + values[0].value + " ph:secret:a*************** é"))
-	f.Add(protoString(nil, 1, maker.accident(9)))
+	f.Add([]byte(becomesAMessage))
+	for i := 0; i < 8; i++ {
+		accident, _ := maker.accident(9)
+		f.Add(accident)
+		f.Add(protoString(protoNumber(nil, 1, 3), 2, accident))
+	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		rewriteChecked(t, ix, data, ScanOptions{})
 	})

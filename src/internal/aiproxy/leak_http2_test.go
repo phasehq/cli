@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -98,8 +99,11 @@ func (s *connectService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls = append(s.calls, call)
 	s.mu.Unlock()
-	w.Header().Set("Content-Type", r.Header.Get("Content-Type"))
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/connect+") {
+	contentType := r.Header.Get("Content-Type")
+	w.Header().Set("Content-Type", contentType)
+	// gRPC frames its messages as Connect does, and X-Envelopes says the same
+	// of a body whose type does not.
+	if !strings.HasPrefix(contentType, "application/connect+") && !strings.HasPrefix(contentType, "application/grpc") && r.Header.Get("X-Envelopes") == "" {
 		body, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		call.body, call.ended = body, true
@@ -142,12 +146,25 @@ func (s *connectService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if breakNow {
 			panic(http.ErrAbortHandler)
 		}
-		_, _ = w.Write(connectEnvelope(0, []byte(fmt.Sprintf("answer %d to %d bytes", count, len(payload)))))
+		answer := []byte(fmt.Sprintf("answer %d to %d bytes", count, len(payload)))
+		if size, _ := strconv.Atoi(r.Header.Get("X-Answer-Bytes")); size > 0 {
+			answer = answerOfSize(size)
+		}
+		_, _ = w.Write(connectEnvelope(0, answer))
 		w.(http.Flusher).Flush()
 	}
 	w.Header().Set("X-Stream-Status", "complete")
 	// A trailer that was never announced, as gRPC sends its status.
 	w.Header().Set(http.TrailerPrefix+"X-Stream-Count", fmt.Sprint(len(call.envelopes)))
+}
+
+// answerOfSize is an answer of size bytes that shows where a byte went missing.
+func answerOfSize(size int) []byte {
+	answer := make([]byte, size)
+	for i := range answer {
+		answer[i] = byte(i % 251)
+	}
+	return answer
 }
 
 // waitFor returns the call for which found holds, once there is one.
@@ -401,10 +418,16 @@ func TestCursorAgentStreamIsReadOverHTTP2(t *testing.T) {
 	}
 
 	// One event for each envelope in which something new was found: what it
-	// is about and how many, never what it was.
-	events := rig.leakEvents(2)
+	// is about and how many, never what it was. The envelope a client marked
+	// as the end of a stream was not read, and its event says so.
+	events := rig.leakEvents(3)
 	placeholders := map[string]bool{}
+	unread := 0
 	for _, event := range events {
+		if event.Outcome == outcomeUnread && event.Reason == leakReasonMessageFlags && event.Detail["scope"] == leakScopeMessage && event.Detail["replacedCount"] == float64(0) {
+			unread++
+			continue
+		}
 		if event.Outcome != outcomeCensored || event.Protocol != leakProtocolHTTP2 || event.Method != http.MethodPost || event.Host != cursorStreamHost ||
 			event.Path != cursorStreamPath || event.Detail["where"] != "message" || event.Detail["harness"] != "cursor" || event.Detail["mode"] != "censor" ||
 			event.Detail["inventoryHits"] != float64(1) || event.Detail["replacedCount"] != float64(1) || event.Detail["severity"] != "medium" {
@@ -412,7 +435,7 @@ func TestCursorAgentStreamIsReadOverHTTP2(t *testing.T) {
 		}
 		placeholders[fmt.Sprint(event.Detail["placeholders"])] = true
 	}
-	if len(events) != 2 || !placeholders["ph:secret:stripe"] || !placeholders["ph:secret:db"] {
+	if len(events) != 3 || unread != 1 || !placeholders["ph:secret:stripe"] || !placeholders["ph:secret:db"] {
 		t.Fatalf("%d events for %v", len(events), placeholders)
 	}
 	shipped := rig.shippedPayloads()
@@ -546,11 +569,25 @@ func TestCursorConnectCallsAreConversationContent(t *testing.T) {
 		"application/connect+proto":                leakBodyProtobufStream,
 		" application/connect+proto ;charset=utf8": leakBodyProtobufStream,
 		"application/connect+json":                 leakBodyJSONStream,
-		"application/json":                         leakBodyAsItReads,
-		"application/x-protobuf":                   leakBodyAsItReads,
-		"application/grpc":                         leakBodyAsItReads,
-		"application/protobuf-x":                   leakBodyAsItReads,
-		"":                                         leakBodyAsItReads,
+		"application/json":                         leakBodyText,
+		"application/problem+json; charset=utf-8":  leakBodyText,
+		"text/plain":                               leakBodyText,
+		"application/x-www-form-urlencoded":        leakBodyText,
+		"application/x-protobuf":                   leakBodyBinary,
+		"application/protobuf":                     leakBodyBinary,
+		"application/octet-stream":                 leakBodyUnframed,
+		"application/protobuf-x":                   leakBodyUnframed,
+		"":                                         leakBodyUnframed,
+		"application/grpc":                         leakBodyGRPC,
+		"application/grpc+proto":                   leakBodyGRPC,
+		"Application/gRPC-Web+proto; charset=utf8": leakBodyGRPC,
+		"application/grpc-web":                     leakBodyGRPC,
+		"application/grpc+json":                    leakBodyGRPCJSON,
+		"application/grpc-web+json":                leakBodyGRPCJSON,
+		// Envelopes in base64 show no envelope, and "grpcx" is not gRPC.
+		"application/grpc-web-text":       leakBodyUnframed,
+		"application/grpc-web-text+proto": leakBodyUnframed,
+		"application/grpcx":               leakBodyUnframed,
 	} {
 		header := http.Header{"Content-Type": {contentType}}
 		if got := cursor.body(header); got != want {
@@ -560,8 +597,21 @@ func TestCursorConnectCallsAreConversationContent(t *testing.T) {
 			t.Errorf("%q on a host that does not speak Connect is read as %d", contentType, got)
 		}
 	}
-	if !leakBodyProtobuf.conversation() || !leakBodyProtobufStream.conversation() || leakBodyJSONStream.conversation() || leakBodyAsItReads.conversation() {
+	if !leakBodyProtobuf.conversation() || !leakBodyProtobufStream.conversation() || !leakBodyGRPC.conversation() || leakBodyJSONStream.conversation() ||
+		leakBodyGRPCJSON.conversation() || leakBodyAsItReads.conversation() || leakBodyText.conversation() || leakBodyBinary.conversation() || leakBodyUnframed.conversation() {
 		t.Fatal("which bodies carry conversation content")
+	}
+	for kind, want := range map[leakBody][3]bool{
+		leakBodyAsItReads: {false, false, true}, leakBodyText: {false, false, true}, leakBodyBinary: {false, true, true}, leakBodyProtobuf: {false, true, true},
+		leakBodyUnframed:       {false, true, false},
+		leakBodyProtobufStream: {true, false, false}, leakBodyJSONStream: {true, false, false}, leakBodyGRPC: {true, false, false}, leakBodyGRPCJSON: {true, false, false},
+	} {
+		if kind.stream() != want[0] || kind.inPlace() != want[1] || kind.unary() != want[2] {
+			t.Errorf("kind %d: read as a stream = %v, overwritten in place = %v", kind, kind.stream(), kind.inPlace())
+		}
+	}
+	if leakBodyGRPC.encodingHeader() != "Grpc-Encoding" || leakBodyGRPCJSON.encodingHeader() != "Grpc-Encoding" || leakBodyJSONStream.encodingHeader() != "Connect-Content-Encoding" {
+		t.Fatal("which header names a stream's encoding")
 	}
 
 	// On a host that does not speak Connect the same body is what its bytes
@@ -873,12 +923,12 @@ func TestCursorStreamsOverHTTP1(t *testing.T) {
 	if got := service.stream(t, "json", 1).envelopes[0]; !bytes.Equal(got, want) {
 		t.Fatalf("a JSON message: %q, want %q", got, want)
 	}
-	// A JSON stream's message that is not text cannot be rewritten: with a
-	// value in it the request is refused, and nothing of it is sent on.
-	before := service.count()
-	response, answer = postConnect(t, client, target, "application/connect+json", connectEnvelope(0, append([]byte{0xff, 0x00}, leakSecretOne...)), nil)
-	if response.StatusCode != http.StatusForbidden || response.Header.Get("X-Phase-Error-Code") != codeSecretInRequest || bytes.Contains(answer, []byte(leakSecretOne)) || service.count() != before {
-		t.Fatalf("a message that cannot be rewritten: status %d, %d calls reached the service", response.StatusCode, service.count()-before)
+	// A JSON stream's message that is not text is overwritten where the
+	// value sits, like any bytes of this host that are not text.
+	response, _ = postConnect(t, client, target, "application/connect+json", connectEnvelope(0, append([]byte{0xff, 0x00}, leakSecretOne...)), map[string]string{"X-Stream-Id": "not-text"})
+	want = connectEnvelope(0, append([]byte{0xff, 0x00}, overwritten("ph:secret:stripe", len(leakSecretOne))...))
+	if got := service.stream(t, "not-text", 1).envelopes[0]; response.StatusCode != http.StatusOK || !bytes.Equal(got, want) {
+		t.Fatalf("a message that is not text: status %d, %q, want %q", response.StatusCode, got, want)
 	}
 }
 
@@ -1162,16 +1212,17 @@ func TestLiveMeterMeasuresStreamMessages(t *testing.T) {
 			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen=stripe-key missed=stripe-key expected_missed= protocol=http2 micros=N",
 			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen=admin-pin missed= expected_missed=admin-pin protocol=http2 micros=N",
 			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen= missed= expected_missed= protocol=http2 micros=N unread=message_undecodable",
+			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen= missed= expected_missed= protocol=http2 micros=N unread=message_flags_unexpected",
 			"request host=api2.cursor.sh path=/aiserver.v1.InferenceService/RunInference conversation=true bytes=N replaced=1 seen=stripe-key missed= expected_missed= protocol=http micros=N",
-			"summary requests_with_body=8 conversation_requests=8 requests_rewritten=3 requests_blocked=0 websocket_messages=0",
+			"summary requests_with_body=9 conversation_requests=9 requests_rewritten=3 requests_blocked=0 websocket_messages=0",
 			"summary ids_seen=3 seen=admin-pin,database-url,stripe-key",
 			"summary ids_missed=1 missed=stripe-key",
 			"summary ids_expected_missed=1 expected_missed=admin-pin",
 			"summary inventory_hits=3 rule_hits=0 rule_redactions=0 rule_alerts=0 signed_findings=0",
-			"summary unread message_undecodable=1",
+			"summary unread message_flags_unexpected=1 message_undecodable=1",
 			"summary bypass none",
 			"summary inspect_micros p50=N max=N inspected=7",
-			"summary stream_messages=7 listed=5",
+			"summary stream_messages=8 listed=6",
 		},
 		leakModeObserve: {
 			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen=stripe-key missed=stripe-key expected_missed= protocol=http2 micros=N",
@@ -1179,16 +1230,17 @@ func TestLiveMeterMeasuresStreamMessages(t *testing.T) {
 			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen=stripe-key missed=stripe-key expected_missed= protocol=http2 micros=N",
 			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen=admin-pin missed= expected_missed=admin-pin protocol=http2 micros=N",
 			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen= missed= expected_missed= protocol=http2 micros=N unread=message_undecodable",
+			"request host=agentn.global.api5.cursor.sh path=/agent.v1.AgentService/Run conversation=true bytes=N replaced=0 seen= missed= expected_missed= protocol=http2 micros=N unread=message_flags_unexpected",
 			"request host=api2.cursor.sh path=/aiserver.v1.InferenceService/RunInference conversation=true bytes=N replaced=0 seen=stripe-key missed=stripe-key expected_missed= protocol=http micros=N",
-			"summary requests_with_body=8 conversation_requests=8 requests_rewritten=0 requests_blocked=0 websocket_messages=0",
+			"summary requests_with_body=9 conversation_requests=9 requests_rewritten=0 requests_blocked=0 websocket_messages=0",
 			"summary ids_seen=3 seen=admin-pin,database-url,stripe-key",
 			"summary ids_missed=2 missed=database-url,stripe-key",
 			"summary ids_expected_missed=1 expected_missed=admin-pin",
 			"summary inventory_hits=3 rule_hits=0 rule_redactions=0 rule_alerts=0 signed_findings=0",
-			"summary unread message_undecodable=1",
+			"summary unread message_flags_unexpected=1 message_undecodable=1",
 			"summary bypass none",
 			"summary inspect_micros p50=N max=N inspected=7",
-			"summary stream_messages=7 listed=5",
+			"summary stream_messages=8 listed=6",
 		},
 	} {
 		rig, _ := newConnectRig(t, mode)
@@ -1372,10 +1424,9 @@ func TestProtobufMeetsTheSameEndAsABodyAndAsAMessage(t *testing.T) {
 	}
 }
 
-// A JSON stream that is under way when one of its messages cannot be
-// rewritten is reset at both ends: the message never reaches the service, and
-// neither end takes the stream for finished.
-func TestCursorJSONStreamIsResetByAMessageThatCannotBeRewritten(t *testing.T) {
+// A message of a JSON stream that is not text does not stop the stream: the
+// value in it is overwritten where it sits, and the stream goes on.
+func TestCursorJSONStreamMessageThatIsNotTextIsOverwrittenInPlace(t *testing.T) {
 	rig, service := newConnectRig(t, leakModeCensor)
 	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
 	stream := openConnectStream(t, rig.clientOffering(rig.phaseRoots, false, true), "json", map[string]string{"Content-Type": "application/connect+json"})
@@ -1385,22 +1436,21 @@ func TestCursorJSONStreamIsResetByAMessageThatCannotBeRewritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream.send(connectEnvelope(0, append([]byte{0xff, 0x00}, leakSecretOne...)))
-	if answer, err := stream.answer(); err == nil || err == io.EOF {
-		t.Fatalf("the stream went on after a message that must not go out: %q, %v", answer, err)
+	if answer, err := stream.answer(); err != nil {
+		t.Fatalf("the stream did not go on after a message that is not text: %q, %v", answer, err)
 	}
-	call := service.waitFor(t, "the stream break off", func(call *connectCall) bool { return call.header.Get("X-Stream-Id") == "json" && call.gone })
-	want := connectEnvelope(0, []byte(`{"text":"the key is ph:secret:stripe"}`))
-	if len(call.envelopes) != 1 || !bytes.Equal(call.envelopes[0], want) || call.ended {
-		t.Fatalf("the service got %d envelopes and the stream ended = %v", len(call.envelopes), call.ended)
+	stream.send(first)
+	stream.end()
+	call := service.waitFor(t, "the stream's end", func(call *connectCall) bool { return call.header.Get("X-Stream-Id") == "json" && call.ended })
+	replaced := connectEnvelope(0, []byte(`{"text":"the key is ph:secret:stripe"}`))
+	inPlace := connectEnvelope(0, append([]byte{0xff, 0x00}, overwritten("ph:secret:stripe", len(leakSecretOne))...))
+	if len(call.envelopes) != 3 || !bytes.Equal(call.envelopes[0], replaced) || !bytes.Equal(call.envelopes[1], inPlace) || !bytes.Equal(call.envelopes[2], replaced) {
+		t.Fatalf("the service got %q", call.envelopes)
 	}
-	var blocked []agentapi.Event
-	for _, event := range rig.distinctLeakEvents(t, 2) {
+	for _, event := range rig.leakEventsNow() {
 		if event.ProxyDecision == "block" {
-			blocked = append(blocked, event)
+			t.Fatalf("something in a message stopped the stream: %+v", event)
 		}
-	}
-	if len(blocked) != 1 || blocked[0].Outcome != "denied" || blocked[0].Detail["where"] != "message" || blocked[0].Detail["severity"] != "high" || blocked[0].Protocol != leakProtocolHTTP2 {
-		t.Fatalf("the block's event: %+v", blocked)
 	}
 }
 

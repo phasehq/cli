@@ -16,7 +16,8 @@ import (
 // WebSocket adapter (leak_websocket.go) and the Connect adapter
 // (leak_connect.go) read what they hold through readPayload, readProtobuf,
 // readFixed and addFound, and act on the scan's verdict. Protobuf is the one
-// kind the bytes do not show: there the host's rule and the Content-Type say.
+// kind the bytes do not show: there the host's rule and the Content-Type say,
+// and on such a host nothing found in a body or a message stops a request.
 
 // leakPart is a kind of bytes a request is made of.
 type leakPart int
@@ -37,10 +38,12 @@ const (
 	leakPartOpaque
 	// leakPartOversize is a body or a message too large to hold.
 	leakPartOversize
-	// leakPartProtobuf is a protobuf message: a body, or a message of a
-	// stream, that a host which speaks Connect says is one. Every length in
-	// it is written down elsewhere in it, so nothing in it may change length.
+	// leakPartProtobuf is a protobuf message, or other bytes that are not
+	// text, on a host which speaks Connect. Every length in a message is
+	// written down elsewhere in it, so nothing in it may change length.
 	leakPartProtobuf
+	// leakPartOpaqueKept is a body of such a host that could not be decoded.
+	leakPartOpaqueKept
 )
 
 // leakPartRule is what happens in one kind of bytes.
@@ -67,23 +70,28 @@ type leakPartRule struct {
 //	oversize  no    passes unread
 //	protobuf  yes   is overwritten where it sits, by a placeholder padded or
 //	                cut to its length; it never blocks
+//	opaque on a host that speaks Connect
+//	          yes   is reported; the request is reported as unread
 //
 // A body or a message is JSON, text or binary by its bytes: valid JSON,
 // otherwise valid UTF-8 with no NUL byte, otherwise binary. Protobuf cannot
-// be told from its bytes: it is what a host whose rule says it speaks Connect
-// sends as application/proto or in an application/connect+proto stream
+// be told from its bytes, and protobuf that happens to be text must not be
+// rewritten as text. So on a host whose rule says it speaks Connect a body is
+// read as JSON or text only when its Content-Type says so; any other body,
+// and anything there that is not text, is read as protobuf
 // (leakHostMatch.body).
 //
 // observe mode reads the same way and never replaces or blocks.
 var leakPartRules = map[leakPart]leakPartRule{
-	leakPartURL:      {read: true, block: true},
-	leakPartHeader:   {read: true},
-	leakPartJSON:     {read: true, rewrite: true},
-	leakPartText:     {read: true, rewrite: true},
-	leakPartBinary:   {read: true, block: true},
-	leakPartOpaque:   {read: true, block: true},
-	leakPartOversize: {},
-	leakPartProtobuf: {read: true, rewrite: true},
+	leakPartURL:        {read: true, block: true},
+	leakPartHeader:     {read: true},
+	leakPartJSON:       {read: true, rewrite: true},
+	leakPartText:       {read: true, rewrite: true},
+	leakPartBinary:     {read: true, block: true},
+	leakPartOpaque:     {read: true, block: true},
+	leakPartOversize:   {},
+	leakPartProtobuf:   {read: true, rewrite: true},
+	leakPartOpaqueKept: {read: true},
 }
 
 // leakVerdict is what happens to a request or a message once it is read.
@@ -141,8 +149,9 @@ func (g *leakGuard) readFixed(scan *leakScan, part leakPart, data []byte, where 
 
 // readPayload reads a decoded body or a whole message: as JSON when it is
 // JSON, as plain text when it is other text, and as binary when it is
-// neither. It returns what to send in its place, or nil when nothing in it
-// is to change, and notes on the scan whether the bytes were text.
+// neither, which on a host that speaks Connect is overwritten in place. It
+// returns what to send in its place, or nil when nothing in it is to change,
+// and notes on the scan whether the bytes were text.
 func (g *leakGuard) readPayload(scan *leakScan, payload []byte, where string) []byte {
 	out, report, err := g.index.RewriteJSON(payload, scan.opts)
 	switch {
@@ -155,6 +164,8 @@ func (g *leakGuard) readPayload(scan *leakScan, payload []byte, where string) []
 		scan.text = true
 		out, report = g.index.RedactWith(payload, scan.opts)
 		return scan.addRewritten(leakPartText, out, report, where)
+	case scan.match.inPlace():
+		return g.readProtobuf(scan, payload, where)
 	default:
 		g.readFixed(scan, leakPartBinary, payload, where)
 		return nil

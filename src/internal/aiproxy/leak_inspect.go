@@ -2,6 +2,7 @@ package aiproxy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -44,6 +45,15 @@ const (
 	// it is marked as gzip and does not inflate.
 	leakReasonMessageEncoding    = "message_encoding_unsupported"
 	leakReasonMessageUndecodable = "message_undecodable"
+	// Why else an envelope went on unread: the request ended inside it, or it
+	// was marked as the end of a stream, which only a service sends.
+	leakReasonMessageTruncated = "message_truncated"
+	leakReasonMessageFlags     = "message_flags_unexpected"
+	// Why the rest of a stream went on unread: what came was no envelope.
+	leakReasonNotEnvelopes = "body_not_enveloped"
+	// Why a body over HTTP/2 went on unread: its length was not stated, and
+	// its kind may never end or no byte of it came for leakBodyIdle.
+	leakReasonStreamed = "body_streamed"
 
 	// Why a whole connection to a host that takes only its own client's TLS
 	// was passed through unread: its first bytes were not one whole
@@ -354,7 +364,7 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 	}
 	opts := guard.scanOptionsFor(match, req.URL.Path)
 	// On a host that speaks Connect the Content-Type says what the body is,
-	// and a protobuf call carries conversation content whatever its path.
+	// and a Connect or gRPC call carries conversation content whatever its path.
 	kind := match.body(req.Header)
 	if kind.conversation() {
 		opts = censor.ScanOptions{}
@@ -380,7 +390,38 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 		// A stream has no end to wait for: it is read as it is sent.
 		return p.readConnectStream(req, upstream, binding, host, port, scan, kind, started)
 	}
-	body, err := io.ReadAll(io.LimitReader(upstream.Body, maxLeakBody+1))
+	var body []byte
+	var err error
+	if req.ProtoMajor == 2 && upstream.ContentLength < 0 {
+		// Over HTTP/2 a body with no stated length may stay open while the
+		// service answers. A unary call's end comes, and is waited for a while.
+		unread := leakReasonStreamed
+		if kind.unary() {
+			pump := newBodyPump(req.Context(), upstream.Body)
+			var ended bool
+			if body, ended, err = pump.collect(maxLeakBody, leakBodyIdle); err == nil && !ended {
+				upstream.Body = struct {
+					io.Reader
+					io.Closer
+				}{io.MultiReader(bytes.NewReader(body), pump), upstream.Body}
+				upstream.GetBody = nil
+				if len(body) > maxLeakBody {
+					unread = leakReasonOverLimit
+				}
+			}
+			if err == nil && ended {
+				unread = ""
+			}
+		}
+		if err == nil && unread != "" {
+			scan.leaveUnread(unread, leakScopeRequest)
+			stopped := p.finishLeakScan(req, upstream, binding, host, port, scan, nil, "", started)
+			p.observeRead(scan, host, req.URL.EscapedPath(), nil, nil, stopped != nil, time.Now())
+			return stopped
+		}
+	} else {
+		body, err = io.ReadAll(io.LimitReader(upstream.Body, maxLeakBody+1))
+	}
 	if err != nil {
 		failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The request body could not be read.", decision: "block", reason: "unclassifiable_request", binding: binding}
 		return &processedResponse{event: makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
@@ -416,9 +457,13 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 		scan.leaveUnread(leakReasonUndecodable, leakScopeRequest)
 		// The raw bytes are still looked at, so a value sent plainly in a body
 		// the proxy cannot decode is caught.
-		guard.readFixed(scan, leakPartOpaque, body, "body")
+		part := leakPartOpaque
+		if match.inPlace() {
+			part = leakPartOpaqueKept
+		}
+		guard.readFixed(scan, part, body, "body")
 		original = body
-	} else if kind == leakBodyProtobuf {
+	} else if kind.inPlace() {
 		rewritten = guard.readProtobuf(scan, decoded, "body")
 	} else {
 		rewritten = guard.readPayload(scan, decoded, "body")
@@ -426,6 +471,93 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 	stopped := p.finishLeakScan(req, upstream, binding, host, port, scan, rewritten, encoding, started)
 	p.observeRead(scan, host, req.URL.EscapedPath(), original, rewritten, stopped != nil, began)
 	return stopped
+}
+
+// leakBodyIdle is how long a unary body with no stated length is waited for
+// without a byte of it coming before it is sent on unread.
+var leakBodyIdle = 30 * time.Second
+
+// bodyPump reads a body that has no deadline of its own, so that waiting for
+// it can stop. It is then the rest of the body, for whoever sends it on.
+type bodyPump struct {
+	ctx     context.Context
+	chunks  chan []byte
+	pending []byte
+	err     error
+}
+
+func newBodyPump(ctx context.Context, source io.Reader) *bodyPump {
+	pump := &bodyPump{ctx: ctx, chunks: make(chan []byte)}
+	go func() {
+		defer close(pump.chunks)
+		for {
+			chunk := make([]byte, 32<<10)
+			n, err := source.Read(chunk)
+			if n > 0 {
+				select {
+				case pump.chunks <- chunk[:n]:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				// Read once the channel is closed, which is after this.
+				pump.err = err
+				return
+			}
+		}
+	}()
+	return pump
+}
+
+// collect gathers the body until it ends, holds more than limit bytes, or
+// no byte of it came for idle. ended says it is whole.
+func (p *bodyPump) collect(limit int, idle time.Duration) (body []byte, ended bool, err error) {
+	timer := time.NewTimer(idle)
+	defer timer.Stop()
+	for len(body) <= limit {
+		select {
+		case chunk, open := <-p.chunks:
+			if !open {
+				if p.err == io.EOF {
+					return body, true, nil
+				}
+				return body, false, p.failure()
+			}
+			body = append(body, chunk...)
+			timer.Reset(idle)
+		case <-timer.C:
+			return body, false, nil
+		case <-p.ctx.Done():
+			return body, false, p.ctx.Err()
+		}
+	}
+	return body, false, nil
+}
+
+// failure is why the body stopped short of its end.
+func (p *bodyPump) failure() error {
+	if p.err != nil {
+		return p.err
+	}
+	return p.ctx.Err()
+}
+
+func (p *bodyPump) Read(buffer []byte) (int, error) {
+	for len(p.pending) == 0 {
+		select {
+		case chunk, open := <-p.chunks:
+			if !open {
+				return 0, p.failure()
+			}
+			p.pending = chunk
+		case <-p.ctx.Done():
+			return 0, p.ctx.Err()
+		}
+	}
+	n := copy(buffer, p.pending)
+	p.pending = p.pending[n:]
+	return n, nil
 }
 
 // finishLeakScan acts on what a request's inspection found: it refuses the

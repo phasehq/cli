@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -17,7 +18,8 @@ import (
 // that stays open: a sequence of envelopes, each one flag byte, the payload's
 // length in four bytes, big-endian, and the payload, which is one message.
 // The agent's own stream is such a body over HTTP/2: the client keeps sending
-// while the service answers.
+// while the service answers. gRPC and gRPC-Web frame their messages the same
+// way, and name the encoding of a compressed one in Grpc-Encoding.
 //
 // Protobuf writes the length of every string and nested message it holds, so
 // nothing in a message may change length. What is found in one is therefore
@@ -32,8 +34,12 @@ const (
 	// envelope that ends a stream; it holds no message.
 	connectCompressed = 0x01
 	connectEndStream  = 0x02
+	// envelopeFlags are the flag bits Connect, gRPC and gRPC-Web use between
+	// them. A first byte with any other bit set begins no envelope.
+	envelopeFlags = connectCompressed | connectEndStream | 0x80
 
 	connectEncodingHeader = "Connect-Content-Encoding"
+	grpcEncodingHeader    = "Grpc-Encoding"
 )
 
 // leakBody is what a request's Content-Type says its body is, on a host whose
@@ -41,15 +47,27 @@ const (
 type leakBody int
 
 const (
-	// leakBodyAsItReads is every other body: JSON, other text or neither, as
-	// its bytes say.
+	// leakBodyAsItReads is a body of a host that does not speak Connect: JSON,
+	// other text or neither, as its bytes say.
 	leakBodyAsItReads leakBody = iota
-	// leakBodyProtobuf is one protobuf message.
+	// leakBodyText is a body its type calls text or JSON. It is read as text
+	// when its bytes are text, and may then change length.
+	leakBodyText
+	// leakBodyBinary is one protobuf message under another name. Nothing in
+	// it may change length.
+	leakBodyBinary
+	// leakBodyUnframed is bytes whose type says nothing of what they are or
+	// whether they end: overwritten in place when their length is stated.
+	leakBodyUnframed
+	// leakBodyProtobuf is one protobuf message of a Connect call.
 	leakBodyProtobuf
-	// leakBodyProtobufStream and leakBodyJSONStream are streams of envelopes
-	// holding protobuf messages, or JSON ones.
+	// leakBodyProtobufStream and leakBodyJSONStream are Connect streams of
+	// envelopes holding protobuf messages, or JSON ones.
 	leakBodyProtobufStream
 	leakBodyJSONStream
+	// leakBodyGRPC and leakBodyGRPCJSON are the same of gRPC and gRPC-Web.
+	leakBodyGRPC
+	leakBodyGRPCJSON
 )
 
 // body says what a request's body is by its Content-Type. Only a host whose
@@ -61,32 +79,87 @@ func (m *leakHostMatch) body(header http.Header) leakBody {
 	}
 	// The type alone: "application/connect+proto; charset=utf-8" is the same.
 	mediaType, _, _ := strings.Cut(header.Get("Content-Type"), ";")
-	switch strings.ToLower(strings.TrimSpace(mediaType)) {
-	case "application/proto":
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	isJSON := mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+	switch {
+	case mediaType == "application/proto":
 		return leakBodyProtobuf
-	case "application/connect+proto":
+	case mediaType == "application/connect+proto":
 		return leakBodyProtobufStream
-	case "application/connect+json":
+	case mediaType == "application/connect+json":
 		return leakBodyJSONStream
+	case strings.HasPrefix(mediaType, "application/grpc-web-text"):
+		// Envelopes in base64: no envelope shows.
+		return leakBodyUnframed
+	case isGRPCType(mediaType) && isJSON:
+		return leakBodyGRPCJSON
+	case isGRPCType(mediaType):
+		return leakBodyGRPC
+	case isJSON, strings.HasPrefix(mediaType, "text/"), mediaType == "application/x-ndjson", mediaType == "application/x-www-form-urlencoded":
+		return leakBodyText
+	case mediaType == "application/x-protobuf", mediaType == "application/protobuf":
+		return leakBodyBinary
 	}
-	return leakBodyAsItReads
+	// Protobuf whose bytes happen to be text would be rewritten as text, so
+	// only a type that says text is read as text.
+	return leakBodyUnframed
+}
+
+// isGRPCType reports whether a media type is gRPC or gRPC-Web, with or
+// without the name of what its messages are encoded as.
+func isGRPCType(mediaType string) bool {
+	for _, name := range []string{"application/grpc", "application/grpc-web"} {
+		if mediaType == name || strings.HasPrefix(mediaType, name+"+") {
+			return true
+		}
+	}
+	return false
 }
 
 // conversation reports whether a body of this kind carries conversation
 // content whatever the path: on a host that speaks Connect, every protobuf
 // call does.
 func (b leakBody) conversation() bool {
-	return b == leakBodyProtobuf || b == leakBodyProtobufStream
+	return b == leakBodyProtobuf || b == leakBodyProtobufStream || b == leakBodyGRPC
 }
 
+// stream reports whether the body is a sequence of envelopes, read one at a
+// time as they are sent.
 func (b leakBody) stream() bool {
-	return b == leakBodyProtobufStream || b == leakBodyJSONStream
+	return b == leakBodyProtobufStream || b == leakBodyJSONStream || b == leakBodyGRPC || b == leakBodyGRPCJSON
+}
+
+// inPlace reports whether the whole body is overwritten where a value sits.
+func (b leakBody) inPlace() bool {
+	return b == leakBodyProtobuf || b == leakBodyBinary || b == leakBodyUnframed
+}
+
+// unary reports whether a body of this kind is one call's, whose end always
+// comes, so that it can be waited for when its length is not stated.
+func (b leakBody) unary() bool {
+	return b != leakBodyUnframed && !b.stream()
+}
+
+// encodingHeader names the header that says what compressed envelopes of
+// such a stream are compressed with.
+func (b leakBody) encodingHeader() string {
+	if b == leakBodyGRPC || b == leakBodyGRPCJSON {
+		return grpcEncodingHeader
+	}
+	return connectEncodingHeader
+}
+
+// inPlace reports whether bytes of this host that are not text are
+// overwritten where a value sits, never refused.
+func (m *leakHostMatch) inPlace() bool {
+	return m != nil && m.rule.Connect
 }
 
 // errLeakMessageBlocked ends a stream one of whose messages must not go out.
 var errLeakMessageBlocked = errors.New("a message of the stream holds a secret value that cannot be removed")
 
-// connectStream is a Connect stream's request body on its way to the service.
+// connectStream is the request body of a Connect or gRPC stream on its way to
+// the service.
 // It hands on one envelope at a time, as each arrives, and holds no more than
 // that one: the client goes on sending while the service answers, so the body
 // has no end to wait for. A message is read like a body of the same bytes;
@@ -156,13 +229,23 @@ func (s *connectStream) Read(p []byte) (int, error) {
 func (s *connectStream) next() {
 	prefix := make([]byte, connectEnvelopePrefix)
 	if n, err := readWhole(s.source, prefix); err != nil {
+		if n > 0 {
+			s.unread(leakReasonMessageTruncated, leakScopeMessage, nil)
+		}
 		s.ready, s.err = keep(prefix[:n]), err
+		return
+	}
+	if prefix[0]&^envelopeFlags != 0 {
+		// No envelope, so no length to wait for: a body that is not what its
+		// type says would be held for bytes that never come.
+		s.unread(leakReasonNotEnvelopes, leakScopeRequest, nil)
+		s.ready, s.passing = [][]byte{prefix}, math.MaxInt64
 		return
 	}
 	length := int64(binary.BigEndian.Uint32(prefix[1:]))
 	if length > maxLeakBody {
 		// Too long to hold: it goes on as it comes, unread.
-		s.unread(leakReasonOverLimit)
+		s.unread(leakReasonOverLimit, leakScopeMessage, nil)
 		s.ready, s.passing = [][]byte{prefix}, length
 		return
 	}
@@ -173,6 +256,7 @@ func (s *connectStream) next() {
 	for filled := 0; ; payload = append(payload, make([]byte, min(length-int64(filled), max(step, int64(filled))))...) {
 		n, err := readWhole(s.source, payload[filled:])
 		if filled += n; err != nil {
+			s.unread(leakReasonMessageTruncated, leakScopeMessage, nil)
 			s.ready, s.err = keep(prefix, payload[:filled]), err
 			return
 		}
@@ -212,9 +296,13 @@ func keep(parts ...[]byte) [][]byte {
 func (s *connectStream) envelope(prefix, payload []byte) {
 	s.ready = [][]byte{prefix, payload}
 	flags := prefix[0]
-	// The envelope that ends a stream holds no message, and an empty one
-	// nothing at all.
-	if flags&connectEndStream != 0 || len(payload) == 0 {
+	if len(payload) == 0 {
+		return
+	}
+	if flags&connectEndStream != 0 {
+		// Only a service ends a stream this way. What a client sends so is no
+		// message to rewrite: it is looked at for the report alone.
+		s.unread(leakReasonMessageFlags, leakScopeMessage, payload)
 		return
 	}
 	guard := s.proxy.leak
@@ -223,12 +311,12 @@ func (s *connectStream) envelope(prefix, payload []byte) {
 	compressed := flags&connectCompressed != 0
 	if compressed {
 		if encoding, known := leakEncoding(s.encoding); !known || encoding != "gzip" {
-			s.unread(leakReasonMessageEncoding)
+			s.unread(leakReasonMessageEncoding, leakScopeMessage, nil)
 			return
 		}
 		decoded, _, err := decodeLeakBody(payload, "gzip")
 		if err != nil {
-			s.unread(leakReasonMessageUndecodable)
+			s.unread(leakReasonMessageUndecodable, leakScopeMessage, nil)
 			return
 		}
 		message = decoded
@@ -271,10 +359,14 @@ func (s *connectStream) envelope(prefix, payload []byte) {
 	s.proxy.emitLeakEvent(s.binding, s.request, s.host, s.port, scan, 0, time.Now())
 }
 
-// unread reports a message that goes on as it came without being read.
-func (s *connectStream) unread(reason string) {
+// unread reports what goes on as it came without being read: one message, or
+// the rest of the request. found is looked at for the report alone.
+func (s *connectStream) unread(reason, scope string, found []byte) {
 	scan := s.proxy.leak.newScan(s.match, s.protocol, s.opts)
-	scan.leaveUnread(reason, leakScopeMessage)
+	if len(found) > 0 {
+		scan.addFixed(s.proxy.leak.index.FindWith(found, scan.opts), "message", false)
+	}
+	scan.leaveUnread(reason, scope)
 	s.proxy.emitLeakEvent(s.binding, s.request, s.host, s.port, scan, 0, time.Now())
 	s.proxy.observeUnit(scan, s.host, s.request.URL.EscapedPath(), nil, nil, false, time.Now(), true)
 }
@@ -298,8 +390,8 @@ func (p *httpProxy) readConnectStream(req, upstream *http.Request, binding *bind
 	}
 	stream := &connectStream{
 		proxy: p, source: upstream.Body, request: req, binding: binding, host: host, port: port,
-		match: scan.match, opts: scan.opts, protocol: scan.protocol, json: body == leakBodyJSONStream,
-		encoding: upstream.Header.Get(connectEncodingHeader),
+		match: scan.match, opts: scan.opts, protocol: scan.protocol, json: body == leakBodyJSONStream || body == leakBodyGRPCJSON,
+		encoding: upstream.Header.Get(body.encodingHeader()),
 	}
 	if upstream.ContentLength > 0 && upstream.ContentLength <= maxLeakBody {
 		// A body whose length the client stated is whole before any answer:

@@ -900,7 +900,13 @@ func cloneUpstreamRequest(req *http.Request) (*http.Request, error) {
 	if req.ProtoMajor == 2 {
 		clone.Trailer = req.Trailer
 	}
+	// TE: trailers is how an HTTP/2 client says it takes trailers, and gRPC
+	// services refuse a call without it.
+	trailers := req.ProtoMajor == 2 && headerContainsToken(req.Header, "Te", "trailers")
 	removeHopHeaders(clone.Header)
+	if trailers {
+		clone.Header.Set("Te", "trailers")
+	}
 	clone.Header.Del("Proxy-Authorization")
 	// The proxy settles 100-continue with its own client (net/http server on
 	// the explicit path, expectContinueBody inside a tunnel). Forwarding Expect

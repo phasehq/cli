@@ -34,9 +34,11 @@ const maxTunnelStreams = 100
 // the connection ends. It returns when the last of them has.
 func (p *httpProxy) serveHTTP2(ctx context.Context, client *tls.Conn, host string, port int, authentication tunnelAuthentication) {
 	streams := &streamCount{idle: make(chan struct{})}
-	// The tunnel's context ends with the session or the proxy: the connection
-	// goes with it, and that is what ServeConn waits for.
-	defer context.AfterFunc(ctx, func() { _ = client.Close() })()
+	// The connection goes when the tunnel's context ends, and when the session
+	// is revoked or expires, as a raw tunnel's does: ServeConn waits for that.
+	stop := make(chan struct{})
+	defer close(stop)
+	go p.watchWebSocket(ctx, client, client, p.state.availability, stop)
 	server := &http2.Server{MaxConcurrentStreams: maxTunnelStreams}
 	server.ServeConn(client, &http2.ServeConnOpts{
 		Context: ctx,
