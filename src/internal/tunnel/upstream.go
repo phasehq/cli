@@ -3,11 +3,11 @@ package tunnel
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -19,36 +19,105 @@ import (
 // against the network's own DNS servers, and every socket is pinned to the physical
 // interface.
 type Upstream struct {
+	// Servers are the network's own DNS servers, in the order the system asks them.
+	// One may name its port; the rest are asked on port 53.
 	Servers []string
+	// Scoped are the servers the system asks about one domain and the names under it,
+	// as another VPN's split DNS sets up. A name under such a domain is asked of them
+	// before the others.
+	Scoped map[string][]string
+	// Fallback are asked only when the network has no server of its own, or none of
+	// them answers. A name the network's servers say doesn't exist is never taken
+	// to them: they know nothing of a private name, or know another address for it.
+	Fallback []string
 	// Override sends an address somewhere else. Tests use it to reach stand-ins.
 	Override map[string]string
 	// OnlyOverrides refuses every address Override doesn't hold, and asks no DNS
 	// server anything. A test that uses real host names sets it, so that nothing it
 	// does can leave the machine.
 	OnlyOverrides bool
-	next          atomic.Uint32
+
+	// wait replaces serverWait. Tests set it.
+	wait time.Duration
 }
+
+// publicResolvers answer when the network has no DNS server that does.
+var publicResolvers = []string{"1.1.1.1", "8.8.8.8"}
+
+// serverWait is how long one DNS server has to answer before the next is asked.
+const serverWait = 3 * time.Second
 
 // NewUpstream reads the network's DNS servers, ignoring the tunnel's own.
 func NewUpstream() *Upstream {
-	servers := []string{}
-	for _, server := range upstreamNameservers() {
-		if server != DNSAddress.String() {
-			servers = append(servers, server)
-		}
-	}
-	return &Upstream{Servers: append(servers, "1.1.1.1", "8.8.8.8")}
+	servers, scoped := upstreamResolvers()
+	return &Upstream{Servers: servers, Scoped: scoped, Fallback: publicResolvers}
 }
 
-// Resolver asks the network's DNS servers directly, moving to the next on each attempt.
-func (u *Upstream) Resolver() *net.Resolver {
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			server := u.Servers[int(u.next.Add(1)-1)%len(u.Servers)]
-			return Physical.Dialer(3*time.Second).DialContext(ctx, "udp", net.JoinHostPort(server, "53"))
-		},
+// serversFor lists the servers to ask about a name, in order: those the system keeps
+// for the name's domain, then the network's own, then the fallback.
+func (u *Upstream) serversFor(name string) []string {
+	name = strings.TrimSuffix(strings.ToLower(name), ".")
+	domain := ""
+	for scoped := range u.Scoped {
+		if (name == scoped || strings.HasSuffix(name, "."+scoped)) && len(scoped) > len(domain) {
+			domain = scoped
+		}
 	}
+	var ordered []string
+	seen := map[string]bool{}
+	for _, servers := range [][]string{u.Scoped[domain], u.Servers, u.Fallback} {
+		for _, server := range servers {
+			if !seen[server] {
+				seen[server] = true
+				ordered = append(ordered, server)
+			}
+		}
+	}
+	return ordered
+}
+
+// serverAddress is where a DNS server is asked: port 53, unless it names its own.
+func serverAddress(server string) string {
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return net.JoinHostPort(server, "53")
+}
+
+// lookup resolves a name against the network's DNS servers, each in its turn, and
+// the next only when one doesn't answer. An answer that the name doesn't exist is an
+// answer, and ends it.
+func (u *Upstream) lookup(ctx context.Context, host string) ([]net.IP, error) {
+	name := strings.TrimSuffix(host, ".") + "."
+	wait := u.wait
+	if wait <= 0 {
+		wait = serverWait
+	}
+	lastErr := fmt.Errorf("there's no DNS server to ask")
+	for _, server := range u.serversFor(name) {
+		resolver := &net.Resolver{
+			PreferGo: true,
+			// Whichever server the resolver means to ask, this one is asked.
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return Physical.Dialer(wait).DialContext(ctx, network, serverAddress(server))
+			},
+		}
+		attempt, cancel := context.WithTimeout(ctx, wait)
+		addresses, err := resolver.LookupIP(attempt, "ip", name)
+		cancel()
+		if err == nil {
+			return addresses, nil
+		}
+		var answer *net.DNSError
+		if errors.As(err, &answer) && answer.IsNotFound {
+			return nil, err
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, lastErr
 }
 
 // DialContext reaches a host by name or address. It's the credential proxy's dialer.
@@ -66,7 +135,7 @@ func (u *Upstream) DialContext(ctx context.Context, network, address string) (ne
 	if net.ParseIP(host) != nil {
 		return dialer.DialContext(ctx, network, address)
 	}
-	addresses, err := u.Resolver().LookupIP(ctx, "ip", strings.TrimSuffix(host, ".")+".")
+	addresses, err := u.lookup(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s: %w", host, err)
 	}
@@ -108,14 +177,15 @@ func (u *Upstream) Transport() *http.Transport {
 	return transport
 }
 
-// Forward asks the network's DNS servers a raw query, for names under a Connection's
-// domain that aren't themselves captured.
-func (u *Upstream) Forward(query []byte) []byte {
+// Forward asks the network's DNS servers a raw query about name, for names under a
+// Connection's domain that aren't themselves captured. The servers are asked as
+// lookup asks them: each in its turn, and the next only when one doesn't answer.
+func (u *Upstream) Forward(name string, query []byte) []byte {
 	if u.OnlyOverrides {
 		return refused(query)
 	}
-	for _, server := range u.Servers {
-		conn, err := Physical.Dialer(2*time.Second).Dial("udp", net.JoinHostPort(server, "53"))
+	for _, server := range u.serversFor(name) {
+		conn, err := Physical.Dialer(2*time.Second).Dial("udp", serverAddress(server))
 		if err != nil {
 			continue
 		}

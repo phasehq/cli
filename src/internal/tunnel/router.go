@@ -241,7 +241,7 @@ func (r *Router) AnswerDNS(query []byte) []byte {
 	}
 	name := strings.TrimSuffix(strings.ToLower(question.Name.String()), ".")
 	if !r.capturedName(name) && !r.readByName(name) {
-		return r.Upstream.Forward(query)
+		return r.Upstream.Forward(name, query)
 	}
 	reply := dnsmessage.Message{
 		Header:    dnsmessage.Header{ID: header.ID, Response: true, RecursionDesired: header.RecursionDesired, RecursionAvailable: true},
