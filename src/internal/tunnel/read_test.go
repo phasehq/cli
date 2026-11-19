@@ -871,7 +871,7 @@ func TestModelHostsAreCapturedByNameOnlyWhenAsked(t *testing.T) {
 	if address, ok := setup.address(modelHost); ok {
 		t.Fatalf("with everything routed in, %s was still given the tunnel address %s", modelHost, address)
 	}
-	if got := setup.router.CapturedDomains(); !reflect.DeepEqual(got, []string{ControlHost}) {
+	if got, _ := setup.router.CapturedDomains(); !reflect.DeepEqual(got, []string{ControlHost}) {
 		t.Fatalf("captured %v", got)
 	}
 	setup.router.Read(setup.reader, true)
@@ -886,7 +886,7 @@ func TestModelHostsAreCapturedByNameOnlyWhenAsked(t *testing.T) {
 		t.Fatalf("cdn.%s was given %s", modelHost, address)
 	}
 	want := []string{otherModelHost, modelHost, ControlHost}
-	if got := setup.router.CapturedDomains(); !reflect.DeepEqual(got, want) {
+	if got, skipped := setup.router.CapturedDomains(); !reflect.DeepEqual(got, want) || skipped != 0 {
 		t.Fatalf("captured %v, want %v", got, want)
 	}
 }

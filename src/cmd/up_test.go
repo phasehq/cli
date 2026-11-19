@@ -105,7 +105,7 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 
 	t.Run("everything", func(t *testing.T) {
 		got := print(capturing(tunnel.FullRoutes), running)
-		want := "🚇 Everything goes through Phase, by utun7, since 15:04.\n" +
+		want := "🚇 Connections opened since 15:04 go through Phase, by utun7.\n" +
 			"   Engine: running as you (pid 4242), leaving by en0.\n" +
 			"   Connections: GitHub\n" +
 			"   Names sent to Phase: api.github.com, phase.invalid\n" +
@@ -119,10 +119,10 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 
 	t.Run("part of the network", func(t *testing.T) {
 		got := print(capturing([]string{"0.0.0.0/7", "192.0.2.0/24"}), running)
-		if !strings.HasPrefix(got, "🚇 Only 0.0.0.0/7, 192.0.2.0/24, and the names sent to Phase, go through it, by utun7, since 15:04. Everything else is untouched.\n") {
+		if !strings.HasPrefix(got, "🚇 Only connections to 0.0.0.0/7, 192.0.2.0/24, and to the names sent to Phase, opened since 15:04 go through it, by utun7. Everything else is untouched.\n") {
 			t.Fatalf("got:\n%s", got)
 		}
-		if strings.Contains(got, "Everything goes through Phase") {
+		if strings.Contains(got, "go through Phase, by") {
 			t.Fatalf("part of the network was reported as all of it:\n%s", got)
 		}
 	})
@@ -133,6 +133,46 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 		got := print(capturing(nil), &missed)
 		if !strings.HasSuffix(got, "   Model flows: 1 read, 0 left unread for other programs, 0 left unread because the program wasn't found in time.\n"+
 			"   5 more went on unread because Phase's proxy couldn't take them.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
+	// What status never says: that everything goes through Phase. A connection that
+	// was open before phase up keeps the path it had.
+	t.Run("nothing it doesn't do", func(t *testing.T) {
+		for _, got := range []string{print(capturing(nil), running), print(capturing([]string{"0.0.0.0/7"}), running)} {
+			if strings.Contains(got, "Everything goes") || strings.Contains(got, "everything goes") {
+				t.Fatalf("got:\n%s", got)
+			}
+		}
+	})
+
+	t.Run("host names that couldn't be sent by name", func(t *testing.T) {
+		odd := *running
+		odd.SkippedNames = 1
+		if got := print(capturing(nil), &odd); !strings.Contains(got, "   Names sent to Phase: api.github.com, phase.invalid\n"+
+			"   1 Connection host has a name a DNS entry can't hold, so it isn't captured by name: only by the name in a TLS hello, where its traffic goes through Phase.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		odd.SkippedNames = 3
+		if got := print(capturing(nil), &odd); !strings.Contains(got, "   3 Connection hosts have names a DNS entry can't hold, so they aren't captured by name: only by the name in a TLS hello, where their traffic goes through Phase.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "DNS entry") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
+	t.Run("what was refused", func(t *testing.T) {
+		refused := *running
+		refused.Counts = map[string]int{"tcp": 4, "loop_refused": 9, "control_refused": 2}
+		got := print(capturing(nil), &refused)
+		if !strings.Contains(got, "   Flows: 0 to Connection hosts, 4 passed through unread.\n"+
+			"   9 were refused because their route led back into Phase: another VPN's range, while that VPN is down.\n"+
+			"   2 requests to phase.invalid were refused because they named another host.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "refused") {
 			t.Fatalf("got:\n%s", got)
 		}
 	})
@@ -157,4 +197,52 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 			t.Fatalf("got:\n%s", got)
 		}
 	})
+}
+
+// phase up says what it has done, and no more: new connections go through Phase, and
+// the ones that were open stay as they are. It doesn't say that everything does.
+func TestUpSaysWhatIsTrue(t *testing.T) {
+	helperStatus := control.Status{Protocol: control.ProtocolVersion, Device: "utun7", Attached: true, Capturing: true}
+	engineStatus := engine.Status{
+		Ready: true, Connections: []string{"GitHub", "Postgres"},
+		ReadTools: map[string][]string{"codex": {"api.openai.com"}, "claude": {"api.anthropic.com"}, "cursor": nil},
+	}
+	print := func(routes []string, engineStatus engine.Status) string {
+		var out bytes.Buffer
+		status := helperStatus
+		status.Routes = routes
+		printUpResult(&out, status, engineStatus)
+		return out.String()
+	}
+	next := "\nNext steps\n" +
+		"   phase status   see what's going through Phase\n" +
+		"   phase down     stop\n"
+
+	everything := print(tunnel.FullRoutes, engineStatus)
+	want := "   ✅ New connections on this Mac now go through Phase, by utun7.\n" +
+		"   Connections that were already open stay as they are.\n" +
+		"   Connections: GitHub, Postgres\n" +
+		"   Model traffic is read for claude, codex, each for its own processes only.\n" +
+		"   Your local network and other VPNs, such as Tailscale, keep their own routes.\n" +
+		"   If the engine stops, Phase steps aside and your network works as it did before.\n" + next
+	if everything != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", everything, want)
+	}
+	if again := print(nil, engineStatus); again != everything {
+		t.Fatalf("no routes means everything:\n%s", again)
+	}
+
+	part := print([]string{"0.0.0.0/7"}, engine.Status{Ready: true})
+	want = "   ✅ New connections to 0.0.0.0/7, and to the names sent to Phase, now go through it, by utun7. Everything else is untouched.\n" +
+		"   Connections that were already open stay as they are.\n" +
+		"   Your local network and other VPNs, such as Tailscale, keep their own routes.\n" +
+		"   If the engine stops, Phase steps aside and your network works as it did before.\n" + next
+	if part != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", part, want)
+	}
+	for _, said := range []string{everything, part} {
+		if strings.Contains(said, "Everything on this Mac") || strings.Contains(said, "verything goes") || strings.Contains(said, "all traffic") {
+			t.Fatalf("it claims what the tunnel doesn't do:\n%s", said)
+		}
+	}
 }

@@ -710,6 +710,28 @@ func TestEngineEndToEnd(t *testing.T) {
 		}
 	})
 
+	// A browser lets a page read what the page's own origin answers. A page whose
+	// name was pointed at the control address must get nothing through it.
+	t.Run("the control API answers only as its own name", func(t *testing.T) {
+		rebound := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return program.DialContext(ctx, network, tunnel.ControlHost+":80")
+			},
+			DisableKeepAlives: true,
+		}}
+		for _, page := range []string{"http://rebound.example.test/v1/status", "http://rebound.example.test/v1/connections/api/environment"} {
+			response, err := rebound.Get(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode != http.StatusForbidden || strings.Contains(string(body), `"api"`) || strings.Contains(string(body), decoy) {
+				t.Fatalf("%s: %d: %.200s", page, response.StatusCode, body)
+			}
+		}
+	})
+
 	// Every flow handed to the proxy so far was a Connection's, and the proxy was told
 	// of each that it isn't to be read.
 	t.Run("the proxy is told of every flow it is handed", func(t *testing.T) {
@@ -835,6 +857,37 @@ func TestEngineCapturesModelHostsByNameWhenItCapturesLess(t *testing.T) {
 			t.Fatalf("status: %+v", status)
 		}
 	})
+}
+
+// One host whose name a DNS entry can't hold must not keep the engine out of the
+// tunnel: the helper refuses a whole attach over such a name. The name is left out of
+// what the helper is sent, and status counts it.
+func TestAHostNameADNSEntryCannotHoldIsLeftOutAndCounted(t *testing.T) {
+	const odd, plain = "under_score.example.test", "localhost"
+	e := startEngineWith(t, engineSetup{session: func() map[string]any {
+		config := testSessionPayload()
+		connection := addedConnectionPayload()
+		connection["grantId"], connection["connectionId"], connection["connectionName"] = "grant-odd", "odd", "Odd API"
+		connection["credentialId"], connection["credentialName"] = "odd", "Odd API"
+		connection["hosts"] = []any{
+			map[string]any{"match": "exact", "value": odd, "port": 443},
+			map[string]any{"match": "exact", "value": plain, "port": 8443},
+		}
+		config["connections"] = append(config["connections"].([]any), connection)
+		return config
+	}})
+	for _, domain := range e.attach.Domains {
+		if !tunnel.CapturableDomain(domain) {
+			t.Errorf("the helper was sent %q, which it refuses a whole attach over", domain)
+		}
+	}
+	if !contains(e.attach.Domains, apiHost) || contains(e.attach.Domains, odd) || contains(e.attach.Domains, plain) {
+		t.Fatalf("the helper was sent %v", e.attach.Domains)
+	}
+	status := e.status(t, func(status Status) bool { return status.Ready && status.HelperLinked })
+	if status.SkippedNames != 2 || !contains(status.Connections, "Odd API") || contains(status.Domains, odd) {
+		t.Fatalf("status: %+v", status)
+	}
 }
 
 func contains(values []string, want string) bool {

@@ -16,7 +16,7 @@ type unsupported struct{}
 func (unsupported) CheckRange() error                            { return ErrUnsupported }
 func (unsupported) CreateDevice(int) (tun.Device, string, error) { return nil, "", ErrUnsupported }
 func (unsupported) Configure(string) error                       { return ErrUnsupported }
-func (unsupported) AddRoutes(string, []string) error             { return ErrUnsupported }
+func (unsupported) AddRoutes(string, []string) ([]string, error) { return nil, ErrUnsupported }
 func (unsupported) RemoveRoutes(string, []string)                {}
 func (unsupported) InstallResolvers([]string) error              { return ErrUnsupported }
 func (unsupported) RemoveResolvers()                             {}

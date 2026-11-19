@@ -26,3 +26,23 @@ func peerAllowed(conn net.Conn, uid int) bool {
 	})
 	return allowed
 }
+
+// peerPID is the process on the other end of the socket, or 0 when the system can't
+// say. It's for telling the user what is attached, and decides nothing here.
+func peerPID(conn net.Conn) int {
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return 0
+	}
+	raw, err := unixConn.SyscallConn()
+	if err != nil {
+		return 0
+	}
+	pid := 0
+	_ = raw.Control(func(fd uintptr) {
+		if found, err := unix.GetsockoptInt(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERPID); err == nil && found > 0 {
+			pid = found
+		}
+	})
+	return pid
+}

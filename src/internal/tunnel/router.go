@@ -49,20 +49,29 @@ func RulesFromConnections(connections []agentapi.Connection) []Rule {
 // Domains are the names the helper sends to the tunnel's resolver. Each covers its
 // subdomains, and anything under them that isn't a Connection host is answered from
 // the network's own DNS servers.
-func Domains(rules []Rule) []string {
-	seen := map[string]bool{ControlHost: true}
+//
+// The helper writes a DNS entry for each name, and refuses a whole attach over one it
+// can't write an entry for. So a host whose name isn't one a DNS entry can hold is
+// left out, and skipped counts those: such a host is still caught by the name in a
+// TLS hello when its traffic reaches the tunnel.
+func Domains(rules []Rule) (domains []string, skipped int) {
+	seen, left := map[string]bool{ControlHost: true}, map[string]bool{}
 	for _, rule := range rules {
-		value := strings.Trim(strings.ToLower(rule.Host.Value), ".")
-		if value != "" && strings.Contains(value, ".") {
+		value := strings.Trim(strings.ToLower(strings.TrimSpace(rule.Host.Value)), ".")
+		switch {
+		case value == "":
+		case CapturableDomain(value):
 			seen[value] = true
+		default:
+			left[value] = true
 		}
 	}
-	domains := make([]string, 0, len(seen))
+	domains = make([]string, 0, len(seen))
 	for domain := range seen {
 		domains = append(domains, domain)
 	}
 	sort.Strings(domains)
-	return domains
+	return domains, len(left)
 }
 
 // Traffic counts what passed through, for status.
@@ -94,6 +103,10 @@ type Router struct {
 	owner     OwnerFunc
 	ownerWait time.Duration
 	lookups   chan struct{}
+
+	// route says where a socket nothing pins would leave from. See loops.
+	route    RouteFunc
+	lastLoop time.Time
 }
 
 // NewRouter starts with no Connections. Until Update, Connection hosts aren't captured.
@@ -105,6 +118,7 @@ func NewRouter(upstream *Upstream, logf func(string, ...any)) *Router {
 	return &Router{
 		Upstream: upstream, names: newNameTable(namePool), counts: map[string]int{}, logf: logf,
 		owner: owner.Lookup, ownerWait: ownerWait, lookups: make(chan struct{}, ownerLookups),
+		route: unpinnedSource,
 	}
 }
 
@@ -134,13 +148,14 @@ func (r *Router) SetRules(rules []Rule) {
 
 // CapturedDomains are the names the helper sends to the tunnel's resolver: the
 // Connections' hosts and, when model hosts are captured by name, those as well.
-func (r *Router) CapturedDomains() []string {
+// skipped counts the Connections' hosts whose names couldn't be sent.
+func (r *Router) CapturedDomains() (domains []string, skipped int) {
 	r.mu.RLock()
 	rules, reader, byName := append([]Rule(nil), r.rules...), r.reader, r.readNames
 	r.mu.RUnlock()
-	domains := Domains(rules)
+	domains, skipped = Domains(rules)
 	if reader == nil || !byName {
-		return domains
+		return domains, skipped
 	}
 	seen := map[string]bool{}
 	for _, domain := range domains {
@@ -152,7 +167,7 @@ func (r *Router) CapturedDomains() []string {
 		}
 	}
 	sort.Strings(domains)
-	return domains
+	return domains, skipped
 }
 
 // Counts reports how many flows took each route.
@@ -253,6 +268,9 @@ func (r *Router) Prepare(flow Flow) (any, bool) {
 		_, known := r.names.name(dest)
 		return nil, known
 	}
+	if r.loops(dest) {
+		return nil, false
+	}
 	upstream, err := r.Upstream.DialContext(context.Background(), "tcp", flow.Dest.String())
 	if err != nil {
 		r.count("tcp_failed")
@@ -298,7 +316,7 @@ func (r *Router) HandleTCP(client net.Conn, flow Flow) {
 	switch protocol {
 	case "control":
 		r.count("control")
-		r.serveControl(client)
+		r.serveControl(client, port)
 	case "postgres":
 		r.count("postgres")
 		r.mu.RLock()
@@ -431,7 +449,7 @@ func (r *Router) relayUnread(client, upstream net.Conn, head []byte) {
 // answer, so a QUIC program falls back to TCP, where the proxy can see it.
 func (r *Router) HandleUDP(client net.Conn, flow Flow) {
 	defer client.Close()
-	if TunnelPrefix.Contains(flow.Dest.Addr()) {
+	if TunnelPrefix.Contains(flow.Dest.Addr()) || r.loops(flow.Dest.Addr()) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -454,10 +472,57 @@ func (r *Router) HandleUDP(client net.Conn, flow Flow) {
 
 // Echo pings the real destination. A tunnel address gets no answer.
 func (r *Router) Echo(dest netip.Addr, sequence uint16, payload []byte) bool {
-	if TunnelPrefix.Contains(dest) {
+	if TunnelPrefix.Contains(dest) || r.loops(dest) {
 		return false
 	}
 	return PingOnce(dest, sequence, payload)
+}
+
+// RouteFunc reports the address a socket of this process to dest would leave from
+// when nothing pins it to an interface: an address of the interface its route goes
+// by. unpinnedSource is the one used outside tests.
+type RouteFunc func(dest netip.Addr) (source netip.Addr, err error)
+
+// FindRoutesWith replaces how a destination's route is found. Tests use it.
+func (r *Router) FindRoutesWith(route RouteFunc) {
+	r.mu.Lock()
+	r.route = route
+	r.mu.Unlock()
+}
+
+// loops reports whether reaching dest from here would only bring it back, and counts
+// it when so.
+//
+// Nearly every socket the engine opens is pinned to the physical interface, and can't
+// come back. The ranges of another VPN are left to that VPN's own routes. When the
+// VPN is down those routes are gone, the range falls under the routes that capture
+// everything, and what the engine sends there re-enters the tunnel to be sent again:
+// TCP until every place for a connection that is still opening is taken, UDP and
+// pings for as long as they are sent. So a destination that is left to its route, and
+// whose route leads into the tunnel, is refused.
+func (r *Router) loops(dest netip.Addr) bool {
+	if !leftToItsRoute(dest) {
+		return false
+	}
+	r.mu.RLock()
+	route := r.route
+	r.mu.RUnlock()
+	// With no route at all there is nothing to come back by.
+	source, err := route(dest)
+	if err != nil || !ownAddress(source) {
+		return false
+	}
+	r.mu.Lock()
+	r.counts["loop_refused"]++
+	quiet := time.Since(r.lastLoop) < 5*time.Second
+	if !quiet {
+		r.lastLoop = time.Now()
+	}
+	r.mu.Unlock()
+	if !quiet {
+		r.logf("refused %s: its route leads back into Phase, as it does while the VPN it belongs to is down", dest)
+	}
+	return true
 }
 
 // connect opens a CONNECT tunnel through the proxy, as a program with proxy settings
@@ -521,8 +586,14 @@ func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn,
 	return &bufferedConn{Conn: conn, reader: buffered, closed: closed}, noted, nil
 }
 
-// serveControl makes http://phase.invalid work with no proxy settings.
-func (r *Router) serveControl(client net.Conn) {
+// serveControl makes http://phase.invalid work with no proxy settings. port is the
+// one the program connected to.
+//
+// It answers only for its own name. The proxy's password is presented here on the
+// program's behalf, and a browser lets a page read whatever its own origin answers:
+// a page whose name was pointed at this address would otherwise read a Connection's
+// environment as if it were the page's own.
+func (r *Router) serveControl(client net.Conn, port int) {
 	r.mu.RLock()
 	proxyURL := r.proxyURL
 	r.mu.RUnlock()
@@ -531,16 +602,24 @@ func (r *Router) serveControl(client net.Conn) {
 	}
 	// The proxy's address carries its password, which the transport presents.
 	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true}
+	forward := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.Out.URL.Scheme = "http"
+			request.Out.URL.Host = ControlHost
+			request.Out.Host = ControlHost
+		},
+	}
 	listener := newSingleConnListener(client)
 	server := &http.Server{
-		Handler: &httputil.ReverseProxy{
-			Transport: transport,
-			Rewrite: func(request *httputil.ProxyRequest) {
-				request.Out.URL.Scheme = "http"
-				request.Out.URL.Host = ControlHost
-				request.Out.Host = ControlHost
-			},
-		},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if !controlAuthority(request.Host, port) {
+				r.count("control_refused")
+				http.Error(w, "This address answers only as "+ControlHost+".", http.StatusForbidden)
+				return
+			}
+			forward.ServeHTTP(w, request)
+		}),
 		ReadHeaderTimeout: 30 * time.Second,
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed {
@@ -550,6 +629,19 @@ func (r *Router) serveControl(client net.Conn) {
 	}
 	_ = server.Serve(listener)
 	<-listener.closed
+}
+
+// controlAuthority reports whether a request names the control host itself: the name
+// alone, or the name with the port the program connected to.
+func controlAuthority(authority string, port int) bool {
+	name := authority
+	if host, named, err := net.SplitHostPort(authority); err == nil {
+		if named != strconv.Itoa(port) {
+			return false
+		}
+		name = host
+	}
+	return strings.EqualFold(strings.TrimSuffix(name, "."), ControlHost)
 }
 
 // bufferedConn keeps bytes the CONNECT reader already buffered, and says when the

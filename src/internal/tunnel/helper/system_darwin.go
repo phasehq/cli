@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
+	"golang.org/x/net/route"
+	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/phasehq/cli/internal/tunnel"
@@ -35,17 +38,16 @@ func run(steps ...[]string) error {
 	return nil
 }
 
+// CheckRange reads the routing table of both families, and refuses when a route in
+// it uses any of the ranges Phase uses for itself: the whole of the tunnel's range,
+// the pool of addresses for Connection hosts included, and its IPv6 address.
 func (Darwin) CheckRange() error {
-	output, err := exec.Command("/usr/sbin/netstat", "-rn", "-f", "inet").Output()
+	output, err := exec.Command("/usr/sbin/netstat", "-rn").Output()
 	if err != nil {
 		return nil
 	}
-	prefix := strings.Join(strings.Split(tunnel.TunnelPrefix.Addr().String(), ".")[:3], ".")
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 0 && strings.HasPrefix(fields[0], prefix) {
-			return fmt.Errorf("%s is already routed (%s): another VPN or container network is using it", tunnel.TunnelPrefix, strings.Join(fields, " "))
-		}
+	if used, line, found := rangeConflict(string(output)); found {
+		return fmt.Errorf("%s, which Phase uses, is already routed (%s): another VPN or container network is using it", used, line)
 	}
 	return nil
 }
@@ -73,25 +75,99 @@ func (Darwin) Configure(device string) error {
 	)
 }
 
-func familyFlag(prefix string) string {
-	if strings.Contains(prefix, ":") {
-		return "-inet6"
-	}
-	return "-inet"
+// darwinRoutes changes this machine's routes, and reads its routing table to see
+// what each change did.
+var darwinRoutes = routeSteps{
+	index: func(device string) (int, error) {
+		found, err := net.InterfaceByName(device)
+		if err != nil {
+			return 0, err
+		}
+		return found.Index, nil
+	},
+	leaves: routeInterface,
+	run:    func(step ...string) error { return run(step) },
+	name: func(index int) string {
+		if found, err := net.InterfaceByIndex(index); err == nil {
+			return found.Name
+		}
+		return ""
+	},
 }
 
-func (Darwin) AddRoutes(device string, prefixes []string) error {
-	steps := make([][]string, 0, len(prefixes))
-	for _, prefix := range prefixes {
-		steps = append(steps, []string{"/sbin/route", "-q", "-n", "add", familyFlag(prefix), prefix, "-interface", device})
-	}
-	return run(steps...)
+func (Darwin) AddRoutes(device string, prefixes []string) ([]string, error) {
+	return darwinRoutes.add(device, prefixes)
 }
 
 func (Darwin) RemoveRoutes(device string, prefixes []string) {
-	for _, prefix := range prefixes {
-		_ = exec.Command("/sbin/route", "-q", "-n", "delete", familyFlag(prefix), prefix, "-interface", device).Run()
+	darwinRoutes.remove(device, prefixes)
+}
+
+// routeInterface finds the route for exactly this destination in the kernel's table,
+// among the routes that aren't scoped to one interface, and returns the interface it
+// leaves by. Reading the table needs no privileges and changes nothing.
+func routeInterface(prefix netip.Prefix) (index int, found bool, err error) {
+	prefix = prefix.Masked()
+	family := syscall.AF_INET
+	if prefix.Addr().Is6() {
+		family = syscall.AF_INET6
 	}
+	rib, err := route.FetchRIB(family, route.RIBTypeRoute, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, message := range messages {
+		entry, ok := message.(*route.RouteMessage)
+		if !ok || entry.Flags&syscall.RTF_UP == 0 || entry.Flags&unix.RTF_IFSCOPE != 0 {
+			continue
+		}
+		if listed, ok := routeDestination(entry); ok && listed == prefix {
+			return entry.Index, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// routeDestination is where one entry of the table goes to. A host's entry has no
+// mask, and is the address alone.
+func routeDestination(entry *route.RouteMessage) (netip.Prefix, bool) {
+	if len(entry.Addrs) <= syscall.RTAX_NETMASK {
+		return netip.Prefix{}, false
+	}
+	var addr netip.Addr
+	var mask []byte
+	switch dest := entry.Addrs[syscall.RTAX_DST].(type) {
+	case *route.Inet4Addr:
+		addr = netip.AddrFrom4(dest.IP)
+		if found, ok := entry.Addrs[syscall.RTAX_NETMASK].(*route.Inet4Addr); ok {
+			mask = found.IP[:]
+		}
+	case *route.Inet6Addr:
+		addr = netip.AddrFrom16(dest.IP)
+		if found, ok := entry.Addrs[syscall.RTAX_NETMASK].(*route.Inet6Addr); ok {
+			mask = found.IP[:]
+		}
+	default:
+		return netip.Prefix{}, false
+	}
+	bits := addr.BitLen()
+	if entry.Flags&syscall.RTF_HOST == 0 {
+		if mask == nil {
+			return netip.Prefix{}, false
+		}
+		ones, size := net.IPMask(mask).Size()
+		if size == 0 {
+			// Not a run of ones followed by zeros: no destination a capture asks for.
+			return netip.Prefix{}, false
+		}
+		bits = ones
+	}
+	prefix, err := addr.Prefix(bits)
+	return prefix, err == nil
 }
 
 // InstallResolvers writes scoped resolver files. They sit beside other VPNs' DNS

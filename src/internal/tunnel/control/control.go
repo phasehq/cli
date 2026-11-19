@@ -51,10 +51,13 @@ type Reply struct {
 
 // Status is the helper's state. It holds no credential.
 type Status struct {
-	Protocol  int       `json:"protocol"`
-	Version   string    `json:"version"`
-	Device    string    `json:"device,omitempty"`
-	Attached  bool      `json:"attached"`
+	Protocol int    `json:"protocol"`
+	Version  string `json:"version"`
+	Device   string `json:"device,omitempty"`
+	Attached bool   `json:"attached"`
+	// EnginePID is the process of the engine that is attached, when the helper's
+	// system can say. phase down stops it, so that it doesn't attach again.
+	EnginePID int       `json:"enginePid,omitempty"`
 	Capturing bool      `json:"capturing"`
 	Reason    string    `json:"reason,omitempty"`
 	Since     time.Time `json:"since"`

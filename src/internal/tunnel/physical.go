@@ -66,8 +66,37 @@ var (
 // staysOnItsRoute is an address another interface is responsible for. It never reaches
 // the tunnel, so pinning it to the physical interface could only break it.
 func staysOnItsRoute(addr netip.Addr) bool {
+	return addr.Unmap().IsLoopback() || leftToItsRoute(addr)
+}
+
+// leftToItsRoute is an address in another VPN's range, which that VPN's own routes
+// carry for as long as it is up. See Router.loops for when it is down.
+func leftToItsRoute(addr netip.Addr) bool {
 	addr = addr.Unmap()
-	return addr.IsLoopback() || tailnetV4.Contains(addr) || tailnetV6.Contains(addr)
+	return tailnetV4.Contains(addr) || tailnetV6.Contains(addr)
+}
+
+// ownAddress is an address of the tunnel's own device. A socket that is given one as
+// its source is routed into the tunnel.
+func ownAddress(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	return TunnelPrefix.Contains(addr) || addr == LocalAddress6
+}
+
+// unpinnedSource asks the system which address a socket to dest would leave from,
+// with no interface chosen for it. Connecting a UDP socket picks the route and the
+// source address, and sends nothing.
+func unpinnedSource(dest netip.Addr) (netip.Addr, error) {
+	conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(dest.Unmap(), 9)))
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	defer conn.Close()
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return netip.Addr{}, errors.New("the socket has no address")
+	}
+	return local.AddrPort().Addr().Unmap().WithZone(""), nil
 }
 
 // Bind pins one socket that is about to reach address.

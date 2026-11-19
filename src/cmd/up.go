@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
@@ -102,6 +104,11 @@ func runUp(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintln(out, "\n🚇 Tunnel")
+	// Two engines would take the helper from each other every second, and the
+	// machine's routes with it.
+	if description, attached := otherEngineAttached(directory); attached {
+		return fmt.Errorf("%s is attached to the Phase helper, and isn't the engine phase up started. Run phase down first, then phase up again", description)
+	}
 	if pid, running := tunnelEnginePID(directory); running {
 		// A running engine keeps the routes it started with.
 		if current, err := engine.ReadStatus(directory); err == nil && !sameTunnelRoutes(current.Routes, routes) {
@@ -115,18 +122,35 @@ func runUp(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Fprintf(out, "   Started the engine as you (pid %d). It holds the credentials, and the helper never sees them.\n", pid)
 	}
-	status, err := waitForCapture(directory, 45*time.Second)
+	// From here phase up ends in one of two ways: Phase is capturing, and says so, or
+	// nothing is left running. An engine left to keep trying would start capturing
+	// later, with nobody told. Ctrl-C while waiting is the second way too.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	status, err := waitForCapture(ctx, directory, 45*time.Second)
 	if err != nil {
-		return err
+		return abandonUp(directory, err)
 	}
 	engineStatus, _ := engine.ReadStatus(directory)
+	printUpResult(out, status, engineStatus)
+	return nil
+}
+
+// printUpResult says what phase up has done, once Phase is capturing. It claims
+// nothing the tunnel doesn't do: a connection that was open before keeps the path it
+// had, and what goes through Phase is read only where status says so.
+func printUpResult(out io.Writer, status control.Status, engineStatus engine.Status) {
 	if capturesEverything(status.Routes) {
-		fmt.Fprintf(out, "   ✅ Everything on this Mac now goes through Phase, by %s.\n", status.Device)
+		fmt.Fprintf(out, "   ✅ New connections on this Mac now go through Phase, by %s.\n", status.Device)
 	} else {
-		fmt.Fprintf(out, "   ✅ Traffic for %s, and for the names sent to Phase, now goes through it, by %s. Everything else is untouched.\n", strings.Join(status.Routes, ", "), status.Device)
+		fmt.Fprintf(out, "   ✅ New connections to %s, and to the names sent to Phase, now go through it, by %s. Everything else is untouched.\n", strings.Join(status.Routes, ", "), status.Device)
 	}
+	fmt.Fprintln(out, "   Connections that were already open stay as they are.")
 	if len(engineStatus.Connections) > 0 {
 		fmt.Fprintf(out, "   Connections: %s\n", strings.Join(engineStatus.Connections, ", "))
+	}
+	if tools := readToolNames(&engineStatus); len(tools) > 0 {
+		fmt.Fprintf(out, "   Model traffic is read for %s, each for its own processes only.\n", strings.Join(tools, ", "))
 	}
 	fmt.Fprintln(out, "   Your local network and other VPNs, such as Tailscale, keep their own routes.")
 	fmt.Fprintln(out, "   If the engine stops, Phase steps aside and your network works as it did before.")
@@ -134,7 +158,29 @@ func runUp(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(out, "\nNext steps")
 	fmt.Fprintln(out, "   phase status   see what's going through Phase")
 	fmt.Fprintln(out, "   phase down     stop")
-	return nil
+}
+
+// abandonUp ends a phase up that didn't get to Phase capturing. It stops the tunnel
+// as phase down does, so that nothing keeps trying and captures later, and says what
+// is true of the machine afterwards.
+func abandonUp(directory string, cause error) error {
+	pid, running := tunnelEnginePID(directory)
+	stopped := stopTunnel(directory)
+	var left []string
+	if running && processIsAlive(pid) {
+		left = append(left, fmt.Sprintf("the engine (pid %d) couldn't be stopped", pid))
+	}
+	if stopped.stillAttached != "" {
+		left = append(left, stopped.stillAttached+" is still attached to the helper, and can bring Phase back")
+	}
+	if !stopped.steppedAside {
+		left = append(left, "the helper didn't answer when asked to step aside")
+	}
+	log := filepath.Join(directory, "engine.log")
+	if len(left) == 0 {
+		return fmt.Errorf("%w. phase up has stopped: the engine isn't running and Phase isn't in the path, so your network is as it was before. The engine's log is %s", cause, log)
+	}
+	return fmt.Errorf("%w. phase up has stopped, but %s. Run phase status, and phase down again, before you rely on the network being as it was. The engine's log is %s", cause, strings.Join(left, ", and "), log)
 }
 
 var errTunnelNeedsKeystore = errors.New("phase up needs a system keystore to keep its certificate authority's key, and none is usable here; your network is unchanged")
@@ -259,16 +305,19 @@ func startTunnelEngine(directory, workflow string, routes []string) (int, error)
 		return 0, fmt.Errorf("start the engine: %w", err)
 	}
 	pid := command.Process.Pid
-	_ = command.Process.Release()
 	if err := os.WriteFile(tunnelEnginePIDPath(directory), []byte(strconv.Itoa(pid)), 0o600); err != nil {
-		return pid, err
+		// Without its pid on record nothing could find the engine to stop it.
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+		return 0, fmt.Errorf("record the engine's process: %w", err)
 	}
+	_ = command.Process.Release()
 	return pid, nil
 }
 
-// waitForCapture waits for the helper to say it's capturing, and explains what went
-// wrong if it doesn't.
-func waitForCapture(directory string, wait time.Duration) (control.Status, error) {
+// waitForCapture waits for the helper to say it's capturing, and says why when it
+// doesn't. It says nothing of what is left running: whoever called it sees to that.
+func waitForCapture(ctx context.Context, directory string, wait time.Duration) (control.Status, error) {
 	deadline := time.Now().Add(wait)
 	var last control.Status
 	for time.Now().Before(deadline) {
@@ -282,15 +331,19 @@ func waitForCapture(directory string, wait time.Duration) (control.Status, error
 			return last, fmt.Errorf("the engine couldn't start a session: %s", status.LastError)
 		}
 		if _, running := tunnelEnginePID(directory); !running {
-			return last, fmt.Errorf("the engine stopped; see %s", filepath.Join(directory, "engine.log"))
+			return last, errors.New("the engine stopped before Phase started capturing")
 		}
-		time.Sleep(300 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return last, errors.New("phase up was interrupted before Phase started capturing")
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 	reason := last.Reason
 	if reason == "" {
 		reason = "no reason given"
 	}
-	return last, fmt.Errorf("Phase didn't start capturing (%s); your network is unchanged. Run phase status for details", reason)
+	return last, fmt.Errorf("Phase didn't start capturing (%s)", reason)
 }
 
 func runDown(cmd *cobra.Command, _ []string) error {
@@ -302,12 +355,19 @@ func runDown(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	steppedAside, stopped := stopTunnel(directory)
-	if steppedAside {
+	stopped := stopTunnel(directory)
+	if stopped.steppedAside {
 		fmt.Fprintln(out, "✅ Phase has stepped aside: your network works as it did before phase up.")
 	}
-	if stopped {
+	if stopped.stoppedEngine {
 		fmt.Fprintln(out, "✅ Stopped the engine.")
+	}
+	if stopped.stoppedOther != 0 {
+		fmt.Fprintf(out, "✅ Stopped another engine that was attached to the helper (pid %d).\n", stopped.stoppedOther)
+	}
+	if stopped.stillAttached != "" {
+		// Not Phase's to stop: it brings Phase back within a second of this.
+		fmt.Fprintf(out, "⚠️  %s is still attached to the helper, and isn't an engine of yours that phase down may stop. It brings Phase back until it is stopped.\n", stopped.stillAttached)
 	}
 	if uninstall, _ := cmd.Flags().GetBool("uninstall"); uninstall && helper.Installed() {
 		self, err := os.Executable()
@@ -325,33 +385,49 @@ func runDown(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// stopTunnel asks the helper to step aside, then stops the engine. It reports which
-// of the two it did.
-func stopTunnel(directory string) (steppedAside, stoppedEngine bool) {
+// tunnelStop is what stopping the tunnel did.
+type tunnelStop struct {
+	// steppedAside is the helper's own word that it has stepped aside.
+	steppedAside bool
+	// stoppedEngine is the engine phase up started and kept the pid of.
+	stoppedEngine bool
+	// stoppedOther is another engine that was attached to the helper, and was
+	// stopped too. stillAttached describes one that wasn't Phase's to stop.
+	stoppedOther  int
+	stillAttached string
+}
+
+// stopTunnel asks the helper to step aside, then stops the engine. It reports what
+// it did.
+//
+// The helper lets go of an engine it steps aside for, and an engine that is still
+// running attaches again within a second. So the engine the helper has attached is
+// stopped as well as the one phase up kept the pid of: they differ when an engine
+// was started some other way. Only a process of this user's that is a phase binary
+// running the engine is stopped. Anything else is left alone and named.
+func stopTunnel(directory string) tunnelStop {
+	var stopped tunnelStop
+	attached := 0
 	if tunnelHelperSocket != "" {
-		_, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpDown}, 15*time.Second)
-		steppedAside = err == nil
-	}
-	if pid, running := tunnelEnginePID(directory); running {
-		if process, err := os.FindProcess(pid); err == nil {
-			_ = process.Signal(syscall.SIGTERM)
-			for range 50 {
-				if !processIsAlive(pid) {
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			if processIsAlive(pid) {
-				_ = process.Kill()
-				for range 20 {
-					if !processIsAlive(pid) {
-						break
-					}
-					time.Sleep(50 * time.Millisecond)
-				}
-			}
+		// Asked first: once it has let go of an engine, the helper no longer knows it.
+		if reply, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpStatus}, 5*time.Second); err == nil && reply.Status != nil && reply.Status.Attached {
+			attached = reply.Status.EnginePID
 		}
-		stoppedEngine = true
+		_, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpDown}, 15*time.Second)
+		stopped.steppedAside = err == nil
+	}
+	pid, running := tunnelEnginePID(directory)
+	if running {
+		stopTunnelProcess(pid)
+		stopped.stoppedEngine = true
+	}
+	if attached > 0 && attached != pid && attached != os.Getpid() && processIsAlive(attached) {
+		if description, ours := tunnelEngineProcess(attached); ours {
+			stopTunnelProcess(attached)
+			stopped.stoppedOther = attached
+		} else {
+			stopped.stillAttached = description
+		}
 	}
 	_ = os.Remove(tunnelEnginePIDPath(directory))
 	// An engine that stops when asked takes its proxy's state with it. One that had
@@ -359,7 +435,80 @@ func stopTunnel(directory string) (steppedAside, stoppedEngine bool) {
 	if state, err := engine.ReadProxyState(directory); err != nil || !processIsAlive(state.PID) {
 		_ = os.Remove(engine.ProxyStatePath(directory))
 	}
-	return steppedAside, stoppedEngine
+	return stopped
+}
+
+// otherEngineAttached reports an engine that is attached to the helper and isn't the
+// one phase up started and kept the pid of, with what it is.
+func otherEngineAttached(directory string) (description string, attached bool) {
+	if tunnelHelperSocket == "" {
+		return "", false
+	}
+	reply, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpStatus}, 5*time.Second)
+	if err != nil || reply.Status == nil || !reply.Status.Attached || reply.Status.EnginePID <= 0 {
+		return "", false
+	}
+	other := reply.Status.EnginePID
+	if pid, running := tunnelEnginePID(directory); (running && pid == other) || !processIsAlive(other) {
+		return "", false
+	}
+	description, _ = tunnelEngineProcess(other)
+	return description, true
+}
+
+// stopTunnelProcess asks an engine to stop, and kills it if it hasn't after five
+// seconds.
+func stopTunnelProcess(pid int) {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	_ = process.Signal(syscall.SIGTERM)
+	for range 50 {
+		if !processIsAlive(pid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = process.Kill()
+	for range 20 {
+		if !processIsAlive(pid) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// tunnelEngineProcess says what the process attached to the helper is, and whether
+// it is an engine phase down may stop.
+func tunnelEngineProcess(pid int) (description string, ours bool) {
+	listing, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "command=").Output()
+	if err != nil {
+		return fmt.Sprintf("process %d", pid), false
+	}
+	return describeEngineProcess(pid, string(listing), os.Getuid())
+}
+
+// describeEngineProcess reads one line of ps: the process's user, then its command
+// line. The process is an engine phase down may stop when it is this user's, and its
+// command line is a program whose name starts with phase, followed by tunnel engine.
+// The description names the program and nothing else of the command line.
+func describeEngineProcess(pid int, listing string, user int) (description string, ours bool) {
+	owner, command, _ := strings.Cut(strings.TrimSpace(listing), " ")
+	command = strings.TrimSpace(command)
+	program, rest, engineCommand := strings.Cut(command, " tunnel engine")
+	if !engineCommand || (rest != "" && !strings.HasPrefix(rest, " ")) {
+		// Not the engine's command line: the program is its first word.
+		program, _, _ = strings.Cut(command, " ")
+		engineCommand = false
+	}
+	name := filepath.Base(program)
+	if program == "" {
+		name = "an unnamed program"
+	}
+	description = fmt.Sprintf("%s (process %d)", name, pid)
+	uid, err := strconv.Atoi(owner)
+	return description, err == nil && uid == user && engineCommand && strings.HasPrefix(name, "phase")
 }
 
 // parseTunnelRoutes reads the networks to send through Phase in place of everything.
@@ -441,10 +590,10 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 	case helperStatus == nil:
 		fmt.Fprintln(out, "🚇 Phase isn't in the path: the helper isn't running. Run phase up to start.")
 	case helperStatus.Capturing && capturesEverything(helperStatus.Routes):
-		fmt.Fprintf(out, "🚇 Everything goes through Phase, by %s, since %s.\n", helperStatus.Device, helperStatus.Since.Local().Format("15:04"))
+		fmt.Fprintf(out, "🚇 Connections opened since %s go through Phase, by %s.\n", helperStatus.Since.Local().Format("15:04"), helperStatus.Device)
 	case helperStatus.Capturing:
-		fmt.Fprintf(out, "🚇 Only %s, and the names sent to Phase, go through it, by %s, since %s. Everything else is untouched.\n",
-			strings.Join(helperStatus.Routes, ", "), helperStatus.Device, helperStatus.Since.Local().Format("15:04"))
+		fmt.Fprintf(out, "🚇 Only connections to %s, and to the names sent to Phase, opened since %s go through it, by %s. Everything else is untouched.\n",
+			strings.Join(helperStatus.Routes, ", "), helperStatus.Since.Local().Format("15:04"), helperStatus.Device)
 	default:
 		reason := helperStatus.Reason
 		if reason == "" {
@@ -466,12 +615,36 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 	if len(status.Domains) > 0 {
 		fmt.Fprintf(out, "   Names sent to Phase: %s\n", strings.Join(status.Domains, ", "))
 	}
+	switch skipped := status.SkippedNames; {
+	case skipped == 1:
+		fmt.Fprintln(out, "   1 Connection host has a name a DNS entry can't hold, so it isn't captured by name: only by the name in a TLS hello, where its traffic goes through Phase.")
+	case skipped > 1:
+		fmt.Fprintf(out, "   %d Connection hosts have names a DNS entry can't hold, so they aren't captured by name: only by the name in a TLS hello, where their traffic goes through Phase.\n", skipped)
+	}
 	if status.LastError != "" {
 		fmt.Fprintf(out, "   Last error: %s\n", status.LastError)
 	}
 	proxied := status.Counts["proxy"] + status.Counts["proxy_by_tls_name"] + status.Counts["postgres"]
 	fmt.Fprintf(out, "   Flows: %d to Connection hosts, %d passed through unread.\n", proxied, status.Counts["tcp"]+status.Counts["udp"])
+	if loops := status.Counts["loop_refused"]; loops > 0 {
+		fmt.Fprintf(out, "   %d were refused because their route led back into Phase: another VPN's range, while that VPN is down.\n", loops)
+	}
+	if refused := status.Counts["control_refused"]; refused > 0 {
+		fmt.Fprintf(out, "   %d requests to %s were refused because they named another host.\n", refused, tunnel.ControlHost)
+	}
 	printModelTraffic(out, status)
+}
+
+// readToolNames lists the tools whose model traffic is read, in order.
+func readToolNames(status *engine.Status) []string {
+	tools := make([]string, 0, len(status.ReadTools))
+	for tool, hosts := range status.ReadTools {
+		if len(hosts) > 0 {
+			tools = append(tools, tool)
+		}
+	}
+	sort.Strings(tools)
+	return tools
 }
 
 // printModelTraffic says which tools' model traffic is read, and how many flows were.

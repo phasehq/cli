@@ -11,10 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"os"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -89,23 +87,29 @@ type Helper struct {
 	wg         *device.Device
 	engine     *control.Conn
 	engineID   int
+	enginePID  int
 	attach     control.Attach
-	captured   atomic.Bool
-	reason     string
-	since      time.Time
-	pathFails  int
-	heldUntil  time.Time
-	backoff    time.Duration
-	lastTry    time.Time
-	lastPin    time.Time
-	pinned     string
-	unpin      func()
+	// added are the capture routes this helper added and hasn't given back. They are
+	// the only routes it ever removes.
+	added     []string
+	captured  atomic.Bool
+	reason    string
+	since     time.Time
+	pathFails int
+	heldUntil time.Time
+	backoff   time.Duration
+	lastTry   time.Time
+	lastPin   time.Time
+	pinned    string
+	unpin     func()
 }
 
 type (
 	attachEvent struct {
 		conn   *control.Conn
 		attach control.Attach
+		// pid is the process on the other end of the connection, when the system says.
+		pid    int
 		result chan error
 		id     chan int
 	}
@@ -225,12 +229,12 @@ func (h *Helper) serve(raw net.Conn) {
 			_ = conn.Send(control.Reply{Error: "attach needs details"})
 			return
 		}
-		if err := validateAttach(*request.Attach); err != nil {
+		if err := validateAttach(request.Attach); err != nil {
 			_ = conn.Send(control.Reply{Error: err.Error()})
 			return
 		}
 		result, ids := make(chan error, 1), make(chan int, 1)
-		h.events <- attachEvent{conn: conn, attach: *request.Attach, result: result, id: ids}
+		h.events <- attachEvent{conn: conn, attach: *request.Attach, pid: peerPID(raw), result: result, id: ids}
 		if err := <-result; err != nil {
 			_ = conn.Send(control.Reply{Error: err.Error()})
 			return
@@ -263,18 +267,19 @@ func replyFor(err error) control.Reply {
 	return control.Reply{}
 }
 
-func validateAttach(attach control.Attach) error {
+// validateAttach checks what an engine asks for, and writes its routes one way.
+func validateAttach(attach *control.Attach) error {
 	if !tunnel.ValidKey(attach.EnginePublicKey) {
 		return errors.New("the engine's key is malformed")
 	}
 	if attach.EnginePort < 1024 || attach.EnginePort > 65535 {
 		return errors.New("the engine's port is out of range")
 	}
-	for _, route := range attach.Routes {
-		if _, err := netip.ParsePrefix(route); err != nil {
-			return fmt.Errorf("route %q is malformed", route)
-		}
+	routes, err := captureRoutes(attach.Routes)
+	if err != nil {
+		return err
 	}
+	attach.Routes = routes
 	for _, domain := range attach.Domains {
 		if !validDomain(domain) {
 			return fmt.Errorf("domain %q is malformed", domain)
@@ -283,27 +288,19 @@ func validateAttach(attach control.Attach) error {
 	return nil
 }
 
-func validDomain(domain string) bool {
-	if domain == "" || len(domain) > 253 || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || !strings.Contains(domain, ".") {
-		return false
-	}
-	for _, r := range domain {
-		if !(r == '.' || r == '-' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
-			return false
-		}
-	}
-	return true
-}
+// validDomain is the engine's own rule for the names it sends, so the two can't
+// come to differ.
+func validDomain(domain string) bool { return tunnel.CapturableDomain(domain) }
 
 func (h *Helper) handle(event any) {
 	switch e := event.(type) {
 	case attachEvent:
-		e.result <- h.attachEngine(e.conn, e.attach)
+		e.result <- h.attachEngine(e.conn, e.attach, e.pid)
 		e.id <- h.engineID
 		h.reconcile("an engine attached")
 	case detachEvent:
 		if e.id == h.engineID && h.engine != nil {
-			h.engine = nil
+			h.engine, h.enginePID = nil, 0
 			h.stepAside("the engine stopped")
 		}
 	case updateEvent:
@@ -335,16 +332,16 @@ func (h *Helper) handle(event any) {
 func (h *Helper) status() control.Status {
 	return control.Status{
 		Protocol: control.ProtocolVersion, Version: h.opts.Version, Device: h.deviceName,
-		Attached: h.engine != nil, Capturing: h.captured.Load(), Reason: h.reason, Since: h.since,
+		Attached: h.engine != nil, EnginePID: h.enginePID, Capturing: h.captured.Load(), Reason: h.reason, Since: h.since,
 		Pinned: h.pinned, Domains: h.attach.Domains, Routes: h.attach.Routes, Retry: h.heldUntil,
 	}
 }
 
 // attachEngine sets up the device the first time, and points WireGuard at the engine.
-func (h *Helper) attachEngine(conn *control.Conn, attach control.Attach) error {
+func (h *Helper) attachEngine(conn *control.Conn, attach control.Attach, pid int) error {
 	if h.engine != nil {
 		_ = h.engine.Close()
-		h.engine = nil
+		h.engine, h.enginePID = nil, 0
 		h.stepAside("another engine attached")
 	}
 	if h.wg == nil {
@@ -361,7 +358,7 @@ func (h *Helper) attachEngine(conn *control.Conn, attach control.Attach) error {
 		attach.Routes = tunnel.FullRoutes
 	}
 	h.attach = attach
-	h.engine = conn
+	h.engine, h.enginePID = conn, pid
 	h.engineID++
 	h.heldUntil = time.Time{}
 	h.backoff = 30 * time.Second
@@ -441,7 +438,11 @@ func (h *Helper) engage() error {
 	}
 	h.opts.System.FlushDNS()
 	h.pin()
-	if err := h.opts.System.AddRoutes(h.deviceName, h.attach.Routes); err != nil {
+	// What was added is kept even when not all of it could be: another VPN may hold
+	// the very same route, and that one isn't this helper's to give back.
+	added, err := h.opts.System.AddRoutes(h.deviceName, h.attach.Routes)
+	h.added = append(h.added, added...)
+	if err != nil {
 		return err
 	}
 	h.pathFails = 0
@@ -463,10 +464,15 @@ func (h *Helper) confirm(wait time.Duration) error {
 
 // stepAside leaves the machine exactly as it would be without Phase. The device
 // stays, so coming back needs no new step from anyone.
+//
+// Only the routes this helper added are removed. The system removes a route by where
+// it goes to, whoever added it, so asking for one that was never added here would
+// take away another VPN's route to the same place.
 func (h *Helper) stepAside(reason string) {
-	if h.deviceName != "" {
-		h.opts.System.RemoveRoutes(h.deviceName, h.attach.Routes)
+	if h.deviceName != "" && len(h.added) > 0 {
+		h.opts.System.RemoveRoutes(h.deviceName, h.added)
 	}
+	h.added = nil
 	h.unpinNow()
 	h.opts.System.RemoveResolvers()
 	h.opts.System.FlushDNS()
@@ -483,7 +489,7 @@ func (h *Helper) shutdown(reason string) {
 	h.stepAside(reason)
 	if h.engine != nil {
 		_ = h.engine.Close()
-		h.engine = nil
+		h.engine, h.enginePID = nil, 0
 	}
 	if h.wg != nil {
 		h.wg.Close()

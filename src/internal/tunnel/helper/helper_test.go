@@ -6,6 +6,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +29,13 @@ type fakeSystem struct {
 	internetUp  bool
 	tunnelWorks bool
 	log         []string
+	// ours are the routes the helper added and hasn't removed. others are routes
+	// that were there before it, such as another VPN's: adding one of those fails,
+	// as it does on a real system, and removing one takes it from whoever added it,
+	// which lost records.
+	ours   map[string]bool
+	others map[string]bool
+	lost   []string
 }
 
 func (f *fakeSystem) note(entry string) { f.log = append(f.log, entry) }
@@ -34,17 +45,56 @@ func (f *fakeSystem) CreateDevice(int) (tun.Device, string, error) {
 	return newFakeTun(), "utun99", nil
 }
 func (f *fakeSystem) Configure(string) error { return nil }
-func (f *fakeSystem) AddRoutes(string, []string) error {
+func (f *fakeSystem) AddRoutes(_ string, prefixes []string) (added []string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.routes = true
 	f.note("add routes")
-	return nil
+	for _, prefix := range prefixes {
+		if f.others[prefix] || f.ours[prefix] {
+			return added, errors.New("route: writing to routing socket: File exists")
+		}
+		if f.ours == nil {
+			f.ours = map[string]bool{}
+		}
+		f.ours[prefix] = true
+		f.routes = true
+		added = append(added, prefix)
+	}
+	return added, nil
 }
-func (f *fakeSystem) RemoveRoutes(string, []string) {
+
+// RemoveRoutes removes by destination, as the system does: a route of someone else's
+// goes just the same.
+func (f *fakeSystem) RemoveRoutes(_ string, prefixes []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.routes = false
+	for _, prefix := range prefixes {
+		if f.others[prefix] {
+			delete(f.others, prefix)
+			f.lost = append(f.lost, prefix)
+		}
+		delete(f.ours, prefix)
+	}
+	f.routes = len(f.ours) > 0
+}
+
+// stillThere reports whether a route that was there before the helper still is.
+func (f *fakeSystem) stillThere(prefix string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.others[prefix]
+}
+
+// routeState returns the routes that are the helper's, and the ones it took from
+// someone else.
+func (f *fakeSystem) routeState() (ours, lost []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for prefix := range f.ours {
+		ours = append(ours, prefix)
+	}
+	sort.Strings(ours)
+	return ours, append([]string(nil), f.lost...)
 }
 func (f *fakeSystem) InstallResolvers(domains []string) error {
 	f.mu.Lock()
@@ -152,9 +202,11 @@ func start(t *testing.T, system *fakeSystem, engineAnswers bool) *harness {
 	go func() { done <- h.Run(ctx) }()
 	test := &harness{t: t, system: system, socket: filepath.Join(dir, "s"), cancel: cancel, done: done}
 	t.Cleanup(test.stop)
-	deadline := time.Now().Add(2 * time.Second)
+	// The socket's file is there a moment before the helper listens on it, and a
+	// connection in that moment is refused. The helper has started once it answers.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(test.socket); err == nil {
+		if _, err := control.Ask(test.socket, control.Request{Op: control.OpStatus}, time.Second); err == nil {
 			return test
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -175,13 +227,18 @@ func (h *harness) stop() {
 // attach plays an engine: attach, then ping every 200ms until stopped.
 func (h *harness) attach(domains []string) (stop func()) {
 	h.t.Helper()
+	return h.attachWith(domains, []string{"0.0.0.0/1", "128.0.0.0/1"})
+}
+
+func (h *harness) attachWith(domains, routes []string) (stop func()) {
+	h.t.Helper()
 	_, public, _ := tunnel.NewKeyPair()
 	conn, err := control.Dial(h.socket)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	reply, err := conn.Call(control.Request{Op: control.OpAttach, Attach: &control.Attach{
-		EnginePublicKey: public, EnginePort: 40000, Domains: domains, Routes: []string{"0.0.0.0/1", "128.0.0.0/1"},
+		EnginePublicKey: public, EnginePort: 40000, Domains: domains, Routes: routes,
 	}}, 15*time.Second)
 	if err != nil {
 		h.t.Fatal(err)
@@ -365,4 +422,161 @@ func TestRefusesMalformedAttaches(t *testing.T) {
 			t.Errorf("%s: a malformed attach was accepted", name)
 		}
 	}
+}
+
+// The helper takes its routes from an unprivileged caller, and decides for itself
+// which ones a capture can be made of. The command line's own check is no reason to
+// trust what arrives on the socket.
+func TestRefusesRoutesNoCaptureIsMadeOf(t *testing.T) {
+	system := &fakeSystem{internetUp: true, tunnelWorks: true}
+	h := start(t, system, true)
+	_, public, _ := tunnel.NewKeyPair()
+	for _, route := range []string{
+		// The default route itself, in either family.
+		"0.0.0.0/0", "::/0", "192.0.2.1/0", "2001:db8::1/0",
+		// Loopback, link-local and multicast, whole or in part.
+		"127.0.0.0/8", "127.0.0.1/32", "127.64.0.0/10", "::1/128",
+		"169.254.0.0/16", "169.254.169.254/32", "fe80::/10", "fe80::1/128", "febf::/16",
+		"224.0.0.0/4", "239.255.255.250/32", "ff00::/8", "ff02::fb/128",
+		// No address at all, broadcast, and the tunnel's own range.
+		"0.0.0.0/8", "0.0.0.0/32", "::/128", "255.255.255.255/32",
+		"198.19.248.0/22", "198.19.249.0/24", "198.19.248.53/32",
+		// An IPv4 route written as IPv6, and what isn't a route.
+		"::ffff:192.0.2.0/120", "192.0.2.0", "192.0.2.0/33", "192.0.2.0/24 ", "192.0.2.0/24;reboot", "",
+	} {
+		for _, routes := range [][]string{{route}, {"0.0.0.0/1", route, "128.0.0.0/1"}} {
+			attach := control.Attach{EnginePublicKey: public, EnginePort: 40000, Routes: routes}
+			if _, err := control.Ask(h.socket, control.Request{Op: control.OpAttach, Attach: &attach}, 5*time.Second); err == nil {
+				t.Errorf("an attach with the routes %q was accepted", routes)
+			}
+		}
+	}
+	if status := h.status(); status.Attached || status.Device != "" {
+		t.Fatalf("a refused attach left something behind: %+v", status)
+	}
+	if ours, _ := system.routeState(); len(ours) != 0 {
+		t.Fatalf("routes were added for a refused attach: %v", ours)
+	}
+}
+
+// What a capture is made of is accepted: each half of the address space, which takes
+// in loopback and the rest without lying inside them, a part of the network for a
+// first try, and another VPN's range. The routes are kept written one way, each once.
+func TestAcceptsTheRoutesACaptureIsMadeOf(t *testing.T) {
+	got, err := captureRoutes([]string{
+		"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1",
+		"0.0.0.0/7", "192.0.2.9/24", "192.0.2.0/24", "100.64.0.0/10", "198.18.0.0/15", "240.0.0.0/4",
+		"2001:db8::1/32", "fc00::/7", "::/2",
+	})
+	want := []string{
+		"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1",
+		"0.0.0.0/7", "192.0.2.0/24", "100.64.0.0/10", "198.18.0.0/15", "240.0.0.0/4",
+		"2001:db8::/32", "fc00::/7", "::/2",
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if got, err := captureRoutes(tunnel.FullRoutes); err != nil || !reflect.DeepEqual(got, tunnel.FullRoutes) {
+		t.Fatalf("the routes that capture everything: %v, %v", got, err)
+	}
+	if got, err := captureRoutes(nil); err != nil || len(got) != 0 {
+		t.Fatalf("no routes: %v, %v", got, err)
+	}
+
+	system := &fakeSystem{internetUp: true, tunnelWorks: true}
+	h := start(t, system, true)
+	defer h.attachWith(nil, []string{"192.0.2.9/24", "0.0.0.0/7", "192.0.2.0/24"})()
+	h.waitFor("capture", h.captured)
+	if ours, _ := system.routeState(); !reflect.DeepEqual(ours, []string{"0.0.0.0/7", "192.0.2.0/24"}) {
+		t.Fatalf("the routes added: %v", ours)
+	}
+	if status := h.status(); !reflect.DeepEqual(status.Routes, []string{"192.0.2.0/24", "0.0.0.0/7"}) {
+		t.Fatalf("the routes in status: %v", status.Routes)
+	}
+}
+
+// Another VPN can hold the very route a capture asks for. Adding it fails, and the
+// helper backs out. The system removes a route by where it goes to, whoever added it,
+// so the helper gives back only what it added itself: the other VPN keeps its route.
+func TestGivesBackOnlyTheRoutesItAdded(t *testing.T) {
+	system := &fakeSystem{internetUp: true, tunnelWorks: true, others: map[string]bool{"128.0.0.0/1": true}}
+	h := start(t, system, true)
+	defer h.attach(nil)()
+	h.waitFor("an attempt to capture", func() bool {
+		system.mu.Lock()
+		defer system.mu.Unlock()
+		return len(system.log) >= 1
+	})
+	h.waitFor("backing out", h.clean)
+	ours, lost := system.routeState()
+	if len(ours) != 0 || len(lost) != 0 || !system.stillThere("128.0.0.0/1") {
+		t.Fatalf("after backing out: the helper's routes %v, taken from another VPN %v", ours, lost)
+	}
+	status := h.status()
+	if status.Capturing || status.Retry.IsZero() || !strings.Contains(status.Reason, "couldn't capture") {
+		t.Fatalf("status: %+v", status)
+	}
+	// Asked to stop while it waits to try again, it still removes nothing of theirs.
+	if _, err := control.Ask(h.socket, control.Request{Op: control.OpDown}, 15*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, lost := system.routeState(); len(lost) != 0 || !system.stillThere("128.0.0.0/1") {
+		t.Fatalf("stopping took another VPN's routes: %v", lost)
+	}
+}
+
+// Stepping aside before anything was captured removes no route at all: none is the
+// helper's yet, and every one it was asked for may be someone else's.
+func TestStepsAsideWithoutRemovingRoutesItNeverAdded(t *testing.T) {
+	system := &fakeSystem{internetUp: false, tunnelWorks: false, others: map[string]bool{"0.0.0.0/1": true, "128.0.0.0/1": true}}
+	h := start(t, system, true)
+	stop := h.attach([]string{"api.github.com"})
+	time.Sleep(time.Second)
+	// The engine goes, another attaches in its place, and the helper is asked to stop.
+	stop()
+	h.waitFor("the engine to be let go", func() bool { return !h.status().Attached })
+	defer h.attach(nil)()
+	defer h.attach(nil)()
+	if _, err := control.Ask(h.socket, control.Request{Op: control.OpDown}, 15*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if ours, lost := system.routeState(); len(ours) != 0 || len(lost) != 0 || !system.stillThere("0.0.0.0/1") || !system.stillThere("128.0.0.0/1") {
+		t.Fatalf("the helper's routes %v, taken from another VPN %v", ours, lost)
+	}
+}
+
+// Once it has captured, it gives back all it added, and only that, each time.
+func TestGivesBackEveryRouteItAdded(t *testing.T) {
+	system := &fakeSystem{internetUp: true, tunnelWorks: true, others: map[string]bool{"10.0.0.0/8": true}}
+	h := start(t, system, true)
+	stop := h.attachWith(nil, tunnel.FullRoutes)
+	h.waitFor("capture", h.captured)
+	if ours, _ := system.routeState(); !reflect.DeepEqual(ours, []string{"0.0.0.0/1", "128.0.0.0/1", "8000::/1", "::/1"}) {
+		t.Fatalf("the routes added: %v", ours)
+	}
+	stop()
+	h.waitFor("stepping aside after the engine left", h.clean)
+	if ours, lost := system.routeState(); len(ours) != 0 || len(lost) != 0 || !system.stillThere("10.0.0.0/8") {
+		t.Fatalf("after stepping aside: the helper's routes %v, taken from another VPN %v", ours, lost)
+	}
+}
+
+// The helper says which process is attached, so that phase down can stop an engine
+// it didn't start itself.
+func TestStatusNamesTheAttachedEnginesProcess(t *testing.T) {
+	system := &fakeSystem{internetUp: true, tunnelWorks: true}
+	h := start(t, system, true)
+	if status := h.status(); status.Attached || status.EnginePID != 0 {
+		t.Fatalf("with nothing attached: %+v", status)
+	}
+	stop := h.attach(nil)
+	want := 0
+	if runtime.GOOS == "darwin" {
+		want = os.Getpid()
+	}
+	if status := h.status(); !status.Attached || status.EnginePID != want {
+		t.Fatalf("the attached engine is process %d, and status says %d", want, status.EnginePID)
+	}
+	stop()
+	h.waitFor("the engine to be let go", func() bool { status := h.status(); return !status.Attached && status.EnginePID == 0 })
 }

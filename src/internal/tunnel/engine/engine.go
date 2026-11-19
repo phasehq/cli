@@ -83,6 +83,9 @@ type Status struct {
 	UDPBytes     int64          `json:"udpBytes"`
 	LastError    string         `json:"lastError,omitempty"`
 	HelperLinked bool           `json:"helperLinked"`
+	// SkippedNames counts the Connections' hosts that aren't among Domains, because
+	// their names aren't ones a DNS entry can hold. It's a number only.
+	SkippedNames int `json:"skippedNames,omitempty"`
 
 	// Routes are what is captured in place of everything, when less was asked for.
 	Routes []string `json:"routes,omitempty"`
@@ -121,6 +124,7 @@ type engine struct {
 	ready       bool
 	connections []string
 	domains     []string
+	skipped     int
 	lastError   string
 }
 
@@ -318,9 +322,9 @@ func (s *sessionEngine) connectionsChanged(connections []aiproxy.ConnectionHosts
 // serving records which Connections the tunnel now serves, and sends the names to
 // capture for them to the helper.
 func (e *engine) serving(connections []string) {
-	domains := e.router.CapturedDomains()
+	domains, skipped := e.router.CapturedDomains()
 	e.mu.Lock()
-	e.ready, e.connections, e.domains, e.lastError = true, connections, domains, ""
+	e.ready, e.connections, e.domains, e.skipped, e.lastError = true, connections, domains, skipped, ""
 	e.mu.Unlock()
 	e.link.setDomains(domains)
 }
@@ -348,7 +352,7 @@ func (e *engine) writeStatus(ctx context.Context) {
 		name, _, _ := tunnel.Physical.Current()
 		status := Status{
 			PID: os.Getpid(), Started: e.started, Ready: e.ready, Interface: name,
-			Connections: e.connections, Domains: e.domains, Counts: e.router.Counts(),
+			Connections: e.connections, Domains: e.domains, SkippedNames: e.skipped, Counts: e.router.Counts(),
 			Routes: e.cfg.Routes, ReadTools: e.router.ReadTools(),
 			TCPBytes:  e.router.Traffic.TCPUp.Load() + e.router.Traffic.TCPDown.Load(),
 			UDPBytes:  e.router.Traffic.UDPUp.Load() + e.router.Traffic.UDPDown.Load(),

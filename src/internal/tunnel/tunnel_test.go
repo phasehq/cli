@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"net"
 	"net/netip"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,15 +101,56 @@ func TestDomainsCoverEveryHostOnce(t *testing.T) {
 		{Protocol: "postgres", Host: agentapi.HostRule{Match: "exact", Value: "db.internal.example", Port: 5432}},
 		{Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: "API.GITHUB.COM."}},
 	}
-	got := Domains(rules)
+	got, skipped := Domains(rules)
 	want := []string{"amazonaws.com", "api.github.com", "db.internal.example", ControlHost}
-	if len(got) != len(want) {
-		t.Fatalf("%v", got)
+	if len(got) != len(want) || skipped != 0 {
+		t.Fatalf("%v, %d skipped", got, skipped)
 	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("%v", got)
 		}
+	}
+}
+
+// The helper refuses a whole attach over one name it can't write a DNS entry for, so
+// one odd host name would keep every Connection out of the tunnel. Such a name is
+// left out, and counted.
+func TestDomainsLeaveOutNamesADNSEntryCannotHold(t *testing.T) {
+	host := func(value string) Rule {
+		return Rule{Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: value, Port: 443}}
+	}
+	rules := []Rule{
+		host("api.github.com"), host(" API.Example.Test. "),
+		host("under_score.example.test"), host("UNDER_SCORE.example.test."), host("*.wild.example.test"),
+		host("localhost"), host("bücher.example.test"), host("two words.example.test"), host("../../etc/hosts"),
+		host("fd00::1"), host("::ffff:192.0.2.1"), host("api.example.test:8443"), host(strings.Repeat("a.", 127) + "test"),
+		host(""), host(" "), host("."),
+	}
+	got, skipped := Domains(rules)
+	if want := []string{"api.example.test", "api.github.com", ControlHost}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	// Each name once, however often and however it is written; nothing at all isn't
+	// a name.
+	if skipped != 10 {
+		t.Fatalf("%d names were counted as left out", skipped)
+	}
+	for _, domain := range got {
+		if !CapturableDomain(domain) {
+			t.Errorf("%q is sent to the helper, which refuses it", domain)
+		}
+	}
+	router := NewRouter(&Upstream{Servers: []string{"127.0.0.1"}}, nil)
+	if err := router.Update("http://phase:secret@127.0.0.1:1", "", rules); err != nil {
+		t.Fatal(err)
+	}
+	if captured, left := router.CapturedDomains(); !reflect.DeepEqual(captured, got) || left != skipped {
+		t.Fatalf("the router sends %v and leaves out %d", captured, left)
+	}
+	// A name that was left out is still a Connection's host when a flow names it.
+	if captured, protocol := router.captured("under_score.example.test", 443); !captured || protocol != "http" {
+		t.Fatal("a host whose name was left out is no longer a Connection's")
 	}
 }
 

@@ -189,7 +189,7 @@ func ReadDomains(hosts map[string][]string) []string {
 	for _, names := range hosts {
 		for _, name := range names {
 			name = strings.Trim(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "*."), ".")
-			if capturableDomain(name) {
+			if CapturableDomain(name) {
 				seen[name] = true
 			}
 		}
@@ -202,10 +202,10 @@ func ReadDomains(hosts map[string][]string) []string {
 	return domains
 }
 
-// capturableDomain is the helper's own rule for a name it will write a DNS entry for.
-// The helper refuses a whole attach over one name that breaks it, so a name that does
-// is left out here.
-func capturableDomain(domain string) bool {
+// CapturableDomain is the rule for a name the helper will write a DNS entry for: the
+// helper applies it, and the engine leaves out any name that breaks it, because the
+// helper refuses a whole attach over one that does.
+func CapturableDomain(domain string) bool {
 	if domain == "" || len(domain) > 253 || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || !strings.Contains(domain, ".") {
 		return false
 	}

@@ -55,9 +55,12 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		// nothing is left running with its state deleted from under it.
 		if directory, err := tunnelStateDirectory(); err == nil {
 			if pid, running := tunnelEnginePID(directory); running {
-				stopTunnel(directory)
+				stopped := stopTunnel(directory)
 				if processIsAlive(pid) {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop phase up's engine (pid %d); run phase down.\n", pid)
+				}
+				if stopped.stillAttached != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s is still attached to the Phase helper, and wasn't stopped.\n", stopped.stillAttached)
 				}
 			}
 		}
