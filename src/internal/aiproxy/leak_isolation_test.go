@@ -1,10 +1,15 @@
 package aiproxy
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -305,5 +310,138 @@ func TestARegistrationIsAnsweredWithoutWaitingOnTheStore(t *testing.T) {
 	}
 	if out, _ := next.index.Redact([]byte("x " + isolationLater + " y")); string(out) != "x ph:secret:second y" {
 		t.Fatalf("the next proxy does not know the value: %q", out)
+	}
+}
+
+// toolResult is the text of the tool result a model request (anthropicBody)
+// carried, as the provider received it.
+func toolResult(t *testing.T, body []byte) string {
+	t.Helper()
+	var request struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	var parts []struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil || len(request.Messages) != 2 || json.Unmarshal(request.Messages[1].Content, &parts) != nil || len(parts) != 1 {
+		t.Fatalf("the provider received no tool result: %s", body)
+	}
+	return parts[0].Content
+}
+
+// A document one login registered, a kubeconfig and a JSON value, is indexed
+// value by value, and stays so through the store. After a restart its own
+// login's proxy replaces each value, and a piece of one, by its id; another
+// login of the tenant sees each value replaced whole, by its type alone, and
+// no piece; and another tenant's proxy does what one that never heard of the
+// document does.
+func TestADocumentOneLoginRegisteredAfterARestart(t *testing.T) {
+	const kubeconfigID, accountID = "kubeconfig-id-of-a", "account-id-of-a"
+	private, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyData := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	token, password := randomLeakValue(t, 40), randomLeakValue(t, 16)
+	keyID, clientSecret := hex.EncodeToString([]byte(randomLeakValue(t, 20))), randomLeakValue(t, 35)
+	kubeconfig := func(keyData, token, password string) string {
+		return "apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    server: https://10.0.0.1:6443\n  name: prod\nusers:\n- name: admin\n  user:\n    client-key-data: " + keyData +
+			"\n    token: " + token + "\n    password: \"" + password + "\"\n"
+	}
+	account := func(keyID, clientSecret string) string {
+		return fmt.Sprintf(`{"type": "service_account", "private_key_id": %q, "client_secret": %q, "token_uri": "https://oauth2.example.com/token"}`, keyID, clientSecret)
+	}
+	// What a session sends: both documents whole, then values and pieces of
+	// them on their own.
+	conversation := func(keyData, token, password, keyID, clientSecret, piece, short string) string {
+		return "cat ~/.kube/config\n" + kubeconfig(keyData, token, password) + "then\n" + account(keyID, clientSecret) +
+			"\nfirst " + token + " then " + piece + " then " + short + " then " + keyID + " then " + keyData + " end\n"
+	}
+	piece, short := token[5:38], token[:39]
+	content := conversation(keyData, token, password, keyID, clientSecret, piece, short)
+
+	store := newTestInventoryStore(t)
+	registering := newStoredLeakRigAs(t, store, leakLoginA)
+	if answer := registerThroughControl(t, registering.proxy, []leakguard.Value{
+		{Type: "secret", ID: kubeconfigID, Value: kubeconfig(keyData, token, password)},
+		{Type: "sealed", ID: accountID, Value: account(keyID, clientSecret)},
+	}, phaseIDs(2)); answer == nil || answer.Added != 2 {
+		t.Fatalf("A's registration: %+v", answer)
+	}
+	registering.proxy.CloseHijacked()
+	if records := storedRecords(t, store); records != 2 {
+		t.Fatalf("%d records stored for two documents", records)
+	}
+	send := func(rig *leakRig) (string, []byte) {
+		t.Helper()
+		postMessages(t, rig.client(rig.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(content), "")
+		received := rig.lastReceived().body
+		return toolResult(t, received), received
+	}
+	named := func(text ...[]byte) string {
+		for _, one := range text {
+			for _, id := range []string{kubeconfigID, accountID} {
+				if bytes.Contains(one, []byte(id)) {
+					return id
+				}
+			}
+		}
+		return ""
+	}
+
+	// A's own proxy, started again: every value by its id, and a piece of one.
+	asA := newStoredLeakRigAs(t, store, leakLoginA)
+	if status, _ := rawStatus(t, asA); status.SecretsKnown != 2 || status.Inventory.Loaded != 2 {
+		t.Fatalf("A's next proxy: %+v %+v", status, status.Inventory)
+	}
+	ofKube, ofAccount := "ph:secret:"+kubeconfigID, "ph:sealed:"+accountID
+	if got, _ := send(asA); got != conversation(ofKube, ofKube, ofKube, ofAccount, ofAccount, ofKube, ofKube) {
+		t.Fatalf("A's own proxy sent:\n%s", got)
+	}
+
+	// Another login of the tenant: each value whole, by its type alone. A
+	// piece of a value, and a value cut short by a character, pass.
+	asB := newStoredLeakRigAs(t, store, leakLoginB)
+	statusB, statusBodyB := rawStatus(t, asB)
+	if statusB.SecretsKnown != 2 || statusB.Inventory.Loaded != 2 {
+		t.Fatalf("B's proxy: %+v %+v", statusB, statusB.Inventory)
+	}
+	got, received := send(asB)
+	if got != conversation("ph:secret", "ph:secret", "ph:secret", "ph:sealed", "ph:sealed", piece, short) {
+		t.Fatalf("B's proxy sent:\n%s", got)
+	}
+	events := asB.distinctLeakEvents(t, 1)
+	shipped, _ := json.Marshal(events)
+	if id := named(received, shipped, asB.shippedPayloads(), []byte(statusBodyB)); id != "" {
+		t.Fatalf("B's proxy named %q, an id of another login", id)
+	}
+	if detail := events[0].Detail; sortedList(detail["placeholders"]) != "ph:sealed,ph:secret" {
+		t.Fatalf("B's event: %+v", detail)
+	}
+
+	// Another tenant: what a proxy that was never told of the document sends,
+	// to the byte, and nothing of the store in its counts.
+	asY := newStoredLeakRigAs(t, store, otherTenantA)
+	never := newStoredLeakRigAs(t, newTestInventoryStore(t), otherTenantA)
+	statusY, statusBodyY := rawStatus(t, asY)
+	_, receivedY := send(asY)
+	_, receivedNever := send(never)
+	if !bytes.Equal(receivedY, receivedNever) || statusY.SecretsKnown != 0 || statusY.Inventory.Loaded != 0 {
+		t.Fatalf("another tenant's proxy knew something of the document: %+v\n%s", statusY.Inventory, receivedY)
+	}
+	if sent := toolResult(t, receivedY); strings.Contains(sent, "ph:secret") || strings.Contains(sent, "ph:sealed") || !strings.Contains(sent, keyID) || !strings.Contains(sent, piece) {
+		t.Fatalf("another tenant's proxy replaced a value as one of an inventory: %s", sent)
+	}
+	if events := asY.leakEventsNow(); len(events) > 0 && events[0].Detail["inventoryHits"] != nil && events[0].Detail["inventoryHits"] != float64(0) {
+		t.Fatalf("another tenant's proxy reported an indexed value: %+v", events[0].Detail)
+	}
+	if id := named(receivedY, asY.shippedPayloads(), []byte(statusBodyY)); id != "" {
+		t.Fatalf("another tenant's proxy named %q", id)
 	}
 }
