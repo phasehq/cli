@@ -428,7 +428,15 @@ a reboot still has its values replaced before anything registers them again:
 - `phase users logout` removes the records of the login that logs out, and
   every record of its tenant when no saved login of that tenant is left on
   the machine. It makes no key and no file, and leaves other tenants'
-  records as they are.
+  records as they are. Picking a login's records out needs the master: it
+  is all that says whose a record is. When the keystore does not give it (a
+  shell with no session bus, a refused prompt, no key there), or the file is
+  one that key does not open (another key's, a newer store format's, not an
+  owner-only file), the logout does not leave the records for a later proxy
+  to load: it removes the whole file, every login's, and says so on stderr.
+  A value is stored again when a command next reads it. A logout that could
+  not remove what it should says that instead, and reports nothing gone
+  that is still there.
 - Two versions are stored. The store format is the file's layout: a version
   of Phase reads every format up to its own and leaves a newer file
   untouched, running from memory. The matching scheme is each record's own:
@@ -444,7 +452,8 @@ a reboot still has its values replaced before anything registers them again:
   and the rest is counted and dropped. A file that exists and cannot be
   opened or understood at all (not an owner-only regular file of this user,
   too large, no inventory header) is never written over: the proxy runs
-  from memory (`store_unreadable`) until `phase ai disable` removes it.
+  from memory (`store_unreadable`) until `phase ai disable` or a logout
+  removes it.
 - On a machine with no system keystore nothing is stored: no key, no file,
   and the inventory is in memory as before.
 - `phase ai disable` removes the master, then the file, and `phase users logout

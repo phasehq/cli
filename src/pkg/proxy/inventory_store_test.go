@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	mathrand "math/rand"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1022,8 +1024,8 @@ func TestForgetRemovesALoginsOrATenantsRecords(t *testing.T) {
 	store := newInventoryTestStore(t)
 	other := store
 	other.Tenant = "https://console.test\norganisation\nanother-organisation"
-	if err := store.Forget([]string{inventoryLoginA}, true); err != nil {
-		t.Fatal(err)
+	if everyone, err := store.Forget([]string{inventoryLoginA}, true); err != nil || everyone {
+		t.Fatal(everyone, err)
 	}
 	if _, err := store.Keyring.Get(inventoryKeyringService, inventoryKeyringUser); err == nil {
 		t.Fatal("forgetting made a key")
@@ -1054,8 +1056,8 @@ func TestForgetRemovesALoginsOrATenantsRecords(t *testing.T) {
 		sort.Strings(ids)
 		return ids
 	}
-	if err := store.Forget([]string{inventoryLoginA, "", "a login that stored nothing"}, false); err != nil {
-		t.Fatal(err)
+	if everyone, err := store.Forget([]string{inventoryLoginA, "", "a login that stored nothing"}, false); err != nil || everyone {
+		t.Fatal(everyone, err)
 	}
 	if got := held(store); fmt.Sprint(got) != "[b-one]" {
 		t.Fatalf("after one login is forgotten its tenant holds %v", got)
@@ -1063,8 +1065,8 @@ func TestForgetRemovesALoginsOrATenantsRecords(t *testing.T) {
 	if got := held(other); fmt.Sprint(got) != "[elsewhere]" {
 		t.Fatalf("another tenant's records after a logout: %v", got)
 	}
-	if err := store.Forget(nil, true); err != nil {
-		t.Fatal(err)
+	if everyone, err := store.Forget(nil, true); err != nil || everyone {
+		t.Fatal(everyone, err)
 	}
 	if got := held(store); len(got) != 0 {
 		t.Fatalf("after its tenant is forgotten: %v", got)
@@ -1075,8 +1077,155 @@ func TestForgetRemovesALoginsOrATenantsRecords(t *testing.T) {
 	// A store with no tenant, and a machine with no keystore, have nothing.
 	none := store
 	none.Tenant = ""
-	if err := none.Forget([]string{inventoryLoginA}, true); err != nil {
-		t.Fatal(err)
+	if everyone, err := none.Forget([]string{inventoryLoginA}, true); err != nil || everyone {
+		t.Fatal(everyone, err)
+	}
+}
+
+// troubledKeyring is a keystore that can stop answering at all, as the
+// desktop's does to a shell with no session bus, or refuse the inventory key.
+type troubledKeyring struct {
+	*lockedKeyring
+	silent, refusing atomic.Bool
+}
+
+func (k *troubledKeyring) Get(service, user string) (string, error) {
+	if k.silent.Load() {
+		return "", errors.New("org.freedesktop.secrets was not provided by any service")
+	}
+	if k.refusing.Load() && service == inventoryKeyringService {
+		return "", errors.New("user interaction is not allowed")
+	}
+	return k.lockedKeyring.Get(service, user)
+}
+
+// troubledStore is a store with a login's record, another login's of its
+// tenant and another tenant's, and the key they were stored under.
+func troubledStore(t *testing.T) (store InventoryStore, keyring *troubledKeyring, tenants []InventoryStore, key string) {
+	t.Helper()
+	store = newInventoryTestStore(t)
+	keyring = &troubledKeyring{lockedKeyring: store.Keyring.(*lockedKeyring)}
+	store.Keyring = keyring
+	other := store
+	other.Tenant = "https://console.test\norganisation\nanother-organisation"
+	for id, who := range map[string]struct {
+		store InventoryStore
+		login string
+	}{"a-one": {store, inventoryLoginA}, "b-one": {store, inventoryLoginB}, "elsewhere": {other, inventoryLoginA}} {
+		inv, _ := openInventory(t, who.store)
+		principal := principalOf(t, inv, who.login)
+		entries, err := censor.IndexValue(principal.Key(), "secret", id, inventoryTestValue(t, inventoryTestAlphabet, 40))
+		if err != nil {
+			t.Fatal(err)
+		}
+		inv.Add([]StoredEntries{{Entries: entries, Principal: principal}})
+	}
+	key, err := keyring.lockedKeyring.Get(inventoryKeyringService, inventoryKeyringUser)
+	if err != nil || inventoryFileRecords(t, store) != 3 {
+		t.Fatalf("the store was not made: %v", err)
+	}
+	return store, keyring, []InventoryStore{store, other}, key
+}
+
+// A logout removes the login's stored values whatever the keystore says. With
+// no key that opens the file nothing tells whose a record is, so all of it
+// goes and Forget says so: what a logout reported removed never loads again.
+func TestForgetDoesNotDependOnTheKeystore(t *testing.T) {
+	cases := map[string]func(t *testing.T, store InventoryStore, keyring *troubledKeyring){
+		"a keystore that does not answer": func(_ *testing.T, _ InventoryStore, keyring *troubledKeyring) { keyring.silent.Store(true) },
+		"a keystore that refuses the key": func(_ *testing.T, _ InventoryStore, keyring *troubledKeyring) { keyring.refusing.Store(true) },
+		"a keystore that holds no key": func(_ *testing.T, _ InventoryStore, keyring *troubledKeyring) {
+			keyring.mu.Lock()
+			defer keyring.mu.Unlock()
+			delete(keyring.values, inventoryKeyringService+"/"+inventoryKeyringUser)
+		},
+		"a key this build cannot read": func(t *testing.T, _ InventoryStore, keyring *troubledKeyring) {
+			if err := keyring.Set(inventoryKeyringService, inventoryKeyringUser, "v2:0011223344556677:AAAA"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a file under another key": func(t *testing.T, store InventoryStore, _ *troubledKeyring) {
+			if err := store.ReplaceKey(); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a file of a newer format": func(t *testing.T, store InventoryStore, _ *troubledKeyring) {
+			file := mustRead(t, inventoryFilePath(store))
+			file[len(inventoryMagic)+3] = InventoryStoreFormat + 1
+			if err := os.WriteFile(inventoryFilePath(store), file, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	if runtime.GOOS != "windows" {
+		cases["a file others can read"] = func(t *testing.T, store InventoryStore, _ *troubledKeyring) {
+			if err := os.Chmod(inventoryFilePath(store), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for name, trouble := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, keyring, tenants, key := troubledStore(t)
+			trouble(t, store, keyring)
+			everyone, err := store.Forget([]string{inventoryLoginA}, false)
+			if err != nil || !everyone {
+				t.Fatalf("a logout answered %v, %v: it is to remove every login's and say so", everyone, err)
+			}
+			if _, err := os.Lstat(inventoryFilePath(store)); !os.IsNotExist(err) {
+				t.Fatalf("the file is still there after the logout: %v", err)
+			}
+			// The keystore is back, with the key the records were stored under.
+			keyring.silent.Store(false)
+			keyring.refusing.Store(false)
+			if err := keyring.Set(inventoryKeyringService, inventoryKeyringUser, key); err != nil {
+				t.Fatal(err)
+			}
+			for _, tenant := range tenants {
+				if _, loaded := openInventory(t, tenant); len(loaded) != 0 {
+					t.Fatalf("%d records load again after a logout that reported them removed", len(loaded))
+				}
+			}
+		})
+	}
+	// With the key, and a file it opens, only the login's own records go.
+	store, _, tenants, _ := troubledStore(t)
+	if everyone, err := store.Forget([]string{inventoryLoginA}, false); err != nil || everyone {
+		t.Fatalf("a logout with the key answered %v, %v", everyone, err)
+	}
+	for at, want := range []string{"b-one", "elsewhere"} {
+		if _, loaded := openInventory(t, tenants[at]); len(loaded) != 1 || loaded[0].Entries.ID != want {
+			t.Fatalf("after a logout with the key a tenant holds %d records, want %s alone", len(loaded), want)
+		}
+	}
+}
+
+// A logout says what it could not remove: with or without the key, a store
+// it cannot write is an error, and nothing it left is reported gone.
+func TestForgetSaysWhatItCouldNotRemove(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory that refuses its owner's writes")
+	}
+	for name, silent := range map[string]bool{"with the key": false, "with a keystore that does not answer": true} {
+		t.Run(name, func(t *testing.T) {
+			store, keyring, _, _ := troubledStore(t)
+			keyring.silent.Store(silent)
+			if err := os.Chmod(store.Directory, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(store.Directory, 0o700) })
+			everyone, err := store.Forget([]string{inventoryLoginA}, false)
+			if err == nil || everyone {
+				t.Fatalf("a logout that could remove nothing answered %v, %v", everyone, err)
+			}
+			if err := os.Chmod(store.Directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			keyring.silent.Store(false)
+			if _, loaded := openInventory(t, store); len(loaded) != 2 {
+				t.Fatalf("%d of the tenant's records are left after a logout that failed", len(loaded))
+			}
+		})
 	}
 }
 

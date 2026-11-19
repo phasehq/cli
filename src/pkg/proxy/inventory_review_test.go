@@ -382,7 +382,7 @@ func TestInventoryLockHasADeadline(t *testing.T) {
 	}
 	own := store
 	own.Tenant = inventoryTestTenant
-	if err := own.Forget([]string{inventoryTestLogin}, false); !errors.Is(err, errInventoryBusy) || !strings.Contains(err.Error(), "was not removed") {
+	if everyone, err := own.Forget([]string{inventoryTestLogin}, false); everyone || !errors.Is(err, errInventoryBusy) || !strings.Contains(err.Error(), "was not removed") {
 		t.Fatalf("a logout from a store in use: %v", err)
 	}
 	if waited := time.Since(started); waited > 3*time.Second {
@@ -417,7 +417,8 @@ func TestInventoryRemovalWaitsForAStoreInUse(t *testing.T) {
 		"a logout": func() error {
 			own := store
 			own.Tenant = inventoryTestTenant
-			return own.Forget([]string{inventoryTestLogin}, false)
+			_, err := own.Forget([]string{inventoryTestLogin}, false)
+			return err
 		},
 		"a disable": store.Remove,
 	} {

@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/phasehq/cli/internal/remoteapi"
@@ -379,6 +381,59 @@ func TestLogoutLeavesAnotherConsoleOfTheOriginAlone(t *testing.T) {
 		if got := fmt.Sprint(storedIDs(t, aiInventoryStore(), identities[id].Tenant)); got != want {
 			t.Errorf("after a logout from the Console at /one, the store holds %s for %q", got, identities[id].Tenant)
 		}
+	}
+}
+
+// silentKeystore is a keystore that stops answering while silent is set, as
+// the desktop's does to a shell with no session bus.
+type silentKeystore struct {
+	memoryKeystore
+	silent atomic.Bool
+}
+
+func (k *silentKeystore) Get(service, user string) (string, error) {
+	if k.silent.Load() {
+		return "", errors.New("org.freedesktop.secrets was not provided by any service")
+	}
+	return k.memoryKeystore.Get(service, user)
+}
+
+// A logout from a shell whose keystore does not answer still removes the
+// login's stored values. Nothing tells them from the others then, so the
+// whole store goes, and the logout says so.
+func TestLogoutRemovesStoredValuesWhenTheKeystoreDoesNotAnswer(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
+	t.Setenv("PHASE_HOST", "")
+	gokeyring.MockInit()
+	keystore := &silentKeystore{memoryKeystore: memoryKeystore{values: map[string]string{}}}
+	original := aiCAStore
+	aiCAStore = phaseproxy.CAStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: keystore}
+	t.Cleanup(func() { aiCAStore = original })
+
+	const host = "https://console.test"
+	organisation, elsewhere := "org-one", "org-two"
+	if err := config.AddUser(config.UserConfig{Host: host, ID: "account-a", OrganizationID: &organisation}); err != nil {
+		t.Fatal(err)
+	}
+	leaving := phaseproxy.NewInventoryIdentity(host, organisation, phaseproxy.InventoryLoginUser, "account-a")
+	other := phaseproxy.NewInventoryIdentity(host, elsewhere, phaseproxy.InventoryLoginUser, "account-c")
+	storeFor(t, aiInventoryStore(), leaving, "of-a")
+	storeFor(t, aiInventoryStore(), other, "of-c")
+
+	keystore.silent.Store(true)
+	_, stderr, err := runPhaseCommand(t, "", "users", "logout")
+	if err != nil || !strings.Contains(stderr, leakInventoryAllForgotten) || strings.Contains(stderr, "Could not remove") {
+		t.Fatalf("a logout with no keystore: %v %s", err, stderr)
+	}
+	if _, err := os.Lstat(filepath.Join(aiCAStore.Directory, inventoryTestFile)); !os.IsNotExist(err) {
+		t.Fatalf("the inventory file is still there after the logout: %v", err)
+	}
+	// The keystore answers again, with the same key: nothing loads.
+	keystore.silent.Store(false)
+	if got := fmt.Sprint(storedIDs(t, aiInventoryStore(), leaving.Tenant), storedIDs(t, aiInventoryStore(), other.Tenant)); got != "[] []" {
+		t.Fatalf("after the keystore came back the store holds %s", got)
 	}
 }
 

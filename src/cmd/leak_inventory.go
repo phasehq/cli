@@ -31,7 +31,8 @@ func savedLoginIdentities(host string, user config.UserConfig) []phaseproxy.Inve
 
 // forgetLeakInventory removes what the inventory stored for a login that
 // logged out, and all its tenant stored when no saved login of it is left.
-func forgetLeakInventory(user config.UserConfig, remaining []config.UserConfig) error {
+// everyone reports that every login's went: no key said whose was whose.
+func forgetLeakInventory(user config.UserConfig, remaining []config.UserConfig) (everyone bool, err error) {
 	hosts := []string{user.Host}
 	if override := os.Getenv("PHASE_HOST"); override != "" && override != user.Host {
 		hosts = append(hosts, override)
@@ -54,10 +55,16 @@ func forgetLeakInventory(user config.UserConfig, remaining []config.UserConfig) 
 				last = last && identity.Tenant != store.Tenant
 			}
 		}
-		failed = errors.Join(failed, store.Forget(logins, last))
+		all, err := store.Forget(logins, last)
+		everyone = everyone || all
+		failed = errors.Join(failed, err)
 	}
-	return failed
+	return everyone, failed
 }
+
+// leakInventoryAllForgotten is what a logout says when it removed every
+// login's stored values to be sure of removing its own.
+const leakInventoryAllForgotten = "The leak protection inventory could not be opened with its key from the system keystore, so this login's stored values could not be told from the others: all of them were removed. A value is stored again when a command next reads it."
 
 // leakInventorySummary says, for phase ai status, whether the values the
 // proxy knows outlive it, and what the store held that it could not use.

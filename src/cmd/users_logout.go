@@ -111,8 +111,12 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to update config: %w", err)
 		}
 		if leaving != nil {
-			if err := forgetLeakInventory(*leaving, staying); err != nil {
+			everyone, err := forgetLeakInventory(*leaving, staying)
+			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove this login's values from the leak protection inventory: %v\n", err)
+			}
+			if everyone {
+				fmt.Fprintln(cmd.ErrOrStderr(), leakInventoryAllForgotten)
 			}
 		}
 		fmt.Println("Logged out successfully.")

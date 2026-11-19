@@ -749,47 +749,62 @@ func (s InventoryStore) Remove() error {
 }
 
 // Forget removes what is stored for logins of the store's tenant, or for the
-// whole tenant, as a logout does. It makes no key or file, touches no other
-// tenant's records, and waits for a store in use as Remove does.
-func (s InventoryStore) Forget(logins []string, wholeTenant bool) error {
+// whole tenant, as a logout does. It makes no key or file, and waits for a
+// store in use as Remove does. With the key it touches no other tenant's
+// records. The key is all that says whose a record is, so a file it does not
+// open, or a keystore that does not give it, leaves no way to pick: the whole
+// file goes, and everyone says so. What could not be removed is the error.
+func (s InventoryStore) Forget(logins []string, wholeTenant bool) (everyone bool, err error) {
 	if s.Tenant == "" {
-		return nil
+		return false, nil
 	}
 	directory, err := s.directory()
 	if err != nil {
-		return err
+		return false, err
 	}
 	// With no file there is nothing to remove, and the keystore is not asked.
-	if _, err := os.Lstat(filepath.Join(directory, inventoryFileName)); err != nil || !s.KeystoreAvailable() {
-		return nil
+	path := filepath.Join(directory, inventoryFileName)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("look for the leak protection inventory: %w", err)
 	}
-	id, raw, err := s.storedKey()
-	if errors.Is(err, errNoInventoryKey) {
-		return nil
+	// Asked with no lock held. Whatever the keystore answers, the removal goes on.
+	var inv *Inventory
+	if id, raw, err := s.storedKey(); err == nil {
+		inv, _ = newInventory(s, directory, id, raw, s.Tenant)
+		clear(raw)
 	}
+	unlock, err := lockInventory(directory, inventoryRemoveWait)
 	if err != nil {
-		return fmt.Errorf("read the leak protection inventory key: %w", err)
+		return false, errRecordsRemain(err)
 	}
-	inv, err := newInventory(s, directory, id, raw, s.Tenant)
-	clear(raw)
-	if err != nil {
-		return err
+	defer unlock()
+	if inv != nil {
+		file := inv.read()
+		if file.present {
+			return false, inv.forget(file, logins, wholeTenant)
+		}
+		if !file.newer && !file.unreadable && !file.foreign {
+			// The file went while the lock was waited for.
+			return false, nil
+		}
 	}
+	sweepInventoryTemporaries(directory)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("remove the leak protection inventory: %w", err)
+	}
+	return true, nil
+}
+
+// forget writes the file without the records of logins of this tenant, or of
+// the whole tenant. Called with the inventory lock held.
+func (inv *Inventory) forget(file inventoryFile, logins []string, wholeTenant bool) error {
 	gone := map[[inventoryTagSize]byte]bool{}
 	for _, login := range logins {
 		if login != "" {
 			gone[inv.loginTag(inv.tag("principal", []byte(login)))] = true
 		}
-	}
-	unlock, err := lockInventory(directory, inventoryRemoveWait)
-	if err != nil {
-		return errRecordsRemain(err)
-	}
-	defer unlock()
-	file := inv.read()
-	if !file.present {
-		// No file, or one this key cannot read: nothing of this tenant's to remove.
-		return nil
 	}
 	kept := file.records[:0:0]
 	for _, record := range file.records {
