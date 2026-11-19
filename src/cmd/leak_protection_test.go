@@ -73,6 +73,36 @@ func TestAgentLoginRefusesWhenLeakProtectionIsDown(t *testing.T) {
 	}
 }
 
+// A session that kept its marker and lost its proxy variables is treated as
+// a session whose leak protection is down: an Agent login is refused and any
+// other login is warned, where a shell outside a session is told nothing.
+func TestASessionWithoutItsProxyVariablesIsNotTakenForNoSession(t *testing.T) {
+	previousEnvironment := leakguard.Environment
+	leakguard.Environment = func(key string) string {
+		if key == "PHASE_AI_ENABLED" {
+			return "1"
+		}
+		return ""
+	}
+	t.Cleanup(func() { leakguard.Environment = previousEnvironment })
+	previousStat := leakRuntimeStat
+	leakRuntimeStat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { leakRuntimeStat = previousStat })
+	warnings := captureLeakWarnings(t)
+	if err := protectSecrets(context.Background(), &phase.AgentBackend{}, leakTestSecrets); !errors.Is(err, errLeakProtectionUnreachable) {
+		t.Fatalf("an Agent login was handed values in a session with no leak protection: %v", err)
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("an Agent refusal also printed a warning: %q", warnings.String())
+	}
+	if err := protectValues(context.Background(), false, []leakguard.Value{{Type: "secret", ID: "STRIPE_KEY", Value: leakTestSecrets[0].Value}}); err != nil {
+		t.Fatalf("a personal login was refused: %v", err)
+	}
+	if got := warnings.String(); got != leakProtectionWarning+"\n" {
+		t.Fatalf("warning: %q", got)
+	}
+}
+
 func TestOtherLoginsWarnOnceAndCarryOn(t *testing.T) {
 	downSession(t)
 	warnings := captureLeakWarnings(t)

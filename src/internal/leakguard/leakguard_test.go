@@ -123,7 +123,6 @@ func TestOutsideASessionNothingHappens(t *testing.T) {
 	for _, environment := range []map[string]string{
 		{},
 		{"HTTPS_PROXY": strings.Replace(server.URL, "http://", "http://phase:capability@", 1)},
-		{"PHASE_AI_ENABLED": "1"},
 	} {
 		withEnvironment(t, environment)
 		if Active() {
@@ -135,6 +134,35 @@ func TestOutsideASessionNothingHappens(t *testing.T) {
 	}
 	if fake.keyCalls != 0 || fake.posts != 0 {
 		t.Fatal("a call was made outside a session")
+	}
+}
+
+// A session whose environment kept the marker and lost the proxy, as after a
+// filter that strips proxy variables, is a session that cannot protect what
+// it hands out, not a shell outside any session: the registration fails as it
+// does when the session's proxy is down. Another source's proxy is still
+// used when there is one.
+func TestASessionMarkerWithNoProxyIsABrokenSession(t *testing.T) {
+	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1"})
+	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_0123456789abcdefghij"}}
+	proxy, found := Locate()
+	if !found || !proxy.InSession() || proxy.URL != "" {
+		t.Fatalf("a session with no proxy in its environment was located as %+v, found %t", proxy, found)
+	}
+	if _, err := proxy.Register(context.Background(), value); !errors.Is(err, ErrNotListening) {
+		t.Fatalf("registering with a session that names no proxy: %v", err)
+	}
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) {
+		t.Fatalf("registering in a session that names no proxy: %v", err)
+	}
+
+	machine, server := newFakeProxy(t)
+	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { return capabilityURL(server), true }})
+	if proxy, found := Locate(); !found || proxy.Source != "runtime" {
+		t.Fatalf("a proxy another source finds was passed over: %+v, found %t", proxy, found)
+	}
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || machine.posts != 1 {
+		t.Fatalf("registering with the proxy another source found: %+v %v", result, err)
 	}
 }
 

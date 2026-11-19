@@ -6,7 +6,9 @@
 // The proxy is found through an ordered list of sources: the session a
 // command runs in names it in the environment, and other sources find one
 // that runs on the machine for commands whose shell does not carry that
-// environment. When no source finds one it does nothing and makes no call.
+// environment. When no source finds one it does nothing and makes no call,
+// unless the environment still carries the session's marker: a registration
+// then fails, as it does when the session's proxy is down.
 // A source can also say its proxy is restarting; a registration then waits
 // for it, for Timeout in all.
 package leakguard
@@ -142,7 +144,13 @@ var Environment = os.Getenv
 // session marker and the proxy that carries the session's capability are both
 // in its environment.
 func Active() bool {
-	return Environment("PHASE_AI_ENABLED") == "1" && proxyURL() != ""
+	return marked() && proxyURL() != ""
+}
+
+// marked reports the session marker alone. With no proxy beside it the
+// process still runs inside a session, one whose proxy it cannot name.
+func marked() bool {
+	return Environment("PHASE_AI_ENABLED") == "1"
 }
 
 // SourceSession is the source that reads the session's own environment.
@@ -209,6 +217,12 @@ func (p Proxy) InSession() bool { return p.Source == SourceSession }
 
 // Locate returns the proxy to register with: the first one a source finds,
 // or says is restarting.
+//
+// A session whose environment kept the marker and lost the proxy is still a
+// session: what a command hands out there is in front of the model. When no
+// source finds a proxy for it, it is returned as the session's proxy with no
+// address, so a registration fails as it does for a session whose proxy is
+// down, and is not taken for a shell outside any session.
 func Locate() (Proxy, bool) {
 	sourcesMu.RLock()
 	ordered := sources
@@ -221,6 +235,9 @@ func Locate() (Proxy, bool) {
 		if source.Restarting != nil && source.Restarting() {
 			return Proxy{Source: source.Name, source: source}, true
 		}
+	}
+	if marked() {
+		return Proxy{Source: SourceSession}, true
 	}
 	return Proxy{}, false
 }
