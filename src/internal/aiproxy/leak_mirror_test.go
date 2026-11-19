@@ -1743,7 +1743,7 @@ func TestAPassedThroughConnectionIsSaidToBeUnreadWhileItLasts(t *testing.T) {
 	if inspected, reasons := hostStatus(status, mirrorHost); inspected || !reflect.DeepEqual(reasons, []string{leakReasonHelloNotMirrored}) {
 		t.Fatalf("with a passed-through connection open the host is listed as inspected = %v, for %v", inspected, reasons)
 	}
-	if !reflect.DeepEqual(status.UnreadHosts, []string{"*.cursor.sh", "cursor.sh", mirrorHost}) || containsString(status.InspectedHosts, mirrorHost) {
+	if !reflect.DeepEqual(status.UnreadHosts, []string{mirrorHost}) || containsString(status.InspectedHosts, mirrorHost) {
 		t.Fatalf("status hosts: %v and %v", status.InspectedHosts, status.UnreadHosts)
 	}
 	rig.passedThroughOnce(t, leakReasonHelloNotMirrored)

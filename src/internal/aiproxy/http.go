@@ -22,6 +22,7 @@ import (
 
 	"github.com/phasehq/cli/internal/agentapi"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
+	"golang.org/x/net/http2"
 )
 
 type httpProxy struct {
@@ -68,6 +69,12 @@ type httpProxy struct {
 	mu        sync.Mutex
 	hijacked  map[net.Conn]struct{}
 	wg        sync.WaitGroup
+	// unaltered sends the requests of hosts whose clients may speak HTTP/2
+	// (unalteredTransport); unalteredOwn is its connections, when they are
+	// the proxy's own to close.
+	unalteredOnce sync.Once
+	unaltered     http.RoundTripper
+	unalteredOwn  *http.Transport
 }
 
 type requestFailure struct {
@@ -100,6 +107,10 @@ type tunnelAuthentication struct {
 	// a host that accepts only its own client's TLS, and these are connections
 	// opened with a copy of the hello the client opened the tunnel with.
 	upstream http.RoundTripper
+	// unbound, when set, sends the tunnel's requests that no Connection
+	// covers. The tunnel is to a host whose clients may speak HTTP/2, and
+	// this adds nothing of its own to what they send.
+	unbound http.RoundTripper
 }
 type selectedConnectionContextKey struct{}
 
@@ -224,6 +235,11 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 			return *stopped
 		}
 		response, roundTripErr := p.transportFor(tunnelAuth, false).RoundTrip(upstream)
+		if errors.Is(roundTripErr, errLeakMessageBlocked) {
+			// Leak protection stopped a message of the request's stream, and
+			// has reported it.
+			return processedResponse{failure: leakMessageBlocked(nil)}
+		}
 		if roundTripErr != nil {
 			return processedResponse{failure: &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The upstream service is unavailable."}}
 		}
@@ -350,6 +366,9 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 func (p *httpProxy) transportFor(tunnel *tunnelAuthentication, bound bool) http.RoundTripper {
 	if tunnel != nil && tunnel.upstream != nil {
 		return tunnel.upstream
+	}
+	if !bound && tunnel != nil && tunnel.unbound != nil {
+		return tunnel.unbound
 	}
 	if !bound && p.unboundTransport != nil {
 		return p.unboundTransport
@@ -608,6 +627,11 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 		// ticket of its own either, so the client's next hello is the one it
 		// sends to the service and can be copied as it is.
 		termination.SessionTicketsDisabled = true
+	} else if leak != nil && leak.rule.HTTP2 {
+		// The client chooses. One that offers h2 alone ends the handshake
+		// when it is offered http/1.1 only, and has no other way to its host.
+		termination.NextProtos = []string{http2.NextProtoTLS, "http/1.1"}
+		authentication.unbound = p.unalteredTransport()
 	}
 	tlsClient := tls.Server(terminated, termination)
 	if err := tlsClient.HandshakeContext(tunnelContext); err != nil {
@@ -618,6 +642,10 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 	}
 	if leak != nil {
 		p.noteLeakHandshake(host, port, leak, true)
+	}
+	if tlsClient.ConnectionState().NegotiatedProtocol == http2.NextProtoTLS {
+		p.serveHTTP2(tunnelContext, tlsClient, host, port, authentication)
+		return
 	}
 	reader := bufio.NewReader(tlsClient)
 	for {
@@ -833,6 +861,10 @@ func (p *httpProxy) CloseHijacked() {
 	}
 	p.mu.Unlock()
 	p.wg.Wait()
+	// Connections the proxy opened for itself and no request holds any more.
+	if p.unalteredOwn != nil {
+		p.unalteredOwn.CloseIdleConnections()
+	}
 }
 
 func selectedProxyAuthorization(header http.Header) (string, string, bool) {
@@ -863,6 +895,11 @@ func cloneUpstreamRequest(req *http.Request) (*http.Request, error) {
 	*clone.URL = *req.URL
 	clone.RequestURI = ""
 	clone.Header = req.Header.Clone()
+	// Trailers a client announced on an HTTP/2 stream are filled in as its
+	// body ends, in the request itself: what is sent on has to see them.
+	if req.ProtoMajor == 2 {
+		clone.Trailer = req.Trailer
+	}
 	removeHopHeaders(clone.Header)
 	clone.Header.Del("Proxy-Authorization")
 	// The proxy settles 100-continue with its own client (net/http server on

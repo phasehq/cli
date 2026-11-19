@@ -309,7 +309,9 @@ program's traffic to the same host passes through untouched.
 A host that is read is answered with the proxy's certificate on port 443 even
 when no Connection covers it. A flow that is not read is not inspected at all.
 When a Connection covers its host the tunnel is still terminated for the
-Connection, as for any other host.
+Connection, as for any other host. The answer offers HTTP/1.1; for a host
+whose entry says `http2`, and that no Connection covers, it offers HTTP/2 as
+well (below).
 
 Where a flow comes from:
 
@@ -353,11 +355,14 @@ elsewhere on the host only registered values and Phase's own token formats are
 looked for.
 
 One table (`internal/aiproxy/leak_policy.go`) says what happens in each kind of
-bytes, and a request body and a WebSocket message are read by it alike. What
-a body or a message is, is read from its bytes and from nothing the client
-calls it: valid JSON is JSON, other valid UTF-8 with no NUL byte is text, and
-anything else is not text, whatever the `Content-Type` and whichever opcode
-(text or binary) a message was framed with.
+bytes, and a request body, a WebSocket message and a message of a Connect
+stream are read by it alike. What a body or a message is, is read from its
+bytes and from nothing the client calls it: valid JSON is JSON, other valid
+UTF-8 with no NUL byte is text, and anything else is not text, whatever the
+`Content-Type` and whichever opcode (text or binary) a message was framed
+with. Protobuf is the one kind the bytes do not show: it is what a host whose
+entry says `connect` sends as `application/proto` or in an
+`application/connect+proto` stream (below), and nowhere else.
 
 | Found in | A registered value or a Phase token | Anything else |
 |---|---|---|
@@ -365,6 +370,7 @@ anything else is not text, whatever the `Content-Type` and whichever opcode
 | a header | reported | reported |
 | JSON, or other text (a body, a message) | replaced | replaced or reported, as the rule says |
 | bytes that are not text (a body, a message) | blocks | reported |
+| a protobuf message (a Connect call's body, a message of its stream) | overwritten where it sits, by the placeholder padded or cut to its length; never blocks | overwritten or reported, as the rule says |
 | a body or message that cannot be decoded (an encoding the proxy does not undo, a message compressed against the handshake) | blocks, and it is reported as unread | reported as unread |
 | a body or message over 16 MiB, or a message in more than 4096 frames | not read: passes, reported as unread | |
 
@@ -416,7 +422,7 @@ session unavailable. `detail` holds:
 | `mode` | `censor` or `observe` |
 | `harness` | the flow's tool when that tool's list reads the host, otherwise the tool whose entry the host is read by |
 | `capture` | `proxy` or `tunnel` |
-| `where` | `url`, `header`, `body`, `message`, comma-separated |
+| `where` | `url`, `header`, `body`, `message` (of a WebSocket, or of a Connect stream), comma-separated |
 | `inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` | counts; `signedFindings` is what was found in text the provider signed and left as it was |
 | `labels` | rule labels |
 | `placeholders` | the newly seen ones, comma-separated, cut to 512 characters. A placeholder registered as a key name is written `ph:<type>` with no id, once per type |
@@ -424,13 +430,121 @@ session unavailable. `detail` holds:
 | `replacedCount` | how many of them were actually replaced in what went out; 0 in `observe` mode and for a header or a block |
 | `placeholdersCapped` | `true` when the request held more distinct placeholders than are counted (more than 4096, or so many findings that only the first 4096 were listed): the two counts are then a floor. Absent otherwise |
 | `severity` | `high` when the request held 5 or more distinct placeholders, or a Phase token, or was blocked; `medium` for 1 to 4; `low` when it held only alerts or findings in signed text. Not on `unread` and `bypass` events |
-| `scope` | on `unread` events and on a block of something unread: `request`, `message` or `connection` |
+| `scope` | on `unread` events and on a block of something unread: `request`, `message` (of a WebSocket, or of a Connect stream) or `connection` |
 | `windowSeconds` | on a `bypass` event, the length of the pass-through window |
+
+An event's `protocol` is `http`, `http2` when the request reached the proxy
+over HTTP/2, or `websocket` for a message of one.
 
 A pass-through window opens only when a client answers the proxy's
 certificate with a TLS certificate alert twice in a row for a tool and host. A
 client that drops the connection without an alert keeps failing on that host;
-`PHASE_AI_LEAK_PROTECTION=off` is the way out.
+`PHASE_AI_LEAK_PROTECTION=off` is the way out. The host is the name the
+client connected to, not the table's entry: under a domain entry, refusals on
+one name open a window for that name and leave every other name of the
+domain read.
+
+#### Connect over protobuf, and HTTP/2
+
+Two flags of a table entry, both set for Cursor (`cursor.sh` and every name
+under it): `http2`, the host's clients may speak HTTP/2, and `connect`, the
+host's API is Connect (connectrpc.com) over protobuf.
+
+Cursor's command-line agent takes the proxy and its certificate from its
+environment (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`). Its unary calls go to
+`api2.cursor.sh` over HTTP/1.1 with no protocol offered in the TLS hello; the
+stream of its session goes to a host named for the session's region
+(`agentn.global.api5.cursor.sh`, `agentn.us.api5.cursor.sh`, ...) and offers
+`h2` alone. A proxy that answers that hello with HTTP/1.1 only ends the
+session: the client has no other way. The desktop app's main process refuses
+the proxy's certificate on every host and its extension host on some; those
+names go through the pass-through windows above, each on its own.
+
+**HTTP/2.** For a host whose entry says `http2`, when no Connection covers
+it, the proxy's TLS offers `h2` and `http/1.1` and serves what the client
+picks. A host a Connection covers is answered with HTTP/1.1 only, as before,
+whatever its entry says. On an HTTP/2 tunnel:
+
+- each stream is one request, handled like a request of the HTTP/1.1 tunnel
+  and independent of the others; at most 100 are served at a time, which the
+  client is told, and a request for another authority than the CONNECT's is
+  refused with 403 `connect_authority_mismatch`;
+- a request's body is not waited for. It is forwarded as it arrives and the
+  answer goes back as it comes, each piece flushed, so a stream that both
+  ends keep open works. The end of either direction is passed on, trailers
+  are copied (the answer's whether announced or not; the request's when the
+  client announced them), and an end that gives up, by reset or by closing
+  the connection, ends the other;
+- what is forwarded is what was sent, less the headers of one hop
+  (`Connection` and what it names, `Keep-Alive`, `Proxy-Authenticate`,
+  `Proxy-Authorization`, `Proxy-Connection`, `TE`, `Trailer`,
+  `Transfer-Encoding`, `Upgrade`) and `Expect`. Nothing is added: no `Accept-Encoding`, so an answer is never
+  decompressed on its way back, and no `User-Agent` when the client sent
+  none. That holds for the HTTP/1.1 clients of such a host as well;
+- the service is reached with the proxy's own TLS and dialer for hosts no
+  Connection covers, over HTTP/2 when it offers it;
+- when the tunnel's connection ends, every stream on it ends, and the proxy
+  lets go of the tunnel once the last one has.
+
+**Bodies.** On a host whose entry says `connect` the `Content-Type` says what
+a body is (the type alone: `application/connect+proto; charset=utf-8` is
+`application/connect+proto`):
+
+| `Content-Type` | Read as |
+|---|---|
+| `application/proto` | one protobuf message. Read whole (16 MiB), any `Content-Encoding` undone as for other bodies, overwritten in place, encoded again the same way |
+| `application/connect+proto` | a stream of protobuf messages, read as it is sent (below) |
+| `application/connect+json` | a stream of JSON messages: each is read as JSON is anywhere, so a placeholder there is not padded and the envelope states the new length. One that is not text and holds a registered value or a Phase token cannot be rewritten: the request is refused (403 `secret_in_request`) or, once it is under way, its stream is reset |
+| anything else (`application/json`, ...) | what its bytes say, as on every other host |
+
+The two protobuf kinds carry conversation content whatever their path, so
+every pattern rule applies to them. Everything else on such a host, traces
+for one, is read for registered values and Phase's own tokens only.
+
+A Connect stream is a sequence of envelopes: a flag byte, the payload's
+length in four bytes, big-endian, and the payload, which is one message. The
+proxy hands on one envelope at a time and holds no more than that one. For
+each:
+
+- flag bit 1, the end of a stream: forwarded as it came, unread;
+- flag bit 0, compressed: inflated with the encoding `Connect-Content-Encoding`
+  names when that is gzip. Any other encoding, or none named, is
+  `message_encoding_unsupported`; a payload that does not inflate, or
+  inflates past 64 MiB, is `message_undecodable`. Both go on as they came and
+  are reported as `unread` with `scope` `message`;
+- a payload over 16 MiB goes on as it comes: `body_over_limit`, `scope`
+  `message`;
+- otherwise the message is read. When something in it was replaced the new
+  message goes on, compressed again if it came compressed, under a prefix
+  that states its length; a protobuf message keeps its length, so its prefix
+  only changes when it is compressed. When nothing was replaced the envelope
+  goes on byte for byte, compressed or not.
+
+A stream compressed as a whole (a `Content-Encoding` on the request) shows no
+envelopes and is forwarded unread: `body_undecodable`, `scope` `request`. A
+stream whose length the client stated, up to 16 MiB, is whole before any
+answer and is read whole, so what is sent states the length it then has; any
+other is forwarded as it comes, and a stated length over 16 MiB is dropped in
+`censor` mode, since a compressed message may come out another length. An
+envelope the client never finished goes on as far as it came, and the stream
+ends as the client's did.
+
+**The overwrite** (`censor.RewriteBinary`). Protobuf writes the length of
+every string and nested message it holds, so nothing in a message may change
+length. The message is walked without a schema: a length-delimited field
+that parses completely as a message is descended into, anything else is a
+leaf, and each leaf is scanned on its own. What is found is overwritten with
+its placeholder followed by `*` up to its length
+(`ph:secret:<id>*********`), or with as much of the start of the placeholder
+as fits. The message stays as long as it was and parses as it did; a
+placeholder that is already there, padded or cut, is never matched again. A
+value split over two fields is not found.
+
+Events are those of any request: one for the URL and headers when they hold
+something, then one for each body or message in which something new was
+found, with `where` `body` or `message`. The service's answers are not read.
+A streamed body of a type the table does not name is held until it ends, as
+a body is on every other host.
 
 #### Hosts that answer only their own client's TLS
 

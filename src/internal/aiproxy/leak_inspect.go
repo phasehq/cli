@@ -39,6 +39,11 @@ const (
 	leakReasonUndecodable = "body_undecodable"
 	leakReasonCompressed  = "message_compressed"
 	leakReasonTLSRefused  = "tls_refused"
+	// Why a message of a Connect stream went on unread: it is compressed with
+	// an encoding the proxy does not undo (any but gzip, or none named), or
+	// it is marked as gzip and does not inflate.
+	leakReasonMessageEncoding    = "message_encoding_unsupported"
+	leakReasonMessageUndecodable = "message_undecodable"
 
 	// Why a whole connection to a host that takes only its own client's TLS
 	// was passed through unread: its first bytes were not one whole
@@ -52,11 +57,16 @@ const (
 	leakReasonUpstreamHandshake = "upstream_handshake_failed"
 	leakReasonUpstreamNotHTTP1  = "upstream_not_http1"
 
-	// How much an unread event covers: one request, one WebSocket message, or
-	// a whole connection.
+	// How much an unread event covers: one request, one message (of a
+	// WebSocket, or of a Connect stream), or a whole connection.
 	leakScopeRequest    = "request"
 	leakScopeMessage    = "message"
 	leakScopeConnection = "connection"
+
+	// What a request came in as, for its events. A WebSocket's messages say
+	// websocket instead.
+	leakProtocolHTTP  = "http"
+	leakProtocolHTTP2 = "http2"
 
 	// An event's severity. A request is high when it held this many distinct
 	// placeholders, or one of Phase's own tokens, or was blocked; medium from
@@ -251,6 +261,9 @@ type leakObservation struct {
 	blocked             bool
 	// took is how long reading it and deciding took, once it was in hand.
 	took time.Duration
+	// streamed says it is one message of a Connect stream, of which a request
+	// can send any number.
+	streamed bool
 	// connection is why a whole connection was passed through unread, and
 	// window why a pass-through window opened.
 	connection, window string
@@ -259,10 +272,15 @@ type leakObservation struct {
 // observeRead tells the harness, when there is one, what was done to a body
 // or a message. rewritten is what replaces it when the scan changed it.
 func (p *httpProxy) observeRead(scan *leakScan, host, path string, original, rewritten []byte, blocked bool, began time.Time) {
+	p.observeUnit(scan, host, path, original, rewritten, blocked, began, false)
+}
+
+// observeUnit is observeRead for a body, or for one message of a stream.
+func (p *httpProxy) observeUnit(scan *leakScan, host, path string, original, rewritten []byte, blocked bool, began time.Time, streamed bool) {
 	if p.observe == nil {
 		return
 	}
-	observation := leakObservation{scan: scan, host: host, path: path, original: original, blocked: blocked, took: time.Since(began)}
+	observation := leakObservation{scan: scan, host: host, path: path, original: original, blocked: blocked, took: time.Since(began), streamed: streamed}
 	switch {
 	case blocked:
 	case scan.changed:
@@ -335,6 +353,16 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 		upstream.Header.Del("Sec-WebSocket-Extensions")
 	}
 	opts := guard.scanOptionsFor(match, req.URL.Path)
+	// On a host that speaks Connect the Content-Type says what the body is,
+	// and a protobuf call carries conversation content whatever its path.
+	kind := match.body(req.Header)
+	if kind.conversation() {
+		opts = censor.ScanOptions{}
+	}
+	protocol := leakProtocolHTTP
+	if req.ProtoMajor == 2 {
+		protocol = leakProtocolHTTP2
+	}
 	// The URL of every request is read, with a body or without one; a request
 	// without a body (Codex polls about once a second) costs only this scan.
 	urlMatches := guard.findInURL(req.URL, opts)
@@ -342,12 +370,16 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 		if len(urlMatches) == 0 {
 			return nil
 		}
-		scan := guard.newScan(match, "http", opts)
+		scan := guard.newScan(match, protocol, opts)
 		scan.addFound(leakPartURL, urlMatches, "url")
 		return p.finishLeakScan(req, upstream, binding, host, port, scan, nil, "", started)
 	}
-	scan := guard.newScan(match, "http", opts)
+	scan := guard.newScan(match, protocol, opts)
 	scan.addFound(leakPartURL, urlMatches, "url")
+	if kind.stream() {
+		// A stream has no end to wait for: it is read as it is sent.
+		return p.readConnectStream(req, upstream, binding, host, port, scan, kind, started)
+	}
 	body, err := io.ReadAll(io.LimitReader(upstream.Body, maxLeakBody+1))
 	if err != nil {
 		failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The request body could not be read.", decision: "block", reason: "unclassifiable_request", binding: binding}
@@ -386,6 +418,8 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 		// the proxy cannot decode is caught.
 		guard.readFixed(scan, leakPartOpaque, body, "body")
 		original = body
+	} else if kind == leakBodyProtobuf {
+		rewritten = guard.readProtobuf(scan, decoded, "body")
 	} else {
 		rewritten = guard.readPayload(scan, decoded, "body")
 	}

@@ -51,7 +51,9 @@ func TestLeakLookupFollowsTheFlow(t *testing.T) {
 		{"claude calls Anthropic through a tunnel", tunnelFlow("claude"), "api.anthropic.com", "claude"},
 		{"claude's processes on another tool's host, tunnel", tunnelFlow("claude"), "api.openai.com", ""},
 		{"codex's processes on Anthropic, tunnel", tunnelFlow("codex"), "api.anthropic.com", ""},
-		{"cursor's host is listed and not read, tunnel", tunnelFlow("cursor"), "api2.cursor.sh", ""},
+		{"cursor calls its own host through a tunnel", tunnelFlow("cursor"), "api2.cursor.sh", "cursor"},
+		{"cursor's agent stream through a tunnel", tunnelFlow("cursor"), "agentn.global.api5.cursor.sh", "cursor"},
+		{"claude's processes on cursor's host, tunnel", tunnelFlow("claude"), "api2.cursor.sh", ""},
 		{"a tool with no entries, tunnel", tunnelFlow("goose"), "api.anthropic.com", ""},
 		// A tunnel's flow from a program that is not a listed tool: never read.
 		{"unknown, tunnel, Anthropic", tunnelFlow(""), "api.anthropic.com", ""},
@@ -76,10 +78,12 @@ func TestLeakLookupFollowsTheFlow(t *testing.T) {
 		{"opencode's session calls Anthropic", proxyFlow("opencode"), "api.anthropic.com", "opencode"},
 		{"opencode's session calls OpenAI", proxyFlow("opencode"), "api.openai.com", "opencode"},
 		{"opencode's session, a host of codex's alone", proxyFlow("opencode"), "chatgpt.com", "codex"},
-		// A host listed as not read is not read in any session.
-		{"cursor's host in claude's session", proxyFlow("claude"), "api2.cursor.sh", ""},
-		{"cursor's host in cursor's session", proxyFlow("cursor"), "api2.cursor.sh", ""},
+		// A name under a listed domain is read like the domain, in any session.
+		{"cursor's host in claude's session", proxyFlow("claude"), "api2.cursor.sh", "cursor"},
+		{"cursor's host in cursor's session", proxyFlow("cursor"), "api2.cursor.sh", "cursor"},
+		{"cursor's domain itself", proxyFlow(""), "cursor.sh", "cursor"},
 		{"a host outside the table", proxyFlow("claude"), "example.com", ""},
+		{"a name that only ends like a listed domain", proxyFlow("cursor"), "mycursor.sh", ""},
 	}
 	for _, c := range cases {
 		match := guard.inspects(c.flow, c.host, 443)
@@ -113,6 +117,17 @@ func TestLeakLookupFollowsTheFlow(t *testing.T) {
 			}
 		}
 	}
+	// A host a list leaves unread is not read for any flow, in any session:
+	// its own tool's, another tool's, or nobody's.
+	listed := newTestLeakGuard(t, leakModeCensor)
+	listed.hosts = append(leakHostTable{{Harness: "other", Hosts: []leakHostRule{{Host: "unread.example", Subdomains: true, Treatment: leakTreatmentUnread}}}}, defaultLeakHosts...)
+	for _, flow := range []FlowContext{tunnelFlow("other"), proxyFlow("other"), proxyFlow("claude"), proxyFlow(""), {}} {
+		for _, host := range []string{"unread.example", "api.unread.example"} {
+			if match := listed.inspects(flow, host, 443); match != nil {
+				t.Errorf("%s, listed as not read, is read for %+v", host, flow)
+			}
+		}
+	}
 	// A tunnel flow from an unknown program is not read even after the same
 	// host was looked up for a client of the proxy environment.
 	if guard.inspects(proxyFlow(""), "chatgpt.com", 443) == nil || guard.inspects(tunnelFlow(""), "chatgpt.com", 443) != nil {
@@ -138,7 +153,7 @@ func TestOpenCodeListsTheProvidersItCallsWithTheSameRules(t *testing.T) {
 	}
 	// Each host is named once in status, however many tools list it.
 	names := defaultLeakHosts.hostNames(leakTreatmentInspect)
-	if !reflect.DeepEqual(names, []string{"api.anthropic.com", "api.openai.com", "chatgpt.com", "opencode.ai", "openrouter.ai"}) {
+	if !reflect.DeepEqual(names, []string{"*.cursor.sh", "api.anthropic.com", "api.openai.com", "chatgpt.com", "cursor.sh", "opencode.ai", "openrouter.ai"}) {
 		t.Fatalf("the inspected hosts: %v", names)
 	}
 	var own []string
@@ -758,10 +773,11 @@ func TestAProxyStartedForOneToolStillReadsEveryListedHost(t *testing.T) {
 			if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &status) != nil || status.LeakProtection == nil {
 				t.Fatalf("status: %d %s", recorder.Code, recorder.Body.String())
 			}
-			if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"api.anthropic.com", "api.openai.com", "chatgpt.com", "opencode.ai", "openrouter.ai"}) {
+			if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"*.cursor.sh", "api.anthropic.com", "api.openai.com", "chatgpt.com", "cursor.sh", "opencode.ai", "openrouter.ai"}) {
 				t.Fatalf("inspected: %v", got)
 			}
-			if got := status.LeakProtection.UnreadHosts; !reflect.DeepEqual(got, []string{"*.cursor.sh", "cursor.sh"}) {
+			// The table leaves no host unread, and nothing was passed through.
+			if got := status.LeakProtection.UnreadHosts; len(got) != 0 {
 				t.Fatalf("not inspected: %v", got)
 			}
 		})
@@ -913,7 +929,10 @@ func TestEngineTellsACaptureLayerWhatToHandOver(t *testing.T) {
 		{"codex", "chatgpt.com", true},
 		{"claude", "api.openai.com", false},
 		{"codex", "api.anthropic.com", false},
-		{"cursor", "api2.cursor.sh", false},
+		{"cursor", "api2.cursor.sh", true},
+		{"cursor", "agentn-gcpp-apsoutheast.api5.cursor.sh", true},
+		{"claude", "api2.cursor.sh", false},
+		{"cursor", "api.anthropic.com", false},
 		{"", "api.anthropic.com", false},
 		{"goose", "api.anthropic.com", false},
 		{"not an id", "api.anthropic.com", false},
@@ -930,7 +949,11 @@ func TestEngineTellsACaptureLayerWhatToHandOver(t *testing.T) {
 	if got := engine.ReadHosts("claude"); !reflect.DeepEqual(got, []ReadHost{{Host: "api.anthropic.com"}}) {
 		t.Fatalf("Claude's hosts: %+v", got)
 	}
-	for _, tool := range []string{"cursor", "", "goose"} {
+	// A domain entry is handed over as one: every name under it is read.
+	if got := engine.ReadHosts("cursor"); !reflect.DeepEqual(got, []ReadHost{{Host: "cursor.sh", Subdomains: true}}) {
+		t.Fatalf("Cursor's hosts: %+v", got)
+	}
+	for _, tool := range []string{"", "goose"} {
 		if got := engine.ReadHosts(tool); len(got) != 0 {
 			t.Errorf("hosts read for %q: %+v", tool, got)
 		}
@@ -1146,7 +1169,7 @@ func TestEngineNamesItsClientsAfterTheToolOfItsSession(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil || status.LeakProtection == nil {
 		t.Fatalf("status: %v", err)
 	}
-	if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"api.anthropic.com", "api.openai.com", "chatgpt.com", "opencode.ai", "openrouter.ai"}) {
+	if got := status.LeakProtection.InspectedHosts; !reflect.DeepEqual(got, []string{"*.cursor.sh", "api.anthropic.com", "api.openai.com", "chatgpt.com", "cursor.sh", "opencode.ai", "openrouter.ai"}) {
 		t.Fatalf("a proxy started for one tool says it inspects %v", got)
 	}
 }

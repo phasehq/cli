@@ -37,6 +37,17 @@ type leakHostRule struct {
 	// a copy of the ClientHello the client sent, never with Go's own; a
 	// connection whose hello cannot be copied is passed through unread.
 	MirrorHello bool `json:"mirrorHello,omitempty"`
+	// HTTP2 says the host's clients may speak HTTP/2. When no Connection
+	// covers the host its tunnel is answered with h2 as well as http/1.1 and
+	// served as the client chooses. A client that offers h2 alone has no
+	// other way: answered with http/1.1 only, it gives up.
+	HTTP2 bool `json:"http2,omitempty"`
+	// Connect says the host's API is Connect over protobuf. A body of type
+	// application/proto, and each message of an application/connect+proto
+	// stream, is then a protobuf message: it is read field by field and what
+	// is found is overwritten where it sits, since no length in it may
+	// change. Such a call carries conversation content whatever its path.
+	Connect bool `json:"connect,omitempty"`
 	// Reason says why an unread host is not inspected.
 	Reason string `json:"reason,omitempty"`
 }
@@ -77,8 +88,13 @@ var defaultLeakHosts = leakHostTable{
 		anthropicAPIHost,
 		openAIAPIHost,
 	}},
+	// Every Connect call of Cursor's carries conversation content; what else
+	// its hosts take (traces, for one) is read for registered values and
+	// Phase's own tokens only. The agent's stream goes to a host named per
+	// session and region (agentn.global.api5.cursor.sh and its like), over
+	// HTTP/2 and nothing else.
 	{Harness: "cursor", Labels: []string{"cursor-agent"}, Hosts: []leakHostRule{
-		{Host: "cursor.sh", Subdomains: true, Treatment: leakTreatmentUnread, Reason: "binary streams; the client refuses inspection"},
+		{Host: "cursor.sh", Subdomains: true, Treatment: leakTreatmentInspect, HTTP2: true, Connect: true},
 	}},
 }
 

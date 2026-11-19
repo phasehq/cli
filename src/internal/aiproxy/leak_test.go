@@ -110,7 +110,14 @@ func TestLeakHostTable(t *testing.T) {
 		{"opencode.ai", "/", 443, true, "opencode"},
 		{"opencode.ai", "/zen/v1/chat/completions", 8443, false, ""},
 		{"api.opencode.ai", "/zen/v1/chat/completions", 443, false, ""},
-		{"api2.cursor.sh", "/aiserver.v1.InferenceService/RunInference", 443, false, ""},
+		{"api2.cursor.sh", "/aiserver.v1.InferenceService/RunInference", 443, true, "cursor"},
+		{"api2.cursor.sh", "/v1/traces", 443, true, "cursor"},
+		{"agentn.global.api5.cursor.sh", "/agent.v1.AgentService/Run", 443, true, "cursor"},
+		{"Agentn-GCPP-apsoutheast.api5.Cursor.sh.", "/agent.v1.AgentService/Run", 443, true, "cursor"},
+		{"cursor.sh", "/", 443, true, "cursor"},
+		{"api2.cursor.sh", "/aiserver.v1.InferenceService/RunInference", 8443, false, ""},
+		{"mycursor.sh", "/", 443, false, ""},
+		{"cursor.sh.example.com", "/", 443, false, ""},
 		{"example.com", "/", 443, false, ""},
 	}
 	for _, c := range cases {
@@ -122,12 +129,34 @@ func TestLeakHostTable(t *testing.T) {
 			t.Errorf("%s belongs to %v, want %s", c.host, match, c.harness)
 		}
 	}
-	// The unread entries are in the table, so status can name them.
-	if match := defaultLeakHosts.lookup("agentn.global.api5.cursor.sh"); match == nil || match.harness != "cursor" || match.inspected() {
-		t.Fatalf("a Cursor subdomain is not listed as unread: %+v", match)
+	// Cursor's agent goes to a host named per session and region: the whole
+	// domain is listed, and every name under it is read by the domain's rule.
+	if match := defaultLeakHosts.lookup("agentn.global.api5.cursor.sh"); match == nil || match.harness != "cursor" || !match.inspected() || !match.rule.HTTP2 || !match.rule.Connect {
+		t.Fatalf("a Cursor subdomain is not read as Connect over HTTP/2: %+v", match)
 	}
 	if match := defaultLeakHosts.lookup("cursor.sh"); match == nil || match.harness != "cursor" {
 		t.Fatal("cursor.sh itself is not listed")
+	}
+	// An entry that leaves a host unread is still an entry: status can name it.
+	unread := leakHostTable{{Harness: "other", Hosts: []leakHostRule{{Host: "unread.example", Subdomains: true, Treatment: leakTreatmentUnread, Reason: "its client refuses inspection"}}}}
+	if match := unread.lookup("api.unread.example"); match == nil || match.harness != "other" || match.inspected() || match.inspectsPath("/") {
+		t.Fatalf("a host listed as not read: %+v", match)
+	}
+	// HTTP/2 is offered, and bodies are taken for Connect's, on the hosts the
+	// table flags and on no other.
+	var flagged []string
+	for _, harness := range defaultLeakHosts {
+		for _, rule := range harness.Hosts {
+			if rule.HTTP2 || rule.Connect {
+				flagged = append(flagged, fmt.Sprintf("%s %s http2=%v connect=%v", harness.Harness, rule.Host, rule.HTTP2, rule.Connect))
+				if rule.Treatment != leakTreatmentInspect || rule.MirrorHello {
+					t.Errorf("%s is flagged and is not read with the proxy's own TLS: %+v", rule.Host, rule)
+				}
+			}
+		}
+	}
+	if len(flagged) != 1 || flagged[0] != "cursor cursor.sh http2=true connect=true" {
+		t.Fatalf("the hosts that speak Connect over HTTP/2: %v", flagged)
 	}
 	// Requests are re-sent with a copy of the client's hello for the hosts
 	// flagged in the table and for no other.
@@ -148,6 +177,9 @@ func TestLeakHostTable(t *testing.T) {
 	encoded, _ := json.Marshal(defaultLeakHosts)
 	if strings.Count(string(encoded), `"mirrorHello":true`) != 1 {
 		t.Fatalf("the flag is not written as mirrorHello: %s", encoded)
+	}
+	if strings.Count(string(encoded), `"http2":true`) != 1 || strings.Count(string(encoded), `"connect":true`) != 1 {
+		t.Fatalf("the flags are not written as http2 and connect: %s", encoded)
 	}
 	if off := newTestLeakGuard(t, leakModeOff); off.inspects(envFlow, "api.anthropic.com", 443) != nil {
 		t.Fatal("off mode still reads model hosts")
@@ -321,9 +353,15 @@ func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 		t.Fatalf("status counts are wrong: %+v", status)
 	}
 	if !containsString(status.InspectedHosts, "api.anthropic.com") || !containsString(status.InspectedHosts, "opencode.ai") ||
-		!containsString(status.UnreadHosts, "*.cursor.sh") || containsString(status.UnreadHosts, "opencode.ai") ||
-		containsString(status.InspectedHosts, "cursor.sh") {
+		!containsString(status.InspectedHosts, "*.cursor.sh") || !containsString(status.InspectedHosts, "cursor.sh") || len(status.UnreadHosts) != 0 {
 		t.Fatalf("status hosts are wrong: %+v", status)
+	}
+	// A host a list leaves unread is named as not read, with its domain.
+	listed := newTestLeakGuard(t, leakModeCensor)
+	listed.hosts = append(leakHostTable{{Harness: "other", Hosts: []leakHostRule{{Host: "unread.example", Subdomains: true, Treatment: leakTreatmentUnread}}}}, defaultLeakHosts...)
+	if status := listed.status(); !containsString(status.UnreadHosts, "*.unread.example") || !containsString(status.UnreadHosts, "unread.example") ||
+		containsString(status.InspectedHosts, "unread.example") || containsString(status.UnreadHosts, "opencode.ai") || listed.inspects(envFlow, "api.unread.example", 443) != nil {
+		t.Fatalf("a host listed as not read: %+v", status)
 	}
 	guard.handshakes.note(hostKey("api.anthropic.com"), false)
 	guard.handshakes.note(hostKey("api.anthropic.com"), false)

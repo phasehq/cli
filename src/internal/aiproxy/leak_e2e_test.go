@@ -471,9 +471,10 @@ func TestLeakProtectionLeavesHostsOutsideTheTableAlone(t *testing.T) {
 	rig := newLeakRig(t, leakModeCensor)
 	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
 	rawTunnelHandshake(t, rig, "api.example.com")
-	rawTunnelHandshake(t, rig, "api2.cursor.sh")
-	// A name beside a listed host is not that host.
+	// A name beside a listed host is not that host, and one that only ends
+	// like a listed domain is not under it.
 	rawTunnelHandshake(t, rig, "api.opencode.ai")
+	rawTunnelHandshake(t, rig, "mycursor.sh")
 }
 
 func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {

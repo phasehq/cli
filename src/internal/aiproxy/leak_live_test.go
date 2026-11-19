@@ -56,16 +56,21 @@ import (
 //     path, counts and placeholders;
 //   - one line per request body, and per WebSocket text message from the
 //     client, that the proxy read on an inspected host;
+//   - one line per message of a Connect stream (Cursor's agent sends its whole
+//     session as one) in which a registered value was sent, or the proxy
+//     found anything, or that it could not read. The other messages of a
+//     stream, of which there are very many, are only counted;
 //   - a summary when it stops.
 //
 // A request line is a measurement:
 //
-//	request host=... path=... conversation=true|false bytes=... replaced=... seen=... missed=... expected_missed=... protocol=http|websocket micros=...
+//	request host=... path=... conversation=true|false bytes=... replaced=... seen=... missed=... expected_missed=... protocol=http|http2|websocket micros=...
 //
 // The values of the manifest and of the values file are looked for, by a
 // verifier that shares no code with the matcher, in what the client sent
 // (seen) and in exactly what goes on to the provider after inspection,
-// decoded (missed). A value that cannot be protected is listed under
+// decoded (missed): a compressed body, and a compressed message of a stream,
+// is inflated first. A value that cannot be protected is listed under
 // expected_missed instead. bytes is the size of what goes on, decoded,
 // replaced the distinct placeholders put into it, and micros the time the
 // proxy spent inspecting it. blocked=true ends the line of one that was
@@ -75,7 +80,18 @@ import (
 // request with a body), those on conversation paths, those rewritten and
 // blocked, the ids seen and missed, the hits, what was left unread and which
 // pass-through windows opened, by reason, and gives the median and the
-// longest inspection.
+// longest inspection. Its last line counts the messages of Connect streams,
+// and how many of them got a line.
+//
+// For Cursor's command-line agent (Node: it takes the proxy and the CA from
+// its environment), with the proxy and the CA file this prints:
+//
+//	HTTPS_PROXY=<proxy> NODE_EXTRA_CA_CERTS=<ca> cursor-agent
+//
+// Its unary calls go to api2.cursor.sh over HTTP/1.1 and its stream to a
+// host named agentn.<region>.api5.cursor.sh over HTTP/2; both are read. In
+// what goes on to Cursor a value is overwritten by its placeholder padded
+// with '*' to the value's length, so bytes does not change there.
 //
 // What gets no request line: a request with no body, a body sent on a path of
 // a listed host that the proxy does not read (chatgpt.com outside
@@ -270,6 +286,8 @@ type liveMeter struct {
 	mu             sync.Mutex
 	requests       int // bodies and text messages the proxy read
 	messages       int // those of them that were WebSocket messages
+	streamed       int // those of them that were messages of a Connect stream
+	streamedListed int // and of those, the ones that got a line
 	conversations  int
 	rewritten      int
 	blocked        int
@@ -390,15 +408,27 @@ func (m *liveMeter) measure(observation leakObservation) {
 	sort.Strings(allSeen)
 	// Every pattern rule applies on a conversation path and only there.
 	conversation := scan.opts.Rules == nil
-	host, path := m.printable(observation.host, observation.path)
-	m.output.line("%s", liveRequestLine(host, path, conversation, len(observation.forwarded), scan.replaced(), allSeen, missed, expected,
-		scan.protocol, observation.took, observation.blocked, scan.unread))
+	// A stream sends a message for every step of a session. Those with
+	// nothing in them are counted; one gets a line when a value was sent in
+	// it, the proxy found something in it, or it was not read.
+	listed := !observation.streamed || len(allSeen) > 0 || scan.found() || scan.unread != "" || observation.blocked
+	if listed {
+		host, path := m.printable(observation.host, observation.path)
+		m.output.line("%s", liveRequestLine(host, path, conversation, len(observation.forwarded), scan.replaced(), allSeen, missed, expected,
+			scan.protocol, observation.took, observation.blocked, scan.unread))
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.requests++
 	if scan.protocol == "websocket" {
 		m.messages++
+	}
+	if observation.streamed {
+		m.streamed++
+		if listed {
+			m.streamedListed++
+		}
 	}
 	if conversation {
 		m.conversations++
@@ -494,6 +524,7 @@ func (m *liveMeter) summary() []string {
 		"summary unread " + liveCounts(m.unread),
 		"summary bypass " + liveCounts(m.windows),
 		fmt.Sprintf("summary inspect_micros p50=%d max=%d inspected=%d", median.Microseconds(), longest.Microseconds(), len(took)),
+		fmt.Sprintf("summary stream_messages=%d listed=%d", m.streamed, m.streamedListed),
 	}
 }
 

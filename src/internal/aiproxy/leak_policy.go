@@ -12,9 +12,11 @@ import (
 // bytes it was found in and on nothing else: not on whether those bytes came
 // as a request body or as a WebSocket message, and not on what the client
 // called them (a Content-Type, a text or binary opcode). This file is the
-// one place that decides it. The HTTP adapter (leak_inspect.go) and the
-// WebSocket adapter (leak_websocket.go) read what they hold through
-// readPayload, readFixed and addFound, and act on the scan's verdict.
+// one place that decides it. The HTTP adapter (leak_inspect.go), the
+// WebSocket adapter (leak_websocket.go) and the Connect adapter
+// (leak_connect.go) read what they hold through readPayload, readProtobuf,
+// readFixed and addFound, and act on the scan's verdict. Protobuf is the one
+// kind the bytes do not show: there the host's rule and the Content-Type say.
 
 // leakPart is a kind of bytes a request is made of.
 type leakPart int
@@ -35,6 +37,10 @@ const (
 	leakPartOpaque
 	// leakPartOversize is a body or a message too large to hold.
 	leakPartOversize
+	// leakPartProtobuf is a protobuf message: a body, or a message of a
+	// stream, that a host which speaks Connect says is one. Every length in
+	// it is written down elsewhere in it, so nothing in it may change length.
+	leakPartProtobuf
 )
 
 // leakPartRule is what happens in one kind of bytes.
@@ -59,9 +65,14 @@ type leakPartRule struct {
 //	binary    yes   blocks
 //	opaque    yes   blocks; the request or message is reported as unread
 //	oversize  no    passes unread
+//	protobuf  yes   is overwritten where it sits, by a placeholder padded or
+//	                cut to its length; it never blocks
 //
 // A body or a message is JSON, text or binary by its bytes: valid JSON,
-// otherwise valid UTF-8 with no NUL byte, otherwise binary.
+// otherwise valid UTF-8 with no NUL byte, otherwise binary. Protobuf cannot
+// be told from its bytes: it is what a host whose rule says it speaks Connect
+// sends as application/proto or in an application/connect+proto stream
+// (leakHostMatch.body).
 //
 // observe mode reads the same way and never replaces or blocks.
 var leakPartRules = map[leakPart]leakPartRule{
@@ -72,6 +83,7 @@ var leakPartRules = map[leakPart]leakPartRule{
 	leakPartBinary:   {read: true, block: true},
 	leakPartOpaque:   {read: true, block: true},
 	leakPartOversize: {},
+	leakPartProtobuf: {read: true, rewrite: true},
 }
 
 // leakVerdict is what happens to a request or a message once it is read.
@@ -147,4 +159,11 @@ func (g *leakGuard) readPayload(scan *leakScan, payload []byte, where string) []
 		g.readFixed(scan, leakPartBinary, payload, where)
 		return nil
 	}
+}
+
+// readProtobuf reads a protobuf message. It returns what to send in its
+// place, which is exactly as long, or nil when nothing in it is to change.
+func (g *leakGuard) readProtobuf(scan *leakScan, payload []byte, where string) []byte {
+	out, report := g.index.RewriteBinary(payload, scan.opts)
+	return scan.addRewritten(leakPartProtobuf, out, report, where)
 }
