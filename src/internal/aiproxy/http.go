@@ -477,7 +477,8 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request, flow
 		// when it is listed for the flow's tool), unless that tool's client
 		// keeps refusing the proxy's certificate there.
 		if match := p.leak.inspects(authentication.flow, host, port); match != nil {
-			if !p.leak.handshakes.bypassed(match.key) {
+			kept := p.leak.memoryOf(match)
+			if !kept.handshakes.bypassed(match.key) {
 				if err := p.state.availability(); err != nil {
 					writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
 					return
@@ -487,7 +488,7 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request, flow
 			}
 			// A tunnel opened in a window is raw for as long as the client
 			// keeps it, after the window too; status goes on saying so.
-			defer p.leak.connections.passed(match.key.host, leakReasonTLSRefused)()
+			defer kept.connections.passed(match.key.host, leakReasonTLSRefused)()
 		}
 		// A raw tunnel hides the service's answer from the proxy, so the host
 		// is only remembered: GET /v1/hints names the preset it belongs to,

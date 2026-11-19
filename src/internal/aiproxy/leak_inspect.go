@@ -676,16 +676,16 @@ func (p *httpProxy) emitLeakEvent(binding *binding, req *http.Request, host stri
 	if p.events == nil || p.leak == nil {
 		return
 	}
-	key := scan.stateKey(host)
-	fresh := p.leak.reported.fresh(key, scan.placeholders)
+	key, kept := scan.stateKey(host), p.leak.memoryOf(scan.match)
+	fresh := kept.reported.fresh(key, scan.placeholders)
 	report := len(fresh) > 0
 	switch {
 	case scan.unread != "":
-		report = p.leak.unread.fresh(key, scan.unread) || report
+		report = kept.unread.fresh(key, scan.unread) || report
 	case scan.left > 0 && len(scan.placeholders) == 0:
 		// Nothing was replaced and no placeholder names it, so the report-once
 		// memory of placeholders does not cover it.
-		report = p.leak.unread.fresh(key, leakQuietSignedText)
+		report = kept.unread.fresh(key, leakQuietSignedText)
 	}
 	if !report {
 		return
@@ -709,7 +709,7 @@ func (p *httpProxy) emitLeakEvent(binding *binding, req *http.Request, host stri
 func (p *httpProxy) leakEvent(binding *binding, req *http.Request, host string, port int, scan *leakScan, decision, outcome, reason string, status int, started time.Time) agentEvent {
 	blocked := decision == "block"
 	if blocked {
-		p.leak.reported.fresh(scan.stateKey(host), scan.placeholders)
+		p.leak.memoryOf(scan.match).reported.fresh(scan.stateKey(host), scan.placeholders)
 		scan.listed = p.leak.eventPlaceholders(scan.placeholders)
 	}
 	method, path := req.Method, req.URL.EscapedPath()
@@ -736,6 +736,10 @@ func leakFlowDetail(mode string, match *leakHostMatch) map[string]any {
 	if match != nil {
 		detail["harness"] = match.harness
 		detail["capture"] = match.flow.capture()
+		// The local peer is not named, so its events are what they always were.
+		if peer := match.flow.peer(); peer != PeerLocal {
+			detail["peer"] = peer
+		}
 	}
 	return detail
 }
@@ -804,7 +808,7 @@ func joinWithin(values []string, limit int) string {
 // window it opens: nothing a client with that TLS hello sends to that host
 // is read until the window ends.
 func (p *httpProxy) noteLeakHandshake(host string, port int, match *leakHostMatch, ok bool) {
-	window := p.leak.handshakes.note(match.key, ok)
+	window := p.leak.memoryOf(match).handshakes.note(match.key, ok)
 	if window != 0 && p.observe != nil {
 		p.observe(leakObservation{host: host, window: leakReasonTLSRefused})
 	}

@@ -175,13 +175,13 @@ func durableAuditEvent(event agentapi.Event) bool {
 // members an event may carry besides aws_sigv4_failure, path and rule: what
 // the access policy or the secret guard decided, or what leak protection
 // found (counts, whether the counts were capped, rule labels, placeholders,
-// how the connection was captured, how severe the finding is and how much an
-// unread reason covers), flat and bounded. An event never carries a request
-// or response value, nor the request an ask offers.
+// how the connection was captured and by which peer, how severe the finding
+// is and how much an unread reason covers), flat and bounded. An event never
+// carries a request or response value, nor the request an ask offers.
 var (
 	eventDetailText = []string{
 		"connectionId", "connectionName", "class", "method", "operation", "harness", "mode", "where", "labels", "placeholders",
-		"capture", "severity", "scope",
+		"capture", "peer", "severity", "scope",
 	}
 	eventDetailNumbers = []string{
 		"scrubbedValues", "inventoryHits", "ruleRedactions", "ruleAlerts", "signedFindings", "placeholderCount", "replacedCount", "windowSeconds",

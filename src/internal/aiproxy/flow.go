@@ -27,7 +27,12 @@ const (
 	CaptureTunnel = "tunnel"
 )
 
-// FlowContext says how a connection reached the proxy and whose it is.
+// PeerLocal is the capture peer that is this machine: the proxy environment
+// and this machine's own tunnel. A tunnel's other half may run elsewhere.
+const PeerLocal = "local"
+
+// FlowContext says how a connection reached the proxy and whose it is. Code in
+// this process makes it: nothing of it is read from what a program sends.
 type FlowContext struct {
 	// Capture is CaptureProxy or CaptureTunnel. It decides how strictly a
 	// host is tied to a tool: behind the environment proxy every program is
@@ -39,6 +44,9 @@ type FlowContext struct {
 	// protection table names it (claude, codex, opencode, cursor). It is empty
 	// when the program is not known to be one of them.
 	Tool string
+	// Peer is the capture peer the flow came from, as the capture layer names
+	// it; empty is PeerLocal. What is remembered of traffic is kept per peer.
+	Peer string
 }
 
 // capture is the flow's capture with the zero value read as CaptureProxy.
@@ -49,7 +57,19 @@ func (f FlowContext) capture() string {
 	return CaptureProxy
 }
 
-var flowToolPattern = regexp.MustCompile(`^[a-z0-9._-]{0,32}$`)
+// peer is the flow's peer with the zero value read as PeerLocal.
+func (f FlowContext) peer() string {
+	if f.Peer == "" {
+		return PeerLocal
+	}
+	return f.Peer
+}
+
+var (
+	flowToolPattern = regexp.MustCompile(`^[a-z0-9._-]{0,32}$`)
+	// A peer's id is written into events and compared exactly, so it is plain.
+	flowPeerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+)
 
 // normalised returns the flow as the proxy keeps it, or an error for one it
 // cannot use.
@@ -61,7 +81,10 @@ func (f FlowContext) normalised() (FlowContext, error) {
 	if !flowToolPattern.MatchString(tool) {
 		return FlowContext{}, errors.New("a flow's tool is a short lower-case id")
 	}
-	return FlowContext{Capture: f.Capture, Tool: tool}, nil
+	if !flowPeerPattern.MatchString(f.peer()) {
+		return FlowContext{}, errors.New("a flow's peer is a short plain id")
+	}
+	return FlowContext{Capture: f.Capture, Tool: tool, Peer: f.Peer}, nil
 }
 
 const (
@@ -316,7 +339,7 @@ func (e *Engine) ReadHosts(tool string) []ReadHost {
 // through its environment. It is named after the one tool this proxy serves,
 // when the proxy knows it; what is read does not depend on that.
 func (p *httpProxy) ownFlow() FlowContext {
-	return FlowContext{Capture: CaptureProxy, Tool: p.tool}
+	return FlowContext{Capture: CaptureProxy, Tool: p.tool, Peer: PeerLocal}
 }
 
 // connectFlow says how a CONNECT reached the proxy. It reads the note for
@@ -330,6 +353,7 @@ func (p *httpProxy) connectFlow(req *http.Request) FlowContext {
 			return flow
 		}
 		if p.flows.tunnels(req.RemoteAddr) {
+			// It names no peer either: nothing of it is read, so nothing is kept.
 			return FlowContext{Capture: CaptureTunnel}
 		}
 	}

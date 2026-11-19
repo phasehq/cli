@@ -338,9 +338,9 @@ well (below).
 Where a flow comes from:
 
 - A capture layer in the proxy's own process (a tunnel's router) calls
-  `Engine.NoteFlow(remoteAddr, FlowContext{Capture, Tool})` with the loopback
-  address and port its connection to the proxy comes from, before it sends the
-  CONNECT. The note is used up by the first CONNECT from that address,
+  `Engine.NoteFlow(remoteAddr, FlowContext{Capture, Tool, Peer})` with the
+  loopback address and port its connection to the proxy comes from, before it
+  sends the CONNECT. The note is used up by the first CONNECT from that address,
   whatever becomes of that CONNECT: one refused for its capability (407) or
   while the session is refreshing (503) uses it up like one that is served,
   so a second CONNECT on the same connection needs a note of its own. A note
@@ -357,7 +357,16 @@ Where a flow comes from:
   proxy environment. A note its CONNECT never used goes with the connection:
   left behind, it would name the next connection from the same address and
   port.
-- Nothing a request carries sets a flow: no header, target or proxy user name.
+- `Peer` is the capture peer the flow came from: an opaque id of up to 64
+  letters, digits, `.`, `_` and `-`, compared exactly. `local`
+  (`aiproxy.PeerLocal`), which an empty `Peer` is read as, is this machine: the
+  proxy environment and this machine's own tunnel. A tunnel's capturing half
+  need not run where the proxy does, so the capture layer names the peer each
+  flow arrived from, and gives no other peer the id `local`. A tunnel's own
+  connection whose CONNECT finds no note names no peer: nothing of it is
+  read, so nothing is kept of it.
+- Nothing a request carries sets a flow, its peer included: no header, target
+  or proxy user name.
 - A CONNECT nobody noted is a client of the proxy environment. Its tool is the
   one the proxy was started for (`phase ai run -- claude` is `claude`,
   `phase ai exec` the harness that invoked it); the hook-managed proxy serves
@@ -367,11 +376,16 @@ Where a flow comes from:
 - `Engine.ShouldRead(tool, host)` and `Engine.ReadHosts(tool)` tell a capture
   layer which flows to hand over, without a copy of the table.
 
-What the proxy remembers about a host it remembers per tool and host: the
-pass-through windows, the once-a-minute limit on unread reports and the
-placeholders already reported. The tool is the one the flow is named as
-(`harness` in its events). One tool's refused handshakes never open a window
-for another tool on the same host.
+What the proxy remembers about a host it remembers per peer, tool and host:
+the pass-through windows, the once-a-minute limit on unread reports, the
+placeholders already reported, the hellos kept for a host whose hello is
+copied, and the count of connections copied or passed through unread. The
+tool is the one the flow is named as (`harness` in its events). One tool's
+refused handshakes never open a window for another tool on the same host.
+Each peer has a memory of its own, with its own bounds, so the same holds
+between two peers with the same tool on the same host, and a peer that
+fills its memory takes nothing from another's. `GET /v1/status` tells of the
+`local` peer only.
 
 A pass-through window is narrower still: it is for the client that refused.
 Every program started in a session is named as the session's tool, so a
@@ -470,6 +484,7 @@ session unavailable. `detail` holds:
 | `mode` | `censor` or `observe` |
 | `harness` | the flow's tool when that tool's list reads the host, otherwise the tool whose entry the host is read by |
 | `capture` | `proxy` or `tunnel` |
+| `peer` | the capture peer the flow came from, when it is not `local`. Absent for this machine's own traffic |
 | `where` | `url`, `header`, `body`, `message` (of a WebSocket, or of a Connect stream), comma-separated |
 | `inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` | counts; `signedFindings` is what was found in text the provider signed and left as it was |
 | `labels` | rule labels |
