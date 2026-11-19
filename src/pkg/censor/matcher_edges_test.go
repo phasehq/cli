@@ -367,3 +367,24 @@ func TestAPieceAfterARejectedOneIsFound(t *testing.T) {
 		}
 	}
 }
+
+// When only a piece of a value is there, what is replaced beyond its verified
+// chunks is the chunk cut short at each end: eleven bytes at most on each side.
+// Text that merely stands next to a piece of a long value stays.
+func TestAPartialMatchIsWidenedByLessThanAChunk(t *testing.T) {
+	value := randomString(t, alnum, 256)
+	ix := build(t, secret{ID: "big", Value: value})
+	link := "https://example.com/some/long/path/with/many/segments/and/query?x=1&y=2"
+	for name, tc := range map[string]struct{ text, want string }{
+		"text after the first chunk":  {"see " + value[:12] + link + " end", "see ph:secret:big" + link[chunkSize-1:] + " end"},
+		"text before the last chunks": {"see " + link + value[228:] + " end", "see " + link[:len(link)-(chunkSize-1)] + "ph:secret:big end"},
+		"a value cut at its end":      {"cut: " + value[:100] + " end", "cut: ph:secret:big end"},
+		"a value cut at both ends":    {"cut: " + value[5:100] + " end", "cut: ph:secret:big end"},
+		"a value with a hole in it":   {"cut: " + value[:60] + strings.Repeat(".", 30) + value[120:] + " end", "cut: ph:secret:big........ph:secret:big end"},
+	} {
+		out, report := ix.Redact([]byte(tc.text))
+		if string(out) != tc.want || report.Inventory == 0 || !report.Findings[0].Partial {
+			t.Errorf("%s: %+v\n got  %s\n want %s", name, report.Findings, out, tc.want)
+		}
+	}
+}

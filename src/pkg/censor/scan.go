@@ -213,11 +213,13 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 			e++
 		}
 	default:
-		floor := max(start, 0)
+		// What the hashes cannot confirm is the chunk cut short at each end:
+		// chunk-1 bytes at most, within where the value would sit.
+		floor := max(start, s-(c-1), 0)
 		for s > floor && f.class[data[s-1]] {
 			s--
 		}
-		ceiling := min(start+f.length, len(data))
+		ceiling := min(start+f.length, e+c-1, len(data))
 		for e < ceiling && f.class[data[e]] {
 			e++
 		}
