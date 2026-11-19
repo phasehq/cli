@@ -322,8 +322,8 @@ func decodeKey(literal []byte) string {
 	return key
 }
 
-// handleString scans one string literal. A signed one is scanned for the report
-// only and left exactly as it was.
+// handleString scans one string literal. A signed one, in the request body
+// itself, is scanned for the report only and left exactly as it was.
 func (w *walker) handleString(start, end int, signed bool) {
 	literal := w.data[start:end]
 	inner := literal[1 : len(literal)-1]
@@ -382,7 +382,10 @@ func (w *walker) handleString(start, end int, signed bool) {
 	if len(entry.hits) == 0 {
 		return
 	}
-	signed = signed || w.underEncryptedContent()
+	// Only the request's own structure can hold what the provider signed. JSON
+	// found inside a string is text a tool or a file produced, whatever its
+	// keys are called, so nothing in it is exempt.
+	signed = w.top && (signed || w.underEncryptedContent())
 	here := w.pointer()
 	for _, h := range entry.hits {
 		h.path = here + h.path

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -473,8 +474,36 @@ func TestFalsePositivesOnOrdinaryText(t *testing.T) {
 	for _, hit := range result.Rules {
 		byRule[hit.Rule+"/"+hit.Action]++
 	}
+	if len(result.Rules) != 0 {
+		t.Fatalf("%d rule false positives: %v", len(result.Rules), byRule)
+	}
 	stats := ix.Stats()
 	t.Logf("corpus %d bytes, %d forms, %d chunks: 0 inventory hits; rule hits %v", len(text), stats.Forms, stats.Chunks, byRule)
+
+	// The same for what is most easily taken for a credential: each file as
+	// plain text, then all of them as the tool results of one request.
+	negatives := ordinaryNegatives(t)
+	names := make([]string, 0, len(negatives))
+	for name := range negatives {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var contents []string
+	size := 0
+	for _, name := range names {
+		content := negatives[name]
+		contents = append(contents, content)
+		size += len(content)
+		out, report := ix.Redact([]byte(content))
+		if string(out) != content || len(report.Findings) != 0 {
+			t.Errorf("%s: %d false positives, the first %+v", name, len(report.Findings), report.Findings[:min(len(report.Findings), 3)])
+		}
+	}
+	request := apply(ix, modelRequest(contents...))
+	if request.Changed || len(request.Hits)+len(request.Rules) != 0 {
+		t.Errorf("as tool results: %d inventory and %d rule false positives, the first %+v", len(request.Hits), len(request.Rules), request.Report.Findings[:min(len(request.Report.Findings), 3)])
+	}
+	t.Logf("%d files of lock files, minified code, digests, names, URLs and images, %d bytes: 0 inventory and 0 rule hits", len(names), size)
 }
 
 func TestEveryInventorySecretIsFoundInARequest(t *testing.T) {

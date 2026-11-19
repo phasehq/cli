@@ -2,7 +2,10 @@
 #
 # Each rule is a regex, or a prefix plus a charset and a length, or keyword_value
 # (the value written right after a keyword). A regex with a group named "secret"
-# replaces only that group. Every candidate is scored:
+# replaces only that group. A keyword_value rule can carry a regex as well: it is
+# applied to the value alone, and the rule then takes only a value of that shape.
+# That is how a format whose own prefix is too common to act on is tied to a keyword.
+# Every candidate is scored:
 #
 #   score = rule score (default 60)
 #         + keyword_bonus   when a keyword ends within keyword_window bytes before it on
@@ -14,10 +17,21 @@
 #
 # At or above redact_at (default 50) it becomes ph:<label>:<n>, the same n for the same
 # value. At or above alert_at (default 30) it is only recorded. Below that it's dropped.
-# action: alert never redacts. min_entropy is in bits per byte, on the candidate.
-# hints are literal strings one of which every match contains: the regex only runs on
-# text that holds one (a prefix rule's prefix is its hint). Exact inventory matches
-# don't go through any of this: they always redact.
+# action: alert never redacts. min_entropy is in bits per byte, on the candidate: a
+# token's rule sets it so that a body of one repeated character is no candidate at all.
+#
+# A validator only adds: a checksum that passes earns validator_bonus, and one that
+# fails changes nothing, so a value with a format's prefix, length and alphabet is
+# replaced either way.
+#
+# What a rule costs. A regex that can only match beginning with a few literals, as a
+# token's does with its prefix (after an optional \b), is tried only where one of them
+# is found, and one pass over the text finds every rule's literals and the keywords
+# together. A keyword_value rule is tried only at a keyword. So a rule costs nothing on
+# text that holds neither its prefix nor a keyword. hints are literal strings one of
+# which every match contains: a rule with hints runs only on text that holds one. A
+# regex with no literal beginning needs them, because it runs over the whole of such
+# text. Exact inventory matches don't go through any of this: they always redact.
 scoring:
   keyword_window: 40
   keyword_bonus: 30
@@ -57,6 +71,7 @@ scoring:
     - AKIAIOSFODNN7EXAMPLE
     - wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
     - ASIAIOSFODNN7EXAMPLE
+  # Matched anywhere in a candidate, whatever its case.
   ignore_substrings:
     - example
     - xxxxxxxx
@@ -68,6 +83,18 @@ scoring:
     - dummy
     - '<token>'
     - '1234567890abcdef'
+    # Stripe test-mode keys, and publishable keys, which are public by design
+    - sk_test_
+    - rk_test_
+    - pk_test_
+    - pk_live_
+    # the example tokens of GitHub's documentation (whatever the prefix), of Telegram's
+    # Bot API documentation and of RFC 8959
+    - 16c7e42f292c6912e7710c838347ae178b4a
+    - abc-def1234ghikl-zyx57w2v1u123ew11
+    - e92fb7eb-d882-47a4-a265-a0b6135dc842
+    # the start of the Azure storage emulator's account key, the same on every machine
+    - eby8vdm02xnocqflquwjpllmetlcdxj1ouzft50u
   # Things written after a keyword that aren't secrets: references to one, URLs
   # without credentials, cloud resource names, and code identifiers. These apply to
   # keyword_value candidates only; the values and substrings above apply to all rules.
@@ -103,11 +130,12 @@ rules:
     validator: phase-token
     label: phase_agent_token
 
+  # Cloud providers.
   - id: aws-access-key-id
     description: AWS access key id (long-lived or temporary)
     regex: '\b(?:AKIA|ASIA)[0-9A-Z]{16}\b'
     hints: [AKIA, ASIA]
-    validator: aws-key-id
+    validator: aws_key_id
     label: aws_access_key_id
   - id: aws-secret-access-key
     description: the value written next to an aws_secret_access_key name
@@ -115,12 +143,76 @@ rules:
     min_entropy: 3.5
     hints: [ws_secret_access_key, WS_SECRET_ACCESS_KEY, ws_Secret_Access_Key]
     label: aws_secret_access_key
+  - id: google-api-key
+    description: Google API key (AIza and 35 characters)
+    regex: '\b(?P<secret>AIza[A-Za-z0-9_-]{35})(?:[^A-Za-z0-9_-]|$)'
+    min_entropy: 3.0
+    label: google_api_key
+  # An Azure storage account key has no prefix: 64 bytes in base64, so 86 characters
+  # and ==. It is taken only after a name that says what it is, here or (below) after
+  # a keyword.
+  - id: azure-storage-key
+    description: Azure storage account key after an AccountKey, account_key or storage_key name
+    regex: '(?i:account|storage)[_.-]?(?i:key)["'']?[ \t]{0,3}[=:][ \t]{0,3}["'']?(?P<secret>[A-Za-z0-9+/]{86}==)'
+    min_entropy: 3.5
+    label: azure_storage_key
+  - id: azure-storage-key-keyword
+    description: Azure storage account key as the value after a keyword
+    keyword_value: true
+    regex: '^[A-Za-z0-9+/]{86}==$'
+    min_length: 88
+    min_entropy: 3.5
+    score: 40
+    label: azure_storage_key
+  - id: digitalocean-token
+    description: DigitalOcean personal access, OAuth or refresh token
+    regex: '\bdo[por]_v1_[0-9a-f]{64}\b'
+    min_entropy: 2.5
+    label: digitalocean_token
+
+  # Model providers.
+  - id: anthropic-api-key
+    description: Anthropic key, sk-ant-<kind>- then 93 characters and AA
+    regex: '\bsk-ant-[a-z]{2,8}[0-9]{2}-[A-Za-z0-9_-]{93}AA\b'
+    min_entropy: 3.0
+    label: anthropic_api_key
+  # T3BlbkFJ is "OpenAI" in base64, and sits in the middle of every OpenAI key.
+  - id: openai-api-key
+    description: OpenAI project, service account or admin key
+    regex: '\b(?P<secret>sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{58,74}T3BlbkFJ[A-Za-z0-9_-]{58,74})(?:[^A-Za-z0-9_-]|$)'
+    min_entropy: 3.0
+    label: openai_api_key
+  - id: openai-legacy-api-key
+    description: OpenAI key of the older form, sk- and 20 characters either side of T3BlbkFJ
+    regex: '\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\b'
+    min_entropy: 3.0
+    label: openai_api_key
+  - id: openrouter-api-key
+    description: OpenRouter API key
+    regex: '\bsk-or-v1-[0-9a-f]{64}\b'
+    min_entropy: 2.5
+    label: openrouter_api_key
+  - id: huggingface-token
+    description: Hugging Face user access token
+    regex: '\bhf_[A-Za-z]{34}\b'
+    min_entropy: 3.0
+    label: huggingface_token
+
+  # Source hosts and package registries.
+  # A GitHub token of the 2021 form ends in a checksum of its 30 random characters.
   - id: github-classic-token
     description: GitHub classic personal access, OAuth, user, server or refresh token
     regex: '\bgh[pousr]_[A-Za-z0-9]{36}\b'
     min_entropy: 3.0
     hints: [ghp_, gho_, ghu_, ghs_, ghr_]
-    validator: github-checksum
+    validator: github_crc32
+    label: github_token
+  # Installation tokens are moving to ghs_<app id>_<JWT>, about 520 characters, with
+  # no checksum this file knows: they are matched by shape and never validated.
+  - id: github-installation-token
+    description: GitHub App installation token of the longer form
+    regex: '\bghs_[0-9A-Za-z]{1,20}_eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}'
+    min_entropy: 3.0
     label: github_token
   - id: github-fine-grained-token
     description: GitHub fine-grained personal access token
@@ -129,6 +221,29 @@ rules:
     min_length: 70
     max_length: 100
     label: github_token
+  - id: gitlab-token
+    description: GitLab personal, project or group access token (glpat- and 20 characters)
+    regex: '\b(?P<secret>glpat-[A-Za-z0-9_-]{20})(?:[^A-Za-z0-9_-]|$)'
+    min_entropy: 3.0
+    label: gitlab_token
+  - id: gitlab-routable-token
+    description: GitLab access token of the routable form, glpat-<payload>.<length and checksum>
+    regex: '\bglpat-[A-Za-z0-9_-]{27,300}\.[0-9a-z]{9}\b'
+    min_entropy: 3.0
+    label: gitlab_token
+  - id: npm-token
+    description: npm access token, npm_ then 30 random characters and a checksum of six
+    regex: '\bnpm_[A-Za-z0-9]{36}\b'
+    min_entropy: 3.0
+    validator: npm_crc32
+    label: npm_token
+  # AgEIcHlwaS5vcmc is how a macaroon for pypi.org begins in base64.
+  - id: pypi-token
+    description: PyPI upload token
+    regex: '\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,1000}'
+    validator: pypi_macaroon
+    label: pypi_token
+
   - id: private-key-block
     description: a PEM private key, whole block, including inside an env file with literal \n
     regex: '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----'
@@ -141,16 +256,119 @@ rules:
     action: alert
     hints: ['PRIVATE KEY-----']
     label: private_key_header
+
+  # Messaging.
   - id: slack-token
     description: Slack bot, user or app token
     regex: '\bxox[abposr]-[0-9A-Za-z-]{20,}'
     hints: [xoxa-, xoxb-, xoxp-, xoxo-, xoxs-, xoxr-]
     label: slack_token
+  - id: slack-app-token
+    description: Slack app-level token
+    regex: '\bxapp-[0-9]-[A-Z0-9]{8,14}-[0-9]{8,16}-[a-z0-9]{32,128}\b'
+    min_entropy: 3.0
+    label: slack_app_token
+  - id: slack-webhook
+    description: Slack incoming webhook; the path after /services/ is the credential
+    regex: '\bhooks\.slack\.com/services/(?P<secret>T[A-Z0-9]{8,12}/B[A-Z0-9]{8,12}/[A-Za-z0-9]{24})\b'
+    min_entropy: 3.0
+    label: slack_webhook
+  - id: sendgrid-api-key
+    description: SendGrid API key, SG. then 22 and 43 characters
+    regex: '\b(?P<secret>SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})(?:[^A-Za-z0-9_-]|$)'
+    min_entropy: 3.0
+    label: sendgrid_api_key
+  # SK and 32 hex is too common a shape to act on alone.
+  - id: twilio-api-key-sid
+    description: Twilio API key SID as the value after a keyword
+    keyword_value: true
+    regex: '^(?P<secret>SK[0-9a-fA-F]{32})(?:[^0-9A-Za-z_]|$)'
+    min_length: 34
+    min_entropy: 2.5
+    score: 40
+    label: twilio_api_key
+  # A bot token is the bot's numeric id, a colon and 35 characters. It is taken as the
+  # value after a keyword, or in a Bot API URL, which is where it is mostly written.
+  - id: telegram-bot-token
+    description: Telegram bot token as the value after a keyword
+    keyword_value: true
+    regex: '^(?P<secret>[0-9]{8,10}:A[A-Za-z0-9_-]{34})(?:[^A-Za-z0-9_-]|$)'
+    min_length: 44
+    min_entropy: 3.0
+    score: 40
+    label: telegram_bot_token
+  - id: telegram-bot-url
+    description: Telegram bot token in a Bot API URL
+    regex: '\bapi\.telegram\.org/(?:file/)?bot(?P<secret>[0-9]{8,10}:A[A-Za-z0-9_-]{34})(?:[^A-Za-z0-9_-]|$)'
+    min_entropy: 3.0
+    label: telegram_bot_token
+
+  # Payments and commerce.
   - id: stripe-live-key
     description: Stripe live secret or restricted key
     regex: '\b[sr]k_live_[0-9A-Za-z]{20,}'
     hints: [k_live_]
     label: stripe_key
+  - id: stripe-webhook-secret
+    description: Stripe webhook signing secret
+    regex: '\bwhsec_[A-Za-z0-9]{32,64}\b'
+    min_entropy: 3.0
+    label: stripe_webhook_secret
+  - id: shopify-token
+    description: Shopify access token or shared secret
+    regex: '\bshp(?:at|ss|ca|pa)_[0-9a-fA-F]{32}\b'
+    min_entropy: 2.5
+    label: shopify_token
+
+  # Developer platforms.
+  - id: databricks-token
+    description: Databricks personal access token
+    regex: '\bdapi[0-9a-f]{32}(?:-[0-9])?\b'
+    min_entropy: 2.5
+    label: databricks_token
+  - id: linear-api-key
+    description: Linear API key
+    regex: '\blin_api_[A-Za-z0-9]{40}\b'
+    min_entropy: 3.0
+    label: linear_api_key
+  - id: supabase-token
+    description: Supabase personal access token
+    regex: '\bsbp_[0-9a-z]{40}\b'
+    min_entropy: 2.5
+    label: supabase_token
+  - id: vault-token
+    description: HashiCorp Vault service (hvs.) or batch (hvb.) token
+    regex: '\bhv(?:s\.[A-Za-z0-9_-]{90,120}|b\.[A-Za-z0-9_-]{138,300})'
+    min_entropy: 3.0
+    label: vault_token
+  - id: postman-api-key
+    description: Postman API key
+    regex: '\bPMAK-[0-9a-f]{24}-[0-9a-f]{34}\b'
+    min_entropy: 2.5
+    label: postman_api_key
+  - id: sentry-user-token
+    description: Sentry user auth token
+    regex: '\bsntryu_[0-9a-f]{64}\b'
+    min_entropy: 2.5
+    label: sentry_token
+  - id: sentry-org-token
+    description: Sentry organisation auth token, sntrys_<base64 JSON>_<43 characters>
+    regex: '\b(?P<secret>sntrys_eyJ[A-Za-z0-9+/]{20,400}={0,2}_[A-Za-z0-9+/]{43})(?:[^A-Za-z0-9+/]|$)'
+    min_entropy: 3.0
+    label: sentry_token
+  - id: doppler-token
+    description: Doppler token (personal, service, CLI, service account, SCIM or audit)
+    regex: '\bdp\.(?:(?:ct|pt|sa|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}\b'
+    min_entropy: 3.0
+    label: doppler_token
+
+  # RFC 8959: a URI scheme whose whole purpose is to mark what follows as a secret.
+  - id: secret-token-uri
+    description: an RFC 8959 secret-token URI; what follows the scheme is replaced
+    regex: '\bsecret-token:(?P<secret>[A-Za-z0-9._~%!$&*+=:@-]{15,511}[A-Za-z0-9_~=+-])'
+    min_entropy: 2.5
+    label: secret_token
+
   - id: jwt
     description: a signed JSON Web Token; redacted only with a keyword such as bearer or token nearby
     regex: '\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}'

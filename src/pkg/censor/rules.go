@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +22,8 @@ var defaultRules []byte
 
 // Rule finds a credential by its shape, whatever the inventory holds. A rule is a
 // regex, a prefix followed by a run of characters from a charset, or (keyword_value)
-// the value written right after a secret-sounding keyword.
+// the value written right after a secret-sounding keyword, which a regex can then
+// hold to one shape.
 //
 // Every candidate gets a score: the rule's base score, plus a bonus when a keyword
 // sits just before it (or is the JSON key holding it), plus a bonus when the rule's
@@ -46,8 +48,9 @@ type Rule struct {
 	AlertAt      *int    `yaml:"alert_at"`
 	Validator    string  `yaml:"validator"`
 	KeywordValue bool    `yaml:"keyword_value"`
-	// Hints are literal strings at least one of which every match contains. The
-	// regex only runs on text holding one, which is what keeps rules cheap.
+	// Hints are literal strings at least one of which every match contains: the
+	// rule runs only on text holding one. A regex that does not begin with a
+	// literal needs them, because it runs over the whole of such text.
 	Hints []string `yaml:"hints"`
 
 	re       *regexp.Regexp
@@ -57,6 +60,16 @@ type Rule struct {
 	redactAt int
 	alertAt  int
 	validate func([]byte) bool
+	order    int // its place in the file, which settles a tie between two rules
+
+	// Set when every match begins with one of a few literals, as a token's does
+	// with its prefix: the regex is then tried only where one of them is found.
+	// atStart is the regex held to the start of the bytes it is given, afterByte
+	// the same with one byte of context before the match.
+	starts    []startLiteral
+	atStart   *regexp.Regexp
+	afterByte *regexp.Regexp
+	maxLen    int // the longest match in bytes, 0 when there is no bound
 }
 
 func (r *Rule) mayMatch(data []byte) bool {
@@ -84,10 +97,19 @@ type Scoring struct {
 	IgnorePatterns   []string `yaml:"ignore_patterns"`
 }
 
+// SkippedRule is a rule of a parsed file that this version cannot apply, and why.
+type SkippedRule struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
 // Rules is a compiled rule file.
 type Rules struct {
-	list           []*Rule
+	list           []*Rule // regex and prefix rules, in file order
 	keywordRules   []*Rule
+	unanchored     []*Rule     // the rules of list that run over the whole text
+	literals       *literalSet // where the other rules of list can begin, and the keywords
+	skipped        []SkippedRule
 	scoring        Scoring
 	keywords       *keywordSet
 	ignoreValues   map[string]bool
@@ -107,9 +129,29 @@ func (r *Rules) cacheTag() uint64 {
 	return r.tag
 }
 
+// index prepares the one pass that finds where the rules can begin. It is run
+// once, when the set is made: a Rules never changes afterwards.
+func (r *Rules) index() {
+	r.unanchored = nil
+	for _, rule := range r.list {
+		if rule.atStart == nil {
+			r.unanchored = append(r.unanchored, rule)
+		}
+	}
+	// Keyword positions are needed on every block only by keyword_value rules;
+	// without them they are looked for when a candidate has to be scored.
+	var words *keywordSet
+	if len(r.keywordRules) > 0 {
+		words = r.keywords
+	}
+	r.literals = newLiteralSet(words, r.list)
+}
+
 // Only returns the rules whose ids are given, sharing everything else. An id
-// that is not in the set is an error, so a typo never silently drops a rule.
-// The result can be passed in ScanOptions.Rules to restrict one call.
+// the file never had is an error, so a typo never silently drops a rule; an id
+// whose rule was skipped when the file was parsed is left out without one, and
+// stays listed by Skipped. The result can be passed in ScanOptions.Rules to
+// restrict one call.
 func (r *Rules) Only(ids ...string) (*Rules, error) {
 	want := map[string]bool{}
 	for _, id := range ids {
@@ -129,11 +171,27 @@ func (r *Rules) Only(ids ...string) (*Rules, error) {
 			delete(want, rule.ID)
 		}
 	}
+	for _, skipped := range r.skipped {
+		delete(want, skipped.ID)
+	}
 	for id := range want {
 		return nil, fmt.Errorf("no rule has the id %s", id)
 	}
+	subset.index()
 	subset.tag = rulesTags.Add(1)
 	return &subset, nil
+}
+
+// Skipped lists the rules of the parsed file that this version cannot apply:
+// one with a validator or an action it does not know, a pattern it cannot
+// compile, or a field holding a kind of value it does not read. The other rules
+// of the file apply as usual. The file may come from a server newer than this
+// binary, so whoever loads one should report what was left out.
+func (r *Rules) Skipped() []SkippedRule {
+	if r == nil {
+		return nil
+	}
+	return append([]SkippedRule(nil), r.skipped...)
 }
 
 // DefaultRules are the rules shipped with the CLI. They are compiled once and,
@@ -145,14 +203,21 @@ var defaultRulesOnce = sync.OnceValue(func() *Rules {
 	if err != nil {
 		panic("censor: the shipped rules do not compile: " + err.Error())
 	}
+	// Leaving a rule out is for files newer than the binary; the shipped file
+	// is exactly as old.
+	if len(rules.skipped) > 0 {
+		panic("censor: the shipped rule " + rules.skipped[0].ID + " does not compile: " + rules.skipped[0].Reason)
+	}
 	return rules
 })
 
-// ParseRules compiles a YAML (or JSON) rule file.
+// ParseRules compiles a YAML (or JSON) rule file. A rule this version cannot
+// apply is left out and listed by Skipped rather than failing the file; a file
+// with no usable rule, a rule without an id or two rules with one id is an error.
 func ParseRules(content []byte) (*Rules, error) {
 	var file struct {
-		Scoring Scoring `yaml:"scoring"`
-		Rules   []*Rule `yaml:"rules"`
+		Scoring Scoring     `yaml:"scoring"`
+		Rules   []yaml.Node `yaml:"rules"`
 	}
 	if err := yaml.Unmarshal(content, &file); err != nil {
 		return nil, err
@@ -179,24 +244,62 @@ func ParseRules(content []byte) (*Rules, error) {
 		rules.ignorePatterns = append(rules.ignorePatterns, re)
 	}
 	seen := map[string]bool{}
-	for _, rule := range file.Rules {
-		if err := rule.compile(); err != nil {
-			return nil, err
+	for i := range file.Rules {
+		// Each rule is decoded on its own, so a value of a kind this version
+		// does not read costs that rule and not the file.
+		rule := &Rule{}
+		decodeErr := file.Rules[i].Decode(rule)
+		if rule.ID == "" {
+			return nil, errors.New("every rule needs an id")
 		}
 		if seen[rule.ID] {
 			return nil, fmt.Errorf("rule id %s appears twice", rule.ID)
 		}
 		seen[rule.ID] = true
+		err := decodeErr
+		if err == nil {
+			err = rule.compile()
+		}
+		if err == nil && rule.KeywordValue && rules.keywords.empty() {
+			err = errors.New("needs a keyword list")
+		}
+		if err != nil {
+			rules.skipped = append(rules.skipped, SkippedRule{ID: rule.ID, Reason: skipReason(err)})
+			continue
+		}
 		if rule.KeywordValue {
-			if rules.keywords.empty() {
-				return nil, fmt.Errorf("rule %s needs a keyword list", rule.ID)
-			}
+			// Keyword rules come after the others wherever two rules tie.
+			rule.order = len(file.Rules) + i
 			rules.keywordRules = append(rules.keywordRules, rule)
 			continue
 		}
+		rule.order = i
 		rules.list = append(rules.list, rule)
 	}
+	if rules.Len() == 0 {
+		first := rules.skipped[0]
+		return nil, fmt.Errorf("the rule file has no usable rules: %d skipped, the first %s (%s)", len(rules.skipped), first.ID, first.Reason)
+	}
+	rules.index()
 	return rules, nil
+}
+
+// skipReason says in one line why a rule was left out.
+func skipReason(err error) string {
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) && len(typeErr.Errors) > 0 {
+		return "a field holds a value this version does not read: " + shorten(typeErr.Errors[0])
+	}
+	return shorten(err.Error())
+}
+
+func shorten(text string) string {
+	const limit = 200
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > limit {
+		return strings.ToValidUTF8(text[:limit], "") + "..."
+	}
+	return text
 }
 
 func intOr(value *int, fallback int) int {
@@ -206,22 +309,20 @@ func intOr(value *int, fallback int) int {
 	return *value
 }
 
+// compile readies one rule. Its error is the reason the rule is skipped.
 func (rule *Rule) compile() error {
-	if rule.ID == "" {
-		return errors.New("every rule needs an id")
-	}
 	if rule.Action == "" {
 		rule.Action = "redact"
 	}
 	if rule.Action != "redact" && rule.Action != "alert" {
-		return fmt.Errorf("rule %s: action must be redact or alert", rule.ID)
+		return fmt.Errorf("unknown action %q (redact or alert)", rule.Action)
 	}
 	if rule.Label == "" {
 		rule.Label = strings.ReplaceAll(rule.ID, "-", "_")
 	}
 	// The label goes into the placeholder ph:<label>:<n>.
 	if !identifier.MatchString(rule.Label) {
-		return fmt.Errorf("rule %s: label must be 1 to 64 of A-Z, a-z, 0-9, '_', '.' and '-'", rule.ID)
+		return errors.New("label must be 1 to 64 of A-Z, a-z, 0-9, '_', '.' and '-'")
 	}
 	rule.base = intOr(rule.Score, 60)
 	rule.redactAt = intOr(rule.RedactAt, 50)
@@ -232,7 +333,7 @@ func (rule *Rule) compile() error {
 	if rule.Validator != "" {
 		validate, ok := validators[rule.Validator]
 		if !ok {
-			return fmt.Errorf("rule %s: unknown validator %q", rule.ID, rule.Validator)
+			return fmt.Errorf("unknown validator %q", rule.Validator)
 		}
 		rule.validate = validate
 	}
@@ -243,22 +344,32 @@ func (rule *Rule) compile() error {
 		if rule.MinLength <= 0 {
 			rule.MinLength = 16
 		}
+		if rule.Regex == "" {
+			return nil
+		}
+		// The shape the value after the keyword must have.
+		re, err := regexp.Compile(rule.Regex)
+		if err != nil {
+			return err
+		}
+		rule.re = re
+		rule.group = max(re.SubexpIndex("secret"), 0)
 		return nil
 	}
 	pattern := rule.Regex
 	if pattern == "" {
 		if rule.Prefix == "" || rule.Charset == "" {
-			return fmt.Errorf("rule %s: needs a regex, a prefix and a charset, or keyword_value", rule.ID)
+			return errors.New("needs a regex, a prefix and a charset, or keyword_value")
 		}
 		if strings.ContainsAny(rule.Charset, "[]") {
-			return fmt.Errorf("rule %s: write the charset without brackets", rule.ID)
+			return errors.New("write the charset without brackets")
 		}
 		low, high := rule.MinLength, rule.MaxLength
 		if rule.Length > 0 {
 			low, high = rule.Length, rule.Length
 		}
 		if low <= 0 {
-			return fmt.Errorf("rule %s: needs a length or a min_length", rule.ID)
+			return errors.New("needs a length or a min_length")
 		}
 		bound := strconv.Itoa(low) + ","
 		if high > 0 {
@@ -271,11 +382,164 @@ func (rule *Rule) compile() error {
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return fmt.Errorf("rule %s: %w", rule.ID, err)
+		return err
 	}
 	rule.re = re
 	rule.group = max(re.SubexpIndex("secret"), 0)
+	rule.anchor(pattern)
 	return nil
+}
+
+// anchor works out whether every match of the pattern begins with one of a few
+// literals. If so the rule is tried only where one is found, which gives the
+// matches a scan of the whole text would: a match has to begin at one of those
+// places, they are tried in order, and each try sees the byte before it and the
+// byte after the longest match, which is all a regex can look around at.
+func (rule *Rule) anchor(pattern string) {
+	tree, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return
+	}
+	starts, ok := startLiterals(tree)
+	if !ok {
+		return
+	}
+	atStart, err := regexp.Compile(`\A(?:` + pattern + `)`)
+	if err != nil {
+		return
+	}
+	afterByte, err := regexp.Compile(`\A[\s\S](?:` + pattern + `)`)
+	if err != nil {
+		return
+	}
+	rule.starts, rule.atStart, rule.afterByte, rule.maxLen = starts, atStart, afterByte, maxMatchLength(tree)
+}
+
+// matchAt tries an anchored rule at p, where one of its literals begins. It
+// returns the range to replace, which is negative when the rule's group took no
+// part in the match, and where the whole match ends.
+func (rule *Rule) matchAt(data []byte, p int) (start, end, matchEnd int, ok bool) {
+	from, re := p, rule.atStart
+	if p > 0 {
+		from, re = p-1, rule.afterByte
+	}
+	to := len(data)
+	if rule.maxLen > 0 {
+		to = min(to, p+rule.maxLen+1)
+	}
+	m := re.FindSubmatchIndex(data[from:to])
+	if m == nil {
+		return 0, 0, 0, false
+	}
+	matchEnd = from + m[1]
+	if rule.group == 0 {
+		return p, matchEnd, matchEnd, true
+	}
+	if m[2*rule.group] < 0 {
+		return -1, -1, matchEnd, true
+	}
+	return from + m[2*rule.group], from + m[2*rule.group+1], matchEnd, true
+}
+
+// How an anchored rule is applied to one block.
+const (
+	ruleUntried  = iota
+	ruleAnchored // tried where its literals begin
+	ruleLeftOut  // it has hints and the block holds none of them
+	ruleWhole    // scanned over the whole block, as a rule that is not anchored
+)
+
+// eachAnchored applies every anchored rule one of whose literals was found, and
+// reports what a scan of the whole text with the rule's regex would. Normally
+// the rule is tried at each of those places in order; its matches do not
+// overlap, so a place inside the last one is passed over.
+//
+// A try reads from its place as far as the regex can reach, which for a regex
+// with no longest match is the end of the block. Text that begins a thousand
+// tokens and ends none would cost a thousand such reads, so the most a rule's
+// tries could read is added up first, and a rule that could read more than a
+// few times the block is scanned over the whole block instead, once. That
+// keeps a scan linear in the text whatever the text is.
+func (r *Rules) eachAnchored(data []byte, starts []startHit, found func(rule *Rule, s, e int)) {
+	if len(starts) == 0 {
+		return
+	}
+	type progress struct {
+		matched, tried int // where the rule last matched to, and was last tried
+		reach          int // the most bytes its tries in this block could read
+		how            uint8
+	}
+	done := make([]progress, len(r.list))
+	allowance := anchoredAllowance*len(data) + anchoredSlack
+	var whole []int32
+	for _, at := range starts {
+		rule, state := r.list[at.rule], &done[at.rule]
+		if state.how == ruleUntried {
+			state.how = ruleAnchored
+			// Hints mean what they always did: the rule runs only on text
+			// that holds one.
+			if !rule.mayMatch(data) {
+				state.how = ruleLeftOut
+			}
+		}
+		if state.how != ruleAnchored {
+			continue
+		}
+		reach := len(data) - at.pos + 1
+		if rule.maxLen > 0 {
+			reach = min(reach, rule.maxLen+2)
+		}
+		if state.reach += reach; state.reach > allowance {
+			state.how = ruleWhole
+			whole = append(whole, at.rule)
+		}
+	}
+	for _, at := range starts {
+		rule, state := r.list[at.rule], &done[at.rule]
+		// Two of a rule's literals can begin at one place.
+		if state.how != ruleAnchored || at.pos < state.matched || at.pos < state.tried {
+			continue
+		}
+		state.tried = at.pos + 1
+		s, e, matchEnd, ok := rule.matchAt(data, at.pos)
+		if !ok {
+			continue
+		}
+		state.matched = matchEnd
+		if s >= 0 && e > s {
+			found(rule, s, e)
+		}
+	}
+	for _, index := range whole {
+		r.list[index].eachMatch(data, found)
+	}
+}
+
+const (
+	anchoredAllowance = 4
+	anchoredSlack     = 4096
+)
+
+// eachMatch runs the rule's regex over the whole text.
+func (rule *Rule) eachMatch(data []byte, found func(rule *Rule, s, e int)) {
+	for _, m := range rule.re.FindAllSubmatchIndex(data, -1) {
+		if s, e := m[2*rule.group], m[2*rule.group+1]; s >= 0 && e > s {
+			found(rule, s, e)
+		}
+	}
+}
+
+// shaped narrows the value after a keyword to what the rule's regex takes of
+// it. A keyword rule without a regex takes any value whole.
+func (rule *Rule) shaped(data []byte, s, e int) (int, int, bool) {
+	if rule.re == nil {
+		return s, e, true
+	}
+	m := rule.re.FindSubmatchIndex(data[s:e])
+	if m == nil || m[2*rule.group] < 0 || m[2*rule.group+1] <= m[2*rule.group] {
+		return 0, 0, false
+	}
+	return s + m[2*rule.group], s + m[2*rule.group+1], true
 }
 
 // Len is the number of rules.
@@ -299,6 +563,12 @@ func (r *Rules) score(rule *Rule, data []byte, start, end int, keys []keywordHit
 	if keywordFound || r.keywordBefore(data, start, keys) || r.keywords.containsFold([]byte(keyName)) {
 		score += r.scoring.KeywordBonus
 	}
+	// A validator only ever adds confidence. A checksum or structure that
+	// passes earns the bonus; one that fails changes nothing: the candidate
+	// already has its format's prefix, length and alphabet, and it is scored
+	// and replaced as a rule without a validator would have it. What is known
+	// in public about some of these checksums is second-hand, and formats
+	// change, so a failure is never taken as proof that a value is harmless.
 	if rule.validate != nil && rule.validate(value) {
 		score += r.scoring.ValidatorBonus
 	}
@@ -353,7 +623,12 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 	}
 	var spans []ruleSpan
 	var keys []keywordHit
+	var starts []startHit
 	keysDone := false
+	if rules.literals != nil {
+		keys, starts = rules.literals.scan(data)
+		keysDone = rules.literals.keywords
+	}
 	findKeys := func() []keywordHit {
 		if !keysDone {
 			keys, keysDone = rules.keywords.find(data), true
@@ -372,15 +647,11 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 			spans = append(spans, ruleSpan{start: s, end: e, rule: rule, score: score})
 		}
 	}
-	for _, rule := range rules.list {
-		if !rule.mayMatch(data) {
-			continue
-		}
-		for _, m := range rule.re.FindAllSubmatchIndex(data, -1) {
-			s, e := m[2*rule.group], m[2*rule.group+1]
-			if s >= 0 && e > s {
-				consider(rule, s, e, false)
-			}
+	candidate := func(rule *Rule, s, e int) { consider(rule, s, e, false) }
+	rules.eachAnchored(data, starts, candidate)
+	for _, rule := range rules.unanchored {
+		if rule.mayMatch(data) {
+			rule.eachMatch(data, candidate)
 		}
 	}
 	if len(rules.keywordRules) > 0 {
@@ -392,7 +663,11 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 				onlyPWD = onlyPWD && pathKeyword([]byte(keyName[k.start:k.end]))
 			}
 			for _, rule := range rules.keywordRules {
-				if s, e, ok := wholeValue(data, rule.MinLength); ok && !(onlyPWD && looksLikePath(data[s:e])) {
+				s, e, ok := wholeValue(data, rule.MinLength)
+				if !ok || (onlyPWD && looksLikePath(data[s:e])) {
+					continue
+				}
+				if s, e, ok = rule.shaped(data, s, e); ok {
 					consider(rule, s, e, true)
 				}
 			}
@@ -410,9 +685,15 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 			if pathKeyword(data[key.start:key.end]) && looksLikePath(data[s:e]) {
 				continue
 			}
+			if !plausibleSecret(data[s:e]) {
+				continue
+			}
 			for _, rule := range rules.keywordRules {
-				if e-s >= rule.MinLength && plausibleSecret(data[s:e]) {
-					consider(rule, s, e, true)
+				if e-s < rule.MinLength {
+					continue
+				}
+				if vs, ve, ok := rule.shaped(data, s, e); ok {
+					consider(rule, vs, ve, true)
 				}
 			}
 		}
@@ -427,7 +708,10 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 		if spans[i].score != spans[j].score {
 			return spans[i].score > spans[j].score
 		}
-		return spans[i].end > spans[j].end
+		if spans[i].end != spans[j].end {
+			return spans[i].end > spans[j].end
+		}
+		return spans[i].rule.order < spans[j].rule.order
 	})
 	var hits []hit
 	var reps []rep

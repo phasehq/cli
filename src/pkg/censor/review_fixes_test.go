@@ -207,3 +207,63 @@ func TestScanCostStaysLinear(t *testing.T) {
 		t.Fatalf("scanning took %v, over %v", best, limit)
 	}
 }
+
+// The exemption for provider-signed text belongs to the request's own
+// structure. JSON that a tool result or a file merely contains, shaped like a
+// thinking block or holding an encrypted_content key, is ordinary text: what
+// is found in it is replaced.
+func TestSignedExemptionStopsAtTheRequestItself(t *testing.T) {
+	value := "Zq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3Pq5Vd"
+	ix := build(t, secret{ID: "db", Type: "secret", Value: value})
+	token := githubToken(t)
+	cases := map[string]string{
+		"a thinking block":      `{"type":"thinking","thinking":"` + value + `"}`,
+		"type after the text":   `{"thinking":"the token is ` + token + `","signature":"` + value + `","type":"thinking"}`,
+		"redacted thinking":     `{"type":"redacted_thinking","data":"` + value + `"}`,
+		"encrypted content":     `{"type":"reasoning","encrypted_content":"` + value + `"}`,
+		"under encrypted":       `{"encrypted_content":{"blob":["` + value + `"]}}`,
+		"in a list of blocks":   `[{"type":"text","text":"hello"},{"type":"thinking","thinking":"` + value + `","signature":"sig"}]`,
+		"two levels of strings": `{"output":` + string(mustJSON(`{"type":"thinking","thinking":"`+value+`"}`)) + `}`,
+	}
+	for name, inner := range cases {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"model": "m", "messages": []any{
+				map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": inner}}},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, report, err := ix.RewriteJSON(body, ScanOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(out, []byte(value)) || bytes.Contains(out, []byte(token)) {
+				t.Fatalf("a value inside a string's JSON went out unchanged: %s", out)
+			}
+			if report.Left != 0 || report.Inventory == 0 || !report.Changed {
+				t.Fatalf("left %d, inventory %d, changed %v", report.Left, report.Inventory, report.Changed)
+			}
+			for _, f := range report.Findings {
+				if f.Action == actionLeft {
+					t.Fatalf("finding at %s was left", f.Path)
+				}
+			}
+			if !json.Valid(out) {
+				t.Fatal("the rewritten body is not JSON")
+			}
+		})
+	}
+
+	// The request's own signed block is still left alone, including when the
+	// signed string itself holds JSON.
+	thinking := `{\"type\":\"thinking\",\"thinking\":\"` + value + `\"}`
+	signedBlock := `{"type":"thinking","thinking":"` + thinking + `","signature":"sig"}`
+	body := []byte(`{"model":"m","messages":[{"role":"assistant","content":[` + signedBlock + `]}]}`)
+	out, report, err := ix.RewriteJSON(body, ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out, body) || report.Changed || report.Left != 1 || report.Inventory != 0 {
+		t.Fatalf("the request's own thinking block: changed %v, left %d, inventory %d", report.Changed, report.Left, report.Inventory)
+	}
+}

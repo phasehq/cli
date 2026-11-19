@@ -2,6 +2,7 @@ package censor
 
 import (
 	"bytes"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"hash/crc32"
@@ -224,7 +225,10 @@ func isLowerHex(text string) bool {
 	return true
 }
 
-// validators check a format's own structure or checksum where it has one.
+// validators check a format's own structure or checksum where it has one. They
+// are pure and cheap: no network, no allocation worth the name. A validator that
+// passes adds to a candidate's score and one that fails takes nothing away (see
+// Rules.score), so none of them needs to be certain of a format to be useful.
 var validators = map[string]func([]byte) bool{
 	"phase-token": func(value []byte) bool {
 		parts := strings.Split(string(value), ":")
@@ -238,27 +242,13 @@ var validators = map[string]func([]byte) bool{
 		}
 		return true
 	},
-	"aws-key-id": func(value []byte) bool {
-		if len(value) != 20 {
-			return false
-		}
-		for _, b := range value[4:] {
-			if !(b >= 'A' && b <= 'Z' || b >= '2' && b <= '7') {
-				return false
-			}
-		}
-		return true
-	},
-	// GitHub's classic tokens end in a CRC32 of the 30 random characters, in base62.
-	"github-checksum": func(value []byte) bool {
-		text := string(value)
-		underscore := strings.IndexByte(text, '_')
-		if underscore < 0 || len(text)-underscore-1 != 36 {
-			return false
-		}
-		body := text[underscore+1:]
-		return base62(crc32.ChecksumIEEE([]byte(body[:30])), 6) == body[30:]
-	},
+	"aws_key_id":    awsKeyID,
+	"github_crc32":  githubChecksum,
+	"npm_crc32":     npmChecksum,
+	"pypi_macaroon": pypiMacaroon,
+	// The names two of them had at first, for a rule file written then.
+	"aws-key-id":      awsKeyID,
+	"github-checksum": githubChecksum,
 	"jwt": func(value []byte) bool {
 		parts := strings.Split(string(value), ".")
 		if len(parts) != 3 {
@@ -284,6 +274,80 @@ var validators = map[string]func([]byte) bool{
 		der, err := base64.StdEncoding.DecodeString(body.String())
 		return err == nil && len(der) > 2 && der[0] == 0x30
 	},
+}
+
+// awsKeyID checks an AWS access key id: after the four-character prefix come 16
+// characters of base32 (A-Z and 2-7), which decode to ten bytes.
+func awsKeyID(value []byte) bool {
+	if len(value) != 20 {
+		return false
+	}
+	var decoded [10]byte
+	n, err := base32.StdEncoding.Decode(decoded[:], value[4:])
+	return err == nil && n == len(decoded)
+}
+
+// githubChecksum checks a GitHub token of the shape introduced in 2021: a
+// three-letter prefix, an underscore, 30 random base62 characters and a
+// checksum of six. Any other shape, such as the longer installation tokens,
+// has no checksum this knows and is not validated.
+func githubChecksum(value []byte) bool {
+	return len(value) == 40 && value[0] == 'g' && value[1] == 'h' && value[3] == '_' && crc32Base62(value[4:34], value[34:])
+}
+
+// npmChecksum checks an npm access token, npm_ and then the same 30 and six.
+func npmChecksum(value []byte) bool {
+	return len(value) == 40 && string(value[:4]) == "npm_" && crc32Base62(value[4:34], value[34:])
+}
+
+// crc32Base62 reports whether checksum is the CRC-32 (IEEE) of body written as
+// GitHub and npm write it: in base62 with the digits 0-9, A-Z, a-z, the most
+// significant first, padded on the left with 0 to six characters.
+//
+// GitHub's own description (github.blog, "Behind GitHub's new authentication
+// token formats", 2021) names CRC32, Base62 and the zero padding and stops
+// there. That the sum is taken over the 30 characters before it, and this digit
+// order, come from implementations and documents that follow it; the vectors in
+// the tests are theirs.
+func crc32Base62(body, checksum []byte) bool {
+	if len(checksum) != 6 {
+		return false
+	}
+	sum := crc32.ChecksumIEEE(body)
+	for i := len(checksum) - 1; i >= 0; i-- {
+		if checksum[i] != base62Alphabet[sum%62] {
+			return false
+		}
+		sum /= 62
+	}
+	return sum == 0
+}
+
+// pypiMacaroonHeader is how a PyPI token's macaroon begins once decoded:
+// version 2, then the location field (type 1, eight bytes long) "pypi.org".
+const pypiMacaroonHeader = "\x02\x01\x08pypi.org"
+
+// pypiMacaroon checks a PyPI upload token: after pypi- the body is base64url
+// that decodes, to a version 2 macaroon whose location is pypi.org and whose
+// next field is the identifier every macaroon has.
+func pypiMacaroon(value []byte) bool {
+	const prefix = "pypi-"
+	if len(value) <= len(prefix) || string(value[:len(prefix)]) != prefix {
+		return false
+	}
+	body := bytes.TrimRight(value[len(prefix):], "=")
+	var decoded [768]byte
+	if base64.RawURLEncoding.DecodedLen(len(body)) > len(decoded) {
+		return false
+	}
+	n, err := base64.RawURLEncoding.Decode(decoded[:], body)
+	if err != nil || n <= len(pypiMacaroonHeader)+2 || string(decoded[:len(pypiMacaroonHeader)]) != pypiMacaroonHeader {
+		return false
+	}
+	// The identifier: field type 2, its length, and that many bytes.
+	const identifierField = 2
+	field, length := decoded[len(pypiMacaroonHeader)], int(decoded[len(pypiMacaroonHeader)+1])
+	return field == identifierField && length > 0 && length < 0x80 && len(pypiMacaroonHeader)+2+length <= n
 }
 
 const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
