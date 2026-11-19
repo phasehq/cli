@@ -98,7 +98,9 @@ type Status struct {
 	// "unread_no_proxy" when the proxy couldn't take it, and "unread_not_noted" when
 	// the proxy couldn't be told whose it was. All but the first leave the flow
 	// unread. "proxy_not_noted" is a Connection's flow that went to the proxy for its
-	// credential without that word, and was read for nobody.
+	// credential without that word, and was read for nobody. "unread_no_hello" is a
+	// flow to port 443 whose TLS hello didn't come in time: its host was never
+	// known, so it went on unread whichever host that was.
 	ReadTools map[string][]string `json:"readTools,omitempty"`
 }
 

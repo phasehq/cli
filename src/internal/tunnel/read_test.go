@@ -322,9 +322,16 @@ func (s *readSetup) openHeld(host string) net.Conn {
 // program's end, which is closed when the test ends if not before.
 func (s *readSetup) run(host string, flow Flow) net.Conn {
 	s.t.Helper()
+	return s.runAfter(0, host, flow)
+}
+
+// runAfter is run for a program that waits before it sends its hello.
+func (s *readSetup) runAfter(wait time.Duration, host string, flow Flow) net.Conn {
+	s.t.Helper()
 	program, routerEnd := net.Pipe()
 	finished := make(chan struct{})
 	go func() {
+		time.Sleep(wait)
 		_ = tls.Client(program, &tls.Config{ServerName: host, InsecureSkipVerify: true}).Handshake()
 	}()
 	go func() {
@@ -435,6 +442,53 @@ func TestAToolsModelTrafficGoesToTheProxy(t *testing.T) {
 		t.Fatalf("looked up %v for the flow %v to %v", asked, flow.Source, flow.Dest)
 	}
 	setup.counts(map[string]int{"read": 1})
+}
+
+// realFlow is a flow to a real address, with the connection that was opened to its
+// destination before the program's own completed.
+func (s *readSetup) realFlow() Flow {
+	s.t.Helper()
+	upstream, err := net.Dial("tcp", s.ends.destination)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return Flow{
+		Source:   netip.AddrPortFrom(LocalAddress, uint16(50000+nextSourcePort.Add(1))),
+		Dest:     netip.MustParseAddrPort("203.0.113.7:443"),
+		Prepared: upstream,
+	}
+}
+
+// A tool whose hello comes a moment after its connection is still read. Taken for a
+// flow with no name, it would be relayed unread for as long as the tool kept it, and
+// a kept connection carries every request after the first.
+func TestAToolsFlowIsReadWhenItsHelloComesLate(t *testing.T) {
+	setup := newReadSetup(t)
+	setup.owners.process = claudeCode
+	setup.runAfter(400*time.Millisecond, modelHost, setup.realFlow())
+	seen := setup.arrives(setup.ends.atProxy)
+	if seen.authority != modelHost+":443" || !seen.noted || seen.tool != "claude" {
+		t.Fatalf("CONNECT %s, noted %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
+	}
+	wholeHello(t, seen.hello, modelHost)
+	if direct := setup.arrives(setup.ends.atDestination); direct.hello != nil {
+		t.Fatal("the hello also went straight to the destination")
+	}
+	setup.counts(map[string]int{"read": 1})
+}
+
+// The wait for a hello does end. A flow let go then is unread whatever it goes on to
+// carry, so it is counted as that, apart from the flows whose host nobody reads.
+func TestAFlowWhoseHelloNeverComesInTimeIsCountedApart(t *testing.T) {
+	setup := newReadSetup(t)
+	setup.owners.process = claudeCode
+	setup.router.helloWait = 150 * time.Millisecond
+	setup.runAfter(600*time.Millisecond, modelHost, setup.realFlow())
+	wholeHello(t, setup.arrives(setup.ends.atDestination).hello, modelHost)
+	if asked := setup.owners.lookups(); len(asked) != 0 || setup.reader.noteCount() != 0 {
+		t.Fatalf("a flow nothing is known of was looked up (%v) or told of", asked)
+	}
+	setup.counts(map[string]int{"tcp": 1, "unread_no_hello": 1})
 }
 
 func TestAnotherProgramsTrafficToTheSameHostIsLeftUnread(t *testing.T) {

@@ -57,21 +57,27 @@ func relayHalf(dst, src net.Conn, total *atomic.Int64) {
 	}
 }
 
+// helloWait is the longest a flow to port 443 is held for its TLS hello. The program
+// speaks first there, so until its hello comes there is nothing to relay. A flow that
+// was let go any sooner would go on unread for its whole life, whatever it carried.
+const helloWait = 5 * time.Second
+
 // peekClientHello returns the server name in a TLS hello, and the bytes it read so they
-// can be sent on. Anything that isn't a TLS hello passes through.
-func peekClientHello(client net.Conn) (string, []byte) {
-	_ = client.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+// can be sent on. Anything that isn't a TLS hello passes through. late means the wait
+// ran out before a whole hello had come, so nothing is known of the flow.
+func peekClientHello(client net.Conn, wait time.Duration) (name string, head []byte, late bool) {
+	_ = client.SetReadDeadline(time.Now().Add(wait))
 	defer client.SetReadDeadline(time.Time{})
-	var head bytes.Buffer
-	name := ""
-	conn := tls.Server(helloRecorder{Conn: client, head: &head}, &tls.Config{
+	recorder := &helloRecorder{Conn: client}
+	seen := false
+	conn := tls.Server(recorder, &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			name = hello.ServerName
+			name, seen = hello.ServerName, true
 			return nil, errHelloSeen
 		},
 	})
 	_ = conn.Handshake()
-	return name, head.Bytes()
+	return name, recorder.head.Bytes(), recorder.timedOut && !seen
 }
 
 var errHelloSeen = errors.New("hello seen")
@@ -79,17 +85,23 @@ var errHelloSeen = errors.New("hello seen")
 // helloRecorder keeps what's read, and swallows the alert a failed handshake would send.
 type helloRecorder struct {
 	net.Conn
-	head *bytes.Buffer
+	head bytes.Buffer
+	// timedOut says a read ended at the deadline rather than with bytes or the flow's end.
+	timedOut bool
 }
 
-func (r helloRecorder) Read(p []byte) (int, error) {
+func (r *helloRecorder) Read(p []byte) (int, error) {
 	n, err := r.Conn.Read(p)
 	r.head.Write(p[:n])
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		r.timedOut = true
+	}
 	return n, err
 }
 
-func (r helloRecorder) Write(p []byte) (int, error) { return len(p), nil }
-func (r helloRecorder) Close() error                { return nil }
+func (r *helloRecorder) Write(p []byte) (int, error) { return len(p), nil }
+func (r *helloRecorder) Close() error                { return nil }
 
 // relayUDP carries one UDP conversation until it has been idle for a while.
 func relayUDP(client, upstream net.Conn, idle time.Duration, up, down *atomic.Int64) {

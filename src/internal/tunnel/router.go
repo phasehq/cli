@@ -104,6 +104,8 @@ type Router struct {
 	owner     OwnerFunc
 	ownerWait time.Duration
 	lookups   chan struct{}
+	// helloWait is how long a flow to port 443 is held for its TLS hello.
+	helloWait time.Duration
 
 	// route says where a socket nothing pins would leave from. See loops.
 	route    RouteFunc
@@ -119,7 +121,7 @@ func NewRouter(upstream *Upstream, logf func(string, ...any)) *Router {
 	r := &Router{
 		Upstream: upstream, names: newNameTable(namePool), counts: map[string]int{}, logf: logf,
 		owner: owner.Lookup, ownerWait: ownerWait, lookups: make(chan struct{}, ownerLookups),
-		route: unpinnedSource,
+		helloWait: helloWait, route: unpinnedSource,
 	}
 	r.peerRules = map[string]PeerRule{LocalPeer: r.localTool}
 	return r
@@ -399,8 +401,13 @@ func (r *Router) relayOut(client net.Conn, authority string) {
 func (r *Router) passThrough(client, upstream net.Conn, flow Flow) {
 	var head []byte
 	if flow.Dest.Port() == 443 {
-		var name string
-		name, head = peekClientHello(client)
+		name, read, late := peekClientHello(client, r.helloWait)
+		head = read
+		if late {
+			// Nothing is known of it, so it goes on unread whatever it turns out to
+			// carry. That is counted apart from a flow whose host nobody reads.
+			r.count("unread_no_hello")
+		}
 		captured, protocol := r.captured(name, 443)
 		connection := captured && protocol != "postgres" && protocol != "control"
 		if toProxy, tool := r.handOver(flow, name, connection); toProxy {

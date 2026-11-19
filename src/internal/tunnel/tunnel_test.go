@@ -22,9 +22,9 @@ func TestPeekClientHelloFindsTheNameAndKeepsTheBytes(t *testing.T) {
 		conn := tls.Client(client, &tls.Config{ServerName: "api.example.test", InsecureSkipVerify: true})
 		_ = conn.Handshake()
 	}()
-	name, head := peekClientHello(server)
-	if name != "api.example.test" {
-		t.Fatalf("name = %q", name)
+	name, head, late := peekClientHello(server, helloWait)
+	if name != "api.example.test" || late {
+		t.Fatalf("name = %q, late = %v", name, late)
 	}
 	if len(head) == 0 || head[0] != 0x16 {
 		t.Fatalf("the hello's bytes weren't kept: %d bytes", len(head))
@@ -36,23 +36,75 @@ func TestPeekClientHelloPassesOtherTrafficThrough(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	go func() { _, _ = client.Write([]byte("GET / HTTP/1.1\r\n\r\n")) }()
-	name, head := peekClientHello(server)
-	if name != "" || len(head) == 0 {
-		t.Fatalf("name = %q, %d bytes kept", name, len(head))
+	start := time.Now()
+	name, head, late := peekClientHello(server, helloWait)
+	if name != "" || len(head) == 0 || late {
+		t.Fatalf("name = %q, %d bytes kept, late = %v", name, len(head), late)
+	}
+	// What isn't a hello is known at once, and isn't held for one.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("took %s", elapsed)
 	}
 }
 
-func TestPeekClientHelloDoesNotWaitForASilentProgram(t *testing.T) {
+// A program that says nothing is held for the wait and no longer, and its flow is
+// known as one nothing was learned of.
+func TestPeekClientHelloGivesUpOnASilentProgram(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
+	const wait = 200 * time.Millisecond
 	start := time.Now()
-	name, head := peekClientHello(server)
-	if name != "" || len(head) != 0 {
-		t.Fatalf("name = %q, %d bytes kept", name, len(head))
+	name, head, late := peekClientHello(server, wait)
+	if name != "" || len(head) != 0 || !late {
+		t.Fatalf("name = %q, %d bytes kept, late = %v", name, len(head), late)
+	}
+	if elapsed := time.Since(start); elapsed < wait || elapsed > wait+time.Second {
+		t.Fatalf("took %s, with %s to wait", elapsed, wait)
+	}
+}
+
+// A program that goes away without a word isn't one whose hello was late.
+func TestPeekClientHelloDoesNotWaitForAProgramThatLeft(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	client.Close()
+	start := time.Now()
+	if name, head, late := peekClientHello(server, helloWait); name != "" || len(head) != 0 || late {
+		t.Fatalf("name = %q, %d bytes kept, late = %v", name, len(head), late)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("took %s", elapsed)
+	}
+}
+
+// A hello that comes a moment after the connection is still read for its name: a
+// program under load, or one that does something else first, takes that long. Let go
+// at once, its flow would be relayed unread for as long as the program kept it.
+func TestPeekClientHelloWaitsForAHelloThatComesLate(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		time.Sleep(400 * time.Millisecond)
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		_ = tls.Client(conn, &tls.Config{ServerName: "api.example.test", InsecureSkipVerify: true}).Handshake()
+	}()
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	name, head, late := peekClientHello(server, helloWait)
+	if name != "api.example.test" || late || len(head) == 0 || head[0] != 0x16 {
+		t.Fatalf("name = %q, %d bytes kept, late = %v", name, len(head), late)
 	}
 }
 

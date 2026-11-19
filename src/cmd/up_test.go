@@ -177,6 +177,21 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 		}
 	})
 
+	// A flow let go before its hello came is a read that may have been missed, and is
+	// said apart from the flows that passed through as they should.
+	t.Run("flows whose hello never came", func(t *testing.T) {
+		late := *running
+		late.Counts = map[string]int{"tcp": 9, "unread_no_hello": 2}
+		got := print(capturing(nil), &late)
+		if !strings.Contains(got, "   Flows: 0 to Connection hosts, 9 passed through unread.\n"+
+			"   2 of those went to port 443 and sent no TLS hello in time, so Phase never learned which host they were for.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "TLS hello in time") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
 	t.Run("nothing is read", func(t *testing.T) {
 		unread := *running
 		unread.ReadTools = nil

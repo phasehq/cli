@@ -626,6 +626,10 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 	}
 	proxied := status.Counts["proxy"] + status.Counts["proxy_by_tls_name"] + status.Counts["postgres"]
 	fmt.Fprintf(out, "   Flows: %d to Connection hosts, %d passed through unread.\n", proxied, status.Counts["tcp"]+status.Counts["udp"])
+	// A missed read, not an ordinary flow: any of them may have been to a host Phase reads.
+	if late := status.Counts["unread_no_hello"]; late > 0 {
+		fmt.Fprintf(out, "   %d of those went to port 443 and sent no TLS hello in time, so Phase never learned which host they were for.\n", late)
+	}
 	if loops := status.Counts["loop_refused"]; loops > 0 {
 		fmt.Fprintf(out, "   %d were refused because their route led back into Phase: another VPN's range, while that VPN is down.\n", loops)
 	}
