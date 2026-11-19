@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -290,5 +291,25 @@ func TestEveryGzipMemberIsRead(t *testing.T) {
 	text := "log: " + base64.StdEncoding.EncodeToString(join(clean, clean)) + "\n"
 	if out, report := ix.Redact([]byte(text)); string(out) != text || report.Inventory != 0 {
 		t.Errorf("clean members: %+v", report.Findings)
+	}
+}
+
+// Percent escapes are written with digits in either case: %2F by Go and most
+// libraries, %2f by others. A value is found in a URL whichever was used.
+func TestPercentEscapesInEitherCaseAreFound(t *testing.T) {
+	for _, value := range []string{"ab/CD+ef?GH!", "Zq7/Lp+3?mW!xR9&tY4#kB2=", "pass word/" + randomString(t, alnum, 12)} {
+		ix := build(t, secret{ID: "pw", Value: value})
+		for _, escaped := range []string{url.QueryEscape(value), url.PathEscape(value), strings.ReplaceAll(url.QueryEscape(value), "+", "%20")} {
+			for _, written := range []string{escaped, lowerEscapes(escaped)} {
+				text := "GET https://api.example.com/v1/items?q=" + written + "&page=2"
+				out, report := ix.Redact([]byte(text))
+				if want := "GET https://api.example.com/v1/items?q=ph:secret:pw&page=2"; string(out) != want || report.Inventory != 1 || report.Findings[0].Partial {
+					t.Errorf("%s: %+v\n%s", written, report.Findings, out)
+				}
+			}
+		}
+	}
+	if got := lowerEscapes("a%2Fb%3D%E2%9C%93%25"); got != "a%2fb%3d%e2%9c%93%25" {
+		t.Errorf("lowerEscapes: %s", got)
 	}
 }

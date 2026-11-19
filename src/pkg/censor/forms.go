@@ -90,10 +90,25 @@ func encodedForms(value string) []rawForm {
 		rawForm{name: formURL, bytes: []byte(url.QueryEscape(value))},
 		rawForm{name: formURL, bytes: []byte(url.PathEscape(value))},
 		rawForm{name: formURL, bytes: []byte(strings.ReplaceAll(url.QueryEscape(value), "+", "%20"))},
+		rawForm{name: formURL, bytes: []byte(lowerEscapes(url.QueryEscape(value)))},
+		rawForm{name: formURL, bytes: []byte(lowerEscapes(url.PathEscape(value)))},
+		rawForm{name: formURL, bytes: []byte(lowerEscapes(strings.ReplaceAll(url.QueryEscape(value), "+", "%20")))},
 		rawForm{name: formJSON, bytes: []byte(jsonEscape(value))},
 		rawForm{name: formJSON, bytes: []byte(jsonEscapeHTML(value))},
 	)
 	return forms
+}
+
+// lowerEscapes writes the two digits of every %XX in lower case, as some
+// encoders do.
+func lowerEscapes(escaped string) string {
+	out := []byte(escaped)
+	for i := 0; i+2 < len(out); i++ {
+		if out[i] == '%' {
+			out[i+1], out[i+2] = lowerTable[out[i+1]], lowerTable[out[i+2]]
+		}
+	}
+	return string(out)
 }
 
 func jsonEscape(value string) string {

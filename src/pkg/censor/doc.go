@@ -7,7 +7,8 @@
 //
 // A value is indexed where it is decrypted: IndexValue cuts each of its encoded
 // forms (raw; base64 and base64url at all three alignments; hex in both cases;
-// URL-encoded; JSON-escaped; newlines as a literal \n; each line of a PEM body)
+// URL-encoded, with %XX in either case; JSON-escaped; newlines as a literal \n;
+// each line of a PEM body)
 // into non-overlapping 12-byte chunks and keeps, per chunk, a keyed rolling hash
 // and a keyed SHA-256, with the chunk's index and the form's length. A JSON
 // value is indexed leaf by leaf, and a URL's password on its own as well. The
