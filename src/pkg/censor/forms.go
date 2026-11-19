@@ -162,8 +162,9 @@ func weakMask(value string) []bool {
 		offset += len(line)
 	}
 	// The base64 of a PEM block, as a kubeconfig holds a key: the characters
-	// that spell its armour lines are in the base64 of every such block.
-	if strings.HasPrefix(value, "LS0tLS1CRUdJTi") {
+	// that spell its armour lines are in the base64 of every such block. Only
+	// in one run: wrapped over lines they are not where this counts them.
+	if strings.HasPrefix(value, "LS0tLS1CRUdJTi") && !strings.ContainsAny(value, "\r\n") {
 		if decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(value, "=")); err == nil {
 			offset = 0
 			for _, line := range strings.SplitAfter(string(decoded), "\n") {

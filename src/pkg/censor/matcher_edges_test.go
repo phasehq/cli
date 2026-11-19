@@ -1144,6 +1144,27 @@ func TestACertificateLeafIsPublic(t *testing.T) {
 	if out, report := ix.RedactWith([]byte("tls.key: "+base64.StdEncoding.EncodeToString([]byte(keyPEM))+"\n"), ScanOptions{Rules: only}); string(out) != "tls.key: ph:secret:tls\n" || report.Inventory != 1 {
 		t.Errorf("the key in base64 was left:\n%s", out)
 	}
+	// The armour is marked in base64 that is one run: exactly the characters
+	// of its two lines, and nothing of the key between them.
+	keyData := base64.StdEncoding.EncodeToString([]byte(keyPEM))
+	mask := weakMask(keyData)
+	// The first line and its break are 28 bytes, which 37 characters hold
+	// alone; the last line, with the break before it, takes 33 to 36.
+	begin, end, marked := len("-----BEGIN PRIVATE KEY-----\n")*8/6, 0, 0
+	for end < len(mask) && mask[len(mask)-1-end] {
+		end++
+	}
+	for _, structure := range mask {
+		if structure {
+			marked++
+		}
+	}
+	if mask == nil || !mask[0] || !mask[begin-1] || mask[begin] || end < 33 || end > 36 || marked != begin+end {
+		t.Errorf("of %d characters %d are marked, %d of them at the end", len(keyData), marked, end)
+	}
+	if wrapped := keyData[:76] + "\n" + keyData[76:]; weakMask(wrapped) != nil {
+		t.Error("base64 wrapped over lines was marked")
+	}
 	body := strings.Split(strings.TrimSpace(keyPEM), "\n")
 	if out, report := ix.RedactWith([]byte(keyPEM), ScanOptions{Rules: only}); report.Inventory == 0 || bytes.Contains(out, []byte(body[1])) || bytes.Contains(out, []byte(body[2])) {
 		t.Errorf("the key next to the certificates was left:\n%s", out)
