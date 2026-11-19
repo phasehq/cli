@@ -192,6 +192,57 @@ func TestLookupAsksADomainsOwnServersForItsNames(t *testing.T) {
 	}
 }
 
+// The servers belong to the network the machine is on. When its way out changes they
+// are read again, once, before the next name is asked about.
+func TestTheServersAreReadAgainWhenTheWayOutChanges(t *testing.T) {
+	home, office := answering(t, "192.168.1.9"), answering(t, "10.9.9.9")
+	var changes atomic.Uint64
+	var reads atomic.Int32
+	current := atomic.Pointer[[]string]{}
+	current.Store(&[]string{home.address})
+	upstream := &Upstream{changed: changes.Load, read: func() ([]string, map[string][]string) {
+		reads.Add(1)
+		return *current.Load(), nil
+	}}
+	upstream.refresh()
+	for range 3 {
+		if got := lookupOne(t, upstream, "wiki.example.test"); got != "192.168.1.9" {
+			t.Fatalf("at home the name resolved to %s", got)
+		}
+	}
+	if reads.Load() != 1 {
+		t.Fatalf("with nothing changed the servers were read %d times", reads.Load())
+	}
+
+	current.Store(&[]string{office.address})
+	changes.Add(1)
+	asked := home.asked.Load()
+	for range 3 {
+		if got := lookupOne(t, upstream, "wiki.example.test"); got != "10.9.9.9" {
+			t.Fatalf("at the office the name resolved to %s", got)
+		}
+	}
+	if reads.Load() != 2 || home.asked.Load() != asked {
+		t.Fatalf("the servers were read %d times, and the old network's server was asked %d more times", reads.Load(), home.asked.Load()-asked)
+	}
+
+	// A network that isn't up yet has no servers. They are read again until it has.
+	current.Store(&[]string{})
+	changes.Add(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if addresses, err := upstream.lookup(ctx, "wiki.example.test"); err == nil {
+		t.Fatalf("with no server, the name resolved to %v", addresses)
+	}
+	current.Store(&[]string{home.address})
+	if got := lookupOne(t, upstream, "wiki.example.test"); got != "192.168.1.9" {
+		t.Fatalf("once the network was up the name resolved to %s", got)
+	}
+	if reads.Load() != 4 {
+		t.Fatalf("the servers were read %d times", reads.Load())
+	}
+}
+
 // A raw query is taken to the servers in the same order, and the first answer is the
 // answer, whatever it says.
 func TestForwardAsksTheServersInTheSameOrder(t *testing.T) {
@@ -244,5 +295,34 @@ func TestServersForListsEachServerOnce(t *testing.T) {
 		if got := serverAddress(server); got != want {
 			t.Errorf("%s is asked at %s, want %s", server, got, want)
 		}
+	}
+}
+
+// A change is the default route on another interface, the same interface with another
+// gateway, or a route that went away and came back. Looking again at what was there
+// is none.
+func TestPhysicalCountsEachChangeToTheWayOut(t *testing.T) {
+	path := &PhysicalPath{}
+	wifi := defaultRoute{name: "en0", index: 14, gateway: "192.168.1.1"}
+	for step, test := range []struct {
+		found   defaultRoute
+		changes uint64
+	}{
+		{wifi, 1}, {wifi, 1},
+		{defaultRoute{name: "en7", index: 21, gateway: "192.168.1.1"}, 2},
+		{wifi, 3},
+		{defaultRoute{name: "en0", index: 14, gateway: "10.0.0.1"}, 4},
+		{defaultRoute{}, 5}, {defaultRoute{}, 5},
+		{defaultRoute{name: "en0", index: 14, gateway: "10.0.0.1"}, 6},
+	} {
+		path.observe(test.found)
+		if got := path.Changes(); got != test.changes {
+			t.Fatalf("step %d: %d changes, want %d", step, got, test.changes)
+		}
+	}
+	// With no default route the interface to leave by stays the last one known.
+	path.observe(defaultRoute{})
+	if name, index, _ := path.Current(); name != "en0" || index != 14 {
+		t.Fatalf("leaving by %s (%d)", name, index)
 	}
 }

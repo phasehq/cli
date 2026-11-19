@@ -23,17 +23,48 @@ type PhysicalPath struct {
 	name    string
 	index   int
 	enabled bool
+	// seen is the default route as last looked at, none included, and changes
+	// counts the looks that found another.
+	seen    defaultRoute
+	changes uint64
+}
+
+// defaultRoute is the default route's interface, and its gateway where that is known.
+type defaultRoute struct {
+	name    string
+	index   int
+	gateway string
 }
 
 // Refresh follows the default route, and turns pinning on.
 func (p *PhysicalPath) Refresh() {
 	name, index := DefaultRouteInterface()
+	found := defaultRoute{name: name, index: index, gateway: defaultRouteGateway()}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.enabled = true
-	if index != 0 {
-		p.name, p.index = name, index
+	p.observe(found)
+}
+
+// observe takes one look at the default route. A route that went away and came back
+// is two changes, and so is the same interface with another gateway: either way the
+// machine may be on another network.
+func (p *PhysicalPath) observe(found defaultRoute) {
+	if found != p.seen {
+		p.seen = found
+		p.changes++
 	}
+	if found.index != 0 {
+		p.name, p.index = found.name, found.index
+	}
+}
+
+// Changes counts the times the machine's way out has changed. Whatever was read from
+// the network, its DNS servers above all, is read again once this has moved on.
+func (p *PhysicalPath) Changes() uint64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.changes
 }
 
 // Watch follows the default route until ctx ends, so a move from Wi-Fi to Ethernet

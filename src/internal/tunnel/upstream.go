@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -37,6 +38,15 @@ type Upstream struct {
 	// does can leave the machine.
 	OnlyOverrides bool
 
+	// changed counts the times the way out of the machine changed, and read reads
+	// the system's servers again after one. NewUpstream sets both.
+	changed func() uint64
+	read    func() (servers []string, scoped map[string][]string)
+	mu      sync.Mutex
+	// readAt is the count of changes the servers were read at, and known says that
+	// read found some.
+	readAt uint64
+	known  bool
 	// wait replaces serverWait. Tests set it.
 	wait time.Duration
 }
@@ -47,15 +57,35 @@ var publicResolvers = []string{"1.1.1.1", "8.8.8.8"}
 // serverWait is how long one DNS server has to answer before the next is asked.
 const serverWait = 3 * time.Second
 
-// NewUpstream reads the network's DNS servers, ignoring the tunnel's own.
+// NewUpstream reads the network's DNS servers, ignoring the tunnel's own, and reads
+// them again whenever the machine's way out changes: another network has other servers.
 func NewUpstream() *Upstream {
-	servers, scoped := upstreamResolvers()
-	return &Upstream{Servers: servers, Scoped: scoped, Fallback: publicResolvers}
+	u := &Upstream{Fallback: publicResolvers, changed: Physical.Changes, read: upstreamResolvers}
+	u.refresh()
+	return u
+}
+
+// refresh reads the system's servers again when the way out has changed since they
+// were read. It reads again as well while there are none: the network they belong
+// to may not have been up yet.
+func (u *Upstream) refresh() {
+	if u.read == nil {
+		return
+	}
+	now := u.changed()
+	if u.known && now == u.readAt {
+		return
+	}
+	u.Servers, u.Scoped = u.read()
+	u.readAt, u.known = now, len(u.Servers) > 0
 }
 
 // serversFor lists the servers to ask about a name, in order: those the system keeps
 // for the name's domain, then the network's own, then the fallback.
 func (u *Upstream) serversFor(name string) []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.refresh()
 	name = strings.TrimSuffix(strings.ToLower(name), ".")
 	domain := ""
 	for scoped := range u.Scoped {

@@ -68,6 +68,17 @@ func DefaultRouteInterface() (string, int) {
 	return "", 0
 }
 
+// defaultRouteGateway is the gateway of the system's default route, or "" when it
+// has none. Two networks reached by the same interface seldom share one.
+func defaultRouteGateway() string {
+	for _, found := range DefaultRoutes() {
+		if !found.Scoped && found.Gateway.IsValid() {
+			return found.Gateway.String()
+		}
+	}
+	return ""
+}
+
 func bindSocket(fd int, ipv6 bool, _ string, index int) error {
 	if ipv6 {
 		return unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, index)

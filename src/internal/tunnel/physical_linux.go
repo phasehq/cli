@@ -27,6 +27,10 @@ func DefaultRouteInterface() (string, int) {
 	return iface.Name, iface.Index
 }
 
+// defaultRouteGateway isn't looked at here: the interface alone says when the way out
+// has changed.
+func defaultRouteGateway() string { return "" }
+
 func bindSocket(fd int, _ bool, name string, _ int) error {
 	return unix.BindToDevice(fd, name)
 }
