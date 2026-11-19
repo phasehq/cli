@@ -636,6 +636,10 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 	if refused := status.Counts["control_refused"]; refused > 0 {
 		fmt.Fprintf(out, "   %d requests to %s were refused because they named another host.\n", refused, tunnel.ControlHost)
 	}
+	// Each is one datagram, not one program: a program sends a few before it gives up.
+	if refused := status.Counts["udp_443_refused"]; refused > 0 {
+		fmt.Fprintf(out, "   %d UDP packets to port 443 were refused: that is HTTP/3, whose host Phase can't tell, so the program falls back to TCP.\n", refused)
+	}
 	printModelTraffic(out, status)
 }
 

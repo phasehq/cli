@@ -449,11 +449,27 @@ func (r *Router) relayUnread(client, upstream net.Conn, head []byte) {
 	relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
 }
 
+// RefuseUDP refuses UDP to port 443 at a real address while everything is routed into
+// the tunnel. That is HTTP/3, and nothing here can tell which host it is for: relayed,
+// a tool's model traffic would pass with nobody asked whether to read it, and a
+// Connection's without its credential. Refused, the program is told at once and falls
+// back to TCP, where the name in its TLS hello decides. With less routed in, such
+// hosts are caught by their names, and their tunnel addresses give UDP no answer.
+func (r *Router) RefuseUDP(flow Flow) bool {
+	reader, byName := r.reading()
+	if flow.Dest.Port() != 443 || reader == nil || byName || TunnelPrefix.Contains(flow.Dest.Addr()) {
+		return false
+	}
+	r.count("udp_443_refused")
+	return true
+}
+
 // HandleUDP carries one UDP conversation. A Connection host's tunnel address gets no
 // answer, so a QUIC program falls back to TCP, where the proxy can see it.
 func (r *Router) HandleUDP(client net.Conn, flow Flow) {
 	defer client.Close()
-	if TunnelPrefix.Contains(flow.Dest.Addr()) || r.loops(flow.Dest.Addr()) {
+	// What RefuseUDP refuses is never relayed, whether or not it was asked first.
+	if TunnelPrefix.Contains(flow.Dest.Addr()) || r.loops(flow.Dest.Addr()) || r.RefuseUDP(flow) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

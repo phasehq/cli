@@ -206,6 +206,19 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 		}
 	})
 
+	t.Run("HTTP/3 that was refused", func(t *testing.T) {
+		refused := *running
+		refused.Counts = map[string]int{"tcp": 4, "udp": 1, "udp_443_refused": 6}
+		got := print(capturing(nil), &refused)
+		if !strings.Contains(got, "   Flows: 0 to Connection hosts, 5 passed through unread.\n"+
+			"   6 UDP packets to port 443 were refused: that is HTTP/3, whose host Phase can't tell, so the program falls back to TCP.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "HTTP/3") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
 	t.Run("nothing is read", func(t *testing.T) {
 		unread := *running
 		unread.ReadTools = nil

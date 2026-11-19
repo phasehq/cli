@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -49,8 +50,10 @@ const (
 	realAPI     = "192.0.2.10:443"
 	realEchoTCP = "192.0.2.11:7000"
 	realEchoUDP = "192.0.2.11:7001"
-	realClosed  = "192.0.2.12:9"
-	realModel   = "192.0.2.20:443"
+	// realQUIC is the same echo at the port HTTP/3 uses.
+	realQUIC   = "192.0.2.11:443"
+	realClosed = "192.0.2.12:9"
+	realModel  = "192.0.2.20:443"
 )
 
 var (
@@ -461,7 +464,7 @@ func startEngineWith(t *testing.T, setup engineSetup) *running {
 	// The model host answers differently by its address and by its name: an unread
 	// flow goes to the address the program dialled, and the proxy reaches it by name.
 	upstream := &tunnel.Upstream{Servers: []string{"127.0.0.1"}, OnlyOverrides: setup.sealed, Override: map[string]string{
-		apiHost + ":443": provider, addedHost + ":443": provider, realAPI: provider, realEchoTCP: echoTCP, realEchoUDP: echoUDP,
+		apiHost + ":443": provider, addedHost + ":443": provider, realAPI: provider, realEchoTCP: echoTCP, realEchoUDP: echoUDP, realQUIC: echoUDP,
 		realClosed: fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 		realModel:  startLabelled(t, providerCA, "by address"), modelHost + ":443": startLabelled(t, providerCA, "by name"),
 	}}
@@ -701,6 +704,43 @@ func TestEngineEndToEnd(t *testing.T) {
 		}
 	})
 
+	// HTTP/3 names its host where the tunnel can't read it, so with everything
+	// captured it is refused, at once, and the program falls back to TCP.
+	t.Run("UDP to port 443 is refused at once", func(t *testing.T) {
+		conn, err := program.DialContext(ctx, "udp", realQUIC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		start := time.Now()
+		if _, err := conn.Write([]byte("a QUIC initial")); err != nil {
+			t.Fatal(err)
+		}
+		// This program's network stack tells a socket it was refused the next time
+		// the socket is used, so it is asked until it says something other than
+		// that nothing has come.
+		var refused error
+		buf := make([]byte, 64)
+		for refused == nil && time.Since(start) < 2*time.Second {
+			_ = conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+			n, err := conn.Read(buf)
+			if err == nil {
+				t.Fatalf("the datagram was relayed, and %q came back", buf[:n])
+			}
+			var timeout net.Error
+			if !errors.As(err, &timeout) || !timeout.Timeout() {
+				refused = err
+			}
+		}
+		if refused == nil || !strings.Contains(refused.Error(), "refused") {
+			t.Fatalf("after %s the program had been told: %v", time.Since(start), refused)
+		}
+		status := e.status(t, func(status Status) bool { return status.Counts["udp_443_refused"] > 0 })
+		if status.Counts["udp"] != 1 {
+			t.Fatalf("counts: %v", status.Counts)
+		}
+	})
+
 	t.Run("the control API works with no proxy settings", func(t *testing.T) {
 		plain := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{DialContext: program.DialContext, DisableKeepAlives: true}}
 		response, err := plain.Get("http://" + tunnel.ControlHost + "/v1/status")
@@ -854,6 +894,21 @@ func TestEngineCapturesModelHostsByNameWhenItCapturesLess(t *testing.T) {
 		}
 		if noted := e.reader.noted(); len(noted) != 0 {
 			t.Fatalf("the proxy was told %q about a flow it never got", noted)
+		}
+	})
+
+	// With less captured, hosts are caught by their names, and UDP is left as it was.
+	t.Run("UDP to port 443 still passes through", func(t *testing.T) {
+		conn, err := e.program.DialContext(e.ctx, "udp", realQUIC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		_, _ = conn.Write([]byte("datagram"))
+		buf := make([]byte, 64)
+		if n, err := conn.Read(buf); err != nil || string(buf[:n]) != "datagram" {
+			t.Fatalf("%q, %v", buf[:n], err)
 		}
 	})
 

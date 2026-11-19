@@ -60,6 +60,10 @@ type Hooks struct {
 	TCP func(client net.Conn, flow Flow)
 	// UDP owns one UDP conversation.
 	UDP func(client net.Conn, flow Flow)
+	// RefuseUDP is asked about each datagram that belongs to no conversation yet.
+	// When it says yes the datagram starts none, and its sender is told at once that
+	// the port can't be reached. Without it nothing is refused.
+	RefuseUDP func(Flow) bool
 	// DNS answers queries sent to DNSAddr on port 53. A nil reply sends nothing.
 	DNSAddr netip.Addr
 	DNS     func(query []byte) []byte
@@ -166,7 +170,16 @@ func NewStack(hooks Hooks, mtu int) (*Stack, error) {
 		}
 		go hooks.UDP(conn, flow)
 	})
-	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+	s.SetTransportProtocolHandler(udp.ProtocolNumber, func(id stack.TransportEndpointID, packet *stack.PacketBuffer) bool {
+		if hooks.RefuseUDP != nil {
+			if flow, known := c.flowOf(id); known && hooks.RefuseUDP(flow) {
+				// A datagram nobody took is answered by the stack itself, as any
+				// host answers one for a port nothing listens on.
+				return false
+			}
+		}
+		return udpForwarder.HandlePacket(id, packet)
+	})
 	return c, nil
 }
 

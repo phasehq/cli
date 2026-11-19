@@ -102,7 +102,9 @@ type Status struct {
 	// unread. "proxy_not_noted" is a Connection's flow that went to the proxy for its
 	// credential without that word, and was read for nobody. "unread_no_hello" is a
 	// flow to port 443 whose TLS hello didn't come in time: its host was never
-	// known, so it went on unread whichever host that was.
+	// known, so it went on unread whichever host that was. "udp_443_refused"
+	// counts the datagrams to port 443 that were refused while everything is
+	// captured, so that a program speaking HTTP/3 falls back to TCP.
 	ReadTools map[string][]string `json:"readTools,omitempty"`
 }
 
@@ -182,7 +184,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// With less, it only reaches the tunnel if it's captured by name.
 	router.Read(reader, len(cfg.Routes) > 0)
 	stack, err := tunnel.NewStack(tunnel.Hooks{
-		Prepare: router.Prepare, TCP: router.HandleTCP, UDP: router.HandleUDP,
+		Prepare: router.Prepare, TCP: router.HandleTCP, UDP: router.HandleUDP, RefuseUDP: router.RefuseUDP,
 		DNSAddr: tunnel.DNSAddress, DNS: router.AnswerDNS, Echo: router.Echo,
 	}, tunnel.MTU)
 	if err != nil {
