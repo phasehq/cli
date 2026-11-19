@@ -62,7 +62,8 @@ type leakGuard struct {
 	// They are counted for status and never returned.
 	unprotected map[string]struct{}
 
-	handshakes *handshakeTracker
+	handshakes    *handshakeTracker
+	unreadTunnels *unreadTunnelLog
 }
 
 func newLeakGuard(mode string) (*leakGuard, error) {
@@ -81,6 +82,7 @@ func newLeakGuard(mode string) (*leakGuard, error) {
 	return &leakGuard{
 		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, limitedRules: limited,
 		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, handshakes: newHandshakeTracker(),
+		unreadTunnels: newUnreadTunnelLog(),
 	}, nil
 }
 
@@ -158,6 +160,42 @@ func (l *placeholderLog) fresh(host string, placeholders []string) []string {
 		}
 	}
 	return fresh
+}
+
+// A whole connection passed through unread is reported once for its host and
+// reason, then at most once a minute: a client whose connections cannot be
+// read opens one after another, and each would say the same thing.
+const unreadTunnelPeriod = time.Minute
+
+type unreadTunnelLog struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+	now  func() time.Time
+}
+
+func newUnreadTunnelLog() *unreadTunnelLog {
+	return &unreadTunnelLog{last: map[string]time.Time{}}
+}
+
+// fresh reports whether a pass-through of host for reason is to be reported
+// now, and remembers that it was.
+func (l *unreadTunnelLog) fresh(host, reason string) bool {
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
+	key := host + " " + reason
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if last, reported := l.last[key]; reported && now.Sub(last) < unreadTunnelPeriod {
+		return false
+	}
+	// A domain entry matches any number of subdomains.
+	if len(l.last) >= maxRememberedHosts {
+		clear(l.last)
+	}
+	l.last[key] = now
+	return true
 }
 
 // Certificate alerts (RFC 8446 section 6.2): bad_certificate,

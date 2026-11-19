@@ -89,7 +89,11 @@ func TestLeakHostTable(t *testing.T) {
 		{"chatgpt.com", "/", 443, false, "codex"},
 		{"api.openai.com", "/v1/responses", 443, true, "codex"},
 		{"openrouter.ai", "/api/v1/chat/completions", 443, true, "opencode"},
-		{"opencode.ai", "/inference/openai/v1/chat/completions", 443, false, ""},
+		{"opencode.ai", "/inference/openai/v1/chat/completions", 443, true, "opencode"},
+		{"opencode.ai", "/zen/v1/chat/completions", 443, true, "opencode"},
+		{"opencode.ai", "/", 443, true, "opencode"},
+		{"opencode.ai", "/zen/v1/chat/completions", 8443, false, ""},
+		{"api.opencode.ai", "/zen/v1/chat/completions", 443, false, ""},
 		{"api2.cursor.sh", "/aiserver.v1.InferenceService/RunInference", 443, false, ""},
 		{"example.com", "/", 443, false, ""},
 	}
@@ -108,6 +112,26 @@ func TestLeakHostTable(t *testing.T) {
 	}
 	if match := defaultLeakHosts.lookup("cursor.sh"); match == nil || match.harness != "cursor" {
 		t.Fatal("cursor.sh itself is not listed")
+	}
+	// Requests are re-sent with a copy of the client's hello for the hosts
+	// flagged in the table and for no other.
+	var mirrored []string
+	for _, harness := range defaultLeakHosts {
+		for _, rule := range harness.Hosts {
+			if rule.MirrorHello {
+				mirrored = append(mirrored, harness.Harness+" "+rule.Host)
+				if rule.Treatment != leakTreatmentInspect {
+					t.Errorf("%s is flagged and is not inspected: %+v", rule.Host, rule)
+				}
+			}
+		}
+	}
+	if len(mirrored) != 1 || mirrored[0] != "opencode opencode.ai" {
+		t.Fatalf("the hosts whose hello is copied: %v", mirrored)
+	}
+	encoded, _ := json.Marshal(defaultLeakHosts)
+	if strings.Count(string(encoded), `"mirrorHello":true`) != 1 {
+		t.Fatalf("the flag is not written as mirrorHello: %s", encoded)
 	}
 	if off := newTestLeakGuard(t, leakModeOff); off.inspects("api.anthropic.com", 443) != nil {
 		t.Fatal("off mode still reads model hosts")
@@ -280,8 +304,9 @@ func TestLeakStatusIsCountsAndHostsOnly(t *testing.T) {
 	if status.Mode != leakModeCensor || status.SecretsKnown != 2 || status.Unprotected != 1 {
 		t.Fatalf("status counts are wrong: %+v", status)
 	}
-	if !containsString(status.InspectedHosts, "api.anthropic.com") || !containsString(status.UnreadHosts, "opencode.ai") ||
-		!containsString(status.UnreadHosts, "*.cursor.sh") || containsString(status.InspectedHosts, "opencode.ai") {
+	if !containsString(status.InspectedHosts, "api.anthropic.com") || !containsString(status.InspectedHosts, "opencode.ai") ||
+		!containsString(status.UnreadHosts, "*.cursor.sh") || containsString(status.UnreadHosts, "opencode.ai") ||
+		containsString(status.InspectedHosts, "cursor.sh") {
 		t.Fatalf("status hosts are wrong: %+v", status)
 	}
 	guard.handshakes.note("api.anthropic.com", false)

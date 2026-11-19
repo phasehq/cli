@@ -19,9 +19,11 @@ The proxy reads what AI tools send to their model providers and replaces secret 
 - `observe`: values are found and reported to the Console, nothing is changed.
 - `off`: model traffic is not read.
 
-A host listed as not inspected is a model host whose traffic Phase does not read: its client refuses the proxy's certificate or its service refuses re-sent requests (Cursor, OpenCode's hosted models), or its client refused the proxy's certificate twice in a row and is passed through for a while. Secrets sent there reach the provider. Never change the mode, or the proxy settings, to get past a placeholder.
+A host listed as not inspected is a model host whose traffic Phase does not read: its client refuses the proxy's certificate (Cursor), or its client refused the proxy's certificate twice in a row and is passed through for a while. Secrets sent there reach the provider. Never change the mode, or the proxy settings, to get past a placeholder.
 
 Only a client that refuses the certificate with a TLS alert opens that pass-through window. A client that drops the connection without saying why keeps failing on that host; the human can set `PHASE_AI_LEAK_PROTECTION=off` where the proxy starts and restart the session to let it through unread.
+
+OpenCode's hosted models (`opencode.ai`) are read. That service answers only OpenCode's own TLS, so Phase re-sends each request over a connection that opens with a copy of the TLS hello OpenCode sent. A connection it cannot open that way is passed through unread, and the Console shows an `unread` leak protection event with the reason: `hello_unreadable` (what the client sent first was not a TLS hello), `hello_resumption` (the client resumes an earlier TLS session), `hello_not_mirrored` (no exact copy of the hello could be made), `upstream_handshake_failed` (Phase's own connection to the service failed) or `upstream_not_http1` (the service chose HTTP/2). Secrets sent on that connection reach the provider.
 
 ## When Phase is unavailable
 

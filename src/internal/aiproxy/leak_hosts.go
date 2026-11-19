@@ -26,6 +26,11 @@ type leakHostRule struct {
 	// indexed values and Phase's own token formats are looked for.
 	ConversationPaths []string `json:"conversationPaths,omitempty"`
 	Treatment         string   `json:"treatment"`
+	// MirrorHello marks an inspected host whose service accepts only its own
+	// client's TLS. Requests to it are re-sent over connections that open with
+	// a copy of the ClientHello the client sent, never with Go's own; a
+	// connection whose hello cannot be copied is passed through unread.
+	MirrorHello bool `json:"mirrorHello,omitempty"`
 	// Reason says why an unread host is not inspected.
 	Reason string `json:"reason,omitempty"`
 }
@@ -47,7 +52,7 @@ var defaultLeakHosts = leakHostTable{
 	}},
 	{Harness: "opencode", Hosts: []leakHostRule{
 		{Host: "openrouter.ai", Treatment: leakTreatmentInspect, ConversationPaths: []string{"/api/v1/chat/completions", "/api/v1/responses", "/api/v1/completions"}},
-		{Host: "opencode.ai", Treatment: leakTreatmentUnread, Reason: "the service rejects re-originated requests"},
+		{Host: "opencode.ai", Treatment: leakTreatmentInspect, MirrorHello: true, ConversationPaths: []string{"/inference/", "/zen/"}},
 	}},
 	{Harness: "cursor", Hosts: []leakHostRule{
 		{Host: "cursor.sh", Subdomains: true, Treatment: leakTreatmentUnread, Reason: "binary streams; the client refuses inspection"},

@@ -334,6 +334,11 @@ func TestLeakConversationPathsOfTheTable(t *testing.T) {
 		{"openrouter.ai", "/api/v1/responses", true},
 		{"openrouter.ai", "/api/v1/completions", true},
 		{"openrouter.ai", "/api/v1/auth/key", false},
+		{"opencode.ai", "/inference/openai/v1/chat/completions", true},
+		{"opencode.ai", "/zen/v1/chat/completions", true},
+		{"opencode.ai", "/zen/v1/messages", true},
+		{"opencode.ai", "/auth/authorize", false},
+		{"opencode.ai", "/zenith", false},
 	}
 	for _, c := range cases {
 		if got := defaultLeakHosts.lookup(c.host).conversation(c.path); got != c.conversation {

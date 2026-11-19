@@ -42,6 +42,17 @@ const (
 	leakReasonBinary      = "message_binary"
 	leakReasonTLSRefused  = "tls_refused"
 
+	// Why a whole connection to a host that takes only its own client's TLS
+	// was passed through unread: its first bytes were not one whole
+	// ClientHello in one TLS record; the hello resumes a session; no exact
+	// copy of it can be sent; the proxy's own connection to the service
+	// failed; or the service chose a protocol other than HTTP/1.1.
+	leakReasonHelloUnreadable   = "hello_unreadable"
+	leakReasonHelloResumption   = "hello_resumption"
+	leakReasonHelloNotMirrored  = "hello_not_mirrored"
+	leakReasonUpstreamHandshake = "upstream_handshake_failed"
+	leakReasonUpstreamNotHTTP1  = "upstream_not_http1"
+
 	// maxScanPlaceholders is how many distinct placeholders one request keeps
 	// to compare with what was already reported; the count goes on past it.
 	maxScanPlaceholders = 256

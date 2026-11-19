@@ -118,9 +118,9 @@ func TestLeaseCredentialsAreFoundInADynamicSecretsResponse(t *testing.T) {
 func TestStatusLineSummarisesLeakProtection(t *testing.T) {
 	line := leakProtectionSummary(remoteapi.LeakProtectionStatus{
 		Mode: "censor", SecretsKnown: 12, Unprotected: 1,
-		InspectedHosts: []string{"api.anthropic.com"}, UnreadHosts: []string{"*.cursor.sh", "opencode.ai"},
+		InspectedHosts: []string{"api.anthropic.com"}, UnreadHosts: []string{"*.cursor.sh", "cursor.sh"},
 	})
-	want := "censor (secrets in model traffic are replaced with placeholders); 12 secrets known, 1 too short or plain to protect; not inspected: *.cursor.sh, opencode.ai"
+	want := "censor (secrets in model traffic are replaced with placeholders); 12 secrets known, 1 too short or plain to protect; not inspected: *.cursor.sh, cursor.sh"
 	if line != want {
 		t.Fatalf("status line:\n%s\n%s", line, want)
 	}

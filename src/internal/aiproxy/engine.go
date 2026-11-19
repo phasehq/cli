@@ -266,15 +266,11 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 
 	transport := e.Transport
 	if transport == nil {
-		base := http.DefaultTransport.(*http.Transport).Clone()
-		base.Proxy = nil
-		base.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-		transport = base
+		transport = defaultUpstreamTransport()
 	}
 	dial := e.DialContext
 	if dial == nil {
-		dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
-		dial = dialer.DialContext
+		dial = defaultUpstreamDialer().DialContext
 	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -442,6 +438,21 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 		return nil
 	}
 	return runErr
+}
+
+// defaultUpstreamTransport is what sends the proxy's requests when the engine
+// is given no transport: Go's default, without the environment's proxy.
+func defaultUpstreamTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	return transport
+}
+
+// defaultUpstreamDialer opens the proxy's tunnels when the engine is given no
+// dialer.
+func defaultUpstreamDialer() *net.Dialer {
+	return &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 }
 
 func endpointForListener(listener net.Listener, tlsEnabled bool, serverName string) (remoteapi.Endpoint, error) {

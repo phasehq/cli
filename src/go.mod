@@ -10,6 +10,7 @@ require (
 	github.com/klauspost/compress v1.18.0
 	github.com/manifoldco/promptui v0.9.0
 	github.com/phasehq/golang-sdk/v2 v2.4.1
+	github.com/refraction-networking/utls v1.8.2
 	github.com/spf13/cobra v1.8.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/crypto v0.54.0
@@ -24,6 +25,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
+	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.7 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.17 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.17 // indirect

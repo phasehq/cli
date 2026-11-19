@@ -39,6 +39,9 @@ type httpProxy struct {
 	control          *controlHandler
 	// leak is the process's leak protection; nil leaves model traffic alone.
 	leak *leakGuard
+	// mirrorHelloWait is how long a client may take to send its TLS hello to a
+	// host whose hello is copied; zero means mirrorHelloTimeout.
+	mirrorHelloWait time.Duration
 	// clock is the time source for expiry checks; nil means time.Now.
 	clock func() time.Time
 	// lifecycle ends with the engine run. Requests read off a hijacked CONNECT
@@ -71,7 +74,13 @@ type requestFailure struct {
 // forwarding, decision, and completion.
 const eventIDHeader = "X-Phase-Event-Id"
 
-type tunnelAuthentication struct{ connectionID string }
+type tunnelAuthentication struct {
+	connectionID string
+	// upstream, when set, sends every request of the tunnel. The tunnel is to
+	// a host that accepts only its own client's TLS, and these are connections
+	// opened with a copy of the hello the client opened the tunnel with.
+	upstream http.RoundTripper
+}
 type selectedConnectionContextKey struct{}
 
 func selectedConnection(req *http.Request) string {
@@ -183,11 +192,7 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		if stopped := p.inspectForLeaks(req, upstream, nil, host, port, started); stopped != nil {
 			return *stopped
 		}
-		roundTripper := p.unboundTransport
-		if roundTripper == nil {
-			roundTripper = p.transport
-		}
-		response, roundTripErr := roundTripper.RoundTrip(upstream)
+		response, roundTripErr := p.transportFor(tunnelAuth, false).RoundTrip(upstream)
 		if roundTripErr != nil {
 			return processedResponse{failure: &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The upstream service is unavailable."}}
 		}
@@ -274,7 +279,7 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		failure := &requestFailure{status: http.StatusServiceUnavailable, code: "agent_binding_changed", message: "The Agent binding changed while the request was evaluated; retry it.", decision: "error", reason: "binding_changed", binding: binding}
 		return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
 	}
-	response, roundTripErr := p.transport.RoundTrip(upstream)
+	response, roundTripErr := p.transportFor(tunnelAuth, true).RoundTrip(upstream)
 	if roundTripErr != nil {
 		failure := &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The upstream service is unavailable.", decision: "error", reason: "upstream_error", binding: binding}
 		return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
@@ -306,6 +311,19 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	}
 	event := makeEvent(binding, req, "allow", "ok", authorization.reason, response.StatusCode, time.Since(started), injection.Action)
 	return processedResponse{response: response, event: event, snapshot: snapshot}
+}
+
+// transportFor picks what sends a request. A tunnel with connections of its
+// own sends everything over them, whether a Connection covers the request or
+// not: there is no other way to its host.
+func (p *httpProxy) transportFor(tunnel *tunnelAuthentication, bound bool) http.RoundTripper {
+	if tunnel != nil && tunnel.upstream != nil {
+		return tunnel.upstream
+	}
+	if !bound && p.unboundTransport != nil {
+		return p.unboundTransport
+	}
+	return p.transport
 }
 
 func (p *httpProxy) authenticateProxyRequest(w http.ResponseWriter, req *http.Request) bool {
@@ -408,7 +426,7 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 				writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
 				return
 			}
-			p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)}, func(ok bool) { p.noteLeakHandshake(host, port, match, ok) })
+			p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)}, match)
 			return
 		}
 		// A raw tunnel hides the service's answer from the proxy, so the host
@@ -425,12 +443,18 @@ func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	p.mitmConnect(w, req, host, port, tunnelAuthentication{connectionID: selectedConnection(req)}, nil)
 }
 
-func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host string, port int) {
+// dialUnbound opens a connection the way the proxy does for a host no
+// Connection covers.
+func (p *httpProxy) dialUnbound(ctx context.Context, address string) (net.Conn, error) {
 	dial := p.unboundDial
 	if dial == nil {
 		dial = p.dial
 	}
-	upstream, err := dial(req.Context(), "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	return dial(ctx, "tcp", address)
+}
+
+func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host string, port int) {
+	upstream, err := p.dialUnbound(req.Context(), net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		writeProxyError(w, &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The CONNECT target is unavailable."})
 		return
@@ -450,18 +474,23 @@ func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host
 	defer p.track(client, false)
 	defer client.Close()
 	defer upstream.Close()
-	stateWatchDone := make(chan struct{})
-	defer close(stateWatchDone)
-	selection := selectedConnection(req)
-	go p.watchUnboundTunnel(req.Context(), client, upstream, stateWatchDone, func() bool {
-		bound, err := p.state.hasBoundHost(host, port, selection)
-		return err == nil && !bound
-	})
+	defer p.watchPassThrough(req.Context(), client, upstream, host, port, selectedConnection(req))()
 	_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	if buffered.Flush() != nil {
 		return
 	}
 	copyBidirectional(client, upstream)
+}
+
+// watchPassThrough starts the watcher of a pass-through tunnel to a host no
+// Connection covers, and returns what stops it.
+func (p *httpProxy) watchPassThrough(ctx context.Context, client, upstream net.Conn, host string, port int, selection string) func() {
+	done := make(chan struct{})
+	go p.watchUnboundTunnel(ctx, client, upstream, done, func() bool {
+		bound, err := p.state.hasBoundHost(host, port, selection)
+		return err == nil && !bound
+	})
+	return func() { close(done) }
 }
 
 // watchUnboundTunnel closes an already-established pass-through tunnel as
@@ -491,9 +520,11 @@ func (p *httpProxy) watchUnboundTunnel(ctx context.Context, client, upstream net
 }
 
 // mitmConnect answers a CONNECT with the proxy's certificate and serves the
-// tunnel's requests. handshake, when set, learns whether the client completed
-// TLS with that certificate.
-func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host string, port int, authentication tunnelAuthentication, handshake func(bool)) {
+// tunnel's requests. leak is set for a tunnel no Connection covers, read only
+// for leak protection: whether the client completed TLS with that certificate
+// is counted, and a host that accepts only its own client's TLS gets upstream
+// connections opened with a copy of the client's hello.
+func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host string, port int, authentication tunnelAuthentication, leak *leakHostMatch) {
 	certificate, err := p.ca.CertificateForHost(host)
 	if err != nil {
 		writeProxyError(w, &requestFailure{status: http.StatusBadGateway, code: "certificate_generation_failed", message: "The proxy could not establish a protected tunnel."})
@@ -520,15 +551,31 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 	if p.lifecycle != nil {
 		defer context.AfterFunc(p.lifecycle, stopTunnel)()
 	}
-	tlsClient := tls.Server(client, &tls.Config{Certificates: []tls.Certificate{*certificate}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
+	termination := &tls.Config{Certificates: []tls.Certificate{*certificate}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
+	terminated := client
+	if leak != nil && leak.rule.MirrorHello {
+		// The client's hello is not answered until the upstream connection
+		// stands: up to then the tunnel can still be handed over unread.
+		replayed, mirror, ok := p.openMirror(tunnelContext, client, buffered.Reader, host, port, leak, authentication.connectionID)
+		if !ok {
+			return
+		}
+		defer mirror.close()
+		authentication.upstream = mirror.transport
+		terminated = replayed
+		// A ticket of the proxy's would come back in this client's next hello,
+		// and a hello that resumes a session is not copied.
+		termination.SessionTicketsDisabled = true
+	}
+	tlsClient := tls.Server(terminated, termination)
 	if err := tlsClient.HandshakeContext(tunnelContext); err != nil {
-		if handshake != nil && tunnelContext.Err() == nil && refusedCertificate(err) {
-			handshake(false)
+		if leak != nil && tunnelContext.Err() == nil && refusedCertificate(err) {
+			p.noteLeakHandshake(host, port, leak, false)
 		}
 		return
 	}
-	if handshake != nil {
-		handshake(true)
+	if leak != nil {
+		p.noteLeakHandshake(host, port, leak, true)
 	}
 	reader := bufio.NewReader(tlsClient)
 	for {

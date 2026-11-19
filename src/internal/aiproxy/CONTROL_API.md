@@ -215,6 +215,49 @@ certificate with a TLS certificate alert twice in a row for a host. A client
 that drops the connection without an alert keeps failing on that host;
 `PHASE_AI_LEAK_PROTECTION=off` is the way out.
 
+Hosts that answer only their own client's TLS (`mirrorHello` in the table;
+`opencode.ai`, for OpenCode's hosted models). A request re-sent over Go's TLS
+is refused by such a service, so the proxy re-sends over connections that open
+with a copy of the ClientHello the client sent (`internal/tlsmirror`). It
+decides before it terminates the client's TLS, in this order:
+
+1. The CONNECT is answered. The client's first TLS record is read (5 second
+   limit, at most 16384 bytes). If it is not one record holding exactly one
+   whole ClientHello, or does not arrive in time: `hello_unreadable`.
+2. A hello that offers to resume a session (a `pre_shared_key` or `early_data`
+   extension, or a session ticket) is never copied: `hello_resumption`.
+3. The copy is built and compared with the original; the random, the session
+   id, the key shares and GREASE values are its own, everything else must be
+   equal byte for byte. If it is not: `hello_not_mirrored`.
+4. The upstream connection is opened with the copy, through the proxy's dialer
+   for hosts no Connection covers, and the service's certificate is verified
+   for the CONNECT host against the roots the proxy's own TLS trusts. If the
+   handshake fails: `upstream_handshake_failed`. If the service cannot be
+   reached at all, the client's connection is closed: there is nothing to
+   hand it to.
+5. If the service chose a protocol other than HTTP/1.1: `upstream_not_http1`.
+6. Only then is the client's TLS answered with the proxy's certificate
+   (HTTP/1.1, no session tickets), and the tunnel is read like any inspected
+   host's. A client that refuses the certificate counts toward the
+   pass-through window above.
+
+At each named reason nothing has been sent to the client's TLS yet, so the
+connection is handed to the service as the client opened it (a new TCP
+connection, the bytes already read, then both directions copied) and is not
+read. That is one `unread` event with `method` `CONNECT`, `path` `/`, the
+reason, and `detail` `harness` and `mode`; it is sent once for a host and
+reason, then at most once a minute. No event or log carries anything of a
+hello.
+
+Every request of a terminated tunnel leaves over connections opened with that
+tunnel's copy: the one opened in step 4, then, when another is needed, a new
+one opened the same way. If that fails the request fails with 502
+`upstream_unavailable`; Go's own hello is never sent to such a host from such
+a tunnel. The forwarding adds no `Accept-Encoding` of its own and does not
+decompress answers. A WebSocket upgrade is carried like any inspected host's,
+over such a connection. A Connection's own host is not handled this way: its
+tunnel is always terminated and sent with the proxy's usual transport.
+
 ### GET /v1/connections and GET /v1/connections/{connectionId}
 
 What the Agent may read about its Connections. Both are answered from the

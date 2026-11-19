@@ -35,6 +35,8 @@ type receivedRequest struct {
 	host, path, rawQuery string
 	header               http.Header
 	body                 []byte
+	// wire is the connection that carried the request.
+	wire *wireConn
 }
 
 // leakRig is the real proxy in front of a fake model provider: every name the
@@ -50,6 +52,11 @@ type leakRig struct {
 	phaseRoots    *x509.CertPool
 	providerRoots *x509.CertPool
 	events        *eventBuffer
+	// provider is the fake model provider, and wire what each connection to it
+	// carried before any TLS: the tests of hosts whose hello is copied read
+	// the hellos it was sent.
+	provider *httptest.Server
+	wire     *wireLog
 
 	mu        sync.Mutex
 	received  []receivedRequest
@@ -60,7 +67,13 @@ type leakRig struct {
 
 func newLeakRig(t *testing.T, mode string) *leakRig {
 	t.Helper()
-	rig := &leakRig{t: t, guard: newTestLeakGuard(t, mode)}
+	return newLeakRigWith(t, mode, nil)
+}
+
+// newLeakRigWith lets a test change the fake provider before it starts.
+func newLeakRigWith(t *testing.T, mode string, configure func(provider *httptest.Server)) *leakRig {
+	t.Helper()
+	rig := &leakRig{t: t, guard: newTestLeakGuard(t, mode), wire: &wireLog{}}
 
 	phaseCA, phasePEM, _, err := phaseproxy.GenerateCA(time.Hour)
 	if err != nil {
@@ -84,17 +97,24 @@ func newLeakRig(t *testing.T, mode string) *leakRig {
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
+		wire, _ := r.Context().Value(wireKey{}).(*wireConn)
 		rig.mu.Lock()
-		rig.received = append(rig.received, receivedRequest{host: r.Host, path: r.URL.Path, rawQuery: r.URL.RawQuery, header: r.Header.Clone(), body: body})
+		rig.received = append(rig.received, receivedRequest{host: r.Host, path: r.URL.Path, rawQuery: r.URL.RawQuery, header: r.Header.Clone(), body: body, wire: wire})
 		rig.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"type":"message","content":[]}`)
 	}))
+	provider.Config.ConnContext = keepWire
 	provider.TLS = &tls.Config{GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		return providerCA.CertificateForHost(hello.ServerName)
 	}}
+	provider.Listener = &wireListener{Listener: provider.Listener, log: rig.wire}
+	if configure != nil {
+		configure(provider)
+	}
 	provider.StartTLS()
 	t.Cleanup(provider.Close)
+	rig.provider = provider
 	providerAddress := provider.Listener.Addr().String()
 	dial := func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, providerAddress)
@@ -445,8 +465,9 @@ func TestLeakProtectionLeavesHostsOutsideTheTableAlone(t *testing.T) {
 	rig := newLeakRig(t, leakModeCensor)
 	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
 	rawTunnelHandshake(t, rig, "api.example.com")
-	rawTunnelHandshake(t, rig, "opencode.ai")
 	rawTunnelHandshake(t, rig, "api2.cursor.sh")
+	// A name beside a listed host is not that host.
+	rawTunnelHandshake(t, rig, "api.opencode.ai")
 }
 
 func TestLeakProtectionPassesThroughAfterTwoRefusedHandshakes(t *testing.T) {
