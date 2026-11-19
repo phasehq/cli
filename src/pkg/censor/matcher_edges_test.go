@@ -541,3 +541,23 @@ func TestAPathUnderAKeywordKeyIsNotASecret(t *testing.T) {
 		}
 	}
 }
+
+// An Azure storage key has no prefix, and is taken by the name it follows. In
+// JSON that a tool printed the name is the key the value sits under, which is
+// all there is to go by: under one of its names the value is replaced, and
+// under any other it is 64 bytes of base64 like any digest.
+func TestAnAzureKeyUnderItsNameInJSONIsReplaced(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(randomBytes(t, 64))
+	ix := build(t)
+	for _, name := range []string{"AccountKey", "accountKey", "storageAccountKey", "account_key", "primary-storage-key"} {
+		r := apply(ix, modelRequest(`{"name":"ordersprod","`+name+`":"`+key+`"}`))
+		if bytes.Contains(r.Out, []byte(key)) || len(r.Rules) != 1 || r.Rules[0].Rule != "azure-storage-key-value" || r.Rules[0].Placeholder != "ph:azure_storage_key:1" {
+			t.Errorf("%s: %+v", name, r.Rules)
+		}
+	}
+	for _, name := range []string{"value", "sha512", "contentMD"} {
+		if r := apply(ix, modelRequest(`{"keyName":"key1","`+name+`":"`+key+`"}`)); r.Changed || len(r.Rules) != 0 {
+			t.Errorf("%s: %+v", name, r.Rules)
+		}
+	}
+}

@@ -46,6 +46,8 @@
 #             holding it. keywords_except lists words that cancel it when the same
 #             name holds one. A rule with keywords of its own decides alone about a
 #             value of its format: a keyword_value rule does not take that value too.
+#             A keyword_value rule with keywords of its own is tried, besides, on a
+#             JSON value whose key holds one of them and none of the keywords below.
 #
 # How candidates are settled. Where candidates that will be replaced overlap, their
 # union is replaced, under the label of the one that scored highest; a candidate that
@@ -202,6 +204,20 @@ rules:
     description: Azure storage account key after an AccountKey, account_key or storage_key name
     regex: '(?:--account-key[ \t]{1,3}["'']?|(?i:account|storage)[_.-]?(?i:key)(?:["'']?[ \t]{0,3}[=:][ \t]{0,3}["'']?|["''][ \t]{1,3}value[ \t]{0,3}=[ \t]{0,3}["'']))(?P<secret>[A-Za-z0-9+/]{86}==)'
     min_entropy: 3.5
+    label: azure_storage_key
+  # In JSON the name is the key and the key alone is the value, so the rule above,
+  # which reads the name in the text, has nothing to go by: {"AccountKey": "..."}.
+  # This one takes a value of the same shape under a key that holds one of its names.
+  - id: azure-storage-key-value
+    description: Azure storage account key as the whole value of a JSON key named AccountKey, account_key or storage_key
+    keyword_value: true
+    regex: '^[A-Za-z0-9+/]{86}==$'
+    min_length: 88
+    min_entropy: 3.5
+    score: 20
+    redact_at: 50
+    alert_at: 50
+    keywords: [accountkey, account_key, account-key, account.key, storagekey, storage_key, storage-key, storage.key]
     label: azure_storage_key
   - id: digitalocean-token
     description: DigitalOcean personal access, OAuth or refresh token

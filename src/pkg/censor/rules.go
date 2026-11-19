@@ -1180,6 +1180,19 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 					consider(rule, s, e, true)
 				}
 			}
+		} else if len(name) > 0 {
+			// A rule with names of its own is tried under those too: AccountKey
+			// holds none of the general keywords.
+			for _, rule := range rules.keywordRules {
+				if !holdsFold(name, rule.own) || holdsFold(name, rule.except) {
+					continue
+				}
+				if s, e, ok := wholeValue(data, rule.MinLength); ok {
+					if s, e, ok = rule.shaped(data, s, e); ok {
+						consider(rule, s, e, true)
+					}
+				}
+			}
 		}
 		for i, key := range findKeys() {
 			// A keyword inside a path or a resource name (arn:...:secret:name) isn't a name.

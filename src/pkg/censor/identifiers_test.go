@@ -399,6 +399,23 @@ func formatCases(t testing.TB) []formatCase {
 			examples: map[string]string{"the storage emulator's key": "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=" + emulatorKey + ";BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"},
 		},
 		{
+			// In JSON the name is the key, and the value is all the rules read.
+			rule: "azure-storage-key-value", label: "azure_storage_key", score: 50,
+			positives: []formatSample{
+				{text: `{"messages":[{"role":"user","content":{"AccountKey":"` + azure + `"}}]}`, secret: azure},
+				{text: `{"messages":[{"role":"user","content":{"storageAccountKey":"` + azure + `"}}]}`, secret: azure},
+				{text: `{"input":[{"output":{"account_key":"` + azure + `"}}]}`, secret: azure},
+			},
+			nearMisses: map[string]string{
+				"a key that names nothing":      `{"messages":[{"role":"user","content":{"checksum":"` + azure + `"}}]}`,
+				"85 characters":                 `{"messages":[{"role":"user","content":{"AccountKey":"` + random(alnum, 85) + `=="}}]}`,
+				"more than the key":             `{"messages":[{"role":"user","content":{"AccountKey":"` + azure + ` rotated"}}]}`,
+				"a key of the request's own":    `{"metadata":{"AccountKey":"` + azure + `"},"messages":[]}`,
+				"a name that says it is public": `{"messages":[{"role":"user","content":{"AccountKeyName":"key1"}}]}`,
+			},
+			examples: map[string]string{"the storage emulator's key": `{"messages":[{"role":"user","content":{"AccountKey":"` + emulatorKey + `"}}]}`},
+		},
+		{
 			// It only reports. The value in these has no digit or is an image's
 			// tag, so the keyword rule does not replace it either; a random value
 			// after the scheme is the keyword rule's, in TestRulesThatOnlyRelabelAreGone.
