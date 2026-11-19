@@ -193,6 +193,10 @@ func printUpResult(out io.Writer, status control.Status, engineStatus engine.Sta
 		fmt.Fprintf(out, "   ✅ New connections to %s, and to the names sent to Phase, now go through it, by %s. Everything else is untouched.\n", strings.Join(status.Routes, ", "), status.Device)
 	}
 	fmt.Fprintln(out, "   Connections that were already open stay as they are.")
+	if capturesEverything(status.Routes) {
+		// The engine refuses UDP to port 443 then: it can't tell which host it is for.
+		fmt.Fprintln(out, "   QUIC (HTTP/3) is turned off for this Mac while phase up runs; programs fall back to TCP on their own.")
+	}
 	if len(engineStatus.Connections) > 0 {
 		fmt.Fprintf(out, "   Connections: %s\n", strings.Join(engineStatus.Connections, ", "))
 	}

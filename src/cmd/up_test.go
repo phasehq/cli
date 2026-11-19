@@ -294,6 +294,7 @@ func TestUpSaysWhatIsTrue(t *testing.T) {
 	everything := print(tunnel.FullRoutes, engineStatus)
 	want := "   ✅ New connections on this Mac now go through Phase, by utun7.\n" +
 		"   Connections that were already open stay as they are.\n" +
+		"   QUIC (HTTP/3) is turned off for this Mac while phase up runs; programs fall back to TCP on their own.\n" +
 		"   Connections: GitHub, Postgres\n" +
 		"   Model traffic is read for claude, codex, each for its own processes only.\n" +
 		"   Your local network and other VPNs, such as Tailscale, keep their own routes.\n" +
@@ -312,6 +313,10 @@ func TestUpSaysWhatIsTrue(t *testing.T) {
 		"   If the engine stops, Phase steps aside and your network works as it did before.\n" + next
 	if part != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", part, want)
+	}
+	// With part of the network captured UDP is left as it was, and nothing is said of it.
+	if strings.Contains(part, "QUIC") {
+		t.Fatalf("it says QUIC is off when it isn't:\n%s", part)
 	}
 	for _, said := range []string{everything, part} {
 		if strings.Contains(said, "Everything on this Mac") || strings.Contains(said, "verything goes") || strings.Contains(said, "all traffic") {
