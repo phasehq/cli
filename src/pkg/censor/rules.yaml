@@ -301,12 +301,13 @@ rules:
     label: pypi_token
 
   # A block begins with key material: 24 or more base64 characters, or the header of
-  # an encrypted key, right after the first armour line. Line breaks, a literal \n and
-  # what joins the pieces of a string in source code may stand between the two. Two
+  # an encrypted key, right after the first armour line. Only white space, punctuation
+  # and a literal \n, \r or \t may stand between the two, which covers a key on one
+  # line, in the pieces of a string in source code, quoted or commented out. Two
   # constants that hold the armour lines, with code between them, are no block.
   - id: private-key-block
     description: a PEM private key, whole block, including inside an env file with literal \n
-    regex: '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:\\+[nrt]?|[\s"''`+,.])*(?:[A-Za-z0-9+/]{24}|Proc-Type:)[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----'
+    regex: '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:\\+[nrt]?|[^A-Za-z0-9\\])*(?:[A-Za-z0-9+/]{24}|Proc-Type:)[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----'
     hints: ['PRIVATE KEY-----']
     validator: pem-der
     label: private_key

@@ -507,6 +507,9 @@ func TestArmourConstantsInSourceAreNotAKeyBlock(t *testing.T) {
 		"escaped twice":            "{\"key\":\"" + strings.ReplaceAll(key, "\n", "\\\\n") + "\"}",
 		"on one line":              strings.ReplaceAll(key, "\n", " "),
 		"in pieces of a string":    pieces,
+		"quoted in a reply":        "> " + strings.ReplaceAll(key, "\n", "\n> "),
+		"commented out":            "# " + strings.ReplaceAll(key, "\n", "\n# "),
+		"in a block comment":       "/*\n * " + strings.ReplaceAll(key, "\n", "\n * ") + "\n */",
 		"encrypted, with a header": "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF0123456789ABCDEF\n\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n",
 	} {
 		out, findings := scanned(t, ix, text)
