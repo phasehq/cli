@@ -50,6 +50,8 @@ var Tools = []Tool{
 	}},
 	{Name: "cursor", Match: []Match{
 		{Path: "/Cursor.app/"},
+		// Its command-line agent runs as the copy of node kept beside each release.
+		{File: "node", Path: "/cursor-agent/"},
 	}},
 }
 

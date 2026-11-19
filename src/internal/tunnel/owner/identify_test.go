@@ -29,6 +29,7 @@ func TestIdentify(t *testing.T) {
 		{name: "OpenCode from npm, run by bun", executable: home + "/.bun/bin/bun", args: []string{"bun", "x", "opencode-ai@latest"}, want: "opencode"},
 		{name: "Cursor's extension host", executable: "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)", args: []string{"Cursor Helper (Plugin): extension-host [1-2]"}, want: "cursor"},
 		{name: "Cursor in the user's Applications", executable: home + "/Applications/Cursor.app/Contents/MacOS/Cursor", want: "cursor"},
+		{name: "Cursor's command-line agent, its own node started through its link", executable: home + "/.local/share/cursor-agent/versions/2026.11.19-f005e9d/node", args: []string{home + "/.local/bin/cursor-agent"}, want: "cursor"},
 		{name: "a relative path", executable: "./claude", want: "claude"},
 		{name: "a bare name", executable: "codex", want: "codex"},
 
