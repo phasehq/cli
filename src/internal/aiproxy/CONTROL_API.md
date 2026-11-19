@@ -504,9 +504,14 @@ the base64 of a hex value.
   Were its tenant's entries out of their seal, it could confirm a guessed
   chunk only of its own principal's values, which it can read anyway. Of
   another principal's (the developer's own login, another Agent) it would
-  hold the 24 lookup bits a chunk and no hash it can compute: the bits list
-  the guesses that fit, one in 2^24, and nothing says which is right, so a
-  chunk of b unknown bits keeps 2^(b-24) candidates. A client is trusted
+  hold the lookup values, under the tenant's lookup key it is handed, and
+  no hash it can compute. One lookup value lists the guesses of its chunk
+  that fit, one in 2^24, and does not say which is right, so by itself it
+  leaves a chunk of b unknown bits 2^(b-24) candidates. All of a value's
+  together do not hide a value that can be guessed whole (a wrong guess
+  fits its n lookup values about once in 2^(24n)), or a chunk whose guesses
+  can be listed, since each form its bytes stand in has a lookup value of
+  its own. `pkg/censor`'s Limits say exactly what they give. A client is trusted
   this far and no further: one that states the proxy's own login is handed
   that login's keys, as that login's commands are, since leak protection is
   against accidents. A client can still send guesses through the proxy and
@@ -525,7 +530,8 @@ the base64 of a hex value.
   guess of that one chunk has the lookup bits of some withheld value's (a
   right guess always, a wrong one about once in 2^24 for each form held); with
   the lookup key it holds, which lookup values are in use that way, which
-  narrows a guess of that chunk by 2^24 and no further; and whether a guess of
+  narrows a guess of that chunk by 2^24 for each form that is looked up by
+  those bytes, and no further; and whether a guess of
   those four chunks together is right. Keeping the lookup values from it would
   take a second lookup key, one no client of another login is handed, for
   entries a login cannot name, and so a second pass over every request, which

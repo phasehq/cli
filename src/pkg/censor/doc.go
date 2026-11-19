@@ -410,11 +410,24 @@
 //     of that process alone. With the file as well it is where the file
 //     alone is: no key it is handed opens a seal. If it had its
 //     tenant's Entries out of their seal, it could confirm a guessed chunk
-//     of its own principal's values, which it could read anyway, and none of
-//     another principal's: of those it would have the 24 bits a chunk, which
-//     list the guesses that fit them (one in 2^24) and say nothing of which
-//     is right. A chunk of b unknown bits is left with 2^(b-24) guesses that
-//     all fit; one the client knows but 24 bits of is found. It would also
+//     of its own principal's values, which it could read anyway. Of another
+//     principal's it could hash nothing, having no confirming key of theirs,
+//     but it would have their lookup values and the key they are under,
+//     which is the tenant's. One lookup value is 24 bits of one chunk of one
+//     form: one wrong guess of the chunk in 2^24 fits it, so by itself it
+//     leaves a chunk of b unknown bits 2^(b-24) guesses and says nothing of
+//     which is right. Together they say more, because a guess is tested
+//     against every lookup value it would give. A guess of a whole value
+//     gives all n of them, over every chunk of every form, and a wrong one
+//     fits them all about once in 2^(24n): a value whose candidates this
+//     client can list (one it has seen elsewhere, a short or patterned one)
+//     is picked out with no confirming key. A guess of one chunk gives one
+//     for each form its bytes stand in, as they are and in the value's hex
+//     in both cases: up to 72 bits about 12 bytes, so of the guesses that
+//     fit one form's value the others leave the right one, and listing them
+//     is the work the process with the master has below. The 24 bits so hide a
+//     chunk only while its guesses are too many to list, and a whole value
+//     not at all once it can be guessed. It would also
 //     have what Entries state openly: each form's length and which chunks
 //     are structure. A client is trusted only to say it is the proxy's own
 //     login, as leak protection is against accidents. One that states
@@ -446,7 +459,8 @@
 //     each such form held (5 MB that repeat such a guess take about a tenth of
 //     a second longer to scan); with the lookup key it holds, which lookup
 //     values are in use that way, which narrows a guess of that chunk as the
-//     24 bits of the stored entries would and no further; and whether a guess
+//     stored lookup values of those chunks would (above: each form's leading
+//     chunk has its own) and no further; and whether a guess
 //     of those four chunks together is right, by the hashing that follows (48
 //     characters, 96 of a form cut into pairs, and fewer unknown ones where a
 //     value has under four chunks that are not structure). Keeping the lookup
