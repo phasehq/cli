@@ -34,6 +34,17 @@
 // entries made under another lookup key than the index's, and the same value
 // indexed in two tenants gives unrelated lookup values and hashes.
 //
+// A daemon that keeps entries between runs takes two sets of them for one
+// value from a client of its own login. Those made under the principal's key
+// in the current scheme are what it keeps, and what the daemon that starts
+// next knows the value by (Index.AddLoaded). Those made under a live key, one
+// the daemon's process drew when it started and keeps nowhere, in scheme 1,
+// are what it matches the value by while it runs (Index.AddLive): scheme 1
+// finds shorter pieces of hex digits than a scheme that may be stored (see
+// Limits), and its entries never leave the process. Both are one value to
+// every count, and where both find it one placeholder is written. A daemon
+// that keeps nothing has one key, its process's, and matches by scheme 1 alone.
+//
 // Entries of another login than the one a scan is for, which that login's
 // own daemon took and kept, are added with Index.AddWithheld: the value is
 // replaced by ph:<type> with no id, and no finding names the id, which the
@@ -132,10 +143,10 @@
 //
 //   - 1: every form in 12-byte chunks, each with its whole 64-bit rolling
 //     hash; the tail hash covers the bytes after the last whole chunk. Its
-//     confirming hash is keyed from the lookup key, the one key a client of
-//     that time was handed, so every client can compute it. No build writes
-//     it any more, and no entries of it are ever stored: an older client may
-//     still register them with a running daemon.
+//     confirming hash is keyed from the lookup key, so whoever holds that
+//     key can compute it. It is the scheme of what a running daemon matches a
+//     value by (IndexValueScheme), under a key of its process alone, and no
+//     entries of it are ever stored.
 //   - 2: as 1, but a form made of hex digits (the hex of any value, and a
 //     value that is itself hex digits), and the base64 of a value made of hex
 //     digits, are cut into 24-byte chunks, marked Wide; and the tail hash
@@ -146,8 +157,8 @@
 //     rolling hash the entries carry the top 24 bits (Form.Lookups) and never
 //     the whole. The confirming hash and the tail hash are keyed from the
 //     confirming key of the principal that registered, which IndexValue
-//     requires: a lookup key alone indexes nothing under this scheme. Entries
-//     made by this build are scheme 2.
+//     requires: a lookup key alone indexes nothing under this scheme. It is
+//     the scheme IndexValue writes, and the one a store keeps.
 //
 // An Index matches every scheme in SupportedSchemes side by side, each as it
 // was made, so a client of an older version is still served. Nothing converts
@@ -338,14 +349,18 @@
 //     fragment is caught only when it holds two whole chunks next to each
 //     other: for certain from 35 characters, at some offsets from 24, and never
 //     below. The whole form is found as before.
-//   - A fragment of a form that scheme 2 cuts into 24-byte chunks needs one
-//     of them whole: it is caught for certain from 47 characters (twice the
-//     chunk, less one), at some offsets from 24, and never below. Those forms
-//     are the hex of any value, a value that is itself hex digits (a 64-digit
-//     key, say: 23 characters of it were enough under scheme 1), and the
-//     base64 of such a value. The whole form is found as before, and so is
-//     such a value in every other form. Entries of scheme 1 keep the lengths
-//     of the item above for these forms.
+//   - A value a daemon knows only from a store, because it started again
+//     and no client has registered the value with it since, is matched by
+//     its entries of scheme 2, and a fragment of a form that scheme cuts
+//     into 24-byte chunks needs one of them whole: it is caught for certain
+//     from 47 characters (twice the chunk, less one), at some offsets from
+//     24, and never below. Those forms are the hex of any value, a value that
+//     is itself hex digits (a 64-digit key, say, of which 23 characters are
+//     enough under scheme 1), and the base64 of such a value. The whole form
+//     is found as before, and so is such a value in every other form. The
+//     limit ends when a client registers the value with that daemon again: a
+//     value registered with the running daemon is matched by entries of
+//     scheme 1, which keep the lengths of the two items above for every form.
 //   - A value whose id is withheld (another login's, or a guest's) is matched
 //     whole or not at all: where every chunk and the tail of one of its
 //     forms stand, which is the whole value in any encoding listed above, a

@@ -162,7 +162,7 @@ command says who it is, and where a registration goes follows from the two:
 
 | The command states | It is handed | The proxy does |
 |---|---|---|
-| the proxy's tenant and the proxy's login | The stored keys of that login: the tenant's lookup key and the login's confirming key. | Stores the values under that login and writes them as `ph:<type>:<id>`. |
+| the proxy's tenant and the proxy's login | The stored keys of that login, the tenant's lookup key and the login's confirming key, and a live key of this proxy process. | Matches the values by their entries under the live key, as the proxy did before there was a store, and writes them as `ph:<type>:<id>`; stores their entries under the stored keys, under that login. |
 | anything else: another login of the proxy's tenant, another tenant, nothing, or anything that is not a well-formed identity | Keys of this proxy process alone, with nothing of the store in them. | A guest: protects the values in memory only, until this proxy process exits or the guests' share drops them for newer ones, as `ph:<type>` with no id, in the request and in events. Nothing is stored, for the proxy's login, for the login the command stated or for anyone, and nothing is counted but the registration itself (`unstored`). |
 
 A proxy whose own session the Console did not name, as an older Console's
@@ -179,6 +179,22 @@ and matches the other logins' as withheld: whole values only, `ph:<type>` and
 no id. So a value a person registered through their own login's proxy is
 still removed from their Agent's traffic after a restart, and a value
 registered through somebody else's proxy is protected until that proxy exits.
+
+What a proxy matches by while it runs and what it keeps are two sets of
+entries. A command of the proxy's own login makes both for each value: one
+under the live key, in the scheme from before there was a store (1), which
+the running proxy matches the value by and never writes; one under the
+stored keys, in the scheme a store may keep (2), which goes to the file. So
+a value registered with the running proxy is found by every piece that proxy
+found before there was a store. A value a proxy knows only from the store,
+because it started again and no command has registered the value with it
+since, is found whole in every form, and by its pieces as scheme 2 finds
+them: a run of hex digits (a hex key, or the hex of any value) is then
+certain to be found from 47 characters of it, where 23 are enough for a value
+registered with the running proxy. That lasts until a command registers the
+value with that proxy again, as the next command that reads it does. Such a
+value is then held both ways until the proxy exits: one value to every count
+and one placeholder where it stands, its chunks counted for both.
 
 The proxy is looked for through an ordered list of sources, and the first one
 that finds a proxy is used (`leakguard.AddSource` adds another):
@@ -391,9 +407,9 @@ a reboot still has its values replaced before anything registers them again:
   wait at once. A registration that arrives then is not queued behind them:
   its values are held in memory only, and status says `store_busy` until a
   later registration is stored.
-- Only entries of scheme 2 are stored. Scheme 1 entries, which an older
-  client may register, carry whole rolling hashes: they are matched while
-  the proxy runs and never written.
+- Only entries of scheme 2 are stored. Scheme 1 entries, which a running
+  proxy matches by and an older client may register, carry whole rolling
+  hashes: they are matched while the proxy runs and never written.
 - No record replaces another's. A `type` and `id` may name several values (a
   key name is shared across apps and environments): each is its own record,
   and a record goes when it has not been registered for 30 days, or when its
@@ -558,11 +574,11 @@ the base64 of a hex value.
   of a hex value); `pkg/censor`'s Limits list them and give every figure.
   Such a process can read the saved logins from the same keystore.
 
-Entries made by this version are scheme 2. Scheme 1 entries hold the whole
+Entries this version stores are scheme 2. Scheme 1 entries hold the whole
 rolling hash, from which a 12-character chunk is found in about 2^36 steps,
 and their confirming hash is keyed from the lookup key: they exist only in
-the memory of a running proxy that an older client registered with, and are
-never stored.
+the memory of a running proxy, under a key of that process alone (its live
+key, or the one key of a proxy with no identity), and are never stored.
 
 Every caller reaches the control API through one client,
 `phaseproxy.ControlClient`: `phase ai status`, the hooks and this registration.
@@ -573,7 +589,8 @@ Content-Type: application/json
 
 {"schemaVersion":1,"tenant":"https://console.phase.dev\norganisation\n<organisation id>","login":"https://console.phase.dev\nuser\n<account id>"}
 
-200 {"schemaVersion":1,"key":"<base64, 32 bytes>","confirmKey":"<base64, 32 bytes>","format":2,"keyId":"<16 hex digits>"}
+200 {"schemaVersion":1,"key":"<base64, 32 bytes>","confirmKey":"<base64, 32 bytes>","format":2,
+     "liveKey":"<base64, 32 bytes>","liveFormat":1,"keyId":"<16 hex digits>"}
 ```
 
 `tenant` and `login` say who the command is, as
@@ -591,29 +608,42 @@ own, or anything derived for a stored tenant or login the command is not of.
 A client indexes with both keys; `confirmKey` is left out only by a proxy
 that reads scheme 1 alone, whose one key did both.
 
-`keyId` names the two keys without giving either. A registration sends it
+`liveKey` is in the answer to a command of the proxy's own login, and in no
+other: a lookup key the proxy process drew when it started, kept nowhere and
+derived from nothing stored, with `liveFormat` the scheme of entries made
+under it (1, which confirms with the lookup key and needs no other). The
+command indexes each value under it as well and sends those entries as
+`liveEntries` (below). A guest is handed none: its values are matched whole
+or not at all, which every scheme does alike. A proxy with no identity
+hands none either: its one key is its process's already, and `format` is 1.
+
+`keyId` names the keys without giving any. A registration sends it
 back, and the proxy refuses entries made under keys it does not hand that
 command (409 `inventory_key_changed`, nothing added): entries under other
-keys would be held and never matched. The client fetches the key again and
-registers again, once. A registration that sends no `keyId`, as a client
-older than key ids does, is taken as made under the keys the proxy hands
-that command. Such a client fetches the key with `GET`, reads `key` alone
-and indexes under scheme 1: its entries are held in memory, as a guest's at
-a proxy with an identity, and are never stored.
+keys would be held and never matched. A proxy that starts again has another
+live key, so the `keyId` of its own login's keys is another too. The client
+fetches the key again and registers again, once. A registration that sends
+no `keyId`, as a client older than key ids does, is taken as made under the
+keys the proxy hands that command. Such a client fetches the key with `GET`,
+reads `key` alone and indexes under scheme 1: its entries are held in
+memory, as a guest's at a proxy with an identity, and are never stored.
 
-`format` is the matching scheme the proxy's own version indexes under
-(`censor.EntriesVersion`). The proxy takes entries of every scheme it still
+`format` is the matching scheme of the entries a command makes under `key`:
+the one a store keeps (`censor.EntriesVersion`, 2) from a proxy with an
+identity, and 1 from a proxy with none, which stores nothing and matches as
+before there was a store. The proxy takes entries of every scheme it still
 matches (1 and 2), each as it was made; `pkg/censor`'s documentation says what
-a scheme covers. A client indexes under `format` whenever its own version
-knows that scheme, so a client and a proxy of different versions still
-register; a `format` the client does not know is the warning of the table
-above.
+a scheme covers. A client indexes under `format`, and under `liveFormat`
+when it was handed a live key, whenever its own version knows that scheme,
+so a client and a proxy of different versions still register; a scheme the
+client does not know is the warning of the table above.
 
 ```http
 POST http://phase.invalid/v1/inventory
 Content-Type: application/json
 
-{"schemaVersion":1,"entries":[{"v":2,"type":"secret","id":"<secret id>","forms":[...]}],"idKinds":["phase_id"],
+{"schemaVersion":1,"entries":[{"v":2,"type":"secret","id":"<secret id>","forms":[...]}],
+ "liveEntries":[{"v":1,"type":"secret","id":"<secret id>","forms":[...]}],"idKinds":["phase_id"],
  "tenant":"<as in the key request>","login":"<as in the key request>","keyId":"<from the key answer>"}
 
 200 {"schemaVersion":1,"added":1,"unprotected":0}
@@ -625,6 +655,17 @@ Content-Type: application/json
   identity, the command is nobody's: its values are protected until the
   proxy exits and are not stored.
 
+- `liveEntries` are from a command that was handed a `liveKey`: each
+  value's entries under that key in `liveFormat`, one for each member of
+  `entries`, in the same order and of the same `type` and `id`. The proxy
+  matches the value by these and stores the member of `entries`, which it
+  does not index. From any other command, of another length, of other names
+  or in another scheme they are 400 `invalid_inventory`. Left out by a
+  command of the proxy's own login, as by a client older than live keys, the
+  `entries` are matched and stored: such a value has the limit of a stored
+  one on pieces of hex digits from the start. The two sets of one value are
+  under the body's limit together; a value whose entries are too large for
+  that is matched by the running proxy and not stored.
 - Body ≤ 4 MiB (413 `inventory_too_large`), at most 4096 entries; unknown
   fields, another `schemaVersion` or any malformed entry is 400
   `invalid_inventory` and nothing of the batch is added.

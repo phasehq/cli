@@ -80,9 +80,9 @@ func SchemeStorable(version int) bool {
 	return s != nil && s.lookupBits < 64
 }
 
-// IndexValueScheme is IndexValue under a scheme this build still matches,
-// for a client whose daemon reads an older one. IndexValue uses the current
-// scheme, EntriesVersion.
+// IndexValueScheme is IndexValue under a scheme this build still matches:
+// scheme 1 for what a running daemon matches by, or whichever one a daemon
+// of another version reads. IndexValue uses the current scheme, EntriesVersion.
 func IndexValueScheme(key *Key, version int, typ, id, value string) (*Entries, error) {
 	s := schemes[version]
 	if s == nil {
