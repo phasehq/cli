@@ -14,6 +14,7 @@ import (
 const (
 	wsOpContinuation = 0x0
 	wsOpText         = 0x1
+	wsOpBinary       = 0x2
 	wsOpClose        = 0x8
 
 	// Close codes (RFC 6455 section 7.4.1): the endpoint is going away, and
@@ -289,6 +290,10 @@ func (p *httpProxy) pumpLeakFrames(reader *bufio.Reader, upstream io.Writer, dow
 			// client that compressed anyway; its bytes are looked at as they came.
 			scan.leaveUnread(leakReasonCompressed, leakScopeMessage)
 			guard.readFixed(scan, leakPartOpaque, message, "message")
+		} else if messageOpcode == wsOpBinary && match.inPlace() {
+			// On a host that speaks Connect a binary message may be protobuf
+			// whose bytes read as text, so nothing in it changes length.
+			rewritten = guard.readProtobuf(scan, message, "message")
 		} else {
 			// The bytes say what the message is, as they do for a request body:
 			// JSON sent in a binary frame is JSON.

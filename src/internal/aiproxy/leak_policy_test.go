@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/internal/leakguard"
@@ -454,6 +455,31 @@ func TestWebSocketObserveModeAndCleanBinaryMessages(t *testing.T) {
 	events := rig.leakEventsNow()
 	if len(events) != 1 || events[0].Outcome != outcomeObserved || events[0].ProxyDecision != "allow" || events[0].Detail["replacedCount"] != float64(0) {
 		t.Fatalf("events: %+v", events)
+	}
+}
+
+// On a host that speaks Connect a binary message is protobuf even when its
+// bytes read as text: a value in it is overwritten where it sits, so every
+// length the message states still holds.
+func TestWebSocketBinaryMessageOnAConnectHostKeepsItsLength(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	peer := rig.openWebSocket(t, "api2.cursor.sh", "/aiserver.v1.AnyService/AnyCall")
+	field := "key " + leakSecretOne
+	message := append([]byte{0x0a, byte(len(field))}, field...)
+	if !utf8.Valid(message) {
+		t.Fatal("the message must read as text")
+	}
+	peer.send(t, clientFrame(true, 0x2, message))
+	got, _ := peer.received(t)
+	if got.opcode != 0x2 || len(got.payload) != len(message) || bytes.Contains(got.payload, []byte(leakSecretOne)) ||
+		!bytes.HasPrefix(got.payload, []byte{0x0a, byte(len(field)), 'k', 'e', 'y', ' ', 'p', 'h'}) {
+		t.Fatalf("the binary message: %q", got.payload)
+	}
+	// A text message on the same host is still read as text.
+	peer.send(t, clientFrame(true, wsOpText, []byte("KEY="+leakSecretOne)))
+	if got, _ := peer.received(t); got.opcode != wsOpText || string(got.payload) != "KEY=ph:secret:stripe" {
+		t.Fatalf("the text message: %q", got.payload)
 	}
 }
 
