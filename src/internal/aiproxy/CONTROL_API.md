@@ -776,7 +776,10 @@ carried no value for it) or `material_exposed` (the proxy withheld the value
 and a member must enter a different one: it also appears inside something the
 Agent can see, such as an identifier, a decoy, or the Connection's own name,
 definition or policy, or it is shorter than 8 bytes, which the Console refuses
-when a value is entered). Only that Connection is affected. A packaged service
+when a value is entered). Only that Connection is affected. When it is the
+Connection's own name that holds the value, the name is withheld with it:
+status, these reads, discovery and events call the Connection
+`name withheld` until a member renames it. A packaged service
 whose value appears inside something the Agent can see still refuses the
 session.
 

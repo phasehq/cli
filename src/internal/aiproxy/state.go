@@ -909,6 +909,17 @@ func (s *runtimeState) applyTrustedDiscoverAuthorization(discover *agentapi.Disc
 	for index := range discover.Connections {
 		connection := &discover.Connections[index]
 		trusted := byGrant[connection.GrantID]
+		if trusted != nil {
+			// The Console still sends a name as the member wrote it. One the
+			// client withheld, because it held the Connection's value, is
+			// withheld from discovery as well.
+			if trusted.connection.ConnectionName == agentapi.WithheldConnectionName {
+				connection.ConnectionName = agentapi.WithheldConnectionName
+			}
+			if trusted.connection.CredentialName == agentapi.WithheldConnectionName {
+				connection.CredentialName = agentapi.WithheldConnectionName
+			}
+		}
 		if trusted == nil || !discoverConnectionMatchesRuntime(*connection, trusted.connection) {
 			return fmt.Errorf("%w: connection data changed", errDiscoverProcessEnvironmentMismatch)
 		}

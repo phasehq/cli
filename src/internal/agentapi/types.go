@@ -274,7 +274,9 @@ const minimumCustomValueBytes = 8
 // becomes unavailable and every other Connection keeps working. The same
 // holds for a custom value that is too short to be a secret, and for one that
 // the Connection's own description (its name, definition or policy, all of
-// which the Agent can read) already contains.
+// which the Agent can read) already contains. A name that holds the value is
+// withheld with it: status, events and every list of Connections would
+// otherwise go on showing it.
 func withholdExposedCustomMaterial(config *SessionConfig) {
 	for index := range config.Connections {
 		connection := &config.Connections[index]
@@ -289,10 +291,28 @@ func withholdExposedCustomMaterial(config *SessionConfig) {
 			!descriptionContains(*connection, live) {
 			continue
 		}
+		for _, name := range []*string{&connection.ConnectionName, &connection.CredentialName} {
+			if holdsAny(*name, live) {
+				*name = WithheldConnectionName
+			}
+		}
 		connection.SecretMaterial.Destroy()
 		connection.SecretMaterial = SecretMaterial{}
 		connection.materialFailure = MaterialFailureExposed
 	}
+}
+
+// WithheldConnectionName is what a custom Connection is called once its own
+// name held the value that was withheld from it.
+const WithheldConnectionName = "name withheld"
+
+func holdsAny(text string, values []string) bool {
+	for _, value := range values {
+		if value != "" && strings.Contains(text, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func shorterThan(values []string, minimum int) bool {
