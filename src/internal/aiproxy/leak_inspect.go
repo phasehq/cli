@@ -51,8 +51,8 @@ const (
 	leakReasonMessageFlags     = "message_flags_unexpected"
 	// Why the rest of a stream went on unread: what came was no envelope.
 	leakReasonNotEnvelopes = "body_not_enveloped"
-	// Why a body over HTTP/2 went on unread: its length was not stated, and
-	// its kind may never end or no byte of it came for leakBodyIdle.
+	// Why a body went on unread: its length was not stated, and its kind may
+	// never end or no byte of it came for leakBodyIdle.
 	leakReasonStreamed = "body_streamed"
 
 	// Why a whole connection to a host that takes only its own client's TLS
@@ -444,9 +444,10 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 	}
 	var body []byte
 	var err error
-	if req.ProtoMajor == 2 && upstream.ContentLength < 0 {
-		// Over HTTP/2 a body with no stated length may stay open while the
-		// service answers. A unary call's end comes, and is waited for a while.
+	if upstream.ContentLength < 0 {
+		// A body with no stated length, chunked over HTTP/1.1 or open over
+		// HTTP/2, may stay open while the service answers. A unary call's end
+		// comes, and is waited for a while.
 		unread := leakReasonStreamed
 		if kind.unary() {
 			pump := newBodyPump(req.Context(), upstream.Body)

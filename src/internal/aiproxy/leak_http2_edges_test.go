@@ -236,6 +236,61 @@ func TestHTTP2BodyWithNoEndToWaitForIsNotHeld(t *testing.T) {
 	}
 }
 
+// A chunked body over HTTP/1.1 is held no more than one over HTTP/2: one of no
+// kind that ends is sent on at once, unread, and a unary one that ends is read.
+func TestHTTP1ChunkedBodyWithNoEndToWaitForIsNotHeld(t *testing.T) {
+	rig, service := newConnectRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	client := rig.clientOffering(rig.phaseRoots, true, false)
+	reader, writer := io.Pipe()
+	request, _ := http.NewRequest(http.MethodPost, "https://"+cursorAPIHost+"/aiserver.v1.Some/Upload", reader)
+	request.Header.Set("Content-Type", "application/octet-stream")
+	done := make(chan int, 1)
+	go func() {
+		response, err := client.Do(request)
+		if err != nil {
+			done <- -1
+			return
+		}
+		_ = response.Body.Close()
+		done <- response.StatusCode
+	}()
+	first := []byte("first chunk " + leakSecretOne)
+	if _, err := writer.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for service.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if service.count() == 0 {
+		t.Fatal("the service was not called while the body was still open")
+	}
+	_ = writer.Close()
+	if status := <-done; status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	if got := service.last(t).body; !bytes.Equal(got, first) {
+		t.Fatalf("what was not read arrived changed: %q", got)
+	}
+	if events := rig.distinctLeakEvents(t, 1); events[0].Outcome != outcomeUnread || events[0].Reason != leakReasonStreamed || events[0].Protocol != leakProtocolHTTP {
+		t.Fatalf("event: %+v", events[0])
+	}
+	// A unary body with no stated length ends, and is read whole.
+	message := agentMessage("the key is " + leakSecretOne)
+	request, _ = http.NewRequest(http.MethodPost, "https://"+cursorAPIHost+cursorUnaryPath, io.MultiReader(bytes.NewReader(message[:10]), bytes.NewReader(message[10:])))
+	request.Header.Set("Content-Type", "application/proto")
+	if request.ContentLength != 0 {
+		t.Fatal("the body's length is stated")
+	}
+	if status := doRequest(t, client, request); status != http.StatusOK {
+		t.Fatalf("unary status %d", status)
+	}
+	if got := service.last(t).body; len(got) != len(message) || bytes.Contains(got, []byte(leakSecretOne)) {
+		t.Fatalf("a unary body with no stated length was not read: %q", got)
+	}
+}
+
 // An HTTP/2 tunnel ends with its session, as a raw tunnel does: a stream that
 // is open breaks off at both ends, and no further one is served.
 func TestHTTP2TunnelEndsWithItsSession(t *testing.T) {

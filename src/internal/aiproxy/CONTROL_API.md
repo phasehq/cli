@@ -481,7 +481,8 @@ whatever its entry says. On an HTTP/2 tunnel:
   of it comes for 30 seconds, what came is sent on with the rest, unread:
   `body_streamed`, `scope` `request`. A body of any other type that is not
   read envelope by envelope may never end: it is sent on at once, with the
-  same report. The end of either direction is passed on, trailers
+  same report. A chunked body over HTTP/1.1, to any host that is read, is
+  waited for or sent on the same way. The end of either direction is passed on, trailers
   are copied (the answer's whether announced or not; the request's when the
   client announced them), and an end that gives up, by reset or by closing
   the connection, ends the other;
