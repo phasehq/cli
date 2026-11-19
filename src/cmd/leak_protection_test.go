@@ -84,6 +84,47 @@ func TestOtherLoginsWarnOnceAndCarryOn(t *testing.T) {
 	}
 }
 
+// A value too short to protect is still handed out, to an Agent login too,
+// and the command says how many such values there were and nothing else of
+// them.
+func TestValuesThatCouldNotBeProtectedAreCountedInAWarning(t *testing.T) {
+	const short = "Pa55w0rd!x"
+	previous := leakRegister
+	t.Cleanup(func() { leakRegister = previous })
+	session := leakguard.Proxy{URL: "http://phase:capability@127.0.0.1:1", Source: leakguard.SourceSession}
+	for _, c := range []struct {
+		unprotected int
+		want        string
+	}{
+		{0, ""},
+		{1, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic.\n"},
+		{3, "Phase: 3 values from this command are too short or plain to protect, so they are not removed from model traffic.\n"},
+	} {
+		for _, agent := range []bool{true, false} {
+			warnings := captureLeakWarnings(t)
+			leakRegister = func(_ context.Context, _ leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
+				return leakguard.Result{Added: len(values) - c.unprotected, Unprotected: c.unprotected}, nil
+			}
+			values := []leakguard.Value{
+				{Type: "secret", ID: "DB_PASSWORD", Value: short}, {Type: "secret", ID: "ADMIN_PIN", Value: "4821"},
+				{Type: "secret", ID: "DEPLOY_KEY", Value: "k9"}, {Type: "secret", ID: "STRIPE_KEY", Value: leakTestSecrets[0].Value},
+			}
+			if err := protectValuesWith(context.Background(), session, true, agent, values); err != nil {
+				t.Fatalf("agent=%t: %d unprotected values refused the command: %v", agent, c.unprotected, err)
+			}
+			got := warnings.String()
+			if got != c.want {
+				t.Fatalf("agent=%t: %d unprotected values warned %q, want %q", agent, c.unprotected, got, c.want)
+			}
+			for _, value := range values {
+				if strings.Contains(got, value.Value) || strings.Contains(got, value.ID) {
+					t.Fatalf("the warning names a value or its key: %q", got)
+				}
+			}
+		}
+	}
+}
+
 func TestNothingIsRegisteredOutsideASessionOrForConfig(t *testing.T) {
 	calls := 0
 	previous := leakRegister

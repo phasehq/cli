@@ -30,6 +30,16 @@ const (
 	leakProtectionInactiveMsg = "Phase: leak protection is not active in this shell, so values from this command are not removed from model traffic."
 )
 
+// unprotectedWarning says how many of a command's values leak protection
+// could not take, and never which: a value too short or plain to tell from
+// ordinary text is handed out all the same.
+func unprotectedWarning(count int) string {
+	if count == 1 {
+		return "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic."
+	}
+	return fmt.Sprintf("Phase: %d values from this command are too short or plain to protect, so they are not removed from model traffic.", count)
+}
+
 // leakRuntimeSource names the source that finds the hook-managed proxy from
 // the runtime state on disk.
 const leakRuntimeSource = "runtime"
@@ -155,6 +165,9 @@ func noProxyRunning(agent bool) {
 //     daemon that did not come back in time is a proxy that could not be
 //     reached, not one that is not running;
 //   - with no proxy at all, see noProxyRunning.
+//
+// Values the proxy took the registration of and could not protect are
+// counted in a warning and handed out all the same.
 func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent bool, values []leakguard.Value) error {
 	if len(values) == 0 {
 		return nil
@@ -166,8 +179,11 @@ func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, err := leakRegister(ctx, proxy, values)
+	result, err := leakRegister(ctx, proxy, values)
 	if err == nil {
+		if result.Unprotected > 0 {
+			fmt.Fprintln(leakWarnings, unprotectedWarning(result.Unprotected))
+		}
 		return nil
 	}
 	if !proxy.InSession() && errors.Is(err, leakguard.ErrNotListening) {
