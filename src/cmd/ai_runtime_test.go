@@ -97,6 +97,47 @@ func TestManualAIRuntimeRejectsActiveHookLease(t *testing.T) {
 	}
 }
 
+func TestManualAIRuntimeKeepsARecyclingDaemonThatHoldsSessions(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
+	const generation = "generation-recycling"
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), hookRuntimeLock{
+		Version: hookRuntimeStateVersion, Generation: generation, PID: os.Getpid(),
+		CreatedAt: time.Now().Add(-time.Hour).UTC(), RecyclingAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	leasePath, err := sessionLeasePath(directory, harnessLeaseID(ai.HarnessClaudeCode, "live-session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOwnerOnlyJSON(leasePath, sessionLease{
+		Version: hookRuntimeStateVersion, Generation: generation, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	startupStops := 0
+	stopState := func(context.Context, string, hookRuntimeState) error {
+		t.Fatal("a daemon without published state was stopped through its state")
+		return nil
+	}
+	stopStartup := func(context.Context) error { startupStops++; return nil }
+
+	err = prepareManualAIRuntimeWithStop(context.Background(), stopState, stopStartup)
+	if err == nil || !strings.Contains(err.Error(), "active Agent sessions") {
+		t.Fatalf("recycling daemon with a session lease: err = %v", err)
+	}
+	if startupStops != 0 {
+		t.Fatalf("recycling daemon with a session lease was stopped %d times", startupStops)
+	}
+	// Setup replaces the helper, so it still stops the daemon past session leases.
+	if _, err := prepareHookRuntime(context.Background(), stopState, stopStartup, true); err != nil {
+		t.Fatal(err)
+	}
+	if startupStops != 1 {
+		t.Fatalf("setup stop calls = %d, want 1", startupStops)
+	}
+}
+
 func TestManualAIRuntimeStopsAuthenticatedIdleHookRuntime(t *testing.T) {
 	directory := withHookRuntimeDirectory(t)
 	wantState := writeHealthyManualHandoffState(t, directory)

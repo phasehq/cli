@@ -335,7 +335,17 @@ func prepareHookRuntime(
 	if errors.Is(err, os.ErrNotExist) {
 		// A hook daemon may still be between claiming its owner-only lock and
 		// publishing authenticated state. The existing stop path handles that
-		// short startup window conservatively.
+		// short startup window conservatively. A recycling daemon withdraws its
+		// state too, so its leases still decide ownership.
+		if lock, lockErr := readHookRuntimeLock(lockPath); lockErr == nil && lock.PID > 0 && processIsAlive(lock.PID) {
+			sessions, commands, err := activeSessionLeases(directory, lock.Generation, time.Now())
+			if err != nil {
+				return false, fmt.Errorf("inspect hook-managed Phase AI session leases: %w; close active Agent harness sessions, then retry this setup command", err)
+			}
+			if commands || (sessions && !allowSessionLeases) {
+				return false, errors.New("Phase AI is already serving one or more active Agent sessions through its hook-owned proxy; close those sessions and retry this setup command")
+			}
+		}
 		if err := stopStartup(ctx); err != nil {
 			return false, fmt.Errorf("prepare hook-managed Phase AI runtime handoff: %w", err)
 		}
