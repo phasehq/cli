@@ -387,6 +387,9 @@ func stillOpen(conn net.Conn) bool {
 // long as the client keeps it: status lists the host as not read meanwhile,
 // and the event is repeated.
 func (p *httpProxy) passThroughUnread(ctx context.Context, client net.Conn, read []byte, host string, port int, match *leakHostMatch, selection, reason string) {
+	// As for a client in a pass-through window: whoever handed the flow over
+	// to be read is told it won't be.
+	p.flows.handedOver(client.RemoteAddr().String())
 	upstream, err := p.dialUnbound(ctx, net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return

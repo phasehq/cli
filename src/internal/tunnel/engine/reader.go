@@ -62,8 +62,10 @@ func (p proxyReader) ToolHosts() map[string][]string {
 // open and can't fail, so even a flow whose note the proxy couldn't keep is never
 // read as a client of the proxy environment. What it returns ends both: the proxy
 // forgets the connection, and with it what was said of a flow whose CONNECT never came.
-func (p proxyReader) NoteFlow(connectFrom, peer, tool string) (func(), error) {
+// unread is the proxy's to call, if it hands the flow on unread once it has answered.
+func (p proxyReader) NoteFlow(connectFrom, peer, tool string, unread func()) (func(), error) {
 	closed := p.proxy.TunnelConnection(connectFrom)
+	p.proxy.OnTunnelUnread(connectFrom, unread)
 	if !p.reads {
 		tool = ""
 	}

@@ -36,7 +36,12 @@ type Reader interface {
 	// done with the connection from connectFrom, whatever became of it, and before it
 	// closes the connection: nothing else can connect from that address until then, so
 	// what was said of it is never taken for another connection's.
-	NoteFlow(connectFrom, peer, tool string) (closed func(), err error)
+	//
+	// unread is for what the proxy's answer to the CONNECT can't say. The proxy may
+	// answer that it serves the tunnel, and only then learn, from the program's TLS
+	// hello, that it will hand the flow to its service unread. It calls unread when it
+	// does, at most once, and never after closed.
+	NoteFlow(connectFrom, peer, tool string, unread func()) (closed func(), err error)
 	// ToolHosts lists the hosts read for each tool, for status and for capturing them
 	// by name. A host that covers its subdomains is written "*.name".
 	ToolHosts() map[string][]string
@@ -138,6 +143,46 @@ var errNotNoted = errors.New("the proxy couldn't be told whose flow this is")
 // unreadByProxy counts a tool's model flow that the proxy took and only relayed: it
 // went through the proxy, and nothing of it was read.
 const unreadByProxy = "unread_by_proxy"
+
+// handed is how a flow that was handed to the proxy for a tool has been counted.
+// The proxy has two chances to say it isn't reading the flow: in its answer to the
+// CONNECT, and afterwards, once it has seen the program's TLS hello.
+type handed struct {
+	// counted says the proxy's answer has been counted, and unread that the flow
+	// is counted as one the proxy didn't read, or will be once it is answered.
+	counted, unread bool
+}
+
+// countHanded counts a flow by the proxy's answer to its CONNECT: read when the
+// proxy serves the tunnel itself and hasn't said since that it handed it on.
+func (r *Router) countHanded(flow *handed, served bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	flow.counted = true
+	if served && !flow.unread {
+		r.counts["read"]++
+		return
+	}
+	flow.unread = true
+	r.counts[unreadByProxy]++
+}
+
+// wentUnread is the proxy's word that it handed a flow to its service unread after
+// all. A flow that was counted as read by its answer moves to the other count.
+func (r *Router) wentUnread(flow *handed) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if flow.unread {
+		return
+	}
+	flow.unread = true
+	if flow.counted {
+		if r.counts["read"]--; r.counts["read"] == 0 {
+			delete(r.counts, "read")
+		}
+		r.counts[unreadByProxy]++
+	}
+}
 
 // unreadBecause names the count for a model flow that went on unread because the
 // proxy didn't take it.

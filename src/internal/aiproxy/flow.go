@@ -114,13 +114,21 @@ type flowNotes struct {
 	// the proxy, each with the mark of the call that put it there. They are as
 	// many as those connections, and each goes when its connection does,
 	// with the note that connection never used.
-	tunnelled map[netip.AddrPort]uint64
+	tunnelled map[netip.AddrPort]tunnelConnection
 	marks     uint64
 	now       func() time.Time
 }
 
+// tunnelConnection is one connection a tunnel has open to the proxy.
+type tunnelConnection struct {
+	mark uint64
+	// unread is what the tunnel asked to be told when the proxy hands the
+	// connection's tunnel to its service unread, after answering its CONNECT.
+	unread func()
+}
+
 func newFlowNotes() *flowNotes {
-	return &flowNotes{notes: map[netip.AddrPort]flowNote{}, tunnelled: map[netip.AddrPort]uint64{}}
+	return &flowNotes{notes: map[netip.AddrPort]flowNote{}, tunnelled: map[netip.AddrPort]tunnelConnection{}}
 }
 
 func (n *flowNotes) clock() time.Time {
@@ -200,11 +208,11 @@ func (n *flowNotes) tunnel(remoteAddr string) (closed func()) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.tunnelled == nil {
-		n.tunnelled = map[netip.AddrPort]uint64{}
+		n.tunnelled = map[netip.AddrPort]tunnelConnection{}
 	}
 	n.marks++
 	mark := n.marks
-	n.tunnelled[address] = mark
+	n.tunnelled[address] = tunnelConnection{mark: mark}
 	// The tunnel notes its flow after this. A note already waiting here was
 	// left for an earlier connection from the same address, which is gone.
 	delete(n.notes, address)
@@ -213,10 +221,48 @@ func (n *flowNotes) tunnel(remoteAddr string) (closed func()) {
 		defer n.mu.Unlock()
 		// The address may have gone to a later connection by now, and neither
 		// that one's place here nor its note is this call's to forget.
-		if n.tunnelled[address] == mark {
+		if n.tunnelled[address].mark == mark {
 			delete(n.tunnelled, address)
 			delete(n.notes, address)
 		}
+	}
+}
+
+// watch keeps what a tunnel asked to be told when the tunnel of its connection
+// from remoteAddr is handed on unread. It is kept with the connection, and
+// goes with it.
+func (n *flowNotes) watch(remoteAddr string, unread func()) {
+	address, ok := loopbackAddress(remoteAddr)
+	if !ok {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if connection, tunnelled := n.tunnelled[address]; tunnelled {
+		connection.unread = unread
+		n.tunnelled[address] = connection
+	}
+}
+
+// handedOver tells the tunnel whose connection comes from remoteAddr, if it
+// asked, that the proxy is handing that connection's tunnel to its service
+// unread. It says so once. Any other connection has nobody to tell.
+func (n *flowNotes) handedOver(remoteAddr string) {
+	if n == nil {
+		return
+	}
+	address, ok := loopbackAddress(remoteAddr)
+	if !ok {
+		return
+	}
+	n.mu.Lock()
+	connection, tunnelled := n.tunnelled[address]
+	if tunnelled && connection.unread != nil {
+		n.tunnelled[address] = tunnelConnection{mark: connection.mark}
+	}
+	n.mu.Unlock()
+	if tunnelled && connection.unread != nil {
+		connection.unread()
 	}
 }
 
@@ -288,6 +334,21 @@ func (e *Engine) NoteFlow(remoteAddr string, flow FlowContext) error {
 // the tunnel still holds the port, nothing else can connect from that address.
 func (e *Engine) TunnelConnection(remoteAddr string) (closed func()) {
 	return e.flowNotes().tunnel(remoteAddr)
+}
+
+// OnTunnelUnread asks the proxy to call unread if it hands the tunnel of the
+// connection from remoteAddr to its service without reading it, after it has
+// answered that connection's CONNECT as a tunnel it serves itself. It does so
+// when the client, known by its TLS hello, is one that keeps refusing the
+// proxy's certificate at that host, and when a hello that has to be copied
+// cannot be. The CONNECT's answer was given before either could be known, so
+// this is how a capture layer that counts what was read learns of it.
+//
+// A tunnel calls it after TunnelConnection, for the same address, and before
+// it sends its CONNECT. unread is called at most once, from the goroutine
+// that serves the connection, and is forgotten with the connection.
+func (e *Engine) OnTunnelUnread(remoteAddr string, unread func()) {
+	e.flowNotes().watch(remoteAddr, unread)
 }
 
 // ReadHost is one host leak protection reads for a tool, on port 443.

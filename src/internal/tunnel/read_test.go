@@ -54,6 +54,8 @@ type fakeReader struct {
 	refused, closed []string
 	// peers are the peers the noted flows came from, one for each note.
 	peers []string
+	// unreads is what the router asked to be told, by the address it asked for.
+	unreads map[string]func()
 }
 
 func (f *fakeReader) covers(listed, host string) bool {
@@ -84,15 +86,20 @@ func (f *fakeReader) ShouldRead(tool, host string) bool {
 	return false
 }
 
-func (f *fakeReader) NoteFlow(connectFrom, peer, tool string) (func(), error) {
+func (f *fakeReader) NoteFlow(connectFrom, peer, tool string, unread func()) (func(), error) {
 	if f.before != nil {
 		f.before(connectFrom)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.unreads == nil {
+		f.unreads = map[string]func(){}
+	}
+	f.unreads[connectFrom] = unread
 	closed := func() {
 		f.mu.Lock()
 		f.closed = append(f.closed, connectFrom)
+		delete(f.unreads, connectFrom)
 		f.mu.Unlock()
 	}
 	if f.refuse != nil {
@@ -102,6 +109,17 @@ func (f *fakeReader) NoteFlow(connectFrom, peer, tool string) (func(), error) {
 	f.notes = append(f.notes, flowNote{connectFrom, tool})
 	f.peers = append(f.peers, peer)
 	return closed, nil
+}
+
+// handOn says, as the proxy does, that the flow from an address is handed to its
+// service unread.
+func (f *fakeReader) handOn(from string) {
+	f.mu.Lock()
+	unread := f.unreads[from]
+	f.mu.Unlock()
+	if unread != nil {
+		unread()
+	}
 }
 
 // closedOnce reports whether the router said, exactly once, that it had closed its
@@ -207,8 +225,13 @@ type fakeEnds struct {
 	// vouch for its session.
 	refuse atomic.Bool
 	// relay makes the proxy take every CONNECT and only relay its tunnel, as it does
-	// for a tool that keeps refusing its certificate.
+	// for a host its table doesn't read.
 	relay atomic.Bool
+	// handsOn makes the proxy answer that it serves the tunnel and then hand it on
+	// unread: "late" once it has read the program's hello, as it does for a
+	// program that keeps refusing its certificate, and "early" before its answer
+	// has been written.
+	handsOn atomic.Value
 }
 
 func startFakeEnds(t *testing.T, notes *fakeReader) *fakeEnds {
@@ -254,8 +277,15 @@ func startFakeEnds(t *testing.T, notes *fakeReader) *fakeEnds {
 		if ends.relay.Load() {
 			serves = ""
 		}
+		handsOn, _ := ends.handsOn.Load().(string)
+		if handsOn == "early" {
+			notes.handOn(from)
+		}
 		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n"+serves+"\r\n")
 		seen.hello = readRecord(conn)
+		if handsOn == "late" {
+			notes.handOn(from)
+		}
 		ends.atProxy <- seen
 	})
 	ends.destination = listen(func(conn net.Conn) {
@@ -738,6 +768,51 @@ func TestAFlowTheProxyOnlyRelaysIsNotCountedAsRead(t *testing.T) {
 	t.Run("another program's flow to a Connection's host", func(t *testing.T) {
 		setup := newReadSetup(t, modelConnection())
 		setup.ends.relay.Store(true)
+		setup.open(modelHost)
+		setup.arrives(setup.ends.atProxy)
+		setup.counts(map[string]int{"proxy_by_tls_name": 1, "unread_not_tool": 1})
+	})
+}
+
+// The proxy answers a CONNECT before it has seen the program's TLS hello, and it is
+// by the hello that it knows a program that keeps refusing its certificate. So it
+// can answer that it serves a tunnel, and then hand the flow to its service unread.
+// It says so when it does, and the flow is counted by that, not by the answer.
+func TestAFlowTheProxyHandsOnAfterItsAnswerIsNotCountedAsRead(t *testing.T) {
+	for name, open := range map[string]func(*readSetup){
+		"caught by the name in its hello": func(s *readSetup) { s.open(modelHost) },
+		"captured by name": func(s *readSetup) {
+			s.router.Read(s.reader, true)
+			s.openByName(modelHost, 443)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setup := newReadSetup(t)
+			setup.owners.process = claudeCode
+			setup.ends.handsOn.Store("late")
+			open(setup)
+			wholeHello(t, setup.arrives(setup.ends.atProxy).hello, modelHost)
+			setup.counts(map[string]int{"unread_by_proxy": 1})
+			// The next flow, which the proxy does read, is counted as read.
+			setup.ends.handsOn.Store("")
+			open(setup)
+			setup.arrives(setup.ends.atProxy)
+			setup.counts(map[string]int{"unread_by_proxy": 1, "read": 1})
+		})
+	}
+	// The proxy's word can come before its answer has been read here.
+	t.Run("told before the answer is read", func(t *testing.T) {
+		setup := newReadSetup(t)
+		setup.owners.process = claudeCode
+		setup.ends.handsOn.Store("early")
+		setup.open(modelHost)
+		setup.arrives(setup.ends.atProxy)
+		setup.counts(map[string]int{"unread_by_proxy": 1})
+	})
+	// A flow that wasn't handed over to be read isn't counted either way.
+	t.Run("a Connection's flow", func(t *testing.T) {
+		setup := newReadSetup(t, modelConnection())
+		setup.ends.handsOn.Store("late")
 		setup.open(modelHost)
 		setup.arrives(setup.ends.atProxy)
 		setup.counts(map[string]int{"proxy_by_tls_name": 1, "unread_not_tool": 1})

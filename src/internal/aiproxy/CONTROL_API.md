@@ -357,6 +357,16 @@ Where a flow comes from:
   proxy environment. A note its CONNECT never used goes with the connection:
   left behind, it would name the next connection from the same address and
   port.
+- A capture layer that counts what was read goes by what the proxy did, in two
+  steps. The answer to a CONNECT whose tunnel the proxy serves itself carries
+  `X-Phase-Tunnel: terminated`; a tunnel it only relays is answered without
+  the header. The answer goes out before the client's TLS hello is read, so a
+  tunnel answered that way can still be handed to its service unread: the
+  client is in a pass-through window of its own, or a hello that has to be
+  copied could not be. The proxy then calls what the tunnel gave
+  `Engine.OnTunnelUnread(remoteAddr, unread)`, which a tunnel calls after
+  `TunnelConnection` for the same address and before it sends the CONNECT.
+  `unread` is called at most once, and is forgotten with the connection.
 - `Peer` is the capture peer the flow came from: an opaque id of up to 64
   letters, digits, `.`, `_` and `-`, compared exactly. `local`
   (`aiproxy.PeerLocal`), which an empty `Peer` is read as, is this machine: the

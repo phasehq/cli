@@ -124,6 +124,9 @@ func (p *httpProxy) scopeToHello(ctx context.Context, source net.Conn, host stri
 // window to the service as the client opened it. It is raw for as long as the
 // client keeps it, after the window too; status goes on saying so.
 func (p *httpProxy) passThroughRefused(ctx context.Context, client net.Conn, read []byte, host string, port int, match *leakHostMatch, selection string) {
+	// The CONNECT was answered as a tunnel the proxy serves. A tunnel that
+	// handed the flow over to be read is told it won't be.
+	p.flows.handedOver(client.RemoteAddr().String())
 	upstream, err := p.dialUnbound(ctx, net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return

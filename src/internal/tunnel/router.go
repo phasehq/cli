@@ -571,8 +571,10 @@ func (r *Router) loops(dest netip.Addr) bool {
 //
 // A flow that was handed over for a tool is counted here, by what the proxy did with
 // it. The proxy's answer says whether it serves the tunnel itself, which is where it
-// reads, or only relays it, as it does for a while when the tool keeps refusing its
-// certificate at that host. Only the first is a flow that was read.
+// reads, or only relays it. Only the first is a flow that was read, and not even
+// that one when the proxy says afterwards that it handed it on unread: it does that
+// for a while for a program that keeps refusing its certificate at that host, which
+// it knows by the program's TLS hello, and that comes after the answer.
 //
 // However the connection ends, here or once the flow is over, it ends in one place:
 // bufferedConn.Close, which tells the proxy first.
@@ -588,9 +590,9 @@ func (r *Router) connect(peer, authority, tool string, needed bool) (net.Conn, e
 		return nil, err
 	}
 	held := &bufferedConn{Conn: conn, reader: bufio.NewReader(conn), closed: func() {}}
-	noted := false
+	noted, flow := false, &handed{}
 	if reader != nil {
-		closed, noteErr := reader.NoteFlow(conn.LocalAddr().String(), peer, tool)
+		closed, noteErr := reader.NoteFlow(conn.LocalAddr().String(), peer, tool, func() { r.wentUnread(flow) })
 		if closed != nil {
 			held.closed = closed
 		}
@@ -620,11 +622,7 @@ func (r *Router) connect(peer, authority, tool string, needed bool) (net.Conn, e
 	}
 	_ = conn.SetDeadline(time.Time{})
 	if tool != "" && noted {
-		if response.Header.Get(phaseproxy.TunnelHeader) == phaseproxy.TunnelTerminated {
-			r.count("read")
-		} else {
-			r.count(unreadByProxy)
-		}
+		r.countHanded(flow, response.Header.Get(phaseproxy.TunnelHeader) == phaseproxy.TunnelTerminated)
 	}
 	return held, nil
 }

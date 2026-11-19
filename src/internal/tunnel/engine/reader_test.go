@@ -68,14 +68,14 @@ func TestProxyReaderAsksTheProxy(t *testing.T) {
 	}
 
 	// The proxy is told of a flow by the loopback address its CONNECT comes from.
-	closed, err := reader.NoteFlow("127.0.0.1:50200", tunnel.LocalPeer, "claude")
+	closed, err := reader.NoteFlow("127.0.0.1:50200", tunnel.LocalPeer, "claude", nil)
 	if err != nil || closed == nil {
 		t.Fatalf("a flow wasn't noted: %v", err)
 	}
 	closed()
 	// One it can't keep is an error, and there is still something to call.
 	for _, test := range []struct{ from, tool string }{{"192.0.2.1:50200", "claude"}, {"127.0.0.1:50201", "not a tool's id"}} {
-		closed, err := reader.NoteFlow(test.from, tunnel.LocalPeer, test.tool)
+		closed, err := reader.NoteFlow(test.from, tunnel.LocalPeer, test.tool, nil)
 		if err == nil || closed == nil {
 			t.Fatalf("NoteFlow(%q, %q): %v", test.from, test.tool, err)
 		}
@@ -99,7 +99,7 @@ func TestWithoutAReaderNothingIsReadAndTheProxyIsStillTold(t *testing.T) {
 	if reader.ReadsHost("api.anthropic.com") || reader.ShouldRead("claude", "api.anthropic.com") || len(reader.ToolHosts()) != 0 {
 		t.Fatal("something is read with no reader set")
 	}
-	closed, err := reader.NoteFlow("127.0.0.1:50202", tunnel.LocalPeer, "claude")
+	closed, err := reader.NoteFlow("127.0.0.1:50202", tunnel.LocalPeer, "claude", nil)
 	if err != nil || closed == nil {
 		t.Fatalf("the proxy wasn't told of the flow: %v", err)
 	}
@@ -115,14 +115,14 @@ func TestTheProxyIsToldTheFlowsPeer(t *testing.T) {
 	t.Setenv(aiproxy.LeakProtectionEnvironmentKey, "censor")
 	reader := ProxyReader(aiproxy.New())
 	for _, peer := range []string{tunnel.LocalPeer, "sandbox-1"} {
-		closed, err := reader.NoteFlow("127.0.0.1:50210", peer, "claude")
+		closed, err := reader.NoteFlow("127.0.0.1:50210", peer, "claude", nil)
 		if err != nil || closed == nil {
 			t.Fatalf("a flow of %q wasn't noted: %v", peer, err)
 		}
 		closed()
 	}
 	// An id the proxy can't keep things under is refused, and the flow isn't read.
-	closed, err := reader.NoteFlow("127.0.0.1:50211", "not a peer's id", "claude")
+	closed, err := reader.NoteFlow("127.0.0.1:50211", "not a peer's id", "claude", nil)
 	if err == nil || closed == nil {
 		t.Fatalf("a flow was noted for a peer with no usable id: %v", err)
 	}
