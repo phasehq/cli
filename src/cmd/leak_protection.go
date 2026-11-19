@@ -146,7 +146,10 @@ func noProxyRunning(agent bool) {
 //     may have nothing to do with an AI tool;
 //   - a proxy found any other way that nothing listens at is no proxy: the
 //     state that named it is stale, or its process id went to another
-//     program. Warning then would warn on every command, in every shell;
+//     program. Warning then would warn on every command, in every shell.
+//     Nothing listens where the connection is refused or is not made within
+//     the registration's short dial timeout, which is how it shows where the
+//     system is slow to refuse, as Windows can be (leakguard.ErrNotListening);
 //   - unless its daemon is starting or recycling its session: the
 //     registration has then waited for it (hookRuntimeRestarting), and a
 //     daemon that did not come back in time is a proxy that could not be

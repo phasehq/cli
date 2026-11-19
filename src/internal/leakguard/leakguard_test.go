@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -226,7 +228,10 @@ func TestRegisterFailsFastWhenTheProxyIsDown(t *testing.T) {
 	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": "http://phase:capability@" + address})
 	started := time.Now()
 	// Nothing listens there: that is its own error, since it means no proxy
-	// runs rather than a proxy that failed.
+	// runs rather than a proxy that failed. It costs one dial, which is over
+	// at once where the system refuses at once and after the dial timeout
+	// where it is slow to, as Windows can be, and never the registration's
+	// whole time.
 	if _, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}); !errors.Is(err, ErrNotListening) {
 		t.Fatalf("a registration with nothing listening came back as %v", err)
 	}
@@ -583,12 +588,15 @@ func TestARegistrationWaitsForAProxyThatIsRestarting(t *testing.T) {
 	}
 
 	// A source that does not say its proxy is restarting is not waited for,
-	// and is not even asked when there is nothing to register.
+	// and is not even asked when there is nothing to register. Not waited for
+	// is one dial: that is at most the dial timeout, where the system takes
+	// its time to refuse, and well short of the wait.
+	oneDial := dialTimeout + Timeout/2
 	withEnvironment(t, map[string]string{})
 	gone := &restartingSource{found: closedProxy(t)}
 	withSource(t, gone.source())
 	started := time.Now()
-	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > Timeout/2 {
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > oneDial {
 		t.Fatalf("a proxy that is not running: %v after %v", err, time.Since(started))
 	}
 	gone.set(closedProxy(t), true)
@@ -597,19 +605,245 @@ func TestARegistrationWaitsForAProxyThatIsRestarting(t *testing.T) {
 	if result, err := proxy.Register(context.Background(), []Value{{Type: "config", ID: "LOG_LEVEL", Value: "debug-level-value"}}); err != nil || result != (Result{}) || gone.timesAsked() != asked {
 		t.Fatalf("a registration of nothing: %+v %v, the source was asked %d times", result, err, gone.timesAsked()-asked)
 	}
-	// The wait ends with the command's own context.
+	// The wait ends with the command's own context. With nothing to dial
+	// that is the wait's own error.
+	gone.set("", true)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	started = time.Now()
 	if _, err := Register(ctx, value); !errors.Is(err, ErrRestarting) || time.Since(started) > Timeout/2 {
 		t.Fatalf("a wait whose context ended: %v after %v", err, time.Since(started))
 	}
+	// With an address nothing listens at, the context may end the dial
+	// before the system has refused it, which is no refusal: whatever the
+	// error, it is never that no proxy runs, and it comes with the context.
+	gone.set(closedProxy(t), true)
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started = time.Now()
+	if _, err := Register(ctx, value); err == nil || errors.Is(err, ErrNotListening) || time.Since(started) > Timeout/2 {
+		t.Fatalf("a wait whose context ended while it dialled: %v after %v", err, time.Since(started))
+	}
 	// A session's own proxy says nothing of the kind: nothing listening there
-	// fails at once, as before, and no other source is asked about it.
+	// fails after one dial, as before, and no other source is asked about it.
 	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": closedProxy(t)})
 	asked = gone.timesAsked()
 	started = time.Now()
-	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > Timeout/2 || gone.timesAsked() != asked {
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > oneDial || gone.timesAsked() != asked {
 		t.Fatalf("a session whose proxy is gone: %v after %v, another source asked %d times", err, time.Since(started), gone.timesAsked()-asked)
 	}
+}
+
+// withDialTimeout sets how long a registration's connection may take to be
+// made, for the length of a test.
+func withDialTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	previous := dialTimeout
+	dialTimeout = timeout
+	t.Cleanup(func() { dialTimeout = previous })
+}
+
+// A connection to the proxy's address that is not made in time means nothing
+// listens there, as a refused one does: the address is a loopback one, and
+// that is how a port nothing listens on shows where the system is slow to
+// refuse. Here the dial is given no time at all, so the error is the dialer's
+// own for a dial that did not complete, on every system, although a proxy
+// listens.
+func TestADialThatRunsOutOfTimeIsNothingListening(t *testing.T) {
+	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}
+	fake, server := newFakeProxy(t)
+	withDialTimeout(t, -time.Second)
+	// A proxy found outside the session's environment: stale state, to the
+	// command that asked.
+	withEnvironment(t, map[string]string{})
+	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { return capabilityURL(server), true }})
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) {
+		t.Fatalf("a dial that ran out of time, outside a session: %v", err)
+	}
+	// Inside a session the error is the same; it is the command that treats
+	// it as a failure there.
+	withEnvironment(t, sessionEnvironment(server))
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) {
+		t.Fatalf("a dial that ran out of time, inside a session: %v", err)
+	}
+	if fake.keyCalls != 0 || fake.posts != 0 {
+		t.Fatalf("the proxy was reached %d times by a dial given no time", fake.keyCalls+fake.posts)
+	}
+	// Given time, the same registration goes through: only the dial failed.
+	dialTimeout = 5 * time.Second
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 {
+		t.Fatalf("the same registration with time to dial: %+v %v", result, err)
+	}
+
+	// Only a dial that timed out is told so: not a call that timed out once
+	// the connection stood, not a dial that failed some other way, and not a
+	// dial that was cancelled.
+	timedOut := &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+	for name, c := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"a dial that timed out, as the client reports it": {&url.Error{Op: "Get", URL: "http://phase.invalid/v1/inventory/key", Err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: timedOut}}, true},
+		"a dial that timed out":                           {timedOut, true},
+		"a read that timed out":                           {&url.Error{Op: "Get", URL: "http://phase.invalid/", Err: &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded}}, false},
+		"a call that outlived its context":                {&url.Error{Op: "Get", URL: "http://phase.invalid/", Err: context.DeadlineExceeded}, false},
+		"a dial that was cancelled":                       {&net.OpError{Op: "dial", Net: "tcp", Err: context.Canceled}, false},
+		"a dial that failed for another reason":           {&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}, false},
+		"no error":                                        {nil, false},
+	} {
+		if got := dialTimedOut(c.err); got != c.want {
+			t.Errorf("%s: timed out in the dial = %v", name, got)
+		}
+		if listening := !errors.Is(unanswered(c.err), ErrNotListening); c.err != nil && listening == c.want {
+			t.Errorf("%s: taken for nothing listening = %v", name, !listening)
+		}
+	}
+}
+
+// slowRefusals makes a connection to an address nothing listens at fail the
+// way it does where the system is slow to refuse, on any system: the refusal
+// arrives delay after the dial began, so a dial given less time than that
+// runs out of it instead. Every error it returns is the dialer's own.
+func slowRefusals(t *testing.T, delay time.Duration) {
+	t.Helper()
+	previous := controlClient
+	controlClient = func(rawProxyURL string, dial, timeout time.Duration) (*http.Client, error) {
+		client, err := previous(rawProxyURL, dial, timeout)
+		if err != nil {
+			return nil, err
+		}
+		client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			began := time.Now()
+			conn, err := (&net.Dialer{Timeout: dial}).DialContext(ctx, network, address)
+			if err == nil || !connectionRefused(err) {
+				return conn, err
+			}
+			inTime := dial <= 0 || dial >= delay
+			wait := delay
+			if !inTime {
+				wait = dial
+			}
+			select {
+			case <-ctx.Done():
+				return (&net.Dialer{}).DialContext(ctx, network, address)
+			case <-time.After(wait - time.Since(began)):
+			}
+			if inTime {
+				return nil, err
+			}
+			return (&net.Dialer{Timeout: -time.Second}).DialContext(ctx, network, address)
+		}
+		return client, nil
+	}
+	t.Cleanup(func() { controlClient = previous })
+}
+
+// Where the system takes two seconds to refuse a connection to a port
+// nothing listens on, a registration does not wait for the refusal. Stale
+// state costs one dial timeout, well under a second, and the wait for a
+// proxy that is restarting still ends on time, although each dial it makes
+// meanwhile takes its whole timeout.
+func TestASlowRefusalIsNotWaitedFor(t *testing.T) {
+	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}
+	slowRefusals(t, 2*time.Second)
+	if dialTimeout >= Timeout/2 {
+		t.Fatalf("the dial timeout is %v: stale state would cost half the registration's time or more", dialTimeout)
+	}
+	// What one dial that runs out of time costs, with room for a slow machine
+	// and still well under the second a refusal would take.
+	oneDial := dialTimeout + Timeout/2
+
+	t.Run("stale state costs one dial", func(t *testing.T) {
+		// No proxy runs, and it takes one dial to know.
+		withEnvironment(t, map[string]string{})
+		withSource(t, (&restartingSource{found: closedProxy(t)}).source())
+		started := time.Now()
+		_, err := Register(context.Background(), value)
+		if elapsed := time.Since(started); !errors.Is(err, ErrNotListening) || elapsed < dialTimeout*8/10 || elapsed > oneDial {
+			t.Fatalf("stale state: %v after %v, want nothing listening after about %v", err, elapsed, dialTimeout)
+		}
+		// A session whose proxy is gone: the same error as soon.
+		withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": closedProxy(t)})
+		started = time.Now()
+		_, err = Register(context.Background(), value)
+		if elapsed := time.Since(started); !errors.Is(err, ErrNotListening) || elapsed > oneDial {
+			t.Fatalf("a session whose proxy is gone: %v after %v", err, elapsed)
+		}
+	})
+
+	t.Run("a proxy that stays away is waited for no longer", func(t *testing.T) {
+		// The wait is Timeout in all, the dials included.
+		withEnvironment(t, map[string]string{})
+		withSource(t, (&restartingSource{found: closedProxy(t), restarting: true}).source())
+		started := time.Now()
+		_, err := Register(context.Background(), value)
+		if elapsed := time.Since(started); !errors.Is(err, ErrRestarting) || elapsed < Timeout*8/10 || elapsed > Timeout+Timeout/4 {
+			t.Fatalf("a proxy that stayed away: %v after %v, want a wait of about %v", err, elapsed, Timeout)
+		}
+	})
+
+	// Here a dial takes more than half the wait, so the second one is cut
+	// short where the wait ends: a wait that let it run, or that began
+	// counting after the first, would end late. And a dial cut short says
+	// nothing of what listens there. The source stops saying its proxy is
+	// restarting once that dial is made, as when the proxy came back, or went
+	// for good, in that moment: the answer is still that the proxy was not
+	// back in time, never that none runs.
+	t.Run("the last dial of the wait is cut short", func(t *testing.T) {
+		withEnvironment(t, map[string]string{})
+		withDialTimeout(t, 600*time.Millisecond)
+		var cutShort atomic.Bool
+		slow := controlClient
+		controlClient = func(rawProxyURL string, dial, timeout time.Duration) (*http.Client, error) {
+			if dial < dialTimeout {
+				cutShort.Store(true)
+			}
+			return slow(rawProxyURL, dial, timeout)
+		}
+		t.Cleanup(func() { controlClient = slow })
+		address := closedProxy(t)
+		withSource(t, Source{
+			Name:       "runtime",
+			Find:       func() (string, bool) { return address, true },
+			Restarting: func() bool { return !cutShort.Load() },
+		})
+		started := time.Now()
+		_, err := Register(context.Background(), value)
+		elapsed := time.Since(started)
+		if !cutShort.Load() {
+			t.Fatalf("no dial was cut short in a wait of %v with dials of %v: %v after %v", Timeout, dialTimeout, err, elapsed)
+		}
+		if !errors.Is(err, ErrRestarting) || elapsed < Timeout*8/10 || elapsed > Timeout+Timeout/4 {
+			t.Fatalf("a wait whose last dial was cut short: %v after %v, want a proxy not back after about %v", err, elapsed, Timeout)
+		}
+	})
+
+	t.Run("a proxy back after the first dial is registered with", func(t *testing.T) {
+		fake, server := newFakeProxy(t)
+		withEnvironment(t, map[string]string{})
+		away := &restartingSource{found: closedProxy(t), restarting: true}
+		withSource(t, away.source())
+		back := dialTimeout + 50*time.Millisecond
+		go func() {
+			time.Sleep(back)
+			away.set(capabilityURL(server), true)
+		}()
+		started := time.Now()
+		result, err := Register(context.Background(), value)
+		if elapsed := time.Since(started); err != nil || result.Added != 1 || fake.posts != 1 || elapsed > Timeout+Timeout/4 {
+			t.Fatalf("a proxy back after the first dial: %+v %v after %v", result, err, elapsed)
+		}
+	})
+
+	t.Run("a refusal within the dial's time is still a refusal", func(t *testing.T) {
+		withEnvironment(t, map[string]string{})
+		withDialTimeout(t, 400*time.Millisecond)
+		slowRefusals(t, 100*time.Millisecond)
+		withSource(t, (&restartingSource{found: closedProxy(t)}).source())
+		started := time.Now()
+		_, err := Register(context.Background(), value)
+		if elapsed := time.Since(started); !errors.Is(err, ErrNotListening) || elapsed > dialTimeout+Timeout/2 {
+			t.Fatalf("a refusal after 100ms: %v after %v", err, elapsed)
+		}
+	})
 }

@@ -170,9 +170,27 @@ never reach the inventory the daemon comes back with, so the gap is not taken
 for no proxy. The daemon is told from its runtime lock (`runtime.lock`): its
 process is alive, and it is starting or recycling, or it still owns the state
 it published while nothing listens there. A registration then waits for the
-state, asking again every 25 ms for one second in all (`leakguard.Timeout`),
-and registers with the proxy that comes back. A source says this through
-`leakguard.Source.Restarting`; the session's own environment never does.
+state, asking again every 25 ms, and registers with the proxy that comes
+back. The wait is one second in all (`leakguard.Timeout`), counted from the
+first look, so the dials that found nothing listening are part of it, and the
+last of them is cut short where the wait ends. A dial cut short that way says
+nothing of what listens there: the answer is that the proxy was not back in
+time. A source says this through `leakguard.Source.Restarting`; the session's
+own environment never does.
+
+Nothing listening at the proxy's address is told in one of two ways, and both
+mean the same on every system: the connection is refused, or it is not made
+within the 250 ms a registration gives its dial. The address is a loopback
+one, so no network is to blame for a dial that hangs, and a port nothing
+listens on shows that way where the system is slow to refuse. Windows can be:
+left to itself it tries again for a second or two before it refuses. Go asks
+it not to for a loopback address, so current Windows refuses at once, but
+that is best effort and builds before 16299 honour it only in part. A proxy
+that listens takes the connection at once, so the short dial costs it
+nothing; the key request and the registration that follow keep one second
+each. Stale state so costs a command a quarter of a second at most on any
+system. A proxy that took the connection and did not answer in time is
+another matter: it is there, and failed.
 
 With no proxy and no daemon the lookup costs two file checks, of the state
 and of the lock: nothing is read, nothing is called and nothing is waited
@@ -183,8 +201,8 @@ depends on how the proxy was found:
 
 | The proxy was found through | When the registration fails |
 |---|---|
-| the session's environment | An Agent-token login is refused before any value leaves. Any other login gets one warning line on stderr and carries on. |
-| the runtime state, and its address refuses the connection | No proxy is running: the last row applies. Nothing listens there, so the state is stale or its process id now belongs to another program, and a warning would repeat on every command in every shell. |
+| the session's environment | An Agent-token login is refused before any value leaves. Any other login gets one warning line on stderr and carries on. Nothing listening there is such a failure too: the session's own proxy is meant to be there. |
+| the runtime state, and nothing listens at its address (the connection is refused, or is not made within 250 ms) | No proxy is running: the last row applies. Nothing listens there, so the state is stale or its process id now belongs to another program, and a warning would repeat on every command in every shell. |
 | the runtime lock or state of a daemon that is starting or recycling, and it is not back within the second | The next row applies: a proxy is there and could not be reached. It is never taken for no proxy. |
 | the runtime state, any other failure | One warning line on stderr, once per process, and the command carries on, whoever is logged in. A timeout, an HTTP error, an answer that cannot be read and a full inventory are such failures: a proxy is there and did not take the values. |
 | nothing | Nothing is registered. An Agent-token login is told once that leak protection is not active; any other login is told nothing. |

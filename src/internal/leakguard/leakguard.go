@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -38,6 +39,21 @@ import (
 // out values waits at most this long for the proxy, and, before that, at most
 // this long for a proxy that is restarting to come back.
 const Timeout = time.Second
+
+// dialTimeout bounds the connection to the proxy's address, which is always
+// a loopback one. A proxy that listens there takes the connection at once.
+// Where nothing listens most systems refuse at once too, but that cannot be
+// counted on: left to itself Windows tries again for a second or two before
+// it says so. Go asks it not to for a loopback address, which is best effort
+// and which Windows before build 16299 honours only in part. A command that
+// finds stale state must not stall that long to learn there is no proxy. The
+// timeout is well under Timeout, so it is the dial that runs out of time, and
+// is seen to, before anything else does. Tests change it.
+var dialTimeout = 250 * time.Millisecond
+
+// controlClient makes the client a registration reaches the proxy with; tests
+// replace it to change how a connection fails.
+var controlClient = phaseproxy.ControlClient
 
 // maxEntryBytes is the largest one value's entries may be and still fit in a
 // registration of their own.
@@ -72,8 +88,10 @@ var identifier = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 var ErrInventoryFull = errors.New("the leak protection inventory is full")
 
 // ErrNotListening is returned when nothing accepts connections at the
-// proxy's address: no proxy runs there. A proxy that is slow, or answers
-// with something this version does not read, is another error.
+// proxy's address: the connection was refused, or was not made within the
+// dial timeout. No proxy runs there. A proxy that took the connection and is
+// slow, or answers with something this version does not read, is another
+// error.
 var ErrNotListening = errors.New("nothing is listening at the Phase AI proxy's address")
 
 // ErrRestarting is returned when the proxy's process runs but took no
@@ -86,11 +104,34 @@ var ErrRestarting = errors.New("the Phase AI proxy is restarting and did not com
 var restartPoll = 25 * time.Millisecond
 
 // unanswered is the error for a call the proxy did not answer.
+//
+// A connection that was refused means nothing listens at the proxy's address.
+// So does one that was not made within dialTimeout, on every platform: the
+// address is a loopback one, so there is no network to blame for a dial that
+// hangs, and that is how a port nothing listens on shows where the system is
+// slow to refuse, as Windows can be (see dialTimeout). Both are
+// ErrNotListening. What that means is for the caller to say by where the
+// proxy was found. Outside the session's environment it is no proxy running:
+// the state that named the address is stale, and a command says nothing.
+// Inside a session, whose own proxy is meant to be there, it is a failure
+// like any other. A proxy that took the connection and did not answer in
+// time is not ErrNotListening anywhere.
 func unanswered(err error) error {
-	if connectionRefused(err) {
+	if connectionRefused(err) || dialTimedOut(err) {
 		return ErrNotListening
 	}
 	return errors.New("the Phase AI proxy did not answer")
+}
+
+// dialTimedOut reports a call that failed because the connection to the
+// proxy's address was not made in time.
+func dialTimedOut(err error) bool {
+	for ; err != nil; err = errors.Unwrap(err) {
+		if operation, ok := err.(*net.OpError); ok && operation.Op == "dial" {
+			return operation.Timeout()
+		}
+	}
+	return false
 }
 
 // Environment is what the package reads from the process's environment;
@@ -238,10 +279,12 @@ type registration struct {
 //
 // When nothing listens at the proxy's address, or its source has not found it
 // yet, and the source says the proxy is restarting, Register waits for it: it
-// asks the source again every few milliseconds, for Timeout in all, and
-// registers once the proxy is back. If it is not back in time the error is
-// ErrRestarting. A source that says nothing of the kind leaves
-// ErrNotListening, at once.
+// asks the source again every few milliseconds and registers once the proxy
+// is back. The wait is Timeout in all, counted from the first look, so the
+// dials that found nothing listening are part of it, and the last of them is
+// cut short where the wait ends. If the proxy is not back in time the error
+// is ErrRestarting. A source that says nothing of the kind leaves
+// ErrNotListening, after one dial.
 func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 	values = protectable(values)
 	if len(values) == 0 {
@@ -250,8 +293,8 @@ func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	address := p.URL
-	var deadline time.Time
+	address, dial := p.URL, dialTimeout
+	deadline := time.Now().Add(Timeout)
 	for {
 		if address == "" && p.source != nil {
 			if found, ok := p.source.Find(); ok {
@@ -259,24 +302,37 @@ func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 			}
 		}
 		if address != "" {
-			result, err := register(ctx, address, values)
+			result, err := register(ctx, address, values, dial)
 			if !errors.Is(err, ErrNotListening) {
 				return result, err
+			}
+			if dial < dialTimeout && time.Until(deadline) <= 0 {
+				// The end of the wait cut this dial short, so running out of
+				// time says nothing of what listens there: the proxy may be
+				// back and not have been given the time to take the
+				// connection. The wait is over, and that is all that is known.
+				return Result{}, ErrRestarting
 			}
 		}
 		if p.source == nil || p.source.Restarting == nil || !p.source.Restarting() {
 			return Result{}, ErrNotListening
 		}
-		if now := time.Now(); deadline.IsZero() {
-			deadline = now.Add(Timeout)
-		} else if !now.Before(deadline) {
+		left := time.Until(deadline)
+		if left <= 0 {
 			return Result{}, ErrRestarting
 		}
 		select {
 		case <-ctx.Done():
 			return Result{}, ErrRestarting
-		case <-time.After(restartPoll):
+		case <-time.After(min(restartPoll, left)):
 		}
+		if left = time.Until(deadline); left <= 0 {
+			return Result{}, ErrRestarting
+		}
+		// The next dial ends with the wait at the latest: where a dial to an
+		// address nothing listens at takes its whole timeout, a few of them
+		// would otherwise carry the wait past its end.
+		dial = min(dialTimeout, left)
 		// Its source is asked again: the proxy may come back at another
 		// address, or as another process with another capability.
 		address = ""
@@ -284,10 +340,10 @@ func (p Proxy) Register(ctx context.Context, values []Value) (Result, error) {
 }
 
 // register sends values, already filtered, to the proxy at address, its URL
-// with its capability.
-func register(ctx context.Context, address string, values []Value) (Result, error) {
+// with its capability. dial is how long the connection may take to be made.
+func register(ctx context.Context, address string, values []Value, dial time.Duration) (Result, error) {
 	var result Result
-	client, err := phaseproxy.ControlClient(address, Timeout, Timeout)
+	client, err := controlClient(address, dial, Timeout)
 	if err != nil {
 		return result, err
 	}

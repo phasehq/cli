@@ -548,6 +548,10 @@ func TestStaleRuntimeStateIsNoProxyRunning(t *testing.T) {
 	if err := protectValues(context.Background(), true, []leakguard.Value{{Type: "dynamic", ID: "lease-1", Value: leakTestSecrets[0].Value}}); err != nil {
 		t.Fatalf("an Agent's lease was refused: %v", err)
 	}
+	// Each of the six pays one dial and no more: at once where the system
+	// refuses at once, the dial timeout where it is slow to, as Windows can
+	// be. Half a second a command leaves room for that and is still no whole
+	// timeout.
 	if elapsed := time.Since(started); elapsed > 3*leakguard.Timeout {
 		t.Fatalf("six commands with nothing listening took %v", elapsed)
 	}
@@ -817,6 +821,14 @@ func TestADaemonThatDoesNotComeBackInTimeIsUnreachable(t *testing.T) {
 // A lock that does not say a daemon is on its way costs no wait: its process
 // is gone, or it has claimed to start or recycle for longer than either takes
 // and published no state, or the state there is not its own.
+//
+// Where live state points at an address nothing listens at, each command
+// still pays one dial. That is over at once on most systems and after the dial
+// timeout, a fraction of a second, where the system is slow to refuse, as
+// Windows can be. A wait for the daemon would be a whole second a command, so
+// those commands are allowed half of that each, which tells the two apart
+// without counting on a quick refusal. The others dial nothing and are held
+// to costing next to nothing.
 func TestALockThatSaysNothingIsOnItsWayCostsNoWait(t *testing.T) {
 	const deadPID = 1 << 30
 	type leftState struct {
@@ -856,16 +868,21 @@ func TestALockThatSaysNothingIsOnItsWayCostsNoWait(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			const commands = 10
 			started := time.Now()
-			for i := 0; i < 5; i++ {
+			for i := 0; i < commands/2; i++ {
 				for _, backend := range []phase.SecretsBackend{nil, &phase.AgentBackend{}} {
 					if err := protectSecrets(context.Background(), backend, leakTestSecrets); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
-			if elapsed := time.Since(started); elapsed > leakguard.Timeout/2 {
-				t.Fatalf("ten commands waited %v for a daemon that is not coming", elapsed)
+			allowed := leakguard.Timeout / 2
+			if c.state != nil && c.state.pid != deadPID {
+				allowed = commands * leakguard.Timeout / 2
+			}
+			if elapsed := time.Since(started); elapsed > allowed {
+				t.Fatalf("%d commands took %v, over %v: they waited for a daemon that is not coming", commands, elapsed, allowed)
 			}
 			// No proxy runs: an Agent login is told once, nobody else anything.
 			if got := warnings.String(); got != leakProtectionInactiveMsg+"\n" {
