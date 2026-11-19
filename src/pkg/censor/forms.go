@@ -161,11 +161,9 @@ func weakMask(value string) []bool {
 		}
 		offset += len(line)
 	}
-	if password := urlPassword(value); password != "" {
-		if at := strings.Index(value, password); at >= 0 {
-			mark(0, at)
-			mark(at+len(password), len(value))
-		}
+	if from, to, ok := passwordSpan(value); ok {
+		mark(0, from)
+		mark(to, len(value))
 	}
 	if !marked {
 		return nil
@@ -173,18 +171,22 @@ func weakMask(value string) []bool {
 	return mask
 }
 
-// decoyOf changes every byte that isn't structure, keeping line breaks so the
-// value's forms keep their shape.
+// decoyOf changes every letter and digit that isn't structure, and the last
+// byte of every character past ASCII. Punctuation stays and what is changed is
+// escaped as it was, so each form of the decoy is as long as the value's and
+// their chunks line up: a password with %40 or '!' in it would otherwise leave
+// the URL-encoded forms without a decoy, and their host chunks counting.
 func decoyOf(value string, mask []bool) string {
 	decoy := []byte(value)
 	for i, b := range decoy {
-		if mask[i] || b == '\n' || b == '\r' {
-			continue
-		}
-		if b == 'x' {
+		switch {
+		case mask[i]:
+		case b == 'x':
 			decoy[i] = 'y'
-		} else {
+		case (b >= '0' && b <= '9') || (lowerTable[b] >= 'a' && lowerTable[b] <= 'z'):
 			decoy[i] = 'x'
+		case b >= 0x80 && b < 0xc0 && (i+1 == len(decoy) || decoy[i+1] < 0x80 || decoy[i+1] >= 0xc0):
+			decoy[i] = b ^ 1
 		}
 	}
 	return string(decoy)
@@ -201,6 +203,27 @@ func urlPassword(value string) string {
 	}
 	password, _ := parsed.User.Password()
 	return password
+}
+
+// passwordSpan is where a URL's password sits in the URL as it is written,
+// which is not the password itself when it holds an escape such as %40.
+func passwordSpan(value string) (from, to int, ok bool) {
+	if urlPassword(value) == "" {
+		return 0, 0, false
+	}
+	// The authority ends at the first '/', '?' or '#', its user and password
+	// at the last '@', and the user at the first ':'.
+	host := strings.Index(value, "://") + len("://")
+	end := len(value)
+	if i := strings.IndexAny(value[host:], "/?#"); i >= 0 {
+		end = host + i
+	}
+	at := strings.LastIndexByte(value[host:end], '@')
+	colon := strings.IndexByte(value[host:end], ':')
+	if at < 0 || colon < 0 || colon > at {
+		return 0, 0, false
+	}
+	return host + colon + 1, host + at, true
 }
 
 // entropy is the Shannon entropy of the bytes, in bits per byte.

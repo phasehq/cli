@@ -412,3 +412,60 @@ func TestAnEncodedRunStopsAtAnAssignment(t *testing.T) {
 		}
 	}
 }
+
+// All of a URL but its password is structure, which no piece of the URL is
+// found by alone. That holds when the password is written with an escape
+// (%40), so that its own text is not in the URL: another URL to the same host
+// is left as it is.
+func TestAURLWithAnEscapedPasswordKeepsItsHostAsStructure(t *testing.T) {
+	host := "@db-primary.internal.example.com:5432/app"
+	for written, password := range map[string]string{
+		"p%40ssW0rdXYZabcQ9":   "p@ssW0rdXYZabcQ9",
+		"pAssW0rdXYZabcQ9xx":   "pAssW0rdXYZabcQ9xx",
+		"p%2fss%3aW0rd%40XYZ9": "p/ss:W0rd@XYZ9",
+	} {
+		value := "postgres://app:" + written + host
+		if from, to, ok := passwordSpan(value); !ok || value[from:to] != written {
+			t.Errorf("%s: the password is not where passwordSpan says", written)
+		}
+		ix := build(t, secret{ID: "db", Value: value})
+		other := "postgres://reader" + host + "?sslmode=require and postgres://app" + host
+		if out, report := ix.Redact([]byte(other)); string(out) != other || report.Inventory != 0 {
+			t.Errorf("%s: another URL to the host was replaced\n%s", written, out)
+		}
+		for _, text := range []string{"DB=" + value + " ", "the password is " + password + " for now", "user app:" + written + " at the host"} {
+			if out, report := ix.Redact([]byte(text)); bytes.Contains(out, []byte(written)) || bytes.Contains(out, []byte(password)) || report.Inventory == 0 {
+				t.Errorf("%s: the password was left\n%s", written, out)
+			}
+		}
+	}
+	for _, value := range []string{"postgres://app@db.internal/app", "https://example.com/a:b@c", "not a url at all"} {
+		if _, _, ok := passwordSpan(value); ok {
+			t.Errorf("%s has no password", value)
+		}
+	}
+	// The decoy that tells structure from secret has every form as long as the
+	// value's, whatever the secret part is made of, or the form would go
+	// without one.
+	for _, value := range []string{
+		"postgres://app:p%40ss!W0rd$~" + host,
+		"https://deploy:пароль-密码\u2028é@git.internal/repo",
+		"sk_live_пароль密码" + randomString(t, alnum, 12),
+		fakePEM(t),
+	} {
+		mask := weakMask(value)
+		if mask == nil {
+			t.Fatalf("%q has no structure", value)
+		}
+		decoy := decoyOf(value, mask)
+		forms, decoys := encodedForms(value), encodedForms(decoy)
+		if decoy == value || len(forms) != len(decoys) {
+			t.Fatalf("%q: the decoy is the value, or has other forms", value)
+		}
+		for i := range forms {
+			if len(forms[i].bytes) != len(decoys[i].bytes) {
+				t.Errorf("%q: the %s form of the decoy is %d bytes, the value's %d", value, forms[i].name, len(decoys[i].bytes), len(forms[i].bytes))
+			}
+		}
+	}
+}
