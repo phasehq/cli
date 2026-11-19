@@ -80,7 +80,7 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 		case phaseproxy.InventoryReasonNoTenant:
 			why = "the Console did not say which organisation and login this session is"
 		case phaseproxy.InventoryReasonBusy:
-			why = "another process held the inventory file; the next proxy start stores again"
+			why = "another process held the inventory file; the next registration tries again"
 		}
 		return "inventory kept in memory only (" + why + ")" + leakUnstoredSummary(inventory)
 	}
@@ -99,6 +99,9 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 	}
 	if inventory.Damaged > 0 {
 		line += fmt.Sprintf(", %d unreadable and dropped", inventory.Damaged)
+	}
+	if inventory.Dropped > 0 {
+		line += fmt.Sprintf(", %d not stored to keep the store within its bounds", inventory.Dropped)
 	}
 	return line + leakUnstoredSummary(inventory)
 }

@@ -57,13 +57,7 @@ func (h *controlHandler) inventoryKey(w http.ResponseWriter, req *http.Request) 
 		}
 		stated = phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login}
 	}
-	// A command that states no identity gets keys made for this request.
-	asked, err := newLeakKeyRequest()
-	if err != nil {
-		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
-		return
-	}
-	place, err := h.leak.place(stated, asked)
+	place, err := h.leak.place(stated)
 	if err != nil {
 		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
 		return
@@ -150,10 +144,10 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 	}
 	// Where the entries go is decided here, from what this request states,
 	// and never from what an earlier one did.
-	place, err := h.leak.place(phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login}, leakKeyRequest(request.KeyID))
-	// Entries made under other keys than this place's would be held and
-	// never matched: the command fetches the key again.
-	if errors.Is(err, errLeakKeyUnknown) || (err == nil && request.KeyID != "" && request.KeyID != place.keyID()) {
+	place, err := h.leak.place(phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login})
+	// Entries made under other keys than this place's would be held and never
+	// matched: the command fetches the key again. An older client names no key.
+	if err == nil && request.KeyID != "" && request.KeyID != place.keyID() {
 		writeControlError(w, http.StatusConflict, "inventory_key_changed", "The entries were made under a key this proxy does not use for this command. Fetch the key again and register again.", true)
 		return
 	}
@@ -164,7 +158,7 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 	added, unprotected, err := h.leak.addAt(place, entries, keyNamed)
 	switch {
 	case errors.Is(err, errLeakInventoryFull):
-		writeControlError(w, http.StatusInsufficientStorage, "leak_inventory_full", "The leak protection inventory has no room for more values from this login. A proxy that starts again has room: it starts with the values registered most recently.", false)
+		writeControlError(w, http.StatusInsufficientStorage, "leak_inventory_full", "The leak protection inventory has no room for more values from this login, or for this many in one registration. A proxy that starts again has room: it starts with the values registered most recently.", false)
 		return
 	case err != nil:
 		writeControlError(w, http.StatusBadRequest, "invalid_inventory", "An inventory entry is not valid.", false)

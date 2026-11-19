@@ -143,19 +143,22 @@ type leakIndexShares struct {
 
 type leakShare struct{ secrets, chunks int }
 
-func leakIndexBounds(rules *censor.Rules) leakIndexShares {
+// leakIndexBounds are the bounds of a guard's index. A proxy with no identity
+// shares it with nobody: the whole of it is its one key's, as before a store.
+func leakIndexBounds(rules *censor.Rules, named bool) leakIndexShares {
 	secrets, chunks := leakIndexMaxSecrets, censor.DefaultMaxChunks
 	if secrets <= 0 {
 		secrets = censor.DefaultMaxSecrets
 	}
-	return leakIndexShares{
-		options: censor.IndexOptions{
-			Rules: rules, MaxSecrets: secrets, MaxChunks: chunks,
-			MaxKeySecrets: max(2, secrets/2), MaxKeyChunks: chunks / 2,
-			MaxGuestSecrets: max(1, secrets/4), MaxGuestChunks: chunks / 4,
-		},
-		load: leakShare{max(1, secrets/2), chunks / 2}, loadPerLogin: leakShare{max(1, secrets/4), chunks / 4},
+	shares := leakIndexShares{
+		options: censor.IndexOptions{Rules: rules, MaxSecrets: secrets, MaxChunks: chunks, Public: defaultLeakHosts.publicTexts()},
+		load:    leakShare{max(1, secrets/2), chunks / 2}, loadPerLogin: leakShare{max(1, secrets/4), chunks / 4},
 	}
+	if named {
+		shares.options.MaxKeySecrets, shares.options.MaxKeyChunks = max(2, secrets/2), chunks/2
+		shares.options.MaxGuestSecrets, shares.options.MaxGuestChunks = max(1, secrets/4), chunks/4
+	}
+	return shares
 }
 
 // newLeakGuardWithInventory makes the guard for a session: what its own login
@@ -165,13 +168,13 @@ func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phas
 		identity = phaseproxy.InventoryIdentity{}
 	}
 	// The one principal this proxy makes: its session's own login's. An
-	// unknown session's is one no command is ever handed.
+	// unknown session's is this process's alone, and every command's.
 	principal, err := inventory.Principal(identity.Login)
 	if err != nil {
 		return nil, err
 	}
 	key := principal.Key()
-	index, err := censor.NewIndex(key, leakIndexBounds(rules).options)
+	index, err := censor.NewIndex(key, leakIndexBounds(rules, identity.Known()).options)
 	if err != nil {
 		return nil, err
 	}
@@ -214,45 +217,16 @@ func (l *leakGuests) start() error {
 	return err
 }
 
-// key is a guest's key: one per stated identity, and for a command that
-// states none, one per key request.
-func (l *leakGuests) key(stated phaseproxy.InventoryIdentity, request string) (*censor.Key, error) {
-	info := "phase-leak-guest\x00" + stated.Tenant + "\x00" + stated.Login
-	if request != "" {
-		info = "phase-leak-guest-request\x00" + request
-	}
-	confirm, err := hkdf.Key(sha256.New, l.root, nil, info, censor.KeySize)
+// key is a guest's key: one per stated identity, and one for every command
+// that states none, so that what such a command registers again is held once.
+func (l *leakGuests) key(stated phaseproxy.InventoryIdentity) (*censor.Key, error) {
+	confirm, err := hkdf.Key(sha256.New, l.root, nil, "phase-leak-guest\x00"+stated.Tenant+"\x00"+stated.Login, censor.KeySize)
 	if err != nil {
 		return nil, err
 	}
 	defer clear(confirm)
 	return l.lookup.WithConfirm(confirm)
 }
-
-// leakKeyRequestSize is the length of the name of a key request, which
-// begins the key id of a command that stated no identity.
-const leakKeyRequestSize = 16
-
-// newLeakKeyRequest names a key request: nothing but random bytes.
-func newLeakKeyRequest() (string, error) {
-	name := make([]byte, leakKeyRequestSize/2)
-	if _, err := rand.Read(name); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(name), nil
-}
-
-// leakKeyRequest is the key request a registration's key id names, or "".
-func leakKeyRequest(keyID string) string {
-	if len(keyID) != 2*leakKeyRequestSize {
-		return ""
-	}
-	return keyID[:leakKeyRequestSize]
-}
-
-// errLeakKeyUnknown is a registration that states no identity and names no
-// key request of this process: there is no key its entries could be under.
-var errLeakKeyUnknown = errors.New("the entries name no key this proxy handed out")
 
 // leakPlace is where a command's registrations go, by who it says it is:
 // what it indexes with, and what the proxy does with what it sends.
@@ -261,35 +235,29 @@ type leakPlace struct {
 	// own says the command is of the session's own login: its entries are
 	// stored and its ids written. Any other is a guest of this process.
 	own bool
-	// request names the key request a guest that stated no identity made.
-	request string
 }
 
 // keyID names a place's keys without giving either away.
 func (p leakPlace) keyID() string {
 	sum := sha256.Sum256(append(append([]byte("phase-leak-key-id\x00"), p.key.LookupBytes()...), p.key.ConfirmBytes()...))
-	return p.request + hex.EncodeToString(sum[:8])
+	return hex.EncodeToString(sum[:8])
 }
 
 // place decides where a registration belongs from what the command stated;
 // the proxy's own identity is the Console's word. CONTROL_API.md has the table.
-func (g *leakGuard) place(stated phaseproxy.InventoryIdentity, request string) (leakPlace, error) {
-	if stated.Is(g.identity) {
-		// The session's own login: stored under it, and its ids are written.
+func (g *leakGuard) place(stated phaseproxy.InventoryIdentity) (leakPlace, error) {
+	// A proxy the Console named nobody for has one key for every command and
+	// keeps nothing, as before there was a store: fragments and ids included.
+	if !g.identity.Known() || stated.Is(g.identity) {
 		return leakPlace{key: g.key, own: true}, nil
 	}
-	// Anyone else, another login of the tenant included, and everyone to a
-	// proxy with no identity: this process only, id withheld, never stored.
-	switch {
-	case stated.Known():
-		request = ""
-	case request == "":
-		return leakPlace{}, errLeakKeyUnknown
-	default:
+	// Anyone else, another login of the tenant included: this process only,
+	// id withheld, never stored. What states no identity is one guest.
+	if !stated.Known() {
 		stated = phaseproxy.InventoryIdentity{}
 	}
-	key, err := g.guests.key(stated, request)
-	return leakPlace{key: key, request: request}, err
+	key, err := g.guests.key(stated)
+	return leakPlace{key: key}, err
 }
 
 // phaseTokenRuleSet returns the rules that run on every path of an inspected
@@ -479,7 +447,8 @@ func newLeakGuardFromEnvironment() (*leakGuard, error) {
 	return newLeakGuard(os.Getenv(LeakProtectionEnvironmentKey))
 }
 
-// errLeakInventoryFull is what a registration gets once the index is at a cap.
+// errLeakInventoryFull is what a registration gets once the session's own
+// login is at a cap of the index, or when it alone is more than guests may hold.
 var errLeakInventoryFull = errors.New("the leak protection inventory is full")
 
 // maxUnprotectedNames bounds the values remembered as too short or plain to
@@ -499,19 +468,23 @@ func (g *leakGuard) addAt(place leakPlace, entries []*censor.Entries, keyNamed [
 	// a registration. Only the session's own login's entries are in a batch.
 	var stored []phaseproxy.StoredEntries
 	defer func() { g.inventory.Add(stored) }()
+	// A guest's registration makes room among the guests' oldest entries.
+	guests := g.index.NewGuestBatch()
 	for i, entry := range entries {
 		named := i < len(keyNamed) && keyNamed[i]
 		var protected bool
 		var err error
 		if !place.own {
-			if err = g.index.AddGuest(place.key, entry); err == nil && entry.Protected() {
+			if err = guests.Add(place.key, entry); err == nil && entry.Protected() {
 				protected = true
 				g.unstored.Add(1)
 			}
-		} else if protected, err = g.addOne(g.principal, entry, named); err == nil && protected {
+		} else if protected, err = g.addOne(g.principal, entry, named, false); err == nil && protected {
 			stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named, Principal: g.principal})
 		}
 		switch {
+		case errors.Is(err, censor.ErrPublic):
+			unprotected++
 		case errors.Is(err, censor.ErrIndexFull):
 			return added, unprotected, errLeakInventoryFull
 		case err != nil:
@@ -529,28 +502,36 @@ func (g *leakGuard) addAt(place leakPlace, entries []*censor.Entries, keyNamed [
 // lock is held over both. A request scanned between the two would find the
 // value and not know yet that its placeholder holds a key name, and its event
 // would carry the name; eventPlaceholders waits for the same lock.
-func (g *leakGuard) addOne(principal phaseproxy.InventoryPrincipal, entry *censor.Entries, keyNamed bool) (protected bool, err error) {
+func (g *leakGuard) addOne(principal phaseproxy.InventoryPrincipal, entry *censor.Entries, keyNamed, loaded bool) (protected bool, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !principal.Is(g.principal) {
-		// Another login's own proxy stored it: its value is replaced, and
-		// its id, which this login may not see, is written nowhere.
-		if err = g.index.AddWithheld(principal.Key(), entry); err != nil {
-			return false, err
-		}
-		return entry.Protected(), nil
+	// Another login's own proxy stored it: its value is replaced, and its id,
+	// which this login may not see, is written nowhere.
+	withheld := !principal.Is(g.principal)
+	switch {
+	case loaded:
+		err = g.index.AddLoaded(principal.Key(), entry, withheld)
+	case withheld:
+		err = g.index.AddWithheld(principal.Key(), entry)
+	default:
+		err = g.index.AddKeyed(principal.Key(), entry)
 	}
-	if err = g.index.AddKeyed(principal.Key(), entry); err != nil {
-		return false, err
+	if withheld {
+		return err == nil && entry.Protected(), err
 	}
 	name := entry.Type + ":" + entry.ID
-	if !entry.Protected() {
+	// A host or a path of the model's own requests is not indexed, and is
+	// counted with the values too short or plain to protect.
+	if errors.Is(err, censor.ErrPublic) || (err == nil && !entry.Protected()) {
 		// A value is counted once however often it is registered, and the
 		// names kept for that are bounded.
 		if _, counted := g.unprotected[name]; !counted && len(g.unprotected) < maxUnprotectedNames {
 			g.unprotected[name] = struct{}{}
 		}
-		return false, nil
+		return false, err
+	}
+	if err != nil {
+		return false, err
 	}
 	delete(g.unprotected, name)
 	// Once a placeholder is known to hold a key name it stays so, whatever a

@@ -143,8 +143,10 @@ func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 			if _, err := os.Lstat(filepath.Join(directory, inventoryTestFile)); !os.IsNotExist(err) {
 				t.Fatalf("%s is still there after disable: %v", inventoryTestFile, err)
 			}
-			if _, err := os.Lstat(filepath.Join(directory, "leak-inventory.lock")); err != nil {
-				t.Fatalf("the inventory lock was removed by disable: %v", err)
+			for _, lock := range []string{"leak-inventory.lock", "leak-inventory.queue"} {
+				if _, err := os.Lstat(filepath.Join(directory, lock)); err != nil {
+					t.Fatalf("%s was removed by disable: %v", lock, err)
+				}
 			}
 			after, err := keystore.Get(inventoryTestKeyService, inventoryTestKeyUser)
 			if _, deletes := keystore.(*deletingKeystore); deletes {
@@ -209,19 +211,23 @@ func TestLeakProtectionSummarySaysHowTheInventoryIsKept(t *testing.T) {
 		},
 		"a held lock": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "store_busy"},
-			"; inventory kept in memory only (another process held the inventory file; the next proxy start stores again)",
+			"; inventory kept in memory only (another process held the inventory file; the next registration tries again)",
 		},
 		"more stored than a start loads": {
 			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 5000, NotLoaded: 12},
 			"; inventory kept across restarts (5000 loaded at start), 12 registered longer ago left out to keep room",
+		},
+		"more registered than the store keeps for a login": {
+			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 2500, Dropped: 7},
+			"; inventory kept across restarts (2500 loaded at start), 7 not stored to keep the store within its bounds",
 		},
 		"commands of another account": {
 			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 2, Unstored: 3},
 			"; inventory kept across restarts (2 loaded at start), 3 registrations from commands of another login, or of none they could state, protected until this proxy exits",
 		},
 		"a session the Console did not name": {
-			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "no_tenant", Unstored: 1},
-			"; inventory kept in memory only (the Console did not say which organisation and login this session is), 1 registrations from commands of another login, or of none they could state, protected until this proxy exits",
+			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "no_tenant"},
+			"; inventory kept in memory only (the Console did not say which organisation and login this session is)",
 		},
 		"no store": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "not_configured"},

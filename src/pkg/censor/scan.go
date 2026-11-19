@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"io"
@@ -48,6 +49,7 @@ type hit struct {
 	part        string // url-password or leaf:<n> for a part of an indexed value
 	decoded     bool   // found by decoding a base64 or hex run
 	partial     bool   // only part of the value's extent verified
+	loaded      bool   // found only through entries a store handed over
 	path        string // JSON pointer in the request, relative while scanning a string
 }
 
@@ -76,6 +78,8 @@ type span struct {
 	checked    int // where the verified chunks end
 	// named says the span's placeholder carries its id.
 	named bool
+	// loaded says every form found here is one a store handed over.
+	loaded bool
 }
 
 type tryKey struct {
@@ -91,19 +95,15 @@ type tryKey struct {
 // quote or white space). That removes the leftover partial chunk at each end, which
 // the hashes can't confirm, at the cost of at most chunk-1 neighbouring bytes on
 // each side when a value is followed directly by similar-looking text.
-func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (span, bool) {
+func (ix *Index) try(search *spanSearch, p int, ref chunkRef) (span, bool) {
+	data := search.data
 	f := &ix.forms[ref.form]
-	withheld := ix.owners[f.owner].withheld
-	// A line is a fragment of its value, and a withheld value is matched whole.
-	if withheld && f.name == formLine {
-		return span{}, false
-	}
 	c := f.chunk
 	start := p - int(ref.idx)*c
 	key := tryKey{form: ref.form, start: start}
 	// tried holds how far the chunks verified in a row the last time: a chunk
 	// past that is another piece of the value, whatever came of the first.
-	if end, done := tried[key]; done && p < end {
+	if end, done := search.tried[key]; done && p < end {
 		return span{}, false
 	}
 	// The caller has confirmed the chunk at p.
@@ -112,36 +112,39 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 	lo, hi := int(ref.idx), int(ref.idx)
 	for j := lo - 1; j >= 0; j-- {
 		pos := start + j*c
-		if pos < 0 || mac(macKey, data[pos:pos+c]) != f.macs[j] {
+		if pos < 0 {
+			break
+		}
+		if search.hashes++; mac(macKey, data[pos:pos+c]) != f.macs[j] {
 			break
 		}
 		lo = j
 	}
 	for j := hi + 1; j < n; j++ {
 		pos := start + j*c
-		if pos+c > len(data) || mac(macKey, data[pos:pos+c]) != f.macs[j] {
+		if pos+c > len(data) {
+			break
+		}
+		if search.hashes++; mac(macKey, data[pos:pos+c]) != f.macs[j] {
 			break
 		}
 		hi = j
 	}
 	s, e := start+lo*c, start+(hi+1)*c
-	tried[key] = e
+	search.tried[key] = e
 	full := false
 	if lo == 0 && hi == n-1 {
 		switch {
 		case f.tailLen == 0:
 			full = true
-		case e+f.tailLen <= len(data) && mac(macKey, data[e-f.tailBack:e+f.tailLen]) == f.tail:
-			e += f.tailLen
-			full = true
+		case e+f.tailLen <= len(data):
+			if search.hashes++; mac(macKey, data[e-f.tailBack:e+f.tailLen]) == f.tail {
+				e += f.tailLen
+				full = true
+			}
 		}
 	}
 	if !full {
-		// A value whose id is withheld is replaced whole or not at all: a
-		// part of it found would confirm a guess of that part to the reader.
-		if withheld {
-			return span{}, false
-		}
 		// A piece made only of structure, such as PEM armour or a token's type
 		// prefix, says nothing about this value: every value of its kind has it.
 		strong := false
@@ -160,29 +163,9 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 			return span{}, false
 		}
 	}
-	switch {
-	case f.wholeRun:
-		// A value encoded inside a larger blob, such as a dockerconfigjson or a
-		// Basic auth header, takes the whole blob, so no decodable piece is left.
-		// A blob holds '=' only as padding at its end: one before it is the
-		// sign of an assignment, and the name it follows stays.
-		for s > 0 && f.class[data[s-1]] && data[s-1] != '=' {
-			s--
-		}
-		for e < len(data) && f.class[data[e]] && data[e] != '=' {
-			e++
-		}
-		for e < len(data) && f.class[data[e]] && data[e] == '=' {
-			e++
-		}
-	case full:
-		for k := 0; k < f.slack && s > 0 && f.class[data[s-1]]; k++ {
-			s--
-		}
-		for k := 0; k < f.slack && e < len(data) && f.class[data[e]]; k++ {
-			e++
-		}
-	default:
+	if full || f.wholeRun {
+		s, e = f.widen(data, s, e)
+	} else {
 		// What the hashes cannot confirm is the chunk cut short at each end:
 		// chunk-1 bytes at most, within where the value would sit.
 		floor := max(start, s-(c-1), 0)
@@ -194,7 +177,82 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 			e++
 		}
 	}
-	return span{start: s, end: e, form: ref.form, full: full, verified: hi - lo + 1, checked: start + (hi+1)*c, named: !withheld}, true
+	return span{start: s, end: e, form: ref.form, full: full, verified: hi - lo + 1, checked: start + (hi+1)*c, named: true, loaded: f.loaded}, true
+}
+
+// widen is how far a match of the form reaches past its own bytes: over the
+// whole run of a base64 or hex form, and over a whole form's slack otherwise.
+func (f *form) widen(data []byte, s, e int) (int, int) {
+	// A value encoded inside a larger blob, such as a dockerconfigjson or a
+	// Basic auth header, takes the whole blob, so no decodable piece is left.
+	if f.wholeRun {
+		// A blob holds '=' only as padding at its end: one before it is the
+		// sign of an assignment, and the name it follows stays.
+		for s > 0 && f.class[data[s-1]] && data[s-1] != '=' {
+			s--
+		}
+		for e < len(data) && f.class[data[e]] && data[e] != '=' {
+			e++
+		}
+		for e < len(data) && f.class[data[e]] && data[e] == '=' {
+			e++
+		}
+		return s, e
+	}
+	for k := 0; k < f.slack && s > 0 && f.class[data[s-1]]; k++ {
+		s--
+	}
+	for k := 0; k < f.slack && e < len(data) && f.class[data[e]]; k++ {
+		e++
+	}
+	return s, e
+}
+
+// whole decides whether a withheld form stands whole around the chunk that led
+// to it, at p: what it hashes there does not depend on what confirms (see Limits).
+func (ix *Index) whole(search *spanSearch, p int, ref chunkRef) (span, bool) {
+	data := search.data
+	f := &ix.forms[ref.form]
+	c, n := f.chunk, len(f.macs)
+	start := p - int(ref.idx)*c
+	if start < 0 || start+f.length > len(data) {
+		return span{}, false
+	}
+	macKey := &ix.macKeys[f.macKey]
+	differ := 0
+	confirm := func(j int) {
+		sum := mac(macKey, data[start+j*c:start+(j+1)*c])
+		differ |= subtle.ConstantTimeCompare(sum[:], f.macs[j][:]) ^ 1
+		search.hashes++
+	}
+	// The probe first, whatever it holds: a short form is all probe. The rest
+	// is hashed only behind a probe that confirmed, and then all of it.
+	short := n <= wholeProbe
+	for j := 0; j < min(n, wholeProbe); j++ {
+		if short {
+			confirm(j)
+		} else {
+			confirm(int(f.probe[j]))
+		}
+	}
+	if !short && differ != 0 {
+		return span{}, false
+	}
+	for j := 0; j < n && !short; j++ {
+		if int32(j) != f.probe[0] && int32(j) != f.probe[1] && int32(j) != f.probe[2] && int32(j) != f.probe[3] {
+			confirm(j)
+		}
+	}
+	if f.tailLen > 0 {
+		sum := mac(macKey, data[start+n*c-f.tailBack:start+f.length])
+		differ |= subtle.ConstantTimeCompare(sum[:], f.tail[:]) ^ 1
+		search.hashes++
+	}
+	if differ != 0 {
+		return span{}, false
+	}
+	s, e := f.widen(data, start, start+f.length)
+	return span{start: s, end: e, form: ref.form, full: true, verified: n, checked: start + n*c, loaded: f.loaded}, true
 }
 
 // minPartialBits is the least a single verified chunk of a base64 or hex form
@@ -321,13 +379,13 @@ func resolve(spans []span) []span {
 	for _, next := range spans {
 		if len(groups) > 0 && next.start < groups[len(groups)-1].end {
 			last := &groups[len(groups)-1]
-			end := max(last.end, next.end)
+			end, loaded := max(last.end, next.end), last.loaded && next.loaded
 			if better(next, *last) {
 				start := last.start
 				*last = next
 				last.start = start
 			}
-			last.end = end
+			last.end, last.loaded = end, loaded
 			continue
 		}
 		groups = append(groups, next)
@@ -352,7 +410,7 @@ func better(a, b span) bool {
 func (ix *Index) hitFor(s span) hit {
 	f := ix.forms[s.form]
 	o := ix.owners[f.owner]
-	return hit{kind: kindInventory, placeholder: o.placeholder, withheld: o.ref, action: actionRedact, form: f.name, part: o.part, partial: !s.full}
+	return hit{kind: kindInventory, placeholder: o.placeholder, withheld: o.ref, action: actionRedact, form: f.name, part: o.part, partial: !s.full, loaded: s.loaded}
 }
 
 // inventoryPass finds every indexed value in data, then decodes long base64 and

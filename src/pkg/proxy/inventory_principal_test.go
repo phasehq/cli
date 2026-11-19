@@ -177,7 +177,7 @@ func TestInventoryTenantsShareNothing(t *testing.T) {
 	}
 	// Every record in the file, opened with all that A's proxy holds, with
 	// the tenant tag as written and with A's own in its place.
-	unlock, err := lockInventory(nextA.directory)
+	unlock, err := lockInventory(nextA.directory, inventoryLockWait)
 	if err != nil {
 		t.Fatal(err)
 	}

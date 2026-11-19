@@ -44,7 +44,7 @@ func openLeakInventory(store *phaseproxy.InventoryStore, identity phaseproxy.Inv
 // load indexes what the store held, the session's own login's first and each
 // newest first, within leakIndexBounds. What is left out is counted.
 func (g *leakGuard) load(loaded []phaseproxy.StoredEntries) {
-	bounds := leakIndexBounds(nil)
+	bounds := leakIndexBounds(nil, g.identity.Known())
 	var all leakShare
 	used := map[[16]byte]*leakShare{}
 	take := func(stored phaseproxy.StoredEntries) {
@@ -59,7 +59,8 @@ func (g *leakGuard) load(loaded []phaseproxy.StoredEntries) {
 			g.notLoaded++
 			return
 		}
-		if _, err := g.addOne(stored.Principal, stored.Entries, stored.KeyNamed); err != nil {
+		// What is loaded is replaced and reported, and never blocks a request.
+		if protected, err := g.addOne(stored.Principal, stored.Entries, stored.KeyNamed, true); err != nil || !protected {
 			if errors.Is(err, censor.ErrIndexFull) {
 				g.notLoaded++
 			}
@@ -84,7 +85,7 @@ func (g *leakGuard) inventoryStatus() *remoteapi.LeakInventoryStatus {
 	status := &remoteapi.LeakInventoryStatus{
 		Storage: remoteapi.LeakInventoryMemory, Reason: stored.Reason, Loaded: g.loaded, NotLoaded: g.notLoaded,
 		UnmatchedScheme: stored.OtherScheme, UnmatchedKey: stored.OtherKey, OtherTenants: stored.OtherTenant, Damaged: stored.Damaged,
-		Unstored: int(g.unstored.Load()),
+		Unstored: int(g.unstored.Load()), Dropped: stored.Dropped,
 	}
 	if stored.Durable {
 		status.Storage, status.Reason = remoteapi.LeakInventoryStored, ""

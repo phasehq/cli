@@ -90,8 +90,8 @@ type InventoryKeyResponse struct {
 	// and a guest's of this process for any other. Scheme 1 alone sends none.
 	ConfirmKey string `json:"confirmKey,omitempty"`
 	Format     int    `json:"format"`
-	// KeyID names the two keys without giving either, and for a command that
-	// stated no identity its key request: a registration sends it back.
+	// KeyID names the two keys without giving either: a registration sends
+	// it back.
 	KeyID string `json:"keyId,omitempty"`
 }
 
@@ -193,6 +193,9 @@ type LeakInventoryStatus struct {
 	// Unstored counts registrations from commands that are not of the proxy's
 	// own login: kept until the proxy exits, counted whatever they held.
 	Unstored int `json:"unstored,omitempty"`
+	// Dropped counts records of the proxy's own login that a bound of the
+	// store dropped when this proxy wrote: they are not stored.
+	Dropped int `json:"dropped,omitempty"`
 	// Damaged counts stored entries that could not be read.
 	Damaged int `json:"damaged,omitempty"`
 }

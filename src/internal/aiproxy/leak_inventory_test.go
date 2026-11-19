@@ -768,20 +768,32 @@ func TestALoginChangeWithTheDaemonAliveIsAGuestOfTheDaemon(t *testing.T) {
 }
 
 // A proxy whose session the Console did not name has no tenant and no login:
-// it stores nothing, and writes no id for any command, whoever it says it is.
-func TestAProxyWithNoIdentityKeepsNothingAndNamesNothing(t *testing.T) {
+// it stores nothing, and is to every command what a proxy was before a store.
+func TestAProxyWithNoIdentityKeepsNothingAndProtectsAsBefore(t *testing.T) {
 	store := newTestInventoryStore(t)
 	rig := newStoredLeakRigAs(t, store, phaseproxy.InventoryIdentity{})
-	for _, stated := range []phaseproxy.InventoryIdentity{leakLoginA, {}, otherTenantA} {
-		if answer := registerThroughControlAs(t, rig.proxy, stated, []leakguard.Value{{Type: "secret", ID: "an-id", Value: leakSecretOne}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+	// One key, whatever a command states.
+	keys := statedKey(t, rig.proxy, phaseproxy.InventoryIdentity{})
+	for _, stated := range []phaseproxy.InventoryIdentity{leakLoginA, otherTenantA, {Tenant: leakLoginA.Tenant}} {
+		if statedKey(t, rig.proxy, stated) != keys {
+			t.Fatal("a proxy with no identity hands commands different keys")
+		}
+	}
+	if keys.Key != base64.StdEncoding.EncodeToString(rig.guard.key.LookupBytes()) || keys.ConfirmKey != base64.StdEncoding.EncodeToString(rig.guard.key.ConfirmBytes()) {
+		t.Fatal("the key it hands out is not its one process key")
+	}
+	for i, stated := range []phaseproxy.InventoryIdentity{leakLoginA, {}, otherTenantA} {
+		values := []leakguard.Value{{Type: "secret", ID: "an-id", Value: leakSecretOne}, {Type: "secret", ID: fmt.Sprintf("id-%d", i), Value: fmt.Sprintf("Zm%dXn8Cb7Va6Sd5Fg4Hj3Kl2Qw1", i)}}
+		if answer := registerThroughControlAs(t, rig.proxy, stated, values, phaseIDs(2)); answer == nil || answer.Added != 2 {
 			t.Fatalf("registration: %+v", answer)
 		}
 	}
-	status, body := rawStatus(t, rig)
-	if status.SecretsKnown != 0 || status.Inventory.Storage != remoteapi.LeakInventoryMemory || status.Inventory.Reason != phaseproxy.InventoryReasonNoTenant || status.Inventory.Unstored != 3 || strings.Contains(body, "an-id") {
+	status, _ := rawStatus(t, rig)
+	if status.SecretsKnown != 4 || status.Inventory.Storage != remoteapi.LeakInventoryMemory || status.Inventory.Reason != phaseproxy.InventoryReasonNoTenant || status.Inventory.Unstored != 0 {
 		t.Fatalf("%+v %+v", status, status.Inventory)
 	}
-	if out, _ := rig.guard.index.Redact([]byte("a " + leakSecretOne)); string(out) != "a ph:secret" {
+	// Ids are written and fragments matched, as they were.
+	if out, _ := rig.guard.index.Redact([]byte("a " + leakSecretOne + " b " + leakSecretOne[:30] + " c Zm2Xn8Cb7Va6Sd5Fg4Hj3Kl2Qw1")); string(out) != "a ph:secret:an-id b ph:secret:an-id c ph:secret:id-2" {
 		t.Fatalf("%q", out)
 	}
 	if _, err := os.Lstat(store.Directory); !os.IsNotExist(err) {
@@ -846,23 +858,27 @@ func TestKeyAnswerFollowsTheStatedIdentity(t *testing.T) {
 		if held := holds(answer, every...); held != "" {
 			t.Fatalf("a command of %s was handed %s", name, held)
 		}
-		// A guest that states who it is gets the same keys each time it asks.
-		if again := statedKey(t, asA.proxy, stated); stated.Known() != (again == answer) {
-			t.Fatalf("a command of %s asking twice: the same keys is %t", name, again == answer)
+		// A guest gets the same keys each time it asks, whatever it states.
+		if again := statedKey(t, asA.proxy, stated); again != answer {
+			t.Fatalf("a command of %s asking twice was handed other keys", name)
 		}
 		guests[name] = answer
 	}
-	// A GET states nothing, and is nobody's: keys of its own, like every
-	// request that states nothing.
+	// A GET states nothing, and is nobody's: the keys of every command that
+	// states nothing, or nothing that is an identity.
 	recorder := controlCall(asA.proxy, http.MethodGet, "/v1/inventory/key", "", nil)
 	var plain remoteapi.InventoryKeyResponse
 	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &plain) != nil || holds(plain, every...) != "" {
 		t.Fatalf("a key request that states nothing: %d", recorder.Code)
 	}
+	if plain != guests["nobody"] || plain != guests["a tenant alone"] {
+		t.Fatal("commands that state no identity are not one guest")
+	}
 	// Guests share this process's lookup key and nothing else, and none of
 	// it outlives the process: the next proxy hands out other keys.
 	confirming := map[string]string{plain.ConfirmKey: "a GET"}
-	for name, guest := range guests {
+	for _, name := range []string{"another organisation", "another host", "another login of the tenant"} {
+		guest := guests[name]
 		if other, twice := confirming[guest.ConfirmKey]; twice || guest.Key != plain.Key || guest.KeyID == plain.KeyID {
 			t.Fatalf("a command of %s and %s do not differ by confirming key alone", name, other)
 		}
@@ -1124,5 +1140,152 @@ func TestAClientsVolumeNeverEvictsAnotherTenantsRecords(t *testing.T) {
 	status, _ := rawStatus(t, nextB)
 	if out, _ := nextB.guard.index.Redact([]byte("x " + leakSecretTwo)); status.Inventory.Loaded != 1 || status.Inventory.OtherTenants != 4096 || string(out) != "x ph:secret:b-id" {
 		t.Fatalf("tenant B after tenant A's volume: %+v, %q", status.Inventory, out)
+	}
+}
+
+// sendWithValueInURL posts a model request that holds a value in its URL and
+// in its body, and answers with the status the client got.
+func sendWithValueInURL(t *testing.T, rig *leakRig, value string) int {
+	t.Helper()
+	request, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages?m="+value, bytes.NewReader(anthropicBody("the value is "+value)))
+	request.Header.Set("Content-Type", "application/json")
+	return doRequest(t, rig.client(rig.phaseRoots), request)
+}
+
+// A value in a URL stops the request at the proxy it was registered with. A
+// proxy that knows it only from the store replaces and reports it, and never blocks.
+func TestAStoredValueInAURLIsReportedAndNeverBlocks(t *testing.T) {
+	store := newTestInventoryStore(t)
+	const marker = "Mm4Kk7Rr2Ss9Tt1Uu6Vv3Ww8"
+	values := []leakguard.Value{{Type: "secret", ID: "marker-id", Value: marker}}
+	first := newStoredLeakRigAs(t, store, leakLoginA)
+	if answer := registerThroughControl(t, first.proxy, values, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatalf("registration: %+v", answer)
+	}
+	if status := sendWithValueInURL(t, first, marker); status != http.StatusForbidden || first.receivedCount() != 0 {
+		t.Fatalf("the proxy the value was registered with: HTTP %d", status)
+	}
+	first.proxy.CloseHijacked()
+	for name, c := range map[string]struct {
+		identity phaseproxy.InventoryIdentity
+		written  string
+	}{"the same login, restarted": {leakLoginA, "ph:secret:marker-id"}, "another login of the tenant": {leakLoginB, "ph:secret"}} {
+		rig := newStoredLeakRigAs(t, store, c.identity)
+		if status := sendWithValueInURL(t, rig, marker); status != http.StatusOK {
+			t.Fatalf("%s: a stored value in the URL stopped the request: HTTP %d", name, status)
+		}
+		// Replaced where it can be, and reported where it cannot.
+		received := rig.lastReceived()
+		if received.rawQuery != "m="+marker || !bytes.Contains(received.body, []byte("the value is "+c.written+"\"")) {
+			t.Fatalf("%s: what the provider received: %s %s", name, received.rawQuery, received.body)
+		}
+		event := rig.distinctLeakEvents(t, 1)[0]
+		if event.ProxyDecision != "allow" || event.Outcome != outcomeCensored || event.Detail["where"] != "body,url" || event.Detail["placeholders"] != c.written {
+			t.Fatalf("%s: the event: %+v", name, event)
+		}
+		// A body that cannot be rewritten is no reason either.
+		request, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(append([]byte{0xff, 0x00}, marker...)))
+		if status := doRequest(t, rig.client(rig.phaseRoots), request); status != http.StatusOK {
+			t.Fatalf("%s: a stored value in a binary body stopped the request: HTTP %d", name, status)
+		}
+		rig.proxy.CloseHijacked()
+	}
+	// Registered again, it is the running proxy's own, and stops a request again.
+	again := newStoredLeakRigAs(t, store, leakLoginA)
+	if status := sendWithValueInURL(t, again, marker); status != http.StatusOK {
+		t.Fatalf("before it is registered again: HTTP %d", status)
+	}
+	if answer := registerThroughControl(t, again.proxy, values, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatalf("registration: %+v", answer)
+	}
+	if status := sendWithValueInURL(t, again, marker); status != http.StatusForbidden {
+		t.Fatalf("after it is registered again: HTTP %d", status)
+	}
+}
+
+// A value that is a host or a path of a model host's own requests is not
+// indexed: held, it would stop every request there. It counts as unprotected.
+func TestAValueThatIsAModelHostOrPathIsNotIndexed(t *testing.T) {
+	store := newTestInventoryStore(t)
+	rig := newStoredLeakRigAs(t, store, leakLoginA)
+	public := []leakguard.Value{
+		{Type: "secret", ID: "API_PATH", Value: "/v1/messages"}, {Type: "secret", ID: "API_HOST", Value: "api.anthropic.com"},
+		{Type: "secret", ID: "RESPONSES_PATH", Value: codexSocketPath},
+	}
+	for name, stated := range map[string]phaseproxy.InventoryIdentity{"the session's own login": leakLoginA, "a guest": otherTenantA, "a command that states nothing": {}} {
+		if answer := registerThroughControlAs(t, rig.proxy, stated, public, phaseIDs(3)); answer == nil || answer.Added != 0 || answer.Unprotected != 3 {
+			t.Fatalf("%s registering a model host's own host and paths: %+v", name, answer)
+		}
+	}
+	status, _ := rawStatus(t, rig)
+	if status.SecretsKnown != 0 || status.Unprotected != 3 || rig.guard.index.Stats().Guests != 0 || storedRecords(t, store) != 0 {
+		t.Fatalf("%+v, %+v", status, rig.guard.index.Stats())
+	}
+	// A longer path that begins as one is taken, and its beginning is no match.
+	longer := []leakguard.Value{{Type: "secret", ID: "COUNT_PATH", Value: "/v1/messages/count_tokens?beta=true"}}
+	if answer := registerThroughControl(t, rig.proxy, longer, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatalf("a longer path: %+v", answer)
+	}
+	body := anthropicBody("hello")
+	for _, target := range []string{"https://api.anthropic.com/v1/messages", "https://api.anthropic.com/v1/messages?beta=true", "https://api.openai.com/v1/responses"} {
+		request, _ := http.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		if code := doRequest(t, rig.client(rig.phaseRoots), request); code != http.StatusOK || !bytes.Equal(rig.lastReceived().body, body) {
+			t.Fatalf("%s: HTTP %d", target, code)
+		}
+	}
+	if events := rig.leakEventsNow(); len(events) != 0 {
+		t.Fatalf("a model host's own requests were reported: %+v", events)
+	}
+	// The value itself, whole, is still what it was registered as.
+	request, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages/count_tokens?beta=true", bytes.NewReader(body))
+	if code := doRequest(t, rig.client(rig.phaseRoots), request); code != http.StatusForbidden {
+		t.Fatalf("the longer path, whole, in a URL: HTTP %d", code)
+	}
+	// What an earlier proxy stored of such a value is not loaded either.
+	rig.proxy.CloseHijacked()
+	next := newStoredLeakRigAs(t, store, leakLoginA)
+	request, _ = http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	if code := doRequest(t, next.client(next.phaseRoots), request); code != http.StatusOK || next.guard.status().SecretsKnown != 1 {
+		t.Fatalf("the next proxy: HTTP %d, %+v", code, next.guard.status())
+	}
+}
+
+// A client of the proxy's own login fills a lookup value with forged forms and
+// registers a guess of a chunk of another login's value last: held, right or wrong.
+func TestAFilledLookupValueConfirmsNoChunkOfAnotherLoginsValue(t *testing.T) {
+	store := newTestInventoryStore(t)
+	const valueOfB = "Zk3Qw9Lm2Xr7Tb5Nc8Vd1Hy6Gs4Fp0Ju7Ke2Ma9"
+	asB := newStoredLeakRigAs(t, store, leakLoginB)
+	if answer := registerThroughControl(t, asB.proxy, []leakguard.Value{{Type: "secret", ID: "id-of-b", Value: valueOfB}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatalf("B: %+v", answer)
+	}
+	asB.proxy.CloseHijacked()
+	asA := newStoredLeakRigAs(t, store, leakLoginA)
+	if status, _ := rawStatus(t, asA); status.Inventory.Loaded != 1 {
+		t.Fatalf("A did not load B's value: %+v", status.Inventory)
+	}
+	keyAnswer := statedKey(t, asA.proxy, leakLoginA)
+	for name, guess := range map[string]string{
+		"first": valueOfB[:12], "second": valueOfB[12:24], "third": valueOfB[24:36], "wrong": "Aa1Bb2Cc3Dd4", "misaligned": valueOfB[1:13], "one-off": valueOfB[:11] + "-",
+	} {
+		filler, probe := forgedProbe(t, answeredKey(t, keyAnswer), "secret", name, guess)
+		if recorder := postInventory(t, asA.proxy, leakLoginA, keyAnswer.KeyID, filler, probe); recorder.Code != http.StatusOK {
+			t.Fatalf("%s: HTTP %d %s", name, recorder.Code, errorCode(recorder))
+		}
+		if out, _ := asA.guard.index.Redact([]byte("x " + guess + " y")); string(out) != "x ph:secret:probe-"+name+" y" {
+			t.Errorf("the guess %q was not held: whether it is says whether it is a chunk of B's value: %q", name, out)
+		}
+		// Seen from outside: the client's own probe in a URL stops the request,
+		// whichever chunk it guessed.
+		request, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages?q="+guess, bytes.NewReader(anthropicBody("hello")))
+		request.Header.Set("Content-Type", "application/json")
+		if code := doRequest(t, asA.client(asA.phaseRoots), request); code != http.StatusForbidden {
+			t.Errorf("the guess %q in a URL: HTTP %d", name, code)
+		}
+	}
+	// B's value is still found whole, through the crowd, and names no id.
+	if out, _ := asA.guard.index.Redact([]byte("a " + valueOfB + " b")); string(out) != "a ph:secret b" {
+		t.Fatalf("B's value: %q", out)
 	}
 }

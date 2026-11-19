@@ -239,7 +239,9 @@ func (s *leakScan) addReport(report *censor.Report, where string) {
 func (s *leakScan) addFixed(matches []censor.Match, where string, canBlock bool) {
 	for _, match := range matches {
 		s.addFinding(match.Finding, where)
-		if canBlock && (match.Kind == "inventory" || phaseTokenLabels[match.Label]) {
+		// A value known only from the store is reported and never blocks: one
+		// that sits in every URL would otherwise stop every request for 30 days.
+		if canBlock && ((match.Kind == "inventory" && !match.Loaded) || phaseTokenLabels[match.Label]) {
 			s.block = true
 		}
 	}

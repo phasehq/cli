@@ -176,24 +176,26 @@ func TestInventoryNewerFormatWithLoosePermissions(t *testing.T) {
 	}
 }
 
-// Remove leaves the lock file: unlinked while held, a process waiting on it
+// Remove leaves the lock files: unlinked while held, a process waiting on one
 // and a process arriving after would each hold "the" lock at once.
 func TestInventoryRemoveLeavesTheLock(t *testing.T) {
 	store := newInventoryTestStore(t)
 	inv, _ := openInventory(t, store)
 	inv.Add(oneEntry(t, inv, "one"))
-	lockPath := filepath.Join(store.Directory, inventoryLockName)
-	before, err := os.Stat(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, remove := range []func() error{store.Remove, store.Purge} {
-		if err := remove(); err != nil {
+	for _, name := range []string{inventoryLockName, inventoryQueueName} {
+		lockPath := filepath.Join(store.Directory, name)
+		before, err := os.Stat(lockPath)
+		if err != nil {
 			t.Fatal(err)
 		}
-		after, err := os.Stat(lockPath)
-		if err != nil || !os.SameFile(before, after) {
-			t.Fatalf("the lock file was removed or replaced: %v", err)
+		for _, remove := range []func() error{store.Remove, store.Purge} {
+			if err := remove(); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(lockPath)
+			if err != nil || !os.SameFile(before, after) {
+				t.Fatalf("%s was removed or replaced: %v", name, err)
+			}
 		}
 	}
 }
@@ -223,7 +225,7 @@ func TestInventoryRemoveRacingWriters(t *testing.T) {
 				}
 				inv.Add(oneEntry(t, inv, fmt.Sprintf("w%d-%d", w, i)))
 				// The lock is one lock for everyone, whatever was removed.
-				if unlock, err := lockInventory(store.Directory); err == nil {
+				if unlock, err := lockInventory(store.Directory, inventoryLockWait); err == nil {
 					if inside.Add(1) != 1 {
 						t.Error("two processes held the store's lock at once")
 					}
@@ -338,12 +340,19 @@ func TestInventoryPurgeWhenDeleteIsRefused(t *testing.T) {
 	}
 }
 
+// shortLockWaits makes the store's waits short enough for a test to sit out.
+func shortLockWaits(t *testing.T, proxy, removal time.Duration) {
+	t.Helper()
+	wait, remove := inventoryLockWait, inventoryRemoveWait
+	inventoryLockWait, inventoryRemoveWait = proxy, removal
+	t.Cleanup(func() { inventoryLockWait, inventoryRemoveWait = wait, remove })
+}
+
 // The store's lock has a deadline: past it a starting proxy runs from memory
-// and says so, a running one stops storing, and a removal fails.
+// and says so, a running one does not store, and a removal fails. None of it
+// is for life: the next registration stores again.
 func TestInventoryLockHasADeadline(t *testing.T) {
-	previous := inventoryLockWait
-	inventoryLockWait = 60 * time.Millisecond
-	t.Cleanup(func() { inventoryLockWait = previous })
+	shortLockWaits(t, 60*time.Millisecond, 200*time.Millisecond)
 	store := newInventoryTestStore(t)
 	running, _ := openInventory(t, store)
 	running.Add(oneEntry(t, running, "one"))
@@ -365,8 +374,16 @@ func TestInventoryLockHasADeadline(t *testing.T) {
 	if status := running.Status(); status.Durable || status.Reason != InventoryReasonBusy {
 		t.Fatalf("%+v", status)
 	}
-	if err := store.Remove(); !errors.Is(err, errInventoryBusy) {
-		t.Fatalf("%v", err)
+	// A removal waits longer than a proxy does, and says what it left behind.
+	began := time.Now()
+	err = store.Remove()
+	if !errors.Is(err, errInventoryBusy) || !strings.Contains(err.Error(), "was not removed") || time.Since(began) < inventoryRemoveWait {
+		t.Fatalf("a removal from a store in use: %v after %v", err, time.Since(began))
+	}
+	own := store
+	own.Tenant = inventoryTestTenant
+	if err := own.Forget([]string{inventoryTestLogin}, false); !errors.Is(err, errInventoryBusy) || !strings.Contains(err.Error(), "was not removed") {
+		t.Fatalf("a logout from a store in use: %v", err)
 	}
 	if waited := time.Since(started); waited > 3*time.Second {
 		t.Fatalf("waited %v on a held lock", waited)
@@ -375,8 +392,90 @@ func TestInventoryLockHasADeadline(t *testing.T) {
 	if !bytes.Equal(mustRead(t, inventoryFilePath(store)), file) {
 		t.Fatal("the file was written without the lock")
 	}
-	if again, loaded := openInventory(t, store); !again.Status().Durable || len(loaded) != 1 {
-		t.Fatalf("%+v", again.Status())
+	// The lock is free again: each proxy stores what is registered next, and
+	// the one whose registration found the store in use stores it then.
+	two := oneEntry(t, running, "two-again")
+	running.Add(two)
+	starting.Add(oneEntry(t, starting, "three"))
+	for name, inv := range map[string]*Inventory{"the running proxy": running, "the one that started meanwhile": starting} {
+		if status := inv.Status(); !status.Durable || status.Reason != "" {
+			t.Fatalf("%s after the lock was free again: %+v", name, status)
+		}
+	}
+	if again, loaded := openInventory(t, store); !again.Status().Durable || len(loaded) != 3 {
+		t.Fatalf("%+v, %d loaded", again.Status(), len(loaded))
+	}
+}
+
+// A removal that finds the store in use for a while still removes it.
+func TestInventoryRemovalWaitsForAStoreInUse(t *testing.T) {
+	shortLockWaits(t, 30*time.Millisecond, 10*time.Second)
+	store := newInventoryTestStore(t)
+	inv, _ := openInventory(t, store)
+	inv.Add(oneEntry(t, inv, "one"))
+	for name, remove := range map[string]func() error{
+		"a logout": func() error {
+			own := store
+			own.Tenant = inventoryTestTenant
+			return own.Forget([]string{inventoryTestLogin}, false)
+		},
+		"a disable": store.Remove,
+	} {
+		unlock, err := lockCAFile(filepath.Join(store.Directory, inventoryLockName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Held for longer than a proxy waits.
+		time.AfterFunc(5*inventoryLockWait, unlock)
+		if err := remove(); err != nil {
+			t.Fatalf("%s while the store was in use: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(inventoryFilePath(store)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the file is still there: %v", err)
+	}
+}
+
+// A writer that lets the lock go and comes straight back for it, as a proxy
+// that registers again and again does, does not overtake a process that waits.
+func TestInventoryLockGoesToTheOneThatWaited(t *testing.T) {
+	directory := t.TempDir()
+	unlock, err := lockInventory(directory, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	had := make(chan error, 1)
+	go func() {
+		waited, err := lockInventory(directory, 10*time.Second)
+		had <- err
+		if err == nil {
+			waited()
+		}
+	}()
+	// The other process is waiting once it holds the queue's lock.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		leave, busy, err := tryLockFile(filepath.Join(directory, inventoryQueueName))
+		if err != nil || time.Now().After(deadline) {
+			t.Fatalf("no process came to wait: %v", err)
+		}
+		if busy {
+			break
+		}
+		leave()
+	}
+	unlock()
+	again, err := lockInventory(directory, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again()
+	select {
+	case err := <-had:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("the writer that came back had the lock again before the process that waited for it")
 	}
 }
 

@@ -47,12 +47,15 @@ const (
 	inventoryKeyringUser    = "key-v1"
 	inventoryFileName       = "leak-inventory.bin"
 	inventoryLockName       = "leak-inventory.lock"
-	inventoryTempPrefix     = ".phase-inventory-"
-	inventoryMagic          = "PHLKINV1"
-	inventoryKeyIDSize      = 8
-	inventoryHeaderSize     = len(inventoryMagic) + 4 + inventoryKeyIDSize
-	inventoryTagSize        = 16
-	inventoryNonceSize      = 12
+	// inventoryQueueName is the lock a process holds while it waits for the
+	// store's: the one that waits is next, whoever comes back for more.
+	inventoryQueueName  = "leak-inventory.queue"
+	inventoryTempPrefix = ".phase-inventory-"
+	inventoryMagic      = "PHLKINV1"
+	inventoryKeyIDSize  = 8
+	inventoryHeaderSize = len(inventoryMagic) + 4 + inventoryKeyIDSize
+	inventoryTagSize    = 16
+	inventoryNonceSize  = 12
 	// inventoryBodyFixed is a sealed body before its entries: the flag byte
 	// and the principal's id.
 	inventoryBodyFixed = 1 + inventoryTagSize
@@ -103,9 +106,14 @@ var inventoryBounds = struct {
 
 // Tests shorten these.
 var (
-	// inventoryLockWait is how long a process waits for the store's lock
-	// before it runs from memory: a writer holds it for one small file.
+	// inventoryLockWait is how long a proxy waits for the store's lock before
+	// it goes on from memory: a writer holds it for one small file.
 	inventoryLockWait = 2 * time.Second
+	// inventoryRemoveWait is how long a removal waits for it: a logout or a
+	// disable that gave up would leave records behind.
+	inventoryRemoveWait = 15 * time.Second
+	// inventoryLockPoll is how often a waiting process tries the lock again.
+	inventoryLockPoll = 2 * time.Millisecond
 	// inventoryKeySettle is how long the first start of all waits before it
 	// reads back the key it made, in case another process made one too.
 	inventoryKeySettle = 250 * time.Millisecond
@@ -133,7 +141,8 @@ const (
 	// InventoryReasonUnreadable: the file exists and could not be opened or
 	// understood, and is left as it is.
 	InventoryReasonUnreadable = "store_unreadable"
-	// InventoryReasonBusy: another process held the store's lock too long.
+	// InventoryReasonBusy: another process held the store's lock too long the
+	// last time this one wanted it. The next registration tries again.
 	InventoryReasonBusy = "store_busy"
 	// InventoryReasonNotConfigured: the proxy was started without a store.
 	InventoryReasonNotConfigured = "not_configured"
@@ -208,6 +217,9 @@ type InventoryStatus struct {
 	// Expired counts stored entries dropped for their age when the store was
 	// opened.
 	Expired int
+	// Dropped counts the records of this process's own login that a bound of
+	// the store dropped when it wrote: its oldest, or what it had just stored.
+	Dropped int
 }
 
 // Inventory is an opened store: the keys derived from the master, and the
@@ -232,9 +244,11 @@ type Inventory struct {
 
 	// adding lets one Add at a time through. mu guards what follows it and
 	// is never held across the keystore or the store's lock.
-	adding     sync.Mutex
-	mu         sync.Mutex
-	status     InventoryStatus
+	adding sync.Mutex
+	mu     sync.Mutex
+	status InventoryStatus
+	// busy says the store's lock was not had the last time it was wanted.
+	busy       bool
 	keyChecked time.Time
 	// known is when each entry this process has seen stored was registered,
 	// by content tag, so a repeated registration costs no file access.
@@ -352,12 +366,17 @@ func (inv *Inventory) Status() InventoryStatus {
 	if due {
 		inv.keyChecked = time.Now()
 	}
+	busy := inv.busy
 	inv.mu.Unlock()
 	if due {
 		if current, err := inv.keyCurrent(); err == nil && !current {
 			inv.demote(InventoryReasonKeyReplaced)
 			status.Durable, status.Reason = false, InventoryReasonKeyReplaced
 		}
+	}
+	// A store in use is not written now, and is tried again.
+	if status.Durable && busy {
+		status.Durable, status.Reason = false, InventoryReasonBusy
 	}
 	return status
 }
@@ -370,6 +389,19 @@ func (inv *Inventory) demote(reason string) {
 	if inv.status.Durable || inv.status.Reason == "" {
 		inv.status.Durable, inv.status.Reason = false, reason
 	}
+}
+
+// reached records how an attempt to store went: a store that was in use is
+// tried again by the next registration, and anything else wrong is for good.
+func (inv *Inventory) reached(reason string, dropped int) {
+	if reason != "" && reason != InventoryReasonBusy {
+		inv.demote(reason)
+		return
+	}
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	inv.busy = reason == InventoryReasonBusy
+	inv.status.Dropped += dropped
 }
 
 // keyCurrent asks the keystore whether it still names this process's key. An
@@ -454,6 +486,10 @@ func (s InventoryStore) Open() (*Inventory, []StoredEntries, error) {
 		}
 	}
 	inv.status.Durable, inv.status.Reason = reason == "", reason
+	if reason == InventoryReasonBusy {
+		// Nothing was loaded, and the first registration tries the store again.
+		inv.status.Durable, inv.status.Reason, inv.busy = true, "", true
+	}
 	return inv, loaded, nil
 }
 
@@ -464,7 +500,7 @@ const inventoryForeign = "foreign"
 // load reads the file under the store's lock, drops what cannot be used and
 // returns the rest. It answers with why nothing may be stored, or "".
 func (inv *Inventory) load(keyConfirmed bool) (loaded []StoredEntries, reason string) {
-	unlock, err := lockInventory(inv.directory)
+	unlock, err := lockInventory(inv.directory, inventoryLockWait)
 	if err != nil {
 		return nil, lockFailure(err)
 	}
@@ -520,11 +556,21 @@ func (inv *Inventory) load(keyConfirmed bool) (loaded []StoredEntries, reason st
 // errInventoryBusy is a lock another process held past inventoryLockWait.
 var errInventoryBusy = errors.New("the leak protection inventory is in use by another process")
 
-// lockInventory takes the store's lock within inventoryLockWait. The lock
-// file is never removed, and no keystore call is made while it is held.
-func lockInventory(directory string) (func(), error) {
-	path := filepath.Join(directory, inventoryLockName)
-	for deadline := time.Now().Add(inventoryLockWait); ; time.Sleep(2 * time.Millisecond) {
+// lockInventory takes the store's lock within wait, holding the queue's while
+// it waits. Neither file is ever removed, and no keystore call is made under one.
+func lockInventory(directory string, wait time.Duration) (func(), error) {
+	deadline := time.Now().Add(wait)
+	leave, err := lockBefore(filepath.Join(directory, inventoryQueueName), deadline)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+	return lockBefore(filepath.Join(directory, inventoryLockName), deadline)
+}
+
+// lockBefore takes the lock on path, trying again until deadline.
+func lockBefore(path string, deadline time.Time) (func(), error) {
+	for ; ; time.Sleep(inventoryLockPoll) {
 		unlock, busy, err := tryLockFile(path)
 		if err != nil {
 			return nil, err
@@ -536,6 +582,14 @@ func lockInventory(directory string) (func(), error) {
 			return nil, errInventoryBusy
 		}
 	}
+}
+
+// errRecordsRemain is a removal that gave up on a store in use.
+func errRecordsRemain(err error) error {
+	if errors.Is(err, errInventoryBusy) {
+		return fmt.Errorf("%w, and stayed so for %s: what it stores was not removed", err, inventoryRemoveWait)
+	}
+	return fmt.Errorf("lock leak protection inventory: %w", err)
 }
 
 func lockFailure(err error) string {
@@ -673,8 +727,8 @@ func (s InventoryStore) ReplaceKey() error {
 }
 
 // Remove deletes the stored entries and what was written beside them, and
-// leaves the key. A missing file or directory is not an error. The lock file
-// stays: a process waiting on it would otherwise hold a lock no one else sees.
+// leaves the key and the lock files: one unlinked while held would lock nothing.
+// It waits for a store in use, and its error says so if the records remain.
 func (s InventoryStore) Remove() error {
 	directory, err := s.directory()
 	if err != nil {
@@ -683,9 +737,9 @@ func (s InventoryStore) Remove() error {
 	if info, err := os.Lstat(directory); err != nil || !info.IsDir() {
 		return nil
 	}
-	unlock, err := lockInventory(directory)
+	unlock, err := lockInventory(directory, inventoryRemoveWait)
 	if err != nil {
-		return fmt.Errorf("lock leak protection inventory: %w", err)
+		return errRecordsRemain(err)
 	}
 	defer unlock()
 	sweepInventoryTemporaries(directory)
@@ -696,7 +750,8 @@ func (s InventoryStore) Remove() error {
 }
 
 // Forget removes what is stored for logins of the store's tenant, or for the
-// whole tenant, as a logout does. It makes no key or file and touches no other.
+// whole tenant, as a logout does. It makes no key or file, touches no other
+// tenant's records, and waits for a store in use as Remove does.
 func (s InventoryStore) Forget(logins []string, wholeTenant bool) error {
 	if s.Tenant == "" {
 		return nil
@@ -727,9 +782,9 @@ func (s InventoryStore) Forget(logins []string, wholeTenant bool) error {
 			gone[inv.loginTag(inv.tag("principal", []byte(login)))] = true
 		}
 	}
-	unlock, err := lockInventory(directory)
+	unlock, err := lockInventory(directory, inventoryRemoveWait)
 	if err != nil {
-		return fmt.Errorf("lock leak protection inventory: %w", err)
+		return errRecordsRemain(err)
 	}
 	defer unlock()
 	file := inv.read()
@@ -1028,7 +1083,7 @@ func (inv *Inventory) Add(batch []StoredEntries) {
 	if len(fresh) == 0 {
 		return
 	}
-	created, reason := inv.storeFresh(fresh, now, false)
+	created, dropped, reason := inv.storeFresh(fresh, now, false)
 	if reason == inventoryForeign {
 		// A file gone or under another key means the key was replaced, unless
 		// the keystore still names this one: asked with the lock released.
@@ -1040,7 +1095,7 @@ func (inv *Inventory) Add(batch []StoredEntries) {
 			inv.demote(InventoryReasonKeyReplaced)
 			return
 		}
-		created, reason = inv.storeFresh(fresh, now, true)
+		created, dropped, reason = inv.storeFresh(fresh, now, true)
 	}
 	if created && reason == "" {
 		// A purge that ran between the question and the write removed the
@@ -1050,9 +1105,7 @@ func (inv *Inventory) Add(batch []StoredEntries) {
 			reason = InventoryReasonKeyReplaced
 		}
 	}
-	if reason != "" {
-		inv.demote(reason)
-	}
+	inv.reached(reason, dropped)
 }
 
 type pendingEntries struct {
@@ -1094,22 +1147,22 @@ func (inv *Inventory) fresh(batch []StoredEntries, now time.Time) []pendingEntri
 	return fresh
 }
 
-// storeFresh merges fresh into the file under the store's lock, and answers
-// whether it made the file and why the store can no longer be written.
-func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfirmed bool) (created bool, reason string) {
-	unlock, err := lockInventory(inv.directory)
+// storeFresh merges fresh into the file under the store's lock. It answers
+// whether it made the file, how many records a bound dropped, and why not.
+func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfirmed bool) (created bool, dropped int, reason string) {
+	unlock, err := lockInventory(inv.directory, inventoryLockWait)
 	if err != nil {
-		return false, lockFailure(err)
+		return false, 0, lockFailure(err)
 	}
 	defer unlock()
 	file := inv.read()
 	switch {
 	case file.newer:
-		return false, InventoryReasonNewerFormat
+		return false, 0, InventoryReasonNewerFormat
 	case file.unreadable:
-		return false, InventoryReasonUnreadable
+		return false, 0, InventoryReasonUnreadable
 	case !file.present && !keyConfirmed:
-		return false, inventoryForeign
+		return false, 0, inventoryForeign
 	}
 	records := file.records[:0:0]
 	for _, record := range file.records {
@@ -1145,9 +1198,11 @@ func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfi
 		records = append(kept, record)
 	}
 	if changed {
+		before := len(records)
 		records = inv.bound(records, writing)
+		dropped = before - len(records)
 		if err := inv.write(records); err != nil {
-			return false, InventoryReasonUnusable
+			return false, 0, InventoryReasonUnusable
 		}
 	}
 	// What the file no longer holds is forgotten, so it can be stored again.
@@ -1158,12 +1213,12 @@ func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfi
 	}
 	inv.seen, _ = os.Stat(inv.path())
 	inv.mu.Unlock()
-	return !file.present, ""
+	return !file.present, dropped, ""
 }
 
 // withdraw removes the file if it is still this key's.
 func (inv *Inventory) withdraw() {
-	unlock, err := lockInventory(inv.directory)
+	unlock, err := lockInventory(inv.directory, inventoryLockWait)
 	if err != nil {
 		return
 	}

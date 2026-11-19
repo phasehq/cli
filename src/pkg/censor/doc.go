@@ -50,8 +50,17 @@
 // held, counted and bounded apart, and belong to the daemon's process alone:
 // the Phase AI proxy derives a guest's key from what it drew when it started
 // and keeps nowhere, and stores nothing made under it. Guests share a lookup
-// key and no confirming key: a guest's is its stated identity's, or, when it
-// states none, its one key request's.
+// key. A guest that states who it is has a confirming key of its own; those
+// that state nothing share one, and are one guest: a value such a client
+// registers again and again is then held once.
+//
+// The guests' share never refuses a guest. Each AddGuest that adds anything
+// is an entry of its own, whatever is held under its type and id, so what it
+// costs the share says nothing of an id; an entry added again is as new; and
+// when the share is full the entries added longest ago are dropped to make
+// room. Only one registration (GuestBatch) that is larger than the share by
+// itself is refused, with ErrIndexFull, and none of its own entries is
+// dropped for another of them.
 //
 // What an Index counts (IndexStats.Secrets) it counts once per principal
 // that added a type and id, so no count says whether another principal holds
@@ -61,6 +70,14 @@
 //
 // The daemon may keep the keys and the Entries for the daemon that starts
 // after it: what that changes, and what each party can do, is under Limits.
+// Entries it reads back are added with Index.AddLoaded, and a Finding says so
+// (Finding.Loaded) until a client adds the same entries again: a daemon can
+// then treat what it only remembers more gently than what it was just told.
+//
+// IndexOptions.Public names texts every scanned request holds, such as a
+// model host's name and the paths of its API. A value that stands whole in
+// one is refused (ErrPublic): held, it would be found in every request. A
+// chunk of a longer value that is a piece of one is structure, as below.
 //
 // A document is indexed by what it holds, not as text. A JSON value is indexed
 // string by string. So is text of two or more lines of which at least half are
@@ -205,14 +222,17 @@
 // file's text, and nothing there is exempt.
 //
 // A chunk that repeats within a form is indexed at its first place only, one
-// rolling hash leads to a bounded number of chunks across the index, and a
-// match already extended over a stretch is not tried again inside it, so a
-// scan stays linear in the body whatever has been indexed. The scan makes one
+// lookup value leads to a bounded number of chunks for each confirming key
+// (so no party's chunks crowd out another's), and a match already extended
+// over a stretch is not tried again inside it, so a scan stays linear in the
+// body whatever has been indexed. A withheld form is led to by one chunk
+// only, the first that is not structure. The scan makes one
 // pass per chunk size that is indexed (and one more while scheme 1 entries
 // are held), and looks for 24-byte chunks only inside runs of letters and
 // digits, which is all they can hold. It keeps the whole rolling hash of the
 // text and compares 24 bits of it, so a position whose 24 bits fit a chunk by
-// chance costs one confirming hash: about one position in 700 with 23000
+// chance costs one confirming hash, or four where the chunk leads to a
+// withheld form: about one position in 700 with 23000
 // chunks indexed (300 values), one in 16 at the index's cap. One pass over a
 // block finds every keyword and every place a rule's prefix begins, and what a
 // rule may read from those places is bounded by the block, so the rules add a
@@ -336,6 +356,7 @@
 //     reader of a scan, who cannot name that value, would otherwise learn
 //     from a replaced fragment that 12 guessed bytes are part of it, and
 //     could work a value out chunk by chunk. Whole, a guess is the value.
+//     What the time a scan takes still says of such a value is below.
 //   - A value transformed in any other way (reversed, split, re-encoded in a
 //     form not listed above, encrypted, compressed without base64 around it, or
 //     inside a base64 string of 16 KiB or more) is not found.
@@ -373,7 +394,9 @@
 //     say, or another login of the same organisation) is a guest. Its values
 //     are replaced by ph:<type> while that proxy runs and are never stored,
 //     for the proxy's login or for its own. A proxy whose session names
-//     nobody, as an older Console's does not, keeps nothing at all.
+//     nobody, as an older Console's does not, keeps nothing at all: it has
+//     no tenant to keep apart, so every command is handed its one process
+//     key and every value is held with its id, as before anything was kept.
 //   - The file alone says nothing a guess can be tested against. In the
 //     clear it shows how many records it holds in all and how long each is,
 //     which grows with its value's length. Each record's head is sealed under
@@ -402,7 +425,35 @@
 //     chunk's bytes of traffic. Of another login's, or a guest's, only a
 //     guess of the whole value (or of a whole leaf, or a URL's whole
 //     password) is answered, by ph:<type> and never its id: a chunk of such
-//     a value is confirmed to no one. Nothing stored narrows either.
+//     a value is confirmed to no one. Nothing stored narrows either. Nor
+//     does what the client registers: the chunks one lookup value leads to
+//     are bounded for each confirming key apart, so forged entries under a
+//     guess's lookup value push out no one's chunk but their owner's.
+//   - Such a client can also time the proxy, and that still says something of
+//     a value it cannot name. A withheld form is looked up by one chunk, the
+//     first that is not structure. Where that chunk's 24 lookup bits turn up
+//     and the form would fit, the scan hashes that chunk and three more, those
+//     that are not structure first (all of a form of four chunks or fewer),
+//     whether or not any confirms, and the rest of the form only when all of
+//     those did, again all of it. So a scan takes the same time for a chunk
+//     that confirms as for text that only has its lookup bits, and no time at
+//     all for any other chunk of the value: no chunk is confirmed by timing,
+//     and none but that one is even looked for. What a client that sends large
+//     requests and times them can still tell: whether a guess of that one
+//     chunk has the 24 lookup bits of a chunk that leads to some withheld
+//     form, as a right guess always has and a wrong one about once in 2^24 for
+//     each such form held (5 MB that repeat such a guess take about a tenth of
+//     a second longer to scan); with the lookup key it holds, which lookup
+//     values are in use that way, which narrows a guess of that chunk as the
+//     24 bits of the stored entries would and no further; and whether a guess
+//     of those four chunks together is right, by the hashing that follows (48
+//     characters, 96 of a form cut into pairs, and fewer unknown ones where a
+//     value has under four chunks that are not structure). Keeping the lookup
+//     values from a client would take a second lookup key, one no client of
+//     another login is handed, for the entries a login cannot name, and so a
+//     second pass over every request; no scan makes it. Even then a lookup
+//     that hits would take longer than one that misses: nothing short of
+//     hashing at every position hides that.
 //   - A process of the same user that reads the keystore has the master, so
 //     every key of every tenant, and the file opens to it. It confirms a
 //     guessed chunk of any principal's value by hashing it, and the 24 bits come off the work:

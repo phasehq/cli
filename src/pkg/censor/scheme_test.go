@@ -3,14 +3,13 @@ package censor
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"strings"
 	"testing"
 )
 
 // found is the placeholder of the one inventory finding in text, or "".
-func found(t *testing.T, ix *Index, text string) string {
+func found(t testing.TB, ix *Index, text string) string {
 	t.Helper()
 	out, report := ix.Redact([]byte(text))
 	if len(report.Findings) == 0 {
@@ -195,24 +194,13 @@ func TestAddingASchemeIsAddingAMatcher(t *testing.T) {
 	}
 }
 
-// holdsHashOf reports whether the entries hold the rolling hash or the
-// confirming hash of data.
+// holdsHashOf reports whether the entries hold the confirming hash of data.
+// The 24 bits a chunk is looked up by are no hash of it: any text fits some.
 func holdsHashOf(key *Key, e *Entries, data []byte) bool {
 	mac := mac(key.macFor(schemes[e.Version]), data)
-	roll := binary.LittleEndian.AppendUint64(nil, key.roll(data))
 	for _, f := range e.Forms {
 		if bytes.Contains(f.MACs, mac[:]) || bytes.Equal(f.Tail, mac[:]) {
 			return true
-		}
-		for at := 0; at+3 <= len(f.Lookups); at += 3 {
-			if schemes[e.Version].lookupAt(&f, at/3) == key.roll(data)>>40 {
-				return true
-			}
-		}
-		for at := 0; at+8 <= len(f.Rolls); at += 8 {
-			if bytes.Equal(f.Rolls[at:at+8], roll) {
-				return true
-			}
 		}
 	}
 	return false

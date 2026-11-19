@@ -1,6 +1,9 @@
 package censor
 
-import "math/bits"
+import (
+	"math/bits"
+	"slices"
+)
 
 // A window is the chunks of one size, and what a scan needs to find them: the
 // rolling hash's power for that size, the chunks by hash, and a filter in
@@ -22,6 +25,8 @@ type window struct {
 	chunks     map[uint64][]chunkRef
 	bloom      []uint64
 	bloomShift uint
+	// gone counts the lookup values removed since the filter was last made.
+	gone int
 }
 
 // classWide is what a wide chunk can hold: letters and digits. Hex digits
@@ -59,22 +64,22 @@ func (ix *Index) windowFor(key *Key, size int, runs bool, lookupBits int) *windo
 	return w
 }
 
-// add files a chunk under its lookup value (its rolling hash less the bits
-// the window drops), within the bound on how many chunks one value leads to.
-func (w *window) add(h uint64, ref chunkRef) {
-	refs, present := w.chunks[h]
-	if !present {
-		w.setBloom(h)
-	}
-	if len(refs) >= maxRefsPerHash {
+// remove takes a form's chunk from under its lookup value. The filter keeps
+// the value's bit until grow finds enough of them gone to make it again.
+func (w *window) remove(h uint64, form int32) {
+	refs := slices.DeleteFunc(w.chunks[h], func(ref chunkRef) bool { return ref.form == form })
+	if len(refs) > 0 {
+		w.chunks[h] = refs
 		return
 	}
-	w.chunks[h] = append(refs, ref)
+	delete(w.chunks, h)
+	w.gone++
 }
 
-// grow keeps 64 bits of filter per distinct hash, which keeps lookups cheap.
+// grow keeps 64 bits of filter per distinct hash, which keeps lookups cheap,
+// and makes the filter again once half of what it was made for has gone.
 func (w *window) grow() {
-	if len(w.chunks) > len(w.bloom) && len(w.bloom)*64 < w.maxBloomBits() {
+	if (len(w.chunks) > len(w.bloom) && len(w.bloom)*64 < w.maxBloomBits()) || (w.gone > 0 && w.gone >= len(w.chunks)/2) {
 		w.resizeBloom(len(w.chunks) * 64)
 	}
 }
@@ -91,6 +96,7 @@ func (w *window) resizeBloom(size int) {
 	}
 	w.bloom = make([]uint64, bitsWanted/64)
 	w.bloomShift = uint(64 - bits.TrailingZeros(uint(bitsWanted)))
+	w.gone = 0
 	for h := range w.chunks {
 		w.setBloom(h)
 	}
@@ -110,18 +116,41 @@ type spanSearch struct {
 	// only walk the same bytes, once per repeat of a repeating value.
 	covered map[int32]int
 	spans   []span
+	// hashes counts the confirming hashes the scan made: what it cost.
+	hashes int
+}
+
+// cover notes a match found, so no chunk inside it is tried again.
+func (search *spanSearch) cover(found span, wholeRun bool) {
+	if search.covered == nil {
+		search.covered = map[int32]int{}
+	}
+	search.spans = append(search.spans, found)
+	reach := found.checked
+	// A base64 or hex match took its whole run, and another copy further on in
+	// the run would take the same.
+	if wholeRun {
+		reach = found.end
+	}
+	search.covered[found.form] = max(search.covered[found.form], reach)
 }
 
 // findSpans returns every place in data where a chunk of an indexed form verified,
 // widened to as much of the form's extent as could be confirmed.
 func (ix *Index) findSpans(data []byte) []span {
 	search := spanSearch{data: data}
+	ix.search(&search)
+	return search.spans
+}
+
+func (ix *Index) search(search *spanSearch) {
+	data := search.data
 	for _, w := range ix.windows {
 		if len(data) < w.size || len(w.chunks) == 0 {
 			continue
 		}
 		if !w.runs {
-			ix.roll(w, &search, 0, len(data))
+			ix.roll(w, search, 0, len(data))
 			continue
 		}
 		// A run long enough to hold a chunk covers one of every w.size
@@ -143,13 +172,12 @@ func (ix *Index) findSpans(data []byte) []span {
 				end++
 			}
 			if end-start >= w.size {
-				ix.roll(w, &search, start, end)
+				ix.roll(w, search, start, end)
 			}
 			floor = end + 1
 			at = end + w.size
 		}
 	}
-	return search.spans
 }
 
 // roll looks for the chunks of one window in data[from:to].
@@ -172,25 +200,24 @@ func (ix *Index) roll(w *window, search *spanSearch, from, to int) {
 					if end, ok := search.covered[ref.form]; ok && p+c <= end {
 						continue
 					}
+					if f.withheld {
+						if found, ok := ix.whole(search, p, ref); ok {
+							search.cover(found, f.wholeRun)
+						}
+						continue
+					}
 					if hashed != f.macKey {
 						here, hashed = mac(&ix.macKeys[f.macKey], data[p:p+c]), f.macKey
+						search.hashes++
 					}
 					if here != f.macs[ref.idx] {
 						continue
 					}
 					if search.tried == nil {
 						search.tried = map[tryKey]int{}
-						search.covered = map[int32]int{}
 					}
-					if found, ok := ix.try(data, p, ref, search.tried); ok {
-						search.spans = append(search.spans, found)
-						reach := found.checked
-						// A base64 or hex match took its whole run, and another
-						// copy further on in the run would take the same.
-						if f.wholeRun {
-							reach = found.end
-						}
-						search.covered[ref.form] = max(search.covered[ref.form], reach)
+					if found, ok := ix.try(search, p, ref); ok {
+						search.cover(found, f.wholeRun)
 					}
 				}
 			}

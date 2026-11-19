@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,69 +221,307 @@ func TestACommandStatingAnotherLoginConfirmsNothingOfItsStore(t *testing.T) {
 	}
 }
 
-// Two commands that state no identity are two guests: each key request gets a
-// confirming key of its own, and neither confirms what the other registered.
-func TestCommandsThatStateNothingShareNoConfirmingKey(t *testing.T) {
+// postInventory posts entries as a command that states an identity and a key id.
+func postInventory(t *testing.T, proxy *httpProxy, stated phaseproxy.InventoryIdentity, keyID string, entries ...*censor.Entries) *httptest.ResponseRecorder {
+	t.Helper()
+	request := remoteapi.InventoryRequest{SchemaVersion: 1, Tenant: stated.Tenant, Login: stated.Login, KeyID: keyID}
+	for _, made := range entries {
+		encoded, err := made.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Entries = append(request.Entries, encoded)
+		request.IDKinds = append(request.IDKinds, remoteapi.InventoryIDPhase)
+	}
+	body, _ := json.Marshal(request)
+	return controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body)
+}
+
+// Commands that state no identity are one guest: one confirming key for the
+// life of the proxy, so a value such a command registers again is held once.
+func TestCommandsThatStateNothingAreOneGuest(t *testing.T) {
 	store := newTestInventoryStore(t)
 	rig := newStoredLeakRigAs(t, store, leakLoginA)
 	nobody := phaseproxy.InventoryIdentity{}
 	first, second := statedKey(t, rig.proxy, nobody), statedKey(t, rig.proxy, nobody)
-	if first.Key != second.Key || first.ConfirmKey == second.ConfirmKey || first.KeyID == second.KeyID {
-		t.Fatal("two commands that state nothing were not handed a confirming key each")
+	if first != second {
+		t.Fatal("two commands that state nothing were handed different keys: each run would be a new guest")
 	}
-	entries := func(answer remoteapi.InventoryKeyResponse, value string) *censor.Entries {
-		t.Helper()
-		made, err := censor.IndexValue(answeredKey(t, answer), "secret", "an-id", value)
-		if err != nil {
-			t.Fatal(err)
+	// Two runs of one command register the same value: one entry, counted twice.
+	for run := 0; run < 2; run++ {
+		if answer := registerThroughControlAs(t, rig.proxy, nobody, []leakguard.Value{{Type: "secret", ID: "an-id", Value: leakSecretOne}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+			t.Fatalf("run %d: %+v", run, answer)
 		}
-		return made
 	}
-	// The same value, indexed by each: no confirming hash in common.
-	mine, theirs := entries(first, leakSecretOne), entries(second, leakSecretOne)
-	if confirmedBy(mine, theirs) != 0 || len(confirmingHashes(theirs)) == 0 {
-		t.Fatal("one guest's keys confirm another guest's entries")
+	if status, _ := rawStatus(t, rig); rig.guard.index.Stats().Guests != 1 || status.Inventory.Unstored != 2 || status.SecretsKnown != 0 {
+		t.Fatalf("the same value from two runs: %+v, %+v", rig.guard.index.Stats(), status.Inventory)
 	}
-	register := func(proxy *httpProxy, made *censor.Entries, keyID string) (int, string) {
-		t.Helper()
-		encoded, _ := made.Marshal()
-		body, _ := json.Marshal(remoteapi.InventoryRequest{SchemaVersion: 1, Entries: []json.RawMessage{encoded}, KeyID: keyID})
-		recorder := controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body)
-		return recorder.Code, errorCode(recorder)
+	// It is a guest's key all the same: nothing of the store, another from a
+	// guest that says who it is, and gone with the proxy.
+	stated := statedKey(t, rig.proxy, otherTenantA)
+	if stated.Key != first.Key || stated.ConfirmKey == first.ConfirmKey || stated.KeyID == first.KeyID || first.Key == base64.StdEncoding.EncodeToString(rig.guard.key.LookupBytes()) {
+		t.Fatal("a command that states nothing shares more than the guests' lookup key")
 	}
-	// Entries that name no key request of this process are under no key the
-	// proxy can confirm with: refused, so the command fetches a key again.
-	other := newStoredLeakRigAs(t, store, leakLoginA)
+	next := newStoredLeakRigAs(t, store, leakLoginA)
+	if again := statedKey(t, next.proxy, nobody); again.Key == first.Key || again.ConfirmKey == first.ConfirmKey || again.KeyID == first.KeyID {
+		t.Fatal("the key of commands that state nothing outlived the proxy")
+	}
+	made, err := censor.IndexValue(answeredKey(t, first), "secret", "another-id", leakSecretTwo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Entries under a key this proxy does not hand such a command are refused,
+	// so the command fetches the key again.
 	for name, c := range map[string]struct {
 		proxy *httpProxy
 		keyID string
 	}{
-		"no key id":                  {rig.proxy, ""},
-		"half of one":                {rig.proxy, first.KeyID[:16]},
+		"half a key id":              {rig.proxy, first.KeyID[:8]},
 		"one this proxy never made":  {rig.proxy, strings.Repeat("0", len(first.KeyID))},
-		"another request's ending":   {rig.proxy, first.KeyID[:16] + second.KeyID[16:]},
-		"a key id of a proxy before": {other.proxy, first.KeyID},
+		"a stated guest's":           {rig.proxy, stated.KeyID},
+		"a key id of a proxy before": {next.proxy, first.KeyID},
 	} {
-		if code, said := register(c.proxy, mine, c.keyID); code != http.StatusConflict || said != "inventory_key_changed" {
-			t.Fatalf("a registration that states nothing, with %s: HTTP %d %s", name, code, said)
+		if recorder := postInventory(t, c.proxy, nobody, c.keyID, made); recorder.Code != http.StatusConflict || errorCode(recorder) != "inventory_key_changed" {
+			t.Fatalf("a registration that states nothing, with %s: HTTP %d %s", name, recorder.Code, errorCode(recorder))
 		}
 	}
-	if status, _ := rawStatus(t, rig); status.Inventory.Unstored != 0 {
-		t.Fatalf("a refused registration was kept: %+v", status.Inventory)
-	}
-	// Each registers under the key it was handed, and its value is replaced.
-	for name, c := range map[string]struct {
-		made  *censor.Entries
-		keyID string
-	}{"the first": {mine, first.KeyID}, "the second": {entries(second, leakSecretTwo), second.KeyID}} {
-		if code, said := register(rig.proxy, c.made, c.keyID); code != http.StatusOK {
-			t.Fatalf("%s guest's registration: HTTP %d %s", name, code, said)
-		}
+	if recorder := postInventory(t, rig.proxy, nobody, first.KeyID, made); recorder.Code != http.StatusOK {
+		t.Fatalf("the registration under the key it was handed: HTTP %d", recorder.Code)
 	}
 	if out, _ := rig.guard.index.Redact([]byte(leakSecretOne + " and " + leakSecretTwo)); string(out) != "ph:secret and ph:secret" {
-		t.Fatalf("the guests' values: %q", out)
+		t.Fatalf("the values: %q", out)
 	}
-	if status, _ := rawStatus(t, rig); status.SecretsKnown != 0 || status.Inventory.Unstored != 2 || storedRecords(t, store) != 0 {
-		t.Fatalf("guests' registrations: %+v", status.Inventory)
+	if storedRecords(t, store) != 0 {
+		t.Fatal("a registration that states nothing was stored")
+	}
+}
+
+// A client older than key ids fetches the key with a GET, indexes under
+// scheme 1 with the one key it reads, and names no key: taken, in memory only.
+func TestAClientOlderThanKeyIDsStillRegisters(t *testing.T) {
+	for name, identity := range map[string]phaseproxy.InventoryIdentity{"a proxy the Console named": leakLoginA, "a proxy it named nobody for": {}} {
+		store := newTestInventoryStore(t)
+		rig := newStoredLeakRigAs(t, store, identity)
+		recorder := controlCall(rig.proxy, http.MethodGet, "/v1/inventory/key", "", nil)
+		var answer struct {
+			Key    string `json:"key"`
+			Format int    `json:"format"`
+		}
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil {
+			t.Fatalf("%s: the key: HTTP %d", name, recorder.Code)
+		}
+		raw, _ := base64.StdEncoding.DecodeString(answer.Key)
+		key, err := censor.LookupKeyFromBytes(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		made, err := censor.IndexValueScheme(key, 1, "secret", "an-id", leakSecretOne)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := made.Marshal()
+		// All such a client sends: no identity, no key id, no kinds.
+		body, _ := json.Marshal(map[string]any{"schemaVersion": 1, "entries": []json.RawMessage{encoded}})
+		recorder = controlCall(rig.proxy, http.MethodPost, "/v1/inventory", "application/json", body)
+		var added remoteapi.InventoryResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &added) != nil || added.Added != 1 {
+			t.Fatalf("%s: the registration of a client older than key ids: HTTP %d %s", name, recorder.Code, recorder.Body.String())
+		}
+		want := "a ph:secret b"
+		if !identity.Known() {
+			want = "a ph:secret:an-id b"
+		}
+		if out, _ := rig.guard.index.Redact([]byte("a " + leakSecretOne + " b")); string(out) != want {
+			t.Fatalf("%s: the value it registered: %q", name, out)
+		}
+		rig.proxy.CloseHijacked()
+		if storedRecords(t, store) != 0 {
+			t.Fatalf("%s: entries of scheme 1 were stored", name)
+		}
+	}
+}
+
+// The same commands run again and again, and more values than the guests'
+// share holds, never get a guest refused: the oldest entries make way.
+func TestGuestsAreNeverRefusedForAFullShare(t *testing.T) {
+	leakIndexMaxSecrets = 400 // the guests' share is a hundred
+	t.Cleanup(func() { leakIndexMaxSecrets = 0 })
+	rig := newStoredLeakRigAs(t, newTestInventoryStore(t), leakLoginA)
+	nobody := phaseproxy.InventoryIdentity{}
+	value := func(i int) string { return fmt.Sprintf("Val%03dQw7Er8Ty9Ui0Op1As2Df3Gh4Jk5", i) }
+	var values []leakguard.Value
+	for i := 0; i < 50; i++ {
+		values = append(values, leakguard.Value{Type: "secret", ID: fmt.Sprintf("KEY_%d", i), Value: value(i)})
+	}
+	// The review found the 51st run of one command refused, and every guest after it.
+	for run := 0; run < 120; run++ {
+		if answer := registerThroughControlAs(t, rig.proxy, nobody, values, nil); answer == nil || answer.Added != 50 {
+			t.Fatalf("run %d of a command that states nothing: %+v", run, answer)
+		}
+	}
+	if guests := rig.guard.index.Stats().Guests; guests != 50 {
+		t.Fatalf("%d entries held for 50 values registered again and again", guests)
+	}
+	// A hundred more values, one command each: the share is full, and the
+	// values registered longest ago go.
+	for i := 50; i < 150; i++ {
+		if answer := registerThroughControlAs(t, rig.proxy, nobody, []leakguard.Value{{Type: "secret", ID: fmt.Sprintf("KEY_%d", i), Value: value(i)}}, nil); answer == nil || answer.Added != 1 {
+			t.Fatalf("value %d at a full share: %+v", i, answer)
+		}
+	}
+	for i, held := range map[int]bool{0: false, 49: false, 50: true, 149: true} {
+		if out, _ := rig.guard.index.Redact([]byte("v=" + value(i))); (string(out) == "v=ph:secret") != held {
+			t.Fatalf("value %d after the share filled: %q", i, out)
+		}
+	}
+	// A guest of another account, and the session's own login, still register.
+	fresh := []leakguard.Value{{Type: "secret", ID: "fresh", Value: leakSecretThree}}
+	if answer := registerThroughControlAs(t, rig.proxy, otherTenantB, fresh, nil); answer == nil || answer.Added != 1 {
+		t.Fatalf("a guest of another account at a full share: %+v", answer)
+	}
+	if out, _ := rig.guard.index.Redact([]byte("v=" + leakSecretThree)); string(out) != "v=ph:secret" {
+		t.Fatalf("its value: %q", out)
+	}
+	if answer := registerThroughControl(t, rig.proxy, fresh, nil); answer == nil || answer.Added != 1 || rig.guard.index.Stats().Guests != 100 {
+		t.Fatalf("the session's own login: %+v, %+v", answer, rig.guard.index.Stats())
+	}
+	// Only one registration that is larger than the share by itself is refused.
+	keyAnswer := statedKey(t, rig.proxy, nobody)
+	var large []*censor.Entries
+	for i := 0; i < 101; i++ {
+		made, err := censor.IndexValue(answeredKey(t, keyAnswer), "secret", fmt.Sprintf("LARGE_%d", i), value(200+i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		large = append(large, made)
+	}
+	if recorder := postInventory(t, rig.proxy, nobody, keyAnswer.KeyID, large...); recorder.Code != http.StatusInsufficientStorage || errorCode(recorder) != "leak_inventory_full" {
+		t.Fatalf("one registration of 101 values into a share of 100: HTTP %d %s", recorder.Code, errorCode(recorder))
+	}
+	if recorder := postInventory(t, rig.proxy, nobody, keyAnswer.KeyID, large[:100]...); recorder.Code != http.StatusOK {
+		t.Fatalf("one registration of 100 values: HTTP %d %s", recorder.Code, errorCode(recorder))
+	}
+}
+
+// A guest that fills the guests' share and then registers a guess in another
+// guest's name is answered alike whether that guest holds the type and id.
+func TestTheGuestsShareSaysNothingOfAnotherGuestsID(t *testing.T) {
+	leakIndexMaxSecrets = 40 // the guests' share is ten
+	t.Cleanup(func() { leakIndexMaxSecrets = 0 })
+	nobody := phaseproxy.InventoryIdentity{}
+	junk := func(i int) string { return fmt.Sprintf("junk%04dQw7Er8Ty9Ui0Op1As2", i) }
+	guess := func(id string) (code int, body string, guests int, oldest, second bool) {
+		rig := newStoredLeakRigAs(t, newTestInventoryStore(t), leakLoginA)
+		register := func(stated phaseproxy.InventoryIdentity, id, value string) {
+			t.Helper()
+			if answer := registerThroughControlAs(t, rig.proxy, stated, []leakguard.Value{{Type: "secret", ID: id, Value: value}}, nil); answer == nil {
+				t.Fatalf("registering %s", id)
+			}
+		}
+		for i := 0; i < 5; i++ {
+			register(nobody, fmt.Sprintf("j%d", i), junk(i))
+		}
+		register(otherTenantA, "STRIPE_LIVE_KEY", leakSecretThree)
+		for i := 5; i < 9; i++ {
+			register(nobody, fmt.Sprintf("j%d", i), junk(i))
+		}
+		// The share is full. The guess is registered in the other guest's name.
+		asVictim := statedKey(t, rig.proxy, otherTenantA)
+		made, err := censor.IndexValue(answeredKey(t, asVictim), "secret", id, "anything-at-all-0123456789")
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := postInventory(t, rig.proxy, otherTenantA, asVictim.KeyID, made)
+		held := func(i int) bool {
+			out, _ := rig.guard.index.Redact([]byte(junk(i)))
+			return string(out) == "ph:secret"
+		}
+		return recorder.Code, recorder.Body.String(), rig.guard.index.Stats().Guests, held(0), held(1)
+	}
+	heldCode, heldBody, heldGuests, heldOldest, heldSecond := guess("STRIPE_LIVE_KEY")
+	for _, id := range []string{"AWS_SECRET_ACCESS_KEY", "DATABASE_URL"} {
+		code, body, guests, oldest, second := guess(id)
+		if code != heldCode || body != heldBody || guests != heldGuests || oldest != heldOldest || second != heldSecond {
+			t.Fatalf("an id the other guest holds: HTTP %d %s, %d entries, %v %v; %s, which it does not: HTTP %d %s, %d entries, %v %v",
+				heldCode, heldBody, heldGuests, heldOldest, heldSecond, id, code, body, guests, oldest, second)
+		}
+	}
+	if heldCode != http.StatusOK || heldGuests != 10 || heldOldest || !heldSecond {
+		t.Fatalf("a guess at a full share: HTTP %d, %d entries, the oldest held %v, the next %v", heldCode, heldGuests, heldOldest, heldSecond)
+	}
+}
+
+// A guest fills a lookup value with forged forms and registers its guess of a
+// chunk of another guest's value last: the guess is held, right or wrong.
+func TestAFilledLookupValueConfirmsNoChunkOfAnotherGuestsValue(t *testing.T) {
+	rig := newStoredLeakRigAs(t, newTestInventoryStore(t), leakLoginA)
+	const theirs = "Hy6Gs4Fp0Ju7Ke2Ma9Zk3Qw9Lm2Xr7Tb5Nc8Vd1"
+	if answer := registerThroughControlAs(t, rig.proxy, otherTenantA, []leakguard.Value{{Type: "secret", ID: "theirs", Value: theirs}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatalf("the other guest: %+v", answer)
+	}
+	nobody := phaseproxy.InventoryIdentity{}
+	keyAnswer := statedKey(t, rig.proxy, nobody)
+	for name, chunk := range map[string]string{"right": theirs[:12], "wrong": "Aa1Bb2Cc3Dd4"} {
+		filler, probe := forgedProbe(t, answeredKey(t, keyAnswer), "probe", name, chunk)
+		if recorder := postInventory(t, rig.proxy, nobody, keyAnswer.KeyID, filler, probe); recorder.Code != http.StatusOK {
+			t.Fatalf("the %s guess: HTTP %d %s", name, recorder.Code, errorCode(recorder))
+		}
+		if out, _ := rig.guard.index.Redact([]byte("x " + chunk + " y")); string(out) != "x ph:probe y" {
+			t.Fatalf("a %s guess of a chunk of another guest's value: %q", name, out)
+		}
+	}
+}
+
+// forgedProbe is what a client posts to learn whether a lookup value is in
+// use: 63 forms that sit under a guess's lookup value, and the guess itself.
+func forgedProbe(t *testing.T, key *censor.Key, typ, id, guess string) (filler, probe *censor.Entries) {
+	t.Helper()
+	probe, err := censor.IndexValue(key, typ, "probe-"+id, guess)
+	if err != nil || len(probe.Forms) == 0 || probe.Forms[0].Form != "raw" || probe.Forms[0].Length != 12 {
+		t.Fatalf("the probe: %v", err)
+	}
+	probe.Forms = probe.Forms[:1]
+	filler = &censor.Entries{Version: 2, Type: typ, ID: "fill-" + id}
+	for i := 0; i < 63; i++ {
+		sum := make([]byte, 16)
+		if _, err := rand.Read(sum); err != nil {
+			t.Fatal(err)
+		}
+		filler.Forms = append(filler.Forms, censor.Form{Part: fmt.Sprintf("leaf:%d", i), Form: "raw", Length: 12, Lookups: probe.Forms[0].Lookups, MACs: sum, Weak: []byte{0}})
+	}
+	return filler, probe
+}
+
+// Guests, the session's own login and scans at once, with a guests' share so
+// small that every registration drops an entry a scan may be reading.
+func TestGuestsComeAndGoWhileRequestsAreScanned(t *testing.T) {
+	leakIndexMaxSecrets = 16 // the guests' share is four
+	t.Cleanup(func() { leakIndexMaxSecrets = 0 })
+	rig := newStoredLeakRigAs(t, newTestInventoryStore(t), leakLoginA)
+	value := func(i int) string { return fmt.Sprintf("conc%04dQw7Er8Ty9Ui0Op1As2Df3", i) }
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 90; i++ {
+			stated := []phaseproxy.InventoryIdentity{{}, leakLoginB, otherTenantA}[i%3]
+			if answer := registerThroughControlAs(t, rig.proxy, stated, []leakguard.Value{{Type: "secret", ID: fmt.Sprintf("k%d", i), Value: value(i)}}, nil); answer == nil || answer.Added != 1 {
+				t.Errorf("registration %d: %+v", i, answer)
+				return
+			}
+		}
+	}()
+	for i := 0; ; i++ {
+		select {
+		case <-done:
+			// The four registered last are the ones held.
+			out, _ := rig.guard.index.Redact([]byte(value(85) + " " + value(86) + " " + value(89)))
+			if string(out) != value(85)+" ph:secret ph:secret" || rig.guard.index.Stats().Guests != 4 {
+				t.Fatalf("after the guests came and went: %q, %+v", out, rig.guard.index.Stats())
+			}
+			return
+		default:
+		}
+		_, _ = rig.guard.index.Redact([]byte(fmt.Sprintf("text %d %s and %s", i, value(i%90), value((i+1)%90))))
+		_, _ = rawStatus(t, rig)
 	}
 }

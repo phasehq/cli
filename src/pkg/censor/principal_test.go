@@ -403,10 +403,14 @@ func TestGuestEntriesAreMatchedUnderTheirOwnKey(t *testing.T) {
 	if got := found(t, alone, mine); got != "" {
 		t.Fatalf("entries of one key matched under another: %q", got)
 	}
-	// The guests' bound is their own, and leaves the index's alone.
+	// The guests' bound is their own: past it their oldest entry goes, and
+	// the index's own values are neither dropped nor refused.
 	more, _ := IndexValue(guest, "secret", "one-more", randomString(t, alnum, 40))
-	if err := ix.AddGuest(guest, more); !errors.Is(err, ErrIndexFull) {
+	if err := ix.AddGuest(guest, more); err != nil {
 		t.Fatalf("a guest past the guests' bound: %v", err)
+	}
+	if after := ix.Stats(); after.Guests != 2 || after.Secrets != before.Secrets || found(t, ix, theirs) != "" || found(t, ix, mine) != "ph:secret:mine" {
+		t.Fatalf("past the guests' bound: %+v", after)
 	}
 	room, _ := IndexValue(home, "secret", "room", randomString(t, alnum, 40))
 	if err := ix.Add(room); err != nil {

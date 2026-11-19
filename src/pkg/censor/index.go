@@ -1,11 +1,13 @@
 package censor
 
 import (
+	"container/list"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 )
 
@@ -18,17 +20,22 @@ const (
 
 	bloomMinBits = 1 << 16
 
-	// maxRefsPerHash bounds how many chunks one rolling hash leads to across the
-	// index, which is what a scan checks at each position the hash turns up.
-	// Distinct values almost never share a 12-byte chunk; the ones that do are
-	// structure (PEM armour) or one value registered under many ids, and either
-	// is still found through its other chunks or its first owner.
+	// maxRefsPerHash bounds how many chunks one lookup value leads to for one
+	// confirming key: each key's own bound, so no party crowds out another's.
 	maxRefsPerHash = 64
+
+	// wholeProbe is how many chunks of a withheld form a scan hashes where its
+	// lookup value turns up, whatever they hold, before it hashes the rest.
+	wholeProbe = 4
 )
 
 // ErrIndexFull is returned by Add when the entries would take the index past one
 // of its caps. Nothing of the refused entries is added.
 var ErrIndexFull = errors.New("the censor index is full")
+
+// ErrPublic is returned by Add for entries of a value that stands whole in
+// one of the index's public texts (IndexOptions.Public). Nothing is added.
+var ErrPublic = errors.New("the entries are of a value every request holds")
 
 // IndexOptions tune an index. Zero values take the defaults.
 type IndexOptions struct {
@@ -42,6 +49,9 @@ type IndexOptions struct {
 	// MaxGuestSecrets and MaxGuestChunks bound what is held under other lookup
 	// keys than the index's (AddGuest), together. Zero is no bound of its own.
 	MaxGuestSecrets, MaxGuestChunks int
+	// Public are texts every scanned request holds, such as a host name or a
+	// path. No value is found in one: see ErrPublic.
+	Public [][]byte
 }
 
 // maxGuestKeys is how many lookup keys besides its own an index takes
@@ -67,21 +77,39 @@ type Index struct {
 	windows    []*window
 	chunkCount int
 	// macKeys are the confirming keys entries were added under: one per
-	// principal, and scheme 1's. A form names its own by position.
-	macKeys [][32]byte
-	// principals are the keys entries were added under, with what each holds,
-	// and guests what is held under other lookup keys than the index's.
+	// principal or guest, and scheme 1's. A form names its own by position.
+	macKeys     [][32]byte
+	macKeyUse   []int32
+	macKeyIndex map[[32]byte]int32
+	freeMacKeys []int32
+	// principals are the keys entries were added under, with what each holds.
+	// Guests are held apart: see guestEntry.
 	principals []principal
 	guests     keyUse
 	guestKeys  int
+	// guestAge lists the guests' entries, added or added again longest ago
+	// first, and guestForms finds the one a form is of by its fingerprint.
+	guestAge   list.List
+	guestForms map[[32]byte]*guestEntry
+	// forms and owners are slots: one a dropped guest's entry left is used again.
 	forms      []form
+	freeForms  []int32
 	owners     []owner
+	freeOwners []int32
 	ownerIndex map[ownerKey]int32
 	secrets    map[secretKey]struct{}
-	// withheldRefs numbers the values whose id is withheld, from 1.
+	// withheldRefs numbers the values whose id is withheld, and lastRef is
+	// the last number given: a guest's entry takes one of its own.
 	withheldRefs map[secretKey]int32
-	types        map[string]struct{} // the types of the values indexed: the middle of their placeholders
-	fingerprints map[[32]byte]struct{}
+	lastRef      int32
+	// types count the owners of each type: the middle of their placeholders.
+	types map[string]int
+	// fingerprints lead to the form each is of, guests' apart in guestForms.
+	fingerprints map[[32]byte]int32
+	// public are the texts no entry may be found in, and publicSets their
+	// chunks' lookup values under each lookup key entries came under.
+	public     [][]byte
+	publicSets map[[KeySize]byte]publicSet
 
 	ruleMu   sync.Mutex
 	ruleNums map[[macSize]byte]int
@@ -102,7 +130,7 @@ func (ix *Index) rulesFor(opts ScanOptions) *Rules {
 // counts a type and id once per principal that registered it, guests apart.
 type IndexStats struct {
 	Secrets, Owners, Forms, Chunks int
-	// Guests counts the values held under other lookup keys (AddGuest).
+	// Guests counts the entries held under other lookup keys (AddGuest).
 	Guests int
 }
 
@@ -154,6 +182,12 @@ type form struct {
 	// tail its hash begins: both are fixed by the entries' scheme.
 	chunk    int
 	tailBack int
+	// withheld says the form is found whole or not at all, through one chunk,
+	// and probe names the chunks a scan hashes first where that one turns up.
+	withheld bool
+	probe    [wholeProbe]int32
+	// loaded says a store handed the form over and no client has added it since.
+	loaded bool
 
 	// weak marks chunks that are structure, such as PEM armour, a token's type
 	// prefix or a URL's host. A partial match needs at least one chunk that isn't.
@@ -163,6 +197,41 @@ type form struct {
 type chunkRef struct {
 	form int32
 	idx  int32
+}
+
+// holding is how entries are held: see AddWithheld, AddLoaded and AddGuest.
+type holding struct {
+	withheld, loaded bool
+	// batch is the registration a guest's entries are of, nil for anyone else's.
+	batch *GuestBatch
+}
+
+// guestEntry is what one AddGuest added: the unit the guests' share is
+// counted in and dropped by, whatever type and id it came under.
+type guestEntry struct {
+	forms  []guestForm
+	prints [][32]byte
+	owners []int32
+	chunks int
+	// batch is the last registration that added it, or added it again.
+	batch *GuestBatch
+	age   *list.Element
+}
+
+// guestForm is one form of a guest's entry and where its chunk was filed.
+type guestForm struct {
+	at     int32
+	window *window
+	lookup uint64
+	filed  bool
+}
+
+// GuestBatch is one registration of guests' entries. When the guests' share is
+// full their oldest entries make way for it, and never one of its own.
+type GuestBatch struct {
+	ix *Index
+	// secrets and chunks are what the batch added, or found held and kept.
+	secrets, chunks int
 }
 
 // NewIndex makes an empty index under key's lookup key, which entries added
@@ -180,11 +249,14 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 		rules:        rules,
 		maxSecrets:   opts.MaxSecrets,
 		maxChunks:    opts.MaxChunks,
+		macKeyIndex:  map[[32]byte]int32{},
+		guestForms:   map[[32]byte]*guestEntry{},
 		ownerIndex:   map[ownerKey]int32{},
 		secrets:      map[secretKey]struct{}{},
 		withheldRefs: map[secretKey]int32{},
-		types:        map[string]struct{}{},
-		fingerprints: map[[32]byte]struct{}{},
+		types:        map[string]int{},
+		fingerprints: map[[32]byte]int32{},
+		publicSets:   map[[KeySize]byte]publicSet{},
 		ruleNums:     map[[macSize]byte]int{},
 		ruleNext:     map[string]int{},
 		cache:        newBlockCache(),
@@ -200,6 +272,11 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 	}
 	ix.maxKeySecrets, ix.maxKeyChunks = max(opts.MaxKeySecrets, 0), max(opts.MaxKeyChunks, 0)
 	ix.maxGuestSecrets, ix.maxGuestChunks = max(opts.MaxGuestSecrets, 0), max(opts.MaxGuestChunks, 0)
+	for _, text := range opts.Public {
+		if len(text) >= chunkSize {
+			ix.public = append(ix.public, slices.Clone(text))
+		}
+	}
 	return ix, nil
 }
 
@@ -210,24 +287,50 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 //
 // Entries of every supported scheme are matched side by side and none replaces
 // another: an id may name several values, and nothing held tells them apart.
-func (ix *Index) Add(e *Entries) error { return ix.add(ix.key, e, false, false) }
+func (ix *Index) Add(e *Entries) error { return ix.add(ix.key, e, holding{}) }
 
 // AddKeyed is Add for entries built under key: this index's lookup key and
 // another principal's confirming key, which a scan confirms their chunks with.
-func (ix *Index) AddKeyed(key *Key, e *Entries) error { return ix.add(key, e, false, false) }
+func (ix *Index) AddKeyed(key *Key, e *Entries) error { return ix.add(key, e, holding{}) }
 
 // AddWithheld is AddKeyed for entries whose id the reader of a scan may not
 // see: the value is replaced by ph:<type>, whole or not at all (see Limits).
-func (ix *Index) AddWithheld(key *Key, e *Entries) error { return ix.add(key, e, true, false) }
+func (ix *Index) AddWithheld(key *Key, e *Entries) error {
+	return ix.add(key, e, holding{withheld: true})
+}
+
+// AddLoaded is AddKeyed, or AddWithheld when withheld is set, for entries a
+// daemon read back from its store: a Finding says so until they are added again.
+func (ix *Index) AddLoaded(key *Key, e *Entries, withheld bool) error {
+	return ix.add(key, e, holding{withheld: withheld, loaded: true})
+}
 
 // AddGuest is AddWithheld for entries built under a key that shares nothing
 // with the index's, its lookup key included: a scan makes a pass of its own.
-func (ix *Index) AddGuest(key *Key, e *Entries) error { return ix.add(key, e, true, true) }
+func (ix *Index) AddGuest(key *Key, e *Entries) error { return ix.NewGuestBatch().Add(key, e) }
 
-func (ix *Index) add(key *Key, e *Entries, withheld, guest bool) error {
+// NewGuestBatch begins one registration of guests' entries.
+func (ix *Index) NewGuestBatch() *GuestBatch { return &GuestBatch{ix: ix} }
+
+// Add is AddGuest for one of the registration's entries. ErrIndexFull says
+// the registration alone is more than the guests' share holds.
+func (b *GuestBatch) Add(key *Key, e *Entries) error {
+	return b.ix.add(key, e, holding{withheld: true, batch: b})
+}
+
+// pendingForm is a form of entries being added that the index does not hold.
+type pendingForm struct {
+	form        *Form
+	fingerprint [32]byte
+	// public are its chunks that are a piece of a public text: structure.
+	public []int
+}
+
+func (ix *Index) add(key *Key, e *Entries, how holding) error {
 	if err := e.validate(); err != nil {
 		return err
 	}
+	guest := how.batch != nil
 	if key == nil || (key.lookup == ix.key.lookup) == guest {
 		return errors.New("the entries' key is not one this index takes them under")
 	}
@@ -238,32 +341,43 @@ func (ix *Index) add(key *Key, e *Entries, withheld, guest bool) error {
 	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
-	// The keys are few: one per principal that ever registered here.
-	macKey := int32(len(ix.macKeys))
-	for at := range ix.macKeys {
-		if ix.macKeys[at] == *confirming {
-			macKey = int32(at)
-			break
-		}
+	public, value := ix.publicIn(key, s, confirming, e)
+	if value {
+		return ErrPublic
+	}
+	if guest {
+		return ix.addGuest(key, s, confirming, e, public, how.batch)
 	}
 
-	type pending struct {
-		form        *Form
-		fingerprint [32]byte
-	}
-	var fresh []pending
+	var fresh []pendingForm
 	newChunks := 0
 	seen := map[[32]byte]bool{}
+	registered := false
 	for i := range e.Forms {
 		f := &e.Forms[i]
-		fp := fingerprint(e.Version, macKey, withheld, e.Type, e.ID, f)
-		if _, dup := ix.fingerprints[fp]; dup || seen[fp] {
+		// A line is a fragment of its value, and a withheld value is matched
+		// whole. A form that is a piece of a public text is never held.
+		if (how.withheld && f.Form == formLine) || public.whole[i] {
+			continue
+		}
+		fp := fingerprint(e.Version, confirming, how.withheld, e.Type, e.ID, f)
+		if at, dup := ix.fingerprints[fp]; dup {
+			// Added again by a client: no longer only what a store handed over.
+			if !how.loaded && ix.forms[at].loaded {
+				ix.forms[at].loaded, registered = false, true
+			}
+			continue
+		}
+		if seen[fp] {
 			continue
 		}
 		seen[fp] = true
-		fresh = append(fresh, pending{form: f, fingerprint: fp})
+		fresh = append(fresh, pendingForm{form: f, fingerprint: fp, public: public.pieces[i]})
 		c, _ := s.chunkOf(f)
 		newChunks += f.Length / c
+	}
+	if registered {
+		ix.cache.reset()
 	}
 	if len(fresh) == 0 {
 		return nil
@@ -283,87 +397,224 @@ func (ix *Index) add(key *Key, e *Entries, withheld, guest bool) error {
 	}
 	secret := secretKey{who, e.Type, e.ID}
 	_, held := ix.secrets[secret]
-	if !held && (len(ix.secrets) >= ix.maxSecrets || over(use.secrets+1, ix.maxKeySecrets) || (guest && over(ix.guests.secrets+1, ix.maxGuestSecrets))) {
+	if !held && (len(ix.secrets)+ix.guests.secrets >= ix.maxSecrets || over(use.secrets+1, ix.maxKeySecrets)) {
 		return fmt.Errorf("%w: no room for another value", ErrIndexFull)
 	}
-	if ix.chunkCount+newChunks > ix.maxChunks || over(use.chunks+newChunks, ix.maxKeyChunks) || (guest && over(ix.guests.chunks+newChunks, ix.maxGuestChunks)) {
+	if ix.chunkCount+newChunks > ix.maxChunks || over(use.chunks+newChunks, ix.maxKeyChunks) {
 		return fmt.Errorf("%w: no room for %d more chunks", ErrIndexFull, newChunks)
 	}
-	var known *window
-	if guest {
-		// A guest's lookup key is one more pass of every scan.
-		for _, w := range ix.windows {
-			if w.key.lookup == key.lookup {
-				known = w
-			}
-		}
-		if known == nil && ix.guestKeys >= maxGuestKeys {
-			return fmt.Errorf("%w: no room for another lookup key", ErrIndexFull)
-		}
-		if known == nil {
-			ix.guestKeys++
-		}
-	}
-	if int(macKey) == len(ix.macKeys) {
-		ix.macKeys = append(ix.macKeys, *confirming)
-	}
+	macKey := ix.macKeySlot(confirming)
 	if int(who) == len(ix.principals) {
 		ix.principals = append(ix.principals, principal{lookup: key.lookup, confirm: key.confirm})
 	}
 	if !held {
 		ix.secrets[secret] = struct{}{}
 		ix.principals[who].use.secrets++
-		if guest {
-			ix.guests.secrets++
-		}
 	}
 	ix.principals[who].use.chunks += newChunks
-	if guest {
-		ix.guests.chunks += newChunks
-	}
-	ix.types[e.Type] = struct{}{}
 	for _, p := range fresh {
-		ix.addForm(key, s, macKey, who, withheld, e.Type, e.ID, p.form)
-		ix.fingerprints[p.fingerprint] = struct{}{}
+		at, _, _, _ := ix.addForm(key, s, macKey, ix.ownerFor(who, how.withheld, e.Type, e.ID, p.form.Part), how, p)
+		ix.fingerprints[p.fingerprint] = at
 	}
+	ix.settle()
+	return nil
+}
+
+// addGuest adds a guest's entries as an entry of their own, whatever is held
+// under their type and id: what it costs the share says nothing of an id.
+func (ix *Index) addGuest(key *Key, s *scheme, confirming *[32]byte, e *Entries, public publicParts, batch *GuestBatch) error {
+	var fresh []pendingForm
+	newChunks := 0
+	seen := map[[32]byte]bool{}
+	for i := range e.Forms {
+		f := &e.Forms[i]
+		if f.Form == formLine || public.whole[i] {
+			continue
+		}
+		fp := fingerprint(e.Version, confirming, true, e.Type, e.ID, f)
+		if held := ix.guestForms[fp]; held != nil {
+			// Registered again: the entry is as new, and this registration's.
+			if held.batch != batch {
+				held.batch, batch.secrets, batch.chunks = batch, batch.secrets+1, batch.chunks+held.chunks
+			}
+			ix.guestAge.MoveToBack(held.age)
+			continue
+		}
+		if seen[fp] {
+			continue
+		}
+		seen[fp] = true
+		fresh = append(fresh, pendingForm{form: f, fingerprint: fp, public: public.pieces[i]})
+		c, _ := s.chunkOf(f)
+		newChunks += f.Length / c
+	}
+	if len(fresh) == 0 {
+		return nil
+	}
+	// A guest's lookup key is one more pass of every scan.
+	known := false
+	for _, w := range ix.windows {
+		known = known || w.key.lookup == key.lookup
+	}
+	if !known && ix.guestKeys >= maxGuestKeys {
+		return fmt.Errorf("%w: no room for another lookup key", ErrIndexFull)
+	}
+	if !ix.guestRoom(batch, newChunks) {
+		return fmt.Errorf("%w: one registration is more than the guests' share", ErrIndexFull)
+	}
+	if !known {
+		ix.guestKeys++
+	}
+	macKey := ix.macKeySlot(confirming)
+	entry := &guestEntry{chunks: newChunks, batch: batch}
+	ix.lastRef++
+	owners := map[string]int32{}
+	for _, p := range fresh {
+		ownerAt, made := owners[p.form.Part]
+		if !made {
+			ownerAt = ix.newOwner(owner{typ: e.Type, id: e.ID, part: p.form.Part, placeholder: "ph:" + e.Type, withheld: true, ref: ix.lastRef})
+			owners[p.form.Part] = ownerAt
+			entry.owners = append(entry.owners, ownerAt)
+		}
+		at, w, lookup, filed := ix.addForm(key, s, macKey, ownerAt, holding{withheld: true}, p)
+		entry.forms = append(entry.forms, guestForm{at: at, window: w, lookup: lookup, filed: filed})
+		entry.prints = append(entry.prints, p.fingerprint)
+		ix.guestForms[p.fingerprint] = entry
+	}
+	entry.age = ix.guestAge.PushBack(entry)
+	ix.guests.secrets, ix.guests.chunks = ix.guests.secrets+1, ix.guests.chunks+newChunks
+	batch.secrets, batch.chunks = batch.secrets+1, batch.chunks+newChunks
+	ix.settle()
+	return nil
+}
+
+// guestRoom drops the guests' oldest entries until one more of newChunks
+// fits. It drops none of batch's, and nothing when that would not be enough.
+func (ix *Index) guestRoom(batch *GuestBatch, newChunks int) bool {
+	others := ix.chunkCount - ix.guests.chunks
+	fits := func(secrets, chunks int) bool {
+		return !over(secrets+1, ix.maxGuestSecrets) && !over(chunks+newChunks, ix.maxGuestChunks) &&
+			len(ix.secrets)+secrets < ix.maxSecrets && others+chunks+newChunks <= ix.maxChunks
+	}
+	if !fits(batch.secrets, batch.chunks) {
+		return false
+	}
+	for oldest := ix.guestAge.Front(); oldest != nil && !fits(ix.guests.secrets, ix.guests.chunks); {
+		entry, next := oldest.Value.(*guestEntry), oldest.Next()
+		if entry.batch != batch {
+			ix.dropGuest(entry)
+		}
+		oldest = next
+	}
+	return fits(ix.guests.secrets, ix.guests.chunks)
+}
+
+// dropGuest takes a guest's entry out of the index and frees what it held.
+func (ix *Index) dropGuest(entry *guestEntry) {
+	for _, held := range entry.forms {
+		f := &ix.forms[held.at]
+		if held.filed {
+			held.window.remove(held.lookup, held.at)
+		}
+		ix.chunkCount -= len(f.macs)
+		if ix.macKeyUse[f.macKey]--; ix.macKeyUse[f.macKey] == 0 {
+			delete(ix.macKeyIndex, ix.macKeys[f.macKey])
+			ix.macKeys[f.macKey] = [32]byte{}
+			ix.freeMacKeys = append(ix.freeMacKeys, f.macKey)
+		}
+		*f = form{}
+		ix.freeForms = append(ix.freeForms, held.at)
+	}
+	for _, at := range entry.owners {
+		if typ := ix.owners[at].typ; ix.types[typ] <= 1 {
+			delete(ix.types, typ)
+		} else {
+			ix.types[typ]--
+		}
+		ix.owners[at] = owner{}
+		ix.freeOwners = append(ix.freeOwners, at)
+	}
+	for _, fp := range entry.prints {
+		delete(ix.guestForms, fp)
+	}
+	ix.guestAge.Remove(entry.age)
+	ix.guests.secrets, ix.guests.chunks = ix.guests.secrets-1, ix.guests.chunks-entry.chunks
+}
+
+// settle follows every change to what is held: the filters fit the chunks
+// again, and strings cached as clean before this value was known are forgotten.
+func (ix *Index) settle() {
 	for _, w := range ix.windows {
 		w.grow()
 	}
-	// Strings scanned before this value was known may have been cached as clean.
 	ix.cache.reset()
-	return nil
 }
 
 // over reports a count past a bound, where 0 is no bound.
 func over(count, bound int) bool { return bound > 0 && count > bound }
 
-func (ix *Index) addForm(key *Key, s *scheme, macKey, who int32, withheld bool, typ, id string, f *Form) {
-	ok := ownerKey{typ: typ, id: id, part: f.Part, withheld: withheld}
+// macKeySlot is where a confirming key sits among the index's, added if new.
+func (ix *Index) macKeySlot(confirming *[32]byte) int32 {
+	if at, held := ix.macKeyIndex[*confirming]; held {
+		return at
+	}
+	at := int32(len(ix.macKeys))
+	if free := len(ix.freeMacKeys); free > 0 {
+		at, ix.freeMacKeys = ix.freeMacKeys[free-1], ix.freeMacKeys[:free-1]
+		ix.macKeys[at] = *confirming
+	} else {
+		ix.macKeys, ix.macKeyUse = append(ix.macKeys, *confirming), append(ix.macKeyUse, 0)
+	}
+	ix.macKeyIndex[*confirming] = at
+	return at
+}
+
+// newOwner puts an owner in a slot and counts its type.
+func (ix *Index) newOwner(added owner) int32 {
+	ix.types[added.typ]++
+	if free := len(ix.freeOwners); free > 0 {
+		at := ix.freeOwners[free-1]
+		ix.freeOwners, ix.owners[at] = ix.freeOwners[:free-1], added
+		return at
+	}
+	ix.owners = append(ix.owners, added)
+	return int32(len(ix.owners) - 1)
+}
+
+// ownerFor is the owner of a part of a principal's value, made when new.
+func (ix *Index) ownerFor(who int32, withheld bool, typ, id, part string) int32 {
+	key := ownerKey{typ: typ, id: id, part: part, withheld: withheld}
 	if withheld {
 		// Two principals' values under one id are two values to a reader.
-		ok.principal = who
+		key.principal = who
 	}
-	ownerIdx, exists := ix.ownerIndex[ok]
-	if !exists {
-		ownerIdx = int32(len(ix.owners))
-		added := owner{typ: typ, id: id, part: f.Part, placeholder: "ph:" + typ, withheld: withheld}
-		if withheld {
-			secret := secretKey{who, typ, id}
-			if _, numbered := ix.withheldRefs[secret]; !numbered {
-				ix.withheldRefs[secret] = int32(len(ix.withheldRefs) + 1)
-			}
-			added.ref = ix.withheldRefs[secret]
-		} else {
-			added.placeholder += ":" + id
+	if at, exists := ix.ownerIndex[key]; exists {
+		return at
+	}
+	added := owner{typ: typ, id: id, part: part, placeholder: "ph:" + typ, withheld: withheld}
+	if withheld {
+		secret := secretKey{who, typ, id}
+		if _, numbered := ix.withheldRefs[secret]; !numbered {
+			ix.lastRef++
+			ix.withheldRefs[secret] = ix.lastRef
 		}
-		ix.owners = append(ix.owners, added)
-		ix.ownerIndex[ok] = ownerIdx
+		added.ref = ix.withheldRefs[secret]
+	} else {
+		added.placeholder += ":" + id
 	}
+	at := ix.newOwner(added)
+	ix.ownerIndex[key] = at
+	return at
+}
+
+// addForm stores a form and files its chunks. For a withheld form it answers
+// where the one chunk that leads to it was filed, if it was.
+func (ix *Index) addForm(key *Key, s *scheme, macKey, ownerAt int32, how holding, pending pendingForm) (at int32, w *window, lookup uint64, filed bool) {
+	f := pending.form
 	c, _ := s.chunkOf(f)
 	n := f.Length / c
-	w := ix.windowFor(key, c, f.Wide, s.lookupBits)
 	stored := form{
-		owner:     ownerIdx,
+		owner:     ownerAt,
 		name:      f.Form,
 		length:    f.Length,
 		macs:      make([][macSize]byte, n),
@@ -373,8 +624,53 @@ func (ix *Index) addForm(key *Key, s *scheme, macKey, who int32, withheld bool, 
 		formShape: s.shapes[f.Form],
 		chunk:     c,
 		tailBack:  s.tailBack(c),
+		withheld:  how.withheld,
+		loaded:    how.loaded,
 	}
-	formIdx := int32(len(ix.forms))
+	for i := 0; i < n; i++ {
+		copy(stored.macs[i][:], f.MACs[i*macSize:])
+		stored.weak[i] = f.Weak[i/8]&(1<<(i%8)) != 0
+	}
+	for _, i := range pending.public {
+		stored.weak[i] = true
+	}
+	if stored.tailLen > 0 {
+		copy(stored.tail[:], f.Tail)
+	}
+	at = int32(len(ix.forms))
+	if free := len(ix.freeForms); free > 0 {
+		at, ix.freeForms = ix.freeForms[free-1], ix.freeForms[:free-1]
+		ix.forms[at] = stored
+	} else {
+		ix.forms = append(ix.forms, stored)
+	}
+	ix.macKeyUse[macKey]++
+	ix.chunkCount += n
+	w = ix.windowFor(key, c, f.Wide, s.lookupBits)
+	if how.withheld {
+		// One chunk leads to a form that is matched whole: the first that is
+		// not structure and has room, so values of one format are found apart.
+		led := 0
+		for _, structure := range []bool{false, true} {
+			for i := 0; i < n && !filed; i++ {
+				if stored.weak[i] == structure {
+					led, lookup = i, s.lookupAt(f, i)
+					filed = ix.file(w, lookup, chunkRef{form: at, idx: int32(i)}, macKey)
+				}
+			}
+		}
+		// The probe: that chunk, then others that are not structure, then any.
+		picked := []int32{int32(led)}
+		for _, structure := range []bool{false, true} {
+			for j := 1; j < n && len(picked) < wholeProbe; j++ {
+				if next := (led + j) % n; stored.weak[next] == structure {
+					picked = append(picked, int32(next))
+				}
+			}
+		}
+		copy(ix.forms[at].probe[:], picked)
+		return at, w, lookup, filed
+	}
 	// A chunk that repeats within a form is looked up through its first place
 	// only: a match found there is extended over the rest, and indexing every
 	// repeat would make a value of one repeated block cost a scan its length at
@@ -382,30 +678,44 @@ func (ix *Index) addForm(key *Key, s *scheme, macKey, who int32, withheld bool, 
 	// share a short lookup value by chance.
 	seen := make(map[[macSize]byte]struct{}, n)
 	for i := 0; i < n; i++ {
-		copy(stored.macs[i][:], f.MACs[i*macSize:])
-		stored.weak[i] = f.Weak[i/8]&(1<<(i%8)) != 0
 		if _, repeat := seen[stored.macs[i]]; repeat {
 			continue
 		}
 		seen[stored.macs[i]] = struct{}{}
-		w.add(s.lookupAt(f, i), chunkRef{form: formIdx, idx: int32(i)})
+		ix.file(w, s.lookupAt(f, i), chunkRef{form: at, idx: int32(i)}, macKey)
 	}
-	if stored.tailLen > 0 {
-		copy(stored.tail[:], f.Tail)
+	return at, w, 0, false
+}
+
+// file puts a chunk under its lookup value, beside the others of its
+// confirming key and within that key's own bound there.
+func (ix *Index) file(w *window, h uint64, ref chunkRef, macKey int32) bool {
+	refs, present := w.chunks[h]
+	at, same := len(refs), 0
+	for i, other := range refs {
+		if ix.forms[other.form].macKey == macKey {
+			at, same = i+1, same+1
+		}
 	}
-	ix.forms = append(ix.forms, stored)
-	ix.chunkCount += n
+	if same >= maxRefsPerHash {
+		return false
+	}
+	if !present {
+		w.setBloom(h)
+	}
+	w.chunks[h] = slices.Insert(refs, at, ref)
+	return true
 }
 
 // fingerprint identifies a form of a value under its owner, scheme and
 // confirming key, so adding the same value twice adds nothing.
-func fingerprint(version int, macKey int32, withheld bool, typ, id string, f *Form) [32]byte {
+func fingerprint(version int, confirming *[32]byte, withheld bool, typ, id string, f *Form) [32]byte {
 	h := sha256.New()
 	if withheld {
 		h.Write([]byte{1})
 	}
 	h.Write([]byte{byte(version), byte(version >> 8), byte(version >> 16), byte(version >> 24)})
-	h.Write([]byte{byte(macKey), byte(macKey >> 8), byte(macKey >> 16), byte(macKey >> 24)})
+	h.Write(confirming[:])
 	for _, s := range []string{typ, id, f.Part, f.Form} {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
@@ -425,6 +735,7 @@ func (ix *Index) Stats() IndexStats {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
 	return IndexStats{
-		Secrets: len(ix.secrets) - ix.guests.secrets, Owners: len(ix.owners), Forms: len(ix.forms), Chunks: ix.chunkCount, Guests: ix.guests.secrets,
+		Secrets: len(ix.secrets), Owners: len(ix.owners) - len(ix.freeOwners), Forms: len(ix.forms) - len(ix.freeForms),
+		Chunks: ix.chunkCount, Guests: ix.guests.secrets,
 	}
 }

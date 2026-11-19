@@ -543,10 +543,10 @@ func TestInventoryRemove(t *testing.T) {
 	if err := store.Remove(); err != nil {
 		t.Fatal(err)
 	}
-	// The lock file stays, for the processes that lock it (see
+	// The lock files stay, for the processes that lock them (see
 	// TestInventoryRemoveLeavesTheLock).
 	entries, err := os.ReadDir(store.Directory)
-	if err != nil || len(entries) != 2 || entries[0].Name() != "ca.pem" || entries[1].Name() != inventoryLockName {
+	if err != nil || len(entries) != 3 || entries[0].Name() != "ca.pem" || entries[1].Name() != inventoryLockName || entries[2].Name() != inventoryQueueName {
 		t.Fatalf("%v %v", entries, err)
 	}
 	if err := store.Remove(); err != nil {
@@ -832,6 +832,54 @@ func TestInventoryBoundsDropOnlyTheWritersOwnOldest(t *testing.T) {
 	}
 }
 
+// What a bound drops of the writer's own records is counted: status said
+// "stored" of a login whose tenant others had filled, and that stored nothing.
+func TestInventoryStatusCountsWhatABoundDropped(t *testing.T) {
+	previous := inventoryBounds
+	t.Cleanup(func() { inventoryBounds = previous })
+	inventoryBounds.login, inventoryBounds.tenant = storeBound{4, 8 << 20}, storeBound{8, 16 << 20}
+	store := newInventoryTestStore(t)
+	register := func(login string, values int) *Inventory {
+		t.Helper()
+		inv, _ := openInventory(t, store)
+		principal := principalOf(t, inv, login)
+		for i := 0; i < values; i++ {
+			entries, err := censor.IndexValue(principal.Key(), "secret", fmt.Sprintf("v%d", i), inventoryTestValue(t, inventoryTestAlphabet, 40))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inv.Add([]StoredEntries{{Principal: principal, Entries: entries}})
+		}
+		return inv
+	}
+	held := func(login string) (mine int) {
+		t.Helper()
+		inv, loaded := openInventory(t, store)
+		for _, stored := range loaded {
+			if stored.Principal.Is(principalOf(t, inv, login)) {
+				mine++
+			}
+		}
+		return mine
+	}
+	// A login past its own bound loses its oldest: six registered, four kept.
+	first := register("https://console.test\nagent\na", 6)
+	if status := first.Status(); !status.Durable || status.Dropped != 2 || held("https://console.test\nagent\na") != 4 {
+		t.Fatalf("a login past its own bound: %+v", status)
+	}
+	if status := register("https://console.test\nagent\nb", 4).Status(); !status.Durable || status.Dropped != 0 {
+		t.Fatalf("a login within its bound: %+v", status)
+	}
+	// The tenant is full of the other two: the late login stores nothing.
+	late := register("https://console.test\nuser\nthe-developer", 3)
+	if status := late.Status(); !status.Durable || status.Dropped != 3 || held("https://console.test\nuser\nthe-developer") != 0 {
+		t.Fatalf("a login whose tenant is full: %+v", status)
+	}
+	if held("https://console.test\nagent\na") != 4 || held("https://console.test\nagent\nb") != 4 {
+		t.Fatal("another login lost records to the late one")
+	}
+}
+
 // Through the store itself: one tenant's volume, in large values or in many
 // small ones, leaves another tenant's record where it was.
 func TestOneTenantsVolumeNeverEvictsAnothers(t *testing.T) {
@@ -922,7 +970,7 @@ func TestInventoryFileShowsNoTenantLoginOrPlaceholder(t *testing.T) {
 		}
 		seen[window] = at
 	}
-	unlock, err := lockInventory(inv.directory)
+	unlock, err := lockInventory(inv.directory, inventoryLockWait)
 	if err != nil {
 		t.Fatal(err)
 	}
