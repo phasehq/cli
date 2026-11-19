@@ -385,9 +385,9 @@
 //     key. A proxy derives its own tenant's keys and no other's. Then:
 //   - Between tenants nothing can be tested at all, by a client or by a
 //     proxy: a session of one tenant holds no key of another, does not
-//     open, load or match its records, and writes nothing of them anywhere
-//     but a count of records. A stored value of another tenant in a request
-//     goes through as it is. A proxy's tenant and login are what the session
+//     open, load or match its records, and says nothing of them anywhere,
+//     not even how many there are. A stored value of another tenant in a
+//     request goes through as it is. A proxy's tenant and login are what the session
 //     the Console opened for it says, never what a client says: a client
 //     states its own, the proxy compares the two, and a command that is not
 //     the proxy's own login (another account's token in its environment,

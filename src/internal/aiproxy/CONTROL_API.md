@@ -286,8 +286,9 @@ a reboot still has its values replaced before anything registers them again:
     registered in two tenants gives unrelated lookup values and hashes;
   - a record carries a keyed tag of its tenant. A proxy opens, loads and
     matches the records of its own tenant alone. Another tenant's records
-    are left in the file as they are until they expire, and all a session
-    learns of them is their number (`otherTenants`): no id, no type, no size;
+    are left in the file as they are until they expire, and a session
+    learns nothing of them: no id, no type, no size and no count, since a
+    count would move whenever another organisation registered a value;
   - a request that holds a value another tenant stored is sent on
     unchanged, and no event or status says anything of it;
   - the key route hands every command that does not state the proxy's own
@@ -333,7 +334,9 @@ a reboot still has its values replaced before anything registers them again:
   grows with the value's length. It does not show whose a record is, of
   which login, when it was registered, or which records share a tenant, a
   login or a placeholder. A proxy opens every head, to keep other tenants'
-  records and count them, and the bodies of its own tenant alone.
+  records where they are, and the bodies of its own tenant alone. It gives
+  no figure of the other tenants' records to a session, a command or a log:
+  the size of the whole store is the file's size, for whoever may read it.
 - A proxy acts as one principal and writes that principal's records alone.
   It matches the records of every principal of its tenant, each written by
   that login's own proxy: a candidate is confirmed with the confirming
@@ -421,8 +424,10 @@ a reboot still has its values replaced before anything registers them again:
   untouched, running from memory. The matching scheme is each record's own:
   records of a scheme the running version does not match stay in the file as
   they are, are not matched, and are counted under `unmatchedScheme`.
-- Entries under another key id are not matched, are counted under
-  `unmatchedKey` and are dropped when the proxy that found them starts.
+- A file under another key id is not matched and is dropped when the proxy
+  that found it starts. Status says so (`unmatchedKey`) and gives no count:
+  under another key no head opens, so nothing tells this tenant's records
+  from another's.
 - A file that is damaged, cut short, too large or not what it claims never
   stops the proxy. Within a file this version can open, what can be
   authenticated and passes the same validation as a registration is loaded,
@@ -445,7 +450,8 @@ the confirming key of the principal that registered it; the smallest chunk is
 the base64 of a hex value.
 
 - **A session of another tenant**, client or proxy, can test nothing: it
-  holds no key of this tenant, opens none of its records, and sees a count.
+  holds no key of this tenant, opens none of its records, and is told
+  nothing of them, their number included.
   A command of another tenant that registers with this proxy is a guest: it
   is handed keys of this process alone and learns nothing of what is stored.
 - **A command that states another login of the proxy's tenant** is a guest
@@ -598,12 +604,12 @@ Content-Type: application/json
   `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...],"inventory":{...}}`.
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
-- `inventory` says whether the values outlive the proxy, in counts:
-  `{"storage":"stored","loaded":9,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`,
-  with `otherTenants` when the file holds records of other hosts or
-  organisations (a count, and all that is said of them), `unstored` when
-  commands that are not of the session's own login registered with this
-  proxy (its guests): a count of those registrations, each one counted
+- `inventory` says whether the values outlive the proxy, in counts of the
+  session's own tenant, none of which moves with what another host or
+  organisation stored:
+  `{"storage":"stored","loaded":9,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":false}`,
+  with `unstored` when commands that are not of the session's own login
+  registered with this proxy (its guests): a count of those registrations, each one counted
   whatever it held, so it says nothing of an id or of whether a value was
   seen before; and `dropped` when a bound of the store dropped records of
   the proxy's own login as it wrote: values it registered that are not
@@ -622,8 +628,8 @@ Content-Type: application/json
   from the store when it started, and `notLoaded` how many more the store
   held that were left out to keep the index room. `unmatchedScheme` counts stored entries of a matching
   scheme this version does not match: they are kept and need registering
-  again. `unmatchedKey` counts stored entries made under a key that has been
-  replaced: they are never matched and were dropped. `damaged`, when
+  again. `unmatchedKey` is true when the store was written under a key that
+  has been replaced: nothing in it was matched and it was dropped. `damaged`, when
   present, counts stored entries that could not be read. `phase ai status`
   prints this on its `Leaks:` line.
 - A host the table reads is listed under `unreadHosts`, and not under

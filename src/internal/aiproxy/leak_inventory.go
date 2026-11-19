@@ -79,12 +79,13 @@ func (g *leakGuard) load(loaded []phaseproxy.StoredEntries) {
 	g.loaded = g.index.Stats().Secrets
 }
 
-// inventoryStatus is how the inventory is kept, in counts.
+// inventoryStatus is how the inventory is kept, in counts of the session's
+// own tenant: nothing in it says how much any other tenant stored.
 func (g *leakGuard) inventoryStatus() *remoteapi.LeakInventoryStatus {
 	stored := g.inventory.Status()
 	status := &remoteapi.LeakInventoryStatus{
 		Storage: remoteapi.LeakInventoryMemory, Reason: stored.Reason, Loaded: g.loaded, NotLoaded: g.notLoaded,
-		UnmatchedScheme: stored.OtherScheme, UnmatchedKey: stored.OtherKey, OtherTenants: stored.OtherTenant, Damaged: stored.Damaged,
+		UnmatchedScheme: stored.OtherScheme, UnmatchedKey: stored.OtherKey, Damaged: stored.Damaged,
 		Unstored: int(g.unstored.Load()), Dropped: stored.Dropped,
 	}
 	if stored.Durable {

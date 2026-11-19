@@ -132,6 +132,21 @@ func inventoryFilePath(store InventoryStore) string {
 	return filepath.Join(store.Directory, inventoryFileName)
 }
 
+// inventoryFileRecords is how many records the file holds, whosever they
+// are: what its lengths show to anyone who can read it, and no status says.
+func inventoryFileRecords(t testing.TB, store InventoryStore) int {
+	t.Helper()
+	data, err := os.ReadFile(inventoryFilePath(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := 0
+	for rest := data[inventoryHeaderSize:]; len(rest) >= 4; records++ {
+		rest = rest[4+int(binary.BigEndian.Uint32(rest)):]
+	}
+	return records
+}
+
 // A value registered with one proxy is known to the next one, which reads
 // the same key from the keystore and the entries from the file.
 func TestInventorySurvivesARestart(t *testing.T) {
@@ -156,7 +171,7 @@ func TestInventorySurvivesARestart(t *testing.T) {
 	if !bytes.Equal(inventoryKeyBytes(t, first), inventoryKeyBytes(t, second)) {
 		t.Fatal("the second proxy has another key")
 	}
-	if status := second.Status(); !status.Durable || status.Loaded != 2 || len(loaded) != 2 || status.Damaged+status.OtherKey+status.OtherScheme+status.Expired != 0 {
+	if status := second.Status(); !status.Durable || status.Loaded != 2 || len(loaded) != 2 || status.OtherKey || status.Damaged+status.OtherScheme+status.Expired != 0 {
 		t.Fatalf("%+v, %d loaded", status, len(loaded))
 	}
 	if !finds(t, second, loaded, value) || !finds(t, second, loaded, named) {
@@ -269,7 +284,7 @@ func TestInventoryConcurrentWriters(t *testing.T) {
 	close(start)
 	wait.Wait()
 	inv, loaded := openInventory(t, store)
-	if status := inv.Status(); len(loaded) != proxies*batches*perBatch || status.Damaged != 0 || status.OtherKey != 0 {
+	if status := inv.Status(); len(loaded) != proxies*batches*perBatch || status.Damaged != 0 || status.OtherKey {
 		t.Fatalf("%d entries loaded of %d: %+v", len(loaded), proxies*batches*perBatch, status)
 	}
 	for p := range values {
@@ -507,7 +522,7 @@ func TestInventoryUnderAnotherKey(t *testing.T) {
 	if bytes.Equal(inventoryKeyBytes(t, fresh), inventoryKeyBytes(t, running)) || fresh.keyID == running.keyID {
 		t.Fatal("the key was not replaced")
 	}
-	if status := fresh.Status(); !status.Durable || status.OtherKey != 2 || status.Loaded != 0 || len(loaded) != 0 {
+	if status := fresh.Status(); !status.Durable || !status.OtherKey || status.Loaded != 0 || len(loaded) != 0 {
 		t.Fatalf("%+v", status)
 	}
 	if info, err := os.Stat(inventoryFilePath(store)); err != nil || info.Size() != int64(inventoryHeaderSize) {
@@ -666,8 +681,7 @@ func TestInventoryDamagedFiles(t *testing.T) {
 				t.Fatalf("%s: a loaded entry does not match its value", name)
 			}
 		}
-		// A record whose tenant tag was hit is another tenant's to this proxy.
-		if len(loaded) < len(batch) && status.Damaged == 0 && status.OtherKey == 0 && status.OtherTenant == 0 && !emptied {
+		if len(loaded) < len(batch) && status.Damaged == 0 && !status.OtherKey && !emptied {
 			t.Fatalf("%s: %d entries are missing and none is counted as damaged: %+v", name, len(batch)-len(loaded), status)
 		}
 		// The store works afterwards.
@@ -921,12 +935,12 @@ func TestOneTenantsVolumeNeverEvictsAnothers(t *testing.T) {
 		invA.Add([]StoredEntries{{Entries: entries, Principal: who}})
 	}
 	nextA, loadedA := openInventory(t, storeA)
-	if status := nextA.Status(); len(loadedA) != 8 || status.OtherTenant != 1 || !finds(t, nextA, loadedA, last) {
-		t.Fatalf("tenant A after its own volume: %d loaded, %+v", len(loadedA), status)
+	if len(loadedA) != 8 || inventoryFileRecords(t, storeA) != 9 || !finds(t, nextA, loadedA, last) {
+		t.Fatalf("tenant A after its own volume: %d loaded, %d records in the file", len(loadedA), inventoryFileRecords(t, storeA))
 	}
 	nextB, loadedB := openInventory(t, storeB)
-	if status := nextB.Status(); len(loadedB) != 1 || status.OtherTenant != 8 || !finds(t, nextB, loadedB, valueB) {
-		t.Fatalf("tenant B after tenant A's volume: %d loaded, %+v", len(loadedB), status)
+	if len(loadedB) != 1 || inventoryFileRecords(t, storeB) != 9 || !finds(t, nextB, loadedB, valueB) {
+		t.Fatalf("tenant B after tenant A's volume: %d loaded, %d records in the file", len(loadedB), inventoryFileRecords(t, storeB))
 	}
 	// And B, writing past its own bounds, drops none of A's.
 	for i := 0; i < 20; i++ {
@@ -997,7 +1011,7 @@ func TestInventoryFileShowsNoTenantLoginOrPlaceholder(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened, loaded := openInventory(t, store)
-	if status := reopened.Status(); len(loaded) != 2 || status.Damaged != 1 || status.OtherTenant != 1 {
+	if status := reopened.Status(); len(loaded) != 2 || status.Damaged != 1 || inventoryFileRecords(t, store) != 3 {
 		t.Fatalf("after a damaged head: %d loaded, %+v", len(loaded), status)
 	}
 }

@@ -160,7 +160,7 @@ func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 			next := aiInventoryStore()
 			next.Tenant = inventoryTestTenant
 			inventory, loaded, err := next.Open()
-			if err != nil || len(loaded) != 0 || inventory.Status().OtherKey != 0 || inventory.Status().OtherTenant != 0 {
+			if err != nil || len(loaded) != 0 || inventory.Status().OtherKey {
 				t.Fatalf("%d loaded, %v", len(loaded), err)
 			}
 			// Disabling again, with nothing left, is not an error.
@@ -182,8 +182,8 @@ func TestLeakProtectionSummarySaysHowTheInventoryIsKept(t *testing.T) {
 			"; inventory kept across restarts (3 loaded at start)",
 		},
 		"stored, with entries it cannot match": {
-			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 1, UnmatchedScheme: 2, UnmatchedKey: 4, Damaged: 1},
-			"; inventory kept across restarts (1 loaded at start), 2 stored by another version of Phase and not matched until read again, 4 stored under a replaced key and dropped, 1 unreadable and dropped",
+			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 1, UnmatchedScheme: 2, UnmatchedKey: true, Damaged: 1},
+			"; inventory kept across restarts (1 loaded at start), 2 stored by another version of Phase and not matched until read again, what was stored under a replaced key dropped, 1 unreadable and dropped",
 		},
 		"no keystore": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "no_keystore"},

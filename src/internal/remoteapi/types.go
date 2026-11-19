@@ -167,7 +167,8 @@ const (
 )
 
 // LeakInventoryStatus describes how the leak protection inventory is kept:
-// counts and a reason, never an entry, a hash or an id.
+// counts and a reason, never an entry, a hash or an id, and nothing of what
+// another host or organisation stored.
 type LeakInventoryStatus struct {
 	// Storage is LeakInventoryStored or LeakInventoryMemory.
 	Storage string `json:"storage"`
@@ -184,12 +185,10 @@ type LeakInventoryStatus struct {
 	// because they were made by a version that matches differently. They are
 	// kept, and matched again once a command reads their value.
 	UnmatchedScheme int `json:"unmatchedScheme"`
-	// UnmatchedKey counts stored entries made under a key that has since been
-	// replaced. They are never matched and have been dropped.
-	UnmatchedKey int `json:"unmatchedKey"`
-	// OtherTenants counts stored records of other hosts or organisations.
-	// They are never opened or matched: this is all a session learns of them.
-	OtherTenants int `json:"otherTenants,omitempty"`
+	// UnmatchedKey reports that the store was written under a key that has
+	// since been replaced: nothing in it was matched and it has been dropped.
+	// It is no count: such a file does not say whose its records were.
+	UnmatchedKey bool `json:"unmatchedKey"`
 	// Unstored counts registrations from commands that are not of the proxy's
 	// own login: kept until the proxy exits, counted whatever they held.
 	Unstored int `json:"unstored,omitempty"`

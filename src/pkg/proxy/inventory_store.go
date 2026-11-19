@@ -195,7 +195,8 @@ func (p InventoryPrincipal) Is(other InventoryPrincipal) bool {
 	return p.key != nil && p.id == other.id
 }
 
-// InventoryStatus is what an opened inventory says of itself: counts only.
+// InventoryStatus is what an opened inventory says of itself: counts of its
+// own tenant's records only, and nothing that moves with another tenant's.
 type InventoryStatus struct {
 	// Durable reports that registered values are written to the store.
 	// Reason says why not.
@@ -206,12 +207,10 @@ type InventoryStatus struct {
 	// OtherScheme counts stored entries in a matching scheme this build does
 	// not match: kept, and in need of registering again.
 	OtherScheme int
-	// OtherKey counts stored entries made under another key: never matched,
-	// and dropped when the file is next written.
-	OtherKey int
-	// OtherTenant counts stored records of other tenants: never opened,
-	// never matched, and kept as they are.
-	OtherTenant int
+	// OtherKey reports a file written under another key: nothing in it was
+	// matched, and all of it was dropped. It is no count, since under another
+	// key nothing tells this tenant's records from any other's.
+	OtherKey bool
 	// Damaged counts stored entries that could not be read or validated.
 	Damaged int
 	// Expired counts stored entries dropped for their age when the store was
@@ -517,12 +516,12 @@ func (inv *Inventory) load(keyConfirmed bool) (loaded []StoredEntries, reason st
 	sweepInventoryTemporaries(inv.directory)
 	now := inv.store.now()
 	var kept []inventoryRecord
-	inv.status.Damaged, inv.status.OtherKey = file.damaged, file.otherKey
+	inv.status.Damaged, inv.status.OtherKey = file.damaged, file.otherKey > 0
 	for _, record := range file.records {
-		// Another tenant's record is carried over unopened, while it lasts.
+		// Another tenant's record is carried over unopened, while it lasts,
+		// and nothing of it is counted: a count would tell this tenant of it.
 		if record.tenant != inv.tenant {
 			if now.Unix()-record.registered <= int64(InventoryEntryLifetime/time.Second) {
-				inv.status.OtherTenant++
 				kept = append(kept, record)
 			}
 			continue

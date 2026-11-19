@@ -144,7 +144,7 @@ func TestLeakInventoryOutlivesTheProxy(t *testing.T) {
 	if status.SecretsKnown != 2 || status.Unprotected != 0 || *status.Inventory != (remoteapi.LeakInventoryStatus{Storage: remoteapi.LeakInventoryStored, Loaded: 2}) {
 		t.Fatalf("the second proxy: %+v %+v", status, status.Inventory)
 	}
-	if !strings.Contains(body, `"inventory":{"storage":"stored","loaded":2,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`) {
+	if !strings.Contains(body, `"inventory":{"storage":"stored","loaded":2,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":false}`) {
 		t.Fatalf("status: %s", body)
 	}
 	for _, private := range []string{"secret-id-1", "DATABASE_URL", leakSecretOne, hex.EncodeToString(second.guard.key.LookupBytes()), hex.EncodeToString(second.guard.key.ConfirmBytes())} {
@@ -305,7 +305,7 @@ func TestLeakInventoryWithoutAKeystoreIsMemoryOnly(t *testing.T) {
 	if status.SecretsKnown != 1 || *status.Inventory != (remoteapi.LeakInventoryStatus{Storage: remoteapi.LeakInventoryMemory, Reason: phaseproxy.InventoryReasonNoKeystore}) {
 		t.Fatalf("%+v", status.Inventory)
 	}
-	if !strings.Contains(body, `"inventory":{"storage":"memory","reason":"no_keystore","loaded":0,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":0}`) {
+	if !strings.Contains(body, `"inventory":{"storage":"memory","reason":"no_keystore","loaded":0,"notLoaded":0,"unmatchedScheme":0,"unmatchedKey":false}`) {
 		t.Fatalf("status: %s", body)
 	}
 	postMessages(t, first.client(first.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(leakSecretOne), "")
@@ -340,10 +340,10 @@ func TestLeakInventoryStatusCountsWhatIsNotMatched(t *testing.T) {
 	}
 	second := newStoredLeakRig(t, store)
 	status, body := rawStatus(t, second)
-	if status.SecretsKnown != 0 || *status.Inventory != (remoteapi.LeakInventoryStatus{Storage: remoteapi.LeakInventoryStored, UnmatchedKey: 2}) {
+	if status.SecretsKnown != 0 || *status.Inventory != (remoteapi.LeakInventoryStatus{Storage: remoteapi.LeakInventoryStored, UnmatchedKey: true}) {
 		t.Fatalf("%+v", status.Inventory)
 	}
-	if !strings.Contains(body, `"unmatchedKey":2`) {
+	if !strings.Contains(body, `"unmatchedKey":true`) {
 		t.Fatalf("status: %s", body)
 	}
 	postMessages(t, second.client(second.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody("a "+leakSecretTwo+" b"), "")
@@ -496,7 +496,7 @@ func TestRestartedProxyReplacesItsTenantsValues(t *testing.T) {
 
 	restarted := newStoredLeakRigAs(t, store, leakLoginA)
 	status, statusBody := rawStatus(t, restarted)
-	if status.SecretsKnown != 4 || status.Inventory.Loaded != 4 || status.Inventory.Damaged != 0 || status.Inventory.OtherTenants != 0 {
+	if status.SecretsKnown != 4 || status.Inventory.Loaded != 4 || status.Inventory.Damaged != 0 {
 		t.Fatalf("the restarted proxy: %+v %+v", status, status.Inventory)
 	}
 	content := leakSecretOne + " and " + leakSecretTwo + " and " + shared + " and " + hex.EncodeToString([]byte(leakSecretTwo))
@@ -558,8 +558,8 @@ func storedRecords(t *testing.T, store *phaseproxy.InventoryStore) int {
 	return records
 }
 
-// A session of one organisation never matches, loads or names what another's
-// registered: the value goes through as it is, and only records are counted.
+// A session of one organisation never matches, loads, names or counts what
+// another's registered: the value goes through as it is.
 func TestAnotherTenantsValuesAreNeverMatched(t *testing.T) {
 	store := newTestInventoryStore(t)
 	const idOfB = "7a2b-id-of-tenant-b"
@@ -573,10 +573,10 @@ func TestAnotherTenantsValuesAreNeverMatched(t *testing.T) {
 		asA := newStoredLeakRigAs(t, store, identity)
 		status, statusBody := rawStatus(t, asA)
 		if status.SecretsKnown != 0 || status.Inventory.Storage != remoteapi.LeakInventoryStored || status.Inventory.Loaded != 0 ||
-			status.Inventory.OtherTenants < 1 || status.Inventory.Damaged != 0 || status.Inventory.UnmatchedKey != 0 {
+			status.Inventory.Damaged != 0 || status.Inventory.UnmatchedKey {
 			t.Fatalf("%s: %+v %+v", name, status, status.Inventory)
 		}
-		if strings.Contains(statusBody, idOfB) || strings.Contains(statusBody, "sealed") {
+		if strings.Contains(statusBody, idOfB) || strings.Contains(statusBody, "sealed") || strings.Contains(statusBody, "otherTenants") {
 			t.Fatalf("%s: status says something of another tenant's record: %s", name, statusBody)
 		}
 		ownA, ownB := statedKey(t, asA.proxy, identity), statedKey(t, asB.proxy, leakLoginB)
@@ -603,8 +603,8 @@ func TestAnotherTenantsValuesAreNeverMatched(t *testing.T) {
 		asA.proxy.CloseHijacked()
 	}
 	again := newStoredLeakRigAs(t, store, leakLoginB)
-	if status, _ := rawStatus(t, again); status.SecretsKnown != 1 || status.Inventory.Loaded != 1 || status.Inventory.OtherTenants != 2 {
-		t.Fatalf("B's next proxy: %+v %+v", status, status.Inventory)
+	if status, _ := rawStatus(t, again); status.SecretsKnown != 1 || status.Inventory.Loaded != 1 || storedRecords(t, store) != 3 {
+		t.Fatalf("B's next proxy: %+v %+v, %d records in the file", status, status.Inventory, storedRecords(t, store))
 	}
 	if out, _ := again.guard.index.Redact([]byte(leakSecretTwo)); string(out) != "ph:sealed:"+idOfB {
 		t.Fatalf("B's next proxy: %q", out)
@@ -682,7 +682,7 @@ func TestACommandOfAnotherLoginNeverReachesTheProxysStore(t *testing.T) {
 			// load, name, count or report, and the value passes as it came.
 			next := newStoredLeakRigAs(t, store, leakLoginA)
 			status, statusBody = rawStatus(t, next)
-			if status.SecretsKnown != 0 || status.Inventory.Loaded != 0 || status.Inventory.OtherTenants != 0 || status.Inventory.Unstored != 0 || status.Inventory.NotLoaded != 0 {
+			if status.SecretsKnown != 0 || status.Inventory.Loaded != 0 || status.Inventory.Unstored != 0 || status.Inventory.NotLoaded != 0 {
 				t.Fatalf("A's next proxy: %+v %+v", status, status.Inventory)
 			}
 			body := anthropicBody(content)
@@ -696,7 +696,7 @@ func TestACommandOfAnotherLoginNeverReachesTheProxysStore(t *testing.T) {
 			// And B's own next proxy starts with nothing A's proxy wrote.
 			if stated.Known() {
 				ofB := newStoredLeakRigAs(t, store, stated)
-				if status, _ := rawStatus(t, ofB); status.SecretsKnown != 0 || status.Inventory.Loaded != 0 || status.Inventory.OtherTenants != 0 {
+				if status, _ := rawStatus(t, ofB); status.SecretsKnown != 0 || status.Inventory.Loaded != 0 {
 					t.Fatalf("B's next proxy: %+v %+v", status, status.Inventory)
 				}
 			}
@@ -762,7 +762,7 @@ func TestALoginChangeWithTheDaemonAliveIsAGuestOfTheDaemon(t *testing.T) {
 		t.Fatalf("A's proxy after B stored its own: %+v", status.Inventory)
 	}
 	// Another organisation's proxy loads neither.
-	if status, _ := rawStatus(t, newStoredLeakRigAs(t, store, otherTenantA)); status.SecretsKnown != 0 || status.Inventory.OtherTenants != 2 {
+	if status, _ := rawStatus(t, newStoredLeakRigAs(t, store, otherTenantA)); status.SecretsKnown != 0 || status.Inventory.Loaded != 0 || storedRecords(t, store) != 2 {
 		t.Fatalf("another organisation's proxy: %+v", status.Inventory)
 	}
 }
@@ -1138,7 +1138,7 @@ func TestAClientsVolumeNeverEvictsAnotherTenantsRecords(t *testing.T) {
 	}
 	nextB := newStoredLeakRigAs(t, store, otherTenantB)
 	status, _ := rawStatus(t, nextB)
-	if out, _ := nextB.guard.index.Redact([]byte("x " + leakSecretTwo)); status.Inventory.Loaded != 1 || status.Inventory.OtherTenants != 4096 || string(out) != "x ph:secret:b-id" {
+	if out, _ := nextB.guard.index.Redact([]byte("x " + leakSecretTwo)); status.Inventory.Loaded != 1 || storedRecords(t, store) != 4096+1 || string(out) != "x ph:secret:b-id" {
 		t.Fatalf("tenant B after tenant A's volume: %+v, %q", status.Inventory, out)
 	}
 }

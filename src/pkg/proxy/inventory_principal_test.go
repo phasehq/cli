@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -92,7 +93,7 @@ func TestInventoryKeepsARecordPerPrincipal(t *testing.T) {
 
 	// The proxy that starts next acts as A, and loads B's records too.
 	reopened, loaded := openInventory(t, store)
-	if status := reopened.Status(); len(loaded) != 3 || status.Damaged != 0 || status.OtherKey != 0 {
+	if status := reopened.Status(); len(loaded) != 3 || status.Damaged != 0 || status.OtherKey {
 		t.Fatalf("%d loaded, %+v", len(loaded), status)
 	}
 	byPrincipal := map[[inventoryTagSize]byte][]StoredEntries{}
@@ -170,9 +171,9 @@ func TestInventoryTenantsShareNothing(t *testing.T) {
 	invB.Add([]StoredEntries{ofB})
 	invA.Add([]StoredEntries{ofA})
 
-	// A's next proxy: B's record is counted and nothing else.
+	// A's next proxy: its status says nothing of B's record, not even a count.
 	nextA, loaded := openInventory(t, storeA)
-	if status := nextA.Status(); len(loaded) != 1 || loaded[0].Entries.ID != "of-a" || status != (InventoryStatus{Durable: true, Loaded: 1, OtherTenant: 1}) {
+	if status := nextA.Status(); len(loaded) != 1 || loaded[0].Entries.ID != "of-a" || status != (InventoryStatus{Durable: true, Loaded: 1}) {
 		t.Fatalf("%d loaded, %+v", len(loaded), status)
 	}
 	// Every record in the file, opened with all that A's proxy holds, with
@@ -227,7 +228,7 @@ func TestInventoryTenantsShareNothing(t *testing.T) {
 	}
 	// B's own next proxy still finds it, after A wrote the file around it.
 	nextB, loaded := openInventory(t, storeB)
-	if status := nextB.Status(); len(loaded) != 1 || loaded[0].Entries.ID != "of-b" || status.OtherTenant != 1 || !finds(t, nextB, loaded, value) {
+	if status := nextB.Status(); len(loaded) != 1 || loaded[0].Entries.ID != "of-b" || status != (InventoryStatus{Durable: true, Loaded: 1}) || inventoryFileRecords(t, storeB) != 2 || !finds(t, nextB, loaded, value) {
 		t.Fatalf("B's next proxy: %d loaded, %+v", len(loaded), status)
 	}
 	// With no tenant nothing of the user's master is derived or stored.
@@ -237,6 +238,32 @@ func TestInventoryTenantsShareNothing(t *testing.T) {
 	if status := alone.Status(); status != (InventoryStatus{Reason: InventoryReasonNoTenant}) || len(loaded) != 0 ||
 		bytes.Equal(principalOf(t, alone, inventoryLoginA).Key().LookupBytes(), a.Key().LookupBytes()) {
 		t.Fatalf("a store with no tenant: %+v", status)
+	}
+}
+
+// A file under a replaced key is dropped without a count: how many records
+// it held, another tenant's among them, is nothing a session is told.
+func TestInventoryUnderAReplacedKeyCountsNothing(t *testing.T) {
+	for _, others := range []int{0, 1, 7} {
+		store := newInventoryTestStore(t)
+		inv, _ := openInventory(t, store)
+		inv.Add(oneEntry(t, inv, "own"))
+		other := store
+		other.Tenant = "https://console.test\norganisation\nanother-organisation"
+		for i := 0; i < others; i++ {
+			theirs, _ := openInventory(t, other)
+			theirs.Add(oneEntry(t, theirs, fmt.Sprintf("theirs-%d", i)))
+		}
+		if records := inventoryFileRecords(t, store); records != 1+others {
+			t.Fatalf("%d records in the file, want %d", records, 1+others)
+		}
+		if err := store.ReplaceKey(); err != nil {
+			t.Fatal(err)
+		}
+		next, loaded := openInventory(t, store)
+		if status := next.Status(); len(loaded) != 0 || status != (InventoryStatus{Durable: true, OtherKey: true}) {
+			t.Fatalf("with %d records of another tenant: %d loaded, %+v", others, len(loaded), status)
+		}
 	}
 }
 

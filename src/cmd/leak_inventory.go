@@ -91,11 +91,8 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 	if inventory.UnmatchedScheme > 0 {
 		line += fmt.Sprintf(", %d stored by another version of Phase and not matched until read again", inventory.UnmatchedScheme)
 	}
-	if inventory.UnmatchedKey > 0 {
-		line += fmt.Sprintf(", %d stored under a replaced key and dropped", inventory.UnmatchedKey)
-	}
-	if inventory.OtherTenants > 0 {
-		line += fmt.Sprintf(", %d of other hosts or organisations left unopened", inventory.OtherTenants)
+	if inventory.UnmatchedKey {
+		line += ", what was stored under a replaced key dropped"
 	}
 	if inventory.Damaged > 0 {
 		line += fmt.Sprintf(", %d unreadable and dropped", inventory.Damaged)

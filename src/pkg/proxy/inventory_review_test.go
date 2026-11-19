@@ -243,7 +243,7 @@ func TestInventoryRemoveRacingWriters(t *testing.T) {
 	close(stop)
 	wait.Wait()
 	inv, _ := openInventory(t, store)
-	if status := inv.Status(); !status.Durable || status.Damaged != 0 || status.OtherKey != 0 {
+	if status := inv.Status(); !status.Durable || status.Damaged != 0 || status.OtherKey {
 		t.Fatalf("%+v", status)
 	}
 	inv.Add(oneEntry(t, inv, "after"))
@@ -597,7 +597,7 @@ func TestInventoryFirstStartsTogether(t *testing.T) {
 			}
 		}
 		final, loaded := openInventory(t, store)
-		if status := final.Status(); !status.Durable || status.OtherKey != 0 || status.Damaged != 0 || len(loaded) != storing {
+		if status := final.Status(); !status.Durable || status.OtherKey || status.Damaged != 0 || len(loaded) != storing {
 			t.Fatalf("round %d: %d loaded of %d stored: %+v", round, len(loaded), storing, status)
 		}
 	}
