@@ -57,6 +57,20 @@ func (k *deletingKeystore) Delete(service, user string) error {
 	return nil
 }
 
+// refusingKeystore deletes, and refuses to read the inventory key while
+// refusing is set, as a keychain whose prompt was denied does.
+type refusingKeystore struct {
+	deletingKeystore
+	refusing atomic.Bool
+}
+
+func (k *refusingKeystore) Get(service, user string) (string, error) {
+	if k.refusing.Load() && service == inventoryTestKeyService {
+		return "", errors.New("user interaction is not allowed")
+	}
+	return k.deletingKeystore.Get(service, user)
+}
+
 // inventoryTestTenant is the tenant the tests' proxy would act for.
 const inventoryTestTenant = "https://console.test\norganisation\ntest-organisation"
 
@@ -121,8 +135,9 @@ func TestLogoutPurgeRemovesTheLeakInventory(t *testing.T) {
 // deleted). The lock file stays: removed, two proxies could each hold it.
 func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 	for name, keystore := range map[string]phaseproxy.PrivateKeyStore{
-		"a keystore that deletes":       &deletingKeystore{memoryKeystore{values: map[string]string{}}},
-		"a keystore that cannot delete": &memoryKeystore{values: map[string]string{}},
+		"a keystore that deletes":                 &deletingKeystore{memoryKeystore{values: map[string]string{}}},
+		"a keystore that cannot delete":           &memoryKeystore{values: map[string]string{}},
+		"a keystore that refuses to read the key": &refusingKeystore{deletingKeystore: deletingKeystore{memoryKeystore{values: map[string]string{}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			isolateAISetup(t)
@@ -139,8 +154,15 @@ func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			refuses, _ := keystore.(*refusingKeystore)
+			if refuses != nil {
+				refuses.refusing.Store(true)
+			}
 			if err := runAIDisableForTest(); err != nil {
 				t.Fatal(err)
+			}
+			if refuses != nil {
+				refuses.refusing.Store(false)
 			}
 			if _, err := os.Lstat(filepath.Join(directory, inventoryTestFile)); !os.IsNotExist(err) {
 				t.Fatalf("%s is still there after disable: %v", inventoryTestFile, err)
@@ -151,7 +173,9 @@ func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 				}
 			}
 			after, err := keystore.Get(inventoryTestKeyService, inventoryTestKeyUser)
-			if _, deletes := keystore.(*deletingKeystore); deletes {
+			if _, deletes := keystore.(interface {
+				Delete(service, user string) error
+			}); deletes {
 				if err != gokeyring.ErrNotFound {
 					t.Fatalf("the inventory key is still in the keystore: %v", err)
 				}

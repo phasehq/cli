@@ -1099,6 +1099,13 @@ func (k *troubledKeyring) Get(service, user string) (string, error) {
 	return k.lockedKeyring.Get(service, user)
 }
 
+func (k *troubledKeyring) Set(service, user, value string) error {
+	if k.silent.Load() {
+		return errors.New("org.freedesktop.secrets was not provided by any service")
+	}
+	return k.lockedKeyring.Set(service, user, value)
+}
+
 // troubledStore is a store with a login's record, another login's of its
 // tenant and another tenant's, and the key they were stored under.
 func troubledStore(t *testing.T) (store InventoryStore, keyring *troubledKeyring, tenants []InventoryStore, key string) {

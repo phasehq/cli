@@ -842,7 +842,8 @@ func DeleteStoredInventoryKey() error {
 
 // Purge removes the stored inventory: the key from the keystore, then the
 // entries. It is what phase ai disable does. A key the keystore cannot
-// delete is replaced, so that nothing stored under it is matched again.
+// delete is replaced, so that nothing stored under it is matched again, and
+// one it can neither delete nor replace is the error: the entries go all the same.
 //
 // The key goes first: a proxy registering meanwhile writes before the file
 // is removed, or finds the file gone and its key with it, and writes nothing.
@@ -850,12 +851,10 @@ func (s InventoryStore) Purge() error {
 	return errors.Join(s.deleteKey(), s.Remove())
 }
 
+// deleteKey removes the master without reading it first: a read the keystore
+// refuses says nothing of whether a key is there, and a key left behind
+// unsaid would outlive the disable.
 func (s InventoryStore) deleteKey() error {
-	_, err := s.keyring().Get(inventoryKeyringService, inventoryKeyringUser)
-	if err != nil {
-		// No key, or no keystore to hold one.
-		return nil
-	}
 	if deleter, ok := s.keyring().(interface {
 		Delete(service, user string) error
 	}); ok {
@@ -863,14 +862,34 @@ func (s InventoryStore) deleteKey() error {
 			return nil
 		}
 	}
-	// A key that cannot be deleted is replaced: what is stored under it is
-	// then another key's, to every proxy.
+	_, err := s.keyring().Get(inventoryKeyringService, inventoryKeyringUser)
+	if errors.Is(err, gokeyring.ErrNotFound) {
+		return nil
+	}
+	// A machine with no keystore never stored a key, or a file under one.
+	if err != nil && !s.KeystoreAvailable() && !s.stored() {
+		return nil
+	}
+	// A key that cannot be deleted, or may be there unread, is replaced: what
+	// is stored under it is then another key's, to every proxy. A keystore
+	// that will not take the new one either is the error.
 	_, raw, err := s.newKey()
 	clear(raw)
 	if err != nil {
 		return fmt.Errorf("remove the leak protection inventory key: %w", err)
 	}
 	return nil
+}
+
+// stored reports whether the store's file is there: one is written only once
+// a keystore has taken a key.
+func (s InventoryStore) stored() bool {
+	directory, err := s.directory()
+	if err != nil {
+		return false
+	}
+	_, err = os.Lstat(filepath.Join(directory, inventoryFileName))
+	return err == nil
 }
 
 // sweepInventoryTemporaries removes what an interrupted write left. Every

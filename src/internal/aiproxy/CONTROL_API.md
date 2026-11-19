@@ -470,6 +470,11 @@ a reboot still has its values replaced before anything registers them again:
   Every derived key goes with it. A
   proxy still running says `key_replaced` the next time its status is asked
   (the keystore is asked at most once a second) and stores nothing more.
+  The disable deletes the master without reading it first, so a keychain
+  that refuses the read still loses it. A master the keystore cannot delete
+  is replaced, and one it will neither delete nor replace is not left behind
+  unsaid: the disable fails with that and asks to be run again. The file is
+  removed either way.
 
 What each party can do with this. What is stored per chunk is 24 bits of its
 rolling hash, under the lookup key, and a SHA-256 truncated to 128 bits, under

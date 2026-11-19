@@ -340,6 +340,65 @@ func TestInventoryPurgeWhenDeleteIsRefused(t *testing.T) {
 	}
 }
 
+// A disable removes the key without reading it first. A keychain that
+// refuses the read still loses the key, one that cannot delete has it
+// replaced, and one that will do neither is an error and never a silent
+// success: either way the entries are gone.
+func TestInventoryPurgeDoesNotNeedToReadTheKey(t *testing.T) {
+	refused := errors.New("user interaction is not allowed")
+	gone := func(t *testing.T, store InventoryStore) {
+		t.Helper()
+		if _, err := os.Stat(inventoryFilePath(store)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the entries outlived the disable: %v", err)
+		}
+	}
+	t.Run("a keystore that deletes", func(t *testing.T) {
+		store, hooked := newHookedInventoryStore(t)
+		inv, _ := openInventory(t, store)
+		inv.Add(oneEntry(t, inv, "one"))
+		hooked.failGet.Store(&refused)
+		if err := store.Purge(); err != nil {
+			t.Fatal(err)
+		}
+		hooked.failGet.Store(nil)
+		gone(t, store)
+		if storedInventoryKey(t, store) != "" {
+			t.Fatal("the key outlived a disable whose read of it was refused")
+		}
+		if again, loaded := openInventory(t, store); bytes.Equal(inventoryKeyBytes(t, again), inventoryKeyBytes(t, inv)) || len(loaded) != 0 {
+			t.Fatal("a proxy enabled again hands out the keys the disable was to remove")
+		}
+	})
+	t.Run("a keystore that cannot delete", func(t *testing.T) {
+		store, keyring, _, key := troubledStore(t)
+		keyring.refusing.Store(true)
+		if err := store.Purge(); err != nil {
+			t.Fatal(err)
+		}
+		gone(t, store)
+		if after, err := keyring.lockedKeyring.Get(inventoryKeyringService, inventoryKeyringUser); err != nil || after == key {
+			t.Fatalf("the key was not replaced after a refused read: %v", err)
+		}
+	})
+	t.Run("a keystore that does neither", func(t *testing.T) {
+		store, keyring, _, key := troubledStore(t)
+		keyring.silent.Store(true)
+		err := store.Purge()
+		if err == nil || !strings.Contains(err.Error(), "remove the leak protection inventory key") {
+			t.Fatalf("a disable that left the key behind answered %v", err)
+		}
+		gone(t, store)
+		if after, _ := keyring.lockedKeyring.Get(inventoryKeyringService, inventoryKeyringUser); after != key {
+			t.Fatal("the keystore was written while it did not answer")
+		}
+		// With no file left, a keystore that does not answer is a machine
+		// with none: there is nothing to remove and nothing to say.
+		if err := store.Purge(); err != nil {
+			t.Fatalf("a disable with no keystore and nothing stored: %v", err)
+		}
+	})
+}
+
 // shortLockWaits makes the store's waits short enough for a test to sit out.
 func shortLockWaits(t *testing.T, proxy, removal time.Duration) {
 	t.Helper()
