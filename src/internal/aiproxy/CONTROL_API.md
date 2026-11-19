@@ -513,7 +513,8 @@ a body is (the type alone: `application/connect+proto; charset=utf-8` is
 | `application/grpc+json`, `application/grpc-web+json` | the same with JSON messages |
 | `application/json`, `+json`, `text/*`, `application/x-ndjson`, `application/x-www-form-urlencoded` | what its bytes say; bytes that are not text are overwritten in place |
 | `application/x-protobuf`, `application/protobuf` | one protobuf message with the rules of its path: read whole (16 MiB), overwritten in place |
-| anything else (`application/octet-stream`, `application/grpc-web-text`, none) | bytes whose length must not change: overwritten in place when their length is stated, sent on unread over HTTP/2 when it is not |
+| `application/grpc-web-text`, with or without a name | gRPC-Web envelopes in base64, which an overwrite would break: looked at for the report and sent on unread, `body_undecodable`, `scope` `request`; with no stated length, sent on at once as `body_streamed` |
+| anything else (`application/octet-stream`, none) | bytes whose length must not change: overwritten in place when their length is stated, sent on unread over HTTP/2 when it is not |
 
 Connect and gRPC calls, in protobuf or JSON, carry conversation content
 whatever their path, so every pattern rule applies to them. Everything else on such a host,

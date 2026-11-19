@@ -499,7 +499,8 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 	encodings := upstream.Header.Values("Content-Encoding")
 	encoding, known := leakEncoding(strings.Join(encodings, ","))
 	var decoded []byte
-	if known && len(encodings) <= 1 {
+	// gRPC-Web's base64 is left undone, like an encoding the proxy does not undo.
+	if known && len(encodings) <= 1 && kind != leakBodyBase64 {
 		decoded, encoding, err = decodeLeakBody(body, encoding)
 	} else {
 		err = errors.New("unsupported encoding")

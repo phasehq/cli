@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -233,6 +234,22 @@ func TestHTTP2BodyWithNoEndToWaitForIsNotHeld(t *testing.T) {
 	request.Header.Set("Content-Type", "application/octet-stream")
 	if status := doRequest(t, client, request); status != http.StatusForbidden || service.count() != before {
 		t.Fatalf("a known value in the URL: status %d", status)
+	}
+}
+
+// gRPC-Web's text form is base64, which an overwrite in place would break: a
+// value in it is reported, and the body goes on as it came.
+func TestGRPCWebTextIsSentOnUnread(t *testing.T) {
+	rig, service := newConnectRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	client := rig.clientOffering(rig.phaseRoots, true, false)
+	body := []byte(base64.StdEncoding.EncodeToString(connectEnvelope(0, agentMessage("key "+leakSecretOne))))
+	response, _ := postConnect(t, client, "https://"+cursorAPIHost+"/aiserver.v1.AnyService/AnyCall", "application/grpc-web-text", body, nil)
+	if got := service.last(t).body; response.StatusCode != http.StatusOK || !bytes.Equal(got, body) {
+		t.Fatalf("status %d, the body arrived changed: %q", response.StatusCode, got)
+	}
+	if events := rig.distinctLeakEvents(t, 1); events[0].Outcome != outcomeUnread || events[0].Reason != leakReasonUndecodable || events[0].Detail["scope"] != leakScopeRequest {
+		t.Fatalf("event: %+v", events[0])
 	}
 }
 

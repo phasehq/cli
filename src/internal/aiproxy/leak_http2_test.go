@@ -102,8 +102,10 @@ func (s *connectService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	contentType := r.Header.Get("Content-Type")
 	w.Header().Set("Content-Type", contentType)
 	// gRPC frames its messages as Connect does, and X-Envelopes says the same
-	// of a body whose type does not.
-	if !strings.HasPrefix(contentType, "application/connect+") && !strings.HasPrefix(contentType, "application/grpc") && r.Header.Get("X-Envelopes") == "" {
+	// of a body whose type does not. gRPC-Web's text form is kept as it came.
+	enveloped := strings.HasPrefix(contentType, "application/connect+") ||
+		(strings.HasPrefix(contentType, "application/grpc") && !strings.HasPrefix(contentType, "application/grpc-web-text"))
+	if !enveloped && r.Header.Get("X-Envelopes") == "" {
 		body, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		call.body, call.ended = body, true
@@ -595,8 +597,8 @@ func TestCursorConnectCallsAreConversationContent(t *testing.T) {
 		"application/grpc+json":                    leakBodyGRPCJSON,
 		"application/grpc-web+json":                leakBodyGRPCJSON,
 		// Envelopes in base64 show no envelope, and "grpcx" is not gRPC.
-		"application/grpc-web-text":       leakBodyUnframed,
-		"application/grpc-web-text+proto": leakBodyUnframed,
+		"application/grpc-web-text":       leakBodyBase64,
+		"application/grpc-web-text+proto": leakBodyBase64,
 		"application/grpcx":               leakBodyUnframed,
 	} {
 		header := http.Header{"Content-Type": {contentType}}
@@ -613,7 +615,7 @@ func TestCursorConnectCallsAreConversationContent(t *testing.T) {
 	}
 	for kind, want := range map[leakBody][3]bool{
 		leakBodyAsItReads: {false, false, true}, leakBodyText: {false, false, true}, leakBodyBinary: {false, true, true}, leakBodyProtobuf: {false, true, true},
-		leakBodyUnframed:       {false, true, false},
+		leakBodyUnframed: {false, true, false}, leakBodyBase64: {false, false, false},
 		leakBodyProtobufStream: {true, false, false}, leakBodyJSONStream: {true, false, false}, leakBodyGRPC: {true, false, false}, leakBodyGRPCJSON: {true, false, false},
 	} {
 		if kind.stream() != want[0] || kind.inPlace() != want[1] || kind.unary() != want[2] {

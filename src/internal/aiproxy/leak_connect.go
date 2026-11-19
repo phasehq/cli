@@ -68,6 +68,9 @@ const (
 	// leakBodyGRPC and leakBodyGRPCJSON are the same of gRPC and gRPC-Web.
 	leakBodyGRPC
 	leakBodyGRPCJSON
+	// leakBodyBase64 is gRPC-Web's envelopes written in base64. Overwriting a
+	// value in place would break the base64, so it is sent on unread.
+	leakBodyBase64
 )
 
 // body says what a request's body is by its Content-Type. Only a host whose
@@ -90,7 +93,7 @@ func (m *leakHostMatch) body(header http.Header) leakBody {
 		return leakBodyJSONStream
 	case strings.HasPrefix(mediaType, "application/grpc-web-text"):
 		// Envelopes in base64: no envelope shows.
-		return leakBodyUnframed
+		return leakBodyBase64
 	case isGRPCType(mediaType) && isJSON:
 		return leakBodyGRPCJSON
 	case isGRPCType(mediaType):
@@ -141,7 +144,7 @@ func (b leakBody) inPlace() bool {
 // unary reports whether a body of this kind is one call's, whose end always
 // comes, so that it can be waited for when its length is not stated.
 func (b leakBody) unary() bool {
-	return b != leakBodyUnframed && !b.stream()
+	return b != leakBodyUnframed && b != leakBodyBase64 && !b.stream()
 }
 
 // encodingHeader names the header that says what compressed envelopes of
