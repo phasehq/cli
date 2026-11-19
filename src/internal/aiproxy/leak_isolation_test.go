@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/internal/remoteapi"
@@ -224,4 +226,84 @@ func viewDifference(alone, with string) string {
 		}
 	}
 	return out.String()
+}
+
+// waitingKeystore is a keystore whose answers wait while a gate is set, as a
+// keychain's do while it asks a person.
+type waitingKeystore struct {
+	*testKeystore
+	gate atomic.Pointer[chan struct{}]
+}
+
+func (k *waitingKeystore) Get(service, user string) (string, error) {
+	if gate := k.gate.Load(); gate != nil {
+		<-*gate
+	}
+	return k.testKeystore.Get(service, user)
+}
+
+// A registration is answered inside the second its client gives it, however
+// long the store takes: the value is matched from memory at once, and the
+// write finishes behind the answer.
+func TestARegistrationIsAnsweredWithoutWaitingOnTheStore(t *testing.T) {
+	previous := leakStoreWait
+	leakStoreWait = 250 * time.Millisecond
+	t.Cleanup(func() { leakStoreWait = previous })
+	keystore := &waitingKeystore{testKeystore: &testKeystore{values: map[string]string{}}}
+	store := &phaseproxy.InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: keystore}
+	guard, err := newStoredLeakGuard(leakModeCensor, store, leakTestIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := inventoryProxy(t, guard)
+	register := func(id, value string) time.Duration {
+		t.Helper()
+		began := time.Now()
+		answer := registerThroughControlAs(t, proxy, leakTestIdentity, []leakguard.Value{{Type: "secret", ID: id, Value: value}}, phaseIDs(1))
+		if answer == nil || answer.Added != 1 {
+			t.Fatalf("registering %s: %+v", id, answer)
+		}
+		return time.Since(began)
+	}
+	register("first", isolationOwn)
+	if records := storedRecords(t, store); records != 1 {
+		t.Fatalf("%d records stored by a registration the store was free for", records)
+	}
+	// The file goes, so the next write asks the keystore whether its key is
+	// still the one: and the keystore waits on a person.
+	if err := store.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	keystore.gate.Store(&gate)
+	// It answers after longer than a client waits.
+	var answered atomic.Bool
+	time.AfterFunc(leakguard.Timeout+leakguard.Timeout/2, func() {
+		answered.Store(true)
+		keystore.gate.Store(nil)
+		close(gate)
+	})
+	took := register("second", isolationLater)
+	if took >= leakguard.Timeout {
+		t.Fatalf("the answer took %v: a client gives a registration %v", took, leakguard.Timeout)
+	}
+	if out, _ := guard.index.Redact([]byte("x " + isolationLater + " y")); string(out) != "x ph:secret:second y" {
+		t.Fatalf("a value registered while the store waited is not matched: %q", out)
+	}
+	if records := storedRecords(t, store); records != 0 && !answered.Load() {
+		t.Fatalf("%d records were stored while the keystore had not answered", records)
+	}
+	// Once the keystore answers, what was acknowledged is stored after all.
+	for deadline := time.Now().Add(10 * time.Second); storedRecords(t, store) != 1; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the value was never stored after the keystore answered")
+		}
+	}
+	next, err := newStoredLeakGuard(leakModeCensor, store, leakTestIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := next.index.Redact([]byte("x " + isolationLater + " y")); string(out) != "x ph:secret:second y" {
+		t.Fatalf("the next proxy does not know the value: %q", out)
+	}
 }

@@ -58,6 +58,10 @@ func (k *testKeystore) Set(service, user, value string) error {
 	return nil
 }
 
+// These tests look for a value in the store once its registration is
+// answered, so here an answer waits for the store however slow the machine.
+func init() { leakStoreWait = time.Minute }
+
 func newTestInventoryStore(t *testing.T) *phaseproxy.InventoryStore {
 	t.Helper()
 	return &phaseproxy.InventoryStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: &testKeystore{values: map[string]string{}}, Tenant: leakTestTenant}

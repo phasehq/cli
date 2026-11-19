@@ -381,6 +381,15 @@ a reboot still has its values replaced before anything registers them again:
   for the life of the proxy. `phase users logout` and `phase ai disable` wait
   up to 15 seconds, and say so when the store was still in use and its
   records remain.
+- A registration's answer does not wait for any of that. Its values are in
+  the running proxy's index before the store is touched, and the answer
+  waits a quarter of a second at most for the write: well inside the second
+  a client gives a registration. A write that takes longer (a store in use,
+  a keystore that waits on a person, a large file on a slow disk) finishes
+  behind the answer, and status says how it went. At most four such writes
+  wait at once. A registration that arrives then is not queued behind them:
+  its values are held in memory only, and status says `store_busy` until a
+  later registration is stored.
 - Only entries of scheme 2 are stored. Scheme 1 entries, which an older
   client may register, carry whole rolling hashes: they are matched while
   the proxy runs and never written.
@@ -640,8 +649,8 @@ Content-Type: application/json
   `store_unreadable` (the file exists and could not be opened or understood,
   and is left as it is), `key_replaced` (the key was replaced or removed
   while this proxy ran), `store_busy` (another process held the store's lock
-  for two seconds the last time this proxy wanted it; the next registration
-  tries again), `store_unusable` (the directory or file could not be
+  for two seconds the last time this proxy wanted it, or writes were already
+  waiting on the store; the next registration tries again), `store_unusable` (the directory or file could not be
   written), `no_tenant` (the Console did not say which organisation and
   login the session is, so nothing is kept for it) or `not_configured`. `loaded` is how many values the proxy knew
   from the store when it started, and `notLoaded` how many more the store

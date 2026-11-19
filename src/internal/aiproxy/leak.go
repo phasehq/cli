@@ -447,6 +447,12 @@ func newLeakGuardFromEnvironment() (*leakGuard, error) {
 	return newLeakGuard(os.Getenv(LeakProtectionEnvironmentKey))
 }
 
+// leakStoreWait is how long a registration's answer waits for the store. The
+// values are in the index by then, and a client gives the whole registration
+// a second (leakguard.Timeout): a write that takes longer finishes behind the
+// answer. Tests lengthen it, to find a value stored once it is acknowledged.
+var leakStoreWait = 250 * time.Millisecond
+
 // errLeakInventoryFull is what a registration gets once the session's own
 // login is at a cap of the index, or when it alone is more than guests may hold.
 var errLeakInventoryFull = errors.New("the leak protection inventory is full")
@@ -465,9 +471,10 @@ func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unpr
 // keyNamed says, entry by entry, that an id is a secret's key name.
 func (g *leakGuard) addAt(place leakPlace, entries []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
 	// What was indexed is stored for the next proxy, and storing never fails
-	// a registration. Only the session's own login's entries are in a batch.
+	// a registration or holds its answer past leakStoreWait. Only the
+	// session's own login's entries are in a batch.
 	var stored []phaseproxy.StoredEntries
-	defer func() { g.inventory.Add(stored) }()
+	defer func() { g.inventory.AddWithin(stored, leakStoreWait) }()
 	// A guest's registration makes room among the guests' oldest entries.
 	guests := g.index.NewGuestBatch()
 	for i, entry := range entries {

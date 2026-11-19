@@ -87,6 +87,10 @@ const (
 	// maxInventoryRecordBytes bounds one record: a registration is at most
 	// 4 MiB on the wire.
 	maxInventoryRecordBytes = 8 << 20
+
+	// inventoryWritesBehind is how many writes may wait on the store behind
+	// the answers of their registrations (AddWithin). One more is not queued.
+	inventoryWritesBehind = 4
 )
 
 // storeBound is a number of records and their bytes.
@@ -241,6 +245,8 @@ type Inventory struct {
 	principalMu sync.Mutex
 	principals  map[[inventoryTagSize]byte]*censor.Key
 
+	// behind holds a place for each write AddWithin has not seen finish.
+	behind chan struct{}
 	// adding lets one Add at a time through. mu guards what follows it and
 	// is never held across the keystore or the store's lock.
 	adding sync.Mutex
@@ -650,6 +656,7 @@ func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byt
 		store: s, directory: directory, lookup: lookup, confirmRoot: derived[inventoryConfirmLabel], keyID: id, tenant: tag, seal: seal, file: fileSeal,
 		principals: map[[inventoryTagSize]byte]*censor.Key{},
 		known:      map[[inventoryTagSize]byte]int64{},
+		behind:     make(chan struct{}, inventoryWritesBehind),
 	}
 	copy(inv.tagKey[:], derived[inventoryTagLabel])
 	clear(derived[inventoryLookupLabel])
@@ -1120,6 +1127,39 @@ func (inv *Inventory) Add(batch []StoredEntries) {
 		}
 	}
 	inv.reached(reason, dropped)
+}
+
+// AddWithin is Add for a caller that has an answer to give in time: it
+// returns once the batch is stored or wait has passed, whichever is first. A
+// write that takes longer (a store in use, a keystore that waits on a person,
+// a large file) finishes behind the caller, and Status says how it went. With
+// inventoryWritesBehind writes already waiting, the batch is not queued behind
+// them: it stays in memory, and Status says the store is busy.
+func (inv *Inventory) AddWithin(batch []StoredEntries, wait time.Duration) {
+	inv.mu.Lock()
+	durable := inv.status.Durable
+	inv.mu.Unlock()
+	if len(batch) == 0 || !durable {
+		return
+	}
+	select {
+	case inv.behind <- struct{}{}:
+	default:
+		inv.reached(InventoryReasonBusy, 0)
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { <-inv.behind }()
+		inv.Add(batch)
+	}()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 type pendingEntries struct {

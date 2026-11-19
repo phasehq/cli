@@ -407,6 +407,91 @@ func TestInventoryLockHasADeadline(t *testing.T) {
 	}
 }
 
+// eventually waits for something a write behind an answer brings about.
+func eventually(t *testing.T, what string, done func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); !done(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("it never came about: %s", what)
+		}
+	}
+}
+
+// A registration's answer waits a bounded time for the store. A store in use
+// for longer is written behind the answer; one in use past the lock's own
+// deadline is reported, and the next registration stores; and writes do not
+// pile up behind a store that stays in use.
+func TestInventoryAddWithinDoesNotHoldItsCallerForTheStore(t *testing.T) {
+	shortLockWaits(t, 2*time.Second, 5*time.Second)
+	store := newInventoryTestStore(t)
+	inv, _ := openInventory(t, store)
+	lockPath := filepath.Join(store.Directory, inventoryLockName)
+	const wait = 30 * time.Millisecond
+
+	unlock, err := lockCAFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	inv.AddWithin(oneEntry(t, inv, "written-behind"), wait)
+	if waited := time.Since(began); waited >= inventoryLockWait/2 {
+		t.Fatalf("a registration waited %v on a store in use, with %v to answer in", waited, wait)
+	}
+	if records := inventoryFileRecords(t, store); records != 0 {
+		t.Fatalf("%d records were written without the lock", records)
+	}
+	unlock()
+	eventually(t, "the write behind the answer", func() bool { return inventoryFileRecords(t, store) == 1 })
+	eventually(t, "the store's place given back", func() bool { return len(inv.behind) == 0 })
+	if status := inv.Status(); !status.Durable {
+		t.Fatalf("after the write behind the answer: %+v", status)
+	}
+
+	// A store in use past the lock's deadline: the value is in memory only,
+	// status says so, and the next registration stores.
+	inventoryLockWait = 60 * time.Millisecond
+	if unlock, err = lockCAFile(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	inv.AddWithin(oneEntry(t, inv, "not-stored"), wait)
+	eventually(t, "a store in use reported", func() bool { return inv.Status().Reason == InventoryReasonBusy })
+	// Writes already waiting are not joined by more: each one past the bound
+	// returns at once, and none of them is left running.
+	inventoryLockWait = 2 * time.Second
+	began = time.Now()
+	for i := 0; i < 3*inventoryWritesBehind; i++ {
+		inv.AddWithin(oneEntry(t, inv, fmt.Sprintf("piled-%d", i)), time.Millisecond)
+		if waiting := len(inv.behind); waiting > inventoryWritesBehind {
+			t.Fatalf("%d writes wait on the store", waiting)
+		}
+	}
+	if waited := time.Since(began); waited >= inventoryLockWait/2 {
+		t.Fatalf("registrations past the bound waited %v", waited)
+	}
+	if status := inv.Status(); status.Durable || status.Reason != InventoryReasonBusy {
+		t.Fatalf("with writes waiting past the bound: %+v", status)
+	}
+	unlock()
+	eventually(t, "every waiting write done", func() bool { return len(inv.behind) == 0 })
+	inv.AddWithin(oneEntry(t, inv, "stored-again"), time.Minute)
+	if status := inv.Status(); !status.Durable || status.Reason != "" {
+		t.Fatalf("after the store was free again: %+v", status)
+	}
+	// Whatever was written behind is whole, and the last one is there.
+	if again, loaded := openInventory(t, store); again.Status().Damaged != 0 || len(loaded) < 2 || len(loaded) > 2+inventoryWritesBehind {
+		t.Fatalf("%d loaded, %+v", len(loaded), again.Status())
+	}
+	// An inventory that stores nothing has nothing to wait for.
+	memory, err := MemoryInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory.AddWithin(oneEntry(t, memory, "memory"), time.Minute)
+	if len(memory.behind) != 0 {
+		t.Fatal("a memory inventory queued a write")
+	}
+}
+
 // A removal that finds the store in use for a while still removes it.
 func TestInventoryRemovalWaitsForAStoreInUse(t *testing.T) {
 	shortLockWaits(t, 30*time.Millisecond, 10*time.Second)
