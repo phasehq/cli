@@ -74,6 +74,24 @@ func loosePathMatch(pattern, requestPath string) bool {
 	return err == nil && matched
 }
 
+// guardPathMatch is loosePathMatch for a request, also tried with each path
+// segment decoded on its own: GitLab and others take "group%2Fproject" as one
+// segment, and an encoded slash must not carry a call past a rule.
+func guardPathMatch(pattern string, requestURL *url.URL) bool {
+	if loosePathMatch(pattern, requestURL.Path) {
+		return true
+	}
+	segments := strings.Split(requestURL.EscapedPath(), "/")
+	for index, segment := range segments {
+		decoded, err := url.PathUnescape(segment)
+		if err != nil {
+			return false
+		}
+		segments[index] = strings.ReplaceAll(decoded, "/", "%2F")
+	}
+	return loosePathMatch(pattern, strings.Join(segments, "/"))
+}
+
 func globMatchWith(pattern, value string, foldCase bool) bool {
 	var expression strings.Builder
 	if foldCase {

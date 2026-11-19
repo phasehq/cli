@@ -40,7 +40,8 @@ import (
 //     speak the query protocol comes from the Connection's actionClasses.
 //   - Paths (any HTTP API): method plus path pattern, matched with path.Match,
 //     and optionally a query parameter the request must carry. The path is
-//     compared as loosePathMatch reads it, so a respelling does not get past.
+//     compared as guardPathMatch reads it, so a respelling or an encoded
+//     slash inside a segment does not get past.
 //
 // Postgres (ALTER ROLE ... PASSWORD) is not covered here; it needs statement
 // inspection in the protocol adapter.
@@ -106,7 +107,7 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 		if rule.Query != "" && !req.URL.Query().Has(rule.Query) {
 			continue
 		}
-		if loosePathMatch(rule.Pattern, req.URL.Path) {
+		if guardPathMatch(rule.Pattern, req.URL) {
 			return &CredentialMintingBlock{Operation: rule.Operation}, nil
 		}
 	}

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -293,4 +294,32 @@ func mustBeGuarded(t *testing.T, req *http.Request, connection agentapi.Connecti
 		t.Fatalf("expected the secret guard to stop the call: block=%#v err=%v", block, err)
 	}
 	return block
+}
+
+func TestCredentialMintingPathRulesReadAnEncodedSlashAsPartOfItsSegment(t *testing.T) {
+	var guard agentapi.SecretGuard
+	if err := json.Unmarshal([]byte(`{"paths":[{"method":"POST","pattern":"/api/v4/projects/*/access_tokens","operation":"gitlab:CreateProjectAccessToken"}]}`), &guard); err != nil {
+		t.Fatal(err)
+	}
+	connection := agentapi.Connection{SecretGuard: &guard}
+	tests := []struct {
+		target  string
+		blocked bool
+	}{
+		{"https://gitlab.example/api/v4/projects/42/access_tokens", true},
+		{"https://gitlab.example/api/v4/projects/group%2Fproject/access_tokens", true},
+		{"https://gitlab.example/api/v4/projects/group%2fsub%2Fproject/access_tokens/", true},
+		{"https://gitlab.example/api/v4/projects/group%2Fproject/issues", false},
+		{"https://gitlab.example/api/v4/projects/group/project/access_tokens", false},
+	}
+	for _, test := range tests {
+		request, err := http.NewRequest(http.MethodPost, test.target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocked, err := CredentialMintingBlocked(request, connection)
+		if err != nil || (blocked != nil) != test.blocked {
+			t.Errorf("%s: blocked=%#v err=%v, want blocked=%t", test.target, blocked, err, test.blocked)
+		}
+	}
 }
