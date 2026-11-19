@@ -1164,3 +1164,27 @@ func TestCompiledEnvironmentAlwaysCarriesReservedNames(t *testing.T) {
 		t.Fatal("a plan without reserved names was accepted")
 	}
 }
+
+// A purge removes the CA key from the system keystore. A keystore that does
+// not answer may still hold it, so that is reported; a keystore that answers
+// and holds no key is not.
+func TestDeleteStoredCAKeyReportsAKeystoreItCouldNotReach(t *testing.T) {
+	t.Cleanup(gokeyring.MockInit)
+	gokeyring.MockInitWithError(errors.New("secret service unreachable"))
+	if err := DeleteStoredCAKey(); !errors.Is(err, ErrKeystoreUnreachable) {
+		t.Fatalf("an unreachable keystore was reported as %v", err)
+	}
+	gokeyring.MockInit()
+	if err := DeleteStoredCAKey(); err != nil {
+		t.Fatalf("a keystore with no CA key: %v", err)
+	}
+	if err := gokeyring.Set(caKeyringService, caKeyringUser, "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteStoredCAKey(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gokeyring.Get(caKeyringService, caKeyringUser); !errors.Is(err, gokeyring.ErrNotFound) {
+		t.Fatalf("the CA key is still in the keystore: %v", err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -437,5 +438,71 @@ func TestWindowsPowerShellEnvironmentReplacesTheInheritedModulePath(t *testing.T
 	}
 	if len(environment) != 3 {
 		t.Fatalf("environment = %v", environment)
+	}
+}
+
+// A purge of all local data leaves the user's trust store alone. When a
+// Phase AI root is there it says so in one line, with how to remove it, and
+// it finds that out by reading the store and nothing else.
+func TestUserCATrustLeftoverNamesAnInstalledRootWithoutChangingTheStore(t *testing.T) {
+	_, phasePEM, _, err := GenerateCA(24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	database := filepath.Join(home, ".pki", "nssdb")
+	if err := os.MkdirAll(database, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(database, "cert9.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for goos, c := range map[string]struct {
+		installed []byte
+		remove    string
+		reads     []string
+	}{
+		"darwin":  {phasePEM, `open Keychain Access and delete "Phase AI Proxy CA"`, []string{"default-keychain", "find-certificate"}},
+		"windows": {[]byte("PHASE_CA_OBSOLETE 0123456789ABCDEF0123456789ABCDEF01234567\r\n"), `certutil -user -delstore Root "Phase AI Proxy CA"`, []string{"-NoLogo"}},
+		"linux":   {phasePEM, `certutil -D -d sql:$HOME/.pki/nssdb -n "Phase AI Proxy CA"`, []string{"-L"}},
+	} {
+		listing := c.installed
+		runner := &recordingTrustRunner{run: func(_ string, args ...string) ([]byte, error) {
+			if args[0] == "default-keychain" {
+				return nil, errors.New("no default keychain")
+			}
+			return listing, nil
+		}}
+		installer := userCATrustInstaller{GOOS: goos, Home: home, Runner: runner}.withDefaults()
+		line := installer.leftover()
+		if !strings.HasPrefix(line, "The Phase AI root certificate stays in your ") || !strings.Contains(line, c.remove) || strings.Contains(line, "\n") {
+			t.Fatalf("%s: an installed root was reported as %q", goos, line)
+		}
+		for _, command := range runner.commands {
+			if !slices.Contains(c.reads, command.Args[0]) {
+				t.Fatalf("%s: looking for a root ran %v", goos, command.Args)
+			}
+		}
+		// Nothing of Phase's in the store, or a store that cannot be read:
+		// nothing is said.
+		for name, quiet := range map[string]*recordingTrustRunner{
+			"an empty store": {},
+			"an unreadable store": {run: func(string, ...string) ([]byte, error) {
+				return listing, errors.New("the store could not be read")
+			}},
+			"no tool": {lookPath: func(string) (string, error) { return "", errors.New("not found") }},
+		} {
+			if line := (userCATrustInstaller{GOOS: goos, Home: home, Runner: quiet}).withDefaults().leftover(); line != "" {
+				t.Fatalf("%s, %s: %q", goos, name, line)
+			}
+		}
+	}
+	if line := (userCATrustInstaller{GOOS: "plan9", Home: home, Runner: &recordingTrustRunner{}}).withDefaults().leftover(); line != "" {
+		t.Fatalf("an unsupported system: %q", line)
+	}
+	// With no NSS database there is nothing to ask certutil about.
+	runner := &recordingTrustRunner{}
+	if line := (userCATrustInstaller{GOOS: "linux", Home: t.TempDir(), Runner: runner}).withDefaults().leftover(); line != "" || len(runner.commands) != 0 {
+		t.Fatalf("without an NSS database: %q after %v", line, runner.commands)
 	}
 }

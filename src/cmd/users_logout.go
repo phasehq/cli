@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,9 @@ var usersLogoutCmd = &cobra.Command{
 	Short: "🏃 Logout from phase-cli",
 	RunE:  runUsersLogout,
 }
+
+// caTrustLeftover reads the user's trust store; tests replace it.
+var caTrustLeftover = phaseproxy.UserCATrustLeftover
 
 func init() {
 	usersLogoutCmd.Flags().Bool("purge", false, "Purge all local data")
@@ -45,7 +49,14 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
 		}
 		cancel()
-		if err := phaseproxy.DeleteStoredCAKey(); err != nil {
+		if err := phaseproxy.DeleteStoredCAKey(); errors.Is(err, phaseproxy.ErrKeystoreUnreachable) {
+			// Only a machine that made a Phase AI CA can have stored its key.
+			if directory, dirErr := hookRuntimeDir(); dirErr == nil {
+				if _, statErr := os.Stat(filepath.Join(directory, "ca.pem")); statErr == nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), "The system keystore could not be reached, so a Phase AI CA key stored in it was not removed.")
+				}
+			}
+		} else if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove the Phase AI CA key from the system keystore: %v\n", err)
 		}
 		phaseHomeDir := filepath.Dir(config.PhaseSecretsDir)
@@ -56,6 +67,10 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 			fmt.Println("Logged out and purged all local data.")
 		} else {
 			fmt.Println("No local data found to purge.")
+		}
+		// The purge leaves the user's trust store alone, and says so.
+		if leftover := caTrustLeftover(); leftover != "" {
+			fmt.Println(leftover)
 		}
 	} else {
 		// Remove current user

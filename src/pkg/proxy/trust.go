@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -269,12 +270,7 @@ func (i userCATrustInstaller) trustDarwin(certificatePath string, certificate *x
 	if err != nil {
 		return UserCATrustResult{}, fmt.Errorf("%w: the macOS security tool was not found: %v", ErrUserCATrustToolMissing, err)
 	}
-	keychain := filepath.Join(i.Home, "Library", "Keychains", "login.keychain-db")
-	if output, runErr := i.Runner.Run(security, "default-keychain", "-d", "user"); runErr == nil {
-		if configured := strings.Trim(strings.TrimSpace(string(output)), `"`); configured != "" {
-			keychain = configured
-		}
-	}
+	keychain := i.darwinUserKeychain(security)
 
 	if output, runErr := i.Runner.Run(security, "find-certificate", "-a", "-p", "-c", phaseAITrustNickname, keychain); runErr == nil {
 		phaseRoots := make([]*x509.Certificate, 0)
@@ -315,6 +311,74 @@ func (i userCATrustInstaller) trustDarwin(certificatePath string, certificate *x
 		return UserCATrustResult{}, trustCommandError("trust Phase AI CA in macOS current-user keychain", err, output)
 	}
 	return UserCATrustResult{Store: "macOS current-user keychain"}, nil
+}
+
+// darwinUserKeychain is the current user's default keychain, the login
+// keychain unless another is configured.
+func (i userCATrustInstaller) darwinUserKeychain(security string) string {
+	keychain := filepath.Join(i.Home, "Library", "Keychains", "login.keychain-db")
+	if output, runErr := i.Runner.Run(security, "default-keychain", "-d", "user"); runErr == nil {
+		if configured := strings.Trim(strings.TrimSpace(string(output)), `"`); configured != "" {
+			keychain = configured
+		}
+	}
+	return keychain
+}
+
+// UserCATrustLeftover is the one line a purge of all local data prints when a
+// Phase AI root certificate is in the current user's trust store: that it
+// stays there, and how to remove it. It is empty when none is found. It only
+// reads the store; Phase removes a trusted root nowhere but in a rotation.
+func UserCATrustLeftover() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return (userCATrustInstaller{GOOS: runtime.GOOS, Home: home}).withDefaults().leftover()
+}
+
+func (i userCATrustInstaller) leftover() string {
+	const stays = "The Phase AI root certificate stays in "
+	switch i.GOOS {
+	case "darwin":
+		security, err := i.Runner.LookPath("security")
+		if err != nil {
+			return ""
+		}
+		output, err := i.Runner.Run(security, "find-certificate", "-a", "-p", "-c", phaseAITrustNickname, i.darwinUserKeychain(security))
+		if err != nil || !slices.ContainsFunc(parsePEMCertificates(output), isPhaseOwnedRoot) {
+			return ""
+		}
+		return stays + `your keychain. To remove it, open Keychain Access and delete "` + phaseAITrustNickname + `".`
+	case "windows":
+		powershell, err := i.Runner.LookPath("powershell.exe")
+		if err != nil {
+			return ""
+		}
+		// With no certificate to look for, the script lists every Phase root.
+		script := strings.Replace(windowsPhaseRootInspectionScript, "__PHASE_SHA256__", "", 1)
+		output, err := i.Runner.Run(powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
+		if err != nil || !strings.Contains(string(output), "PHASE_CA_OBSOLETE ") {
+			return ""
+		}
+		return stays + `your user Root store. To remove it, run: certutil -user -delstore Root "` + phaseAITrustNickname + `"`
+	case "linux":
+		certutil, err := i.Runner.LookPath("certutil")
+		if err != nil {
+			return ""
+		}
+		directory := filepath.Join(i.Home, ".pki", "nssdb")
+		if _, err := i.Stat(filepath.Join(directory, "cert9.db")); err != nil {
+			return ""
+		}
+		output, err := i.Runner.Run(certutil, "-L", "-d", "sql:"+directory, "-n", phaseAITrustNickname, "-a")
+		if err != nil || !slices.ContainsFunc(parsePEMCertificates(output), isPhaseOwnedRoot) {
+			return ""
+		}
+		return stays + `your NSS database. To remove it, run: certutil -D -d sql:$HOME/.pki/nssdb -n "` + phaseAITrustNickname + `"`
+	default:
+		return ""
+	}
 }
 
 func (i userCATrustInstaller) trustWindows(certificatePath string, certificate *x509.Certificate) (UserCATrustResult, error) {

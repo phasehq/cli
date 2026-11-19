@@ -86,15 +86,21 @@ var memoryCAs = struct {
 // private key cannot be kept in a system keystore.
 const NoKeystoreNotice = "There is no system keystore on this machine, so the Phase AI CA key is kept in memory only and a new CA is created each time the proxy starts."
 
+// ErrKeystoreUnreachable means the system keystore did not answer, so a CA
+// key it holds was not removed.
+var ErrKeystoreUnreachable = errors.New("the system keystore could not be reached")
+
 // DeleteStoredCAKey removes the CA private key from the system keystore, for a
-// purge of all local data. A missing key or keystore is not an error.
+// purge of all local data. A missing key is not an error. A keystore that
+// does not answer is ErrKeystoreUnreachable: a key stored from a session that
+// could reach it, such as the desktop's, is still there.
 func DeleteStoredCAKey() error {
 	err := gokeyring.Delete(caKeyringService, caKeyringUser)
 	if err == nil || errors.Is(err, gokeyring.ErrNotFound) {
 		return nil
 	}
 	if !(CAStore{}).KeystoreAvailable() {
-		return nil
+		return ErrKeystoreUnreachable
 	}
 	return err
 }
