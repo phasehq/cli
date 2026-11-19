@@ -515,8 +515,8 @@ a body is (the type alone: `application/connect+proto; charset=utf-8` is
 | `application/x-protobuf`, `application/protobuf` | one protobuf message with the rules of its path: read whole (16 MiB), overwritten in place |
 | anything else (`application/octet-stream`, `application/grpc-web-text`, none) | bytes whose length must not change: overwritten in place when their length is stated, sent on unread over HTTP/2 when it is not |
 
-Connect and gRPC calls in protobuf carry conversation content whatever their
-path, so every pattern rule applies to them. Everything else on such a host,
+Connect and gRPC calls, in protobuf or JSON, carry conversation content
+whatever their path, so every pattern rule applies to them. Everything else on such a host,
 traces for one, is read for registered values and Phase's own tokens only,
 with the rules of its path.
 
