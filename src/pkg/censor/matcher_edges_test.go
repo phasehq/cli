@@ -614,3 +614,63 @@ func TestARunOfRepeatedCopiesIsTakenOnce(t *testing.T) {
 		t.Fatalf("scanning took %v, over %v", best, limit)
 	}
 }
+
+// Ranges found in bytes that were rewritten are mapped back to the bytes that
+// were scanned. With thousands of replacements before thousands of ranges each
+// one still maps to its own place, and the mapping walks the replacements
+// once, not once for every range.
+func TestManyRangesMapBackInOnePass(t *testing.T) {
+	limit := 250 * time.Millisecond
+	if raceEnabled {
+		limit *= 10
+	}
+	first, second := randomString(t, alnum, 24), randomString(t, alnum, 24)
+	ix := build(t, secret{ID: "a", Value: first}, secret{ID: "b", Value: second})
+	// The second value is in base64 twice over, so it is found by decoding a
+	// run, after the first pass replaced every copy of the first.
+	inner := base64.StdEncoding.EncodeToString([]byte("xx " + second + " yy"))
+	run := base64.StdEncoding.EncodeToString([]byte("see " + inner + " there"))
+	const copies = 20000
+	text := []byte(strings.Repeat(first+" ", copies) + strings.Repeat(run+" ", copies))
+	best := time.Hour
+	var matches []Match
+	for i := 0; i < 3; i++ {
+		started := time.Now()
+		ix.mu.RLock()
+		_, _, _, reps, _ := ix.scanBlock(text, "", newScanState(), true, ix.rules)
+		ix.mu.RUnlock()
+		best = min(best, time.Since(started))
+		matches = matches[:0]
+		for _, r := range reps {
+			matches = append(matches, Match{Finding: r.hit.finding(), Start: r.start, End: r.end})
+		}
+	}
+	t.Logf("%d ranges in %d KB mapped in %v", len(matches), len(text)>>10, best)
+	if len(matches) != 2*copies {
+		t.Fatalf("%d ranges, want %d", len(matches), 2*copies)
+	}
+	for i, m := range matches {
+		want, placeholder := first, "ph:secret:a"
+		if i >= copies {
+			want, placeholder = run, "ph:secret:b"
+		}
+		if string(text[m.Start:m.End]) != want || m.Placeholder != placeholder {
+			t.Fatalf("range %d is %d to %d, %s", i, m.Start, m.End, m.Placeholder)
+		}
+	}
+	if best > limit {
+		t.Fatalf("scanning took %v, over %v", best, limit)
+	}
+
+	// Asked out of order, a position is still mapped from the start.
+	reps := []rep{{start: 10, end: 40, hit: hit{placeholder: "ph:secret:a"}}, {start: 50, end: 52}, {start: 60, end: 64, hit: hit{placeholder: "ph:secret:b"}}}
+	back := positions{reps: reps}
+	for _, tc := range []struct {
+		pos, want int
+		end       bool
+	}{{5, 5, false}, {10, 10, false}, {15, 10, false}, {15, 40, true}, {21, 40, false}, {41, 60, false}, {45, 64, true}, {52, 64, false}, {60, 72, false}, {3, 3, false}, {30, 49, false}} {
+		if got := back.of(tc.pos, tc.end); got != tc.want {
+			t.Errorf("position %d maps to %d, want %d", tc.pos, got, tc.want)
+		}
+	}
+}

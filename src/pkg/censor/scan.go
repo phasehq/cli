@@ -424,9 +424,10 @@ func (ix *Index) inventoryPass(data []byte, depth int, st *scanState) ([]byte, [
 			hits = append(hits, decodedHits...)
 			// Decoded runs never touch a placeholder, so each sits in bytes the
 			// first pass left alone and maps back by a plain shift.
+			back := positions{reps: reps}
 			for i := range decodedReps {
-				decodedReps[i].start = mapPosition(decodedReps[i].start, reps, false)
-				decodedReps[i].end = mapPosition(decodedReps[i].end, reps, true)
+				decodedReps[i].start = back.of(decodedReps[i].start, false)
+				decodedReps[i].end = back.of(decodedReps[i].end, true)
 			}
 			reps = mergeReps(reps, decodedReps)
 		}
@@ -434,30 +435,41 @@ func (ix *Index) inventoryPass(data []byte, depth int, st *scanState) ([]byte, [
 	return out, hits, reps
 }
 
-// mapPosition turns a position in the rewritten bytes back into one in the bytes
+// positions turns positions in the rewritten bytes back into ones in the bytes
 // that were scanned, given the replacements made (sorted, in the scanned bytes'
 // coordinates). A position inside a placeholder maps to the replaced range's
-// start, or its end when end is set.
-func mapPosition(pos int, reps []rep, end bool) int {
-	shift := 0
-	for _, r := range reps {
+// start, or its end when end is set. Positions are asked for in rising order,
+// so the replacements already behind one are not walked again for the next.
+type positions struct {
+	reps  []rep
+	next  int // the first replacement not behind the last position asked for
+	shift int // how much longer the rewritten bytes are than the scanned, up to it
+	last  int
+}
+
+func (m *positions) of(pos int, end bool) int {
+	if pos < m.last {
+		m.next, m.shift = 0, 0
+	}
+	m.last = pos
+	for ; m.next < len(m.reps); m.next++ {
+		r := m.reps[m.next]
 		if r.hit.placeholder == "" {
 			continue
 		}
-		outStart := r.start + shift
-		outEnd := outStart + len(r.hit.placeholder)
+		outStart := r.start + m.shift
 		if pos <= outStart {
-			return pos - shift
+			break
 		}
-		if pos < outEnd {
+		if pos < outStart+len(r.hit.placeholder) {
 			if end {
 				return r.end
 			}
 			return r.start
 		}
-		shift += len(r.hit.placeholder) - (r.end - r.start)
+		m.shift += len(r.hit.placeholder) - (r.end - r.start)
 	}
-	return pos - shift
+	return pos - m.shift
 }
 
 func mergeReps(a, b []rep) []rep {
@@ -661,9 +673,10 @@ func (ix *Index) scanBlock(data []byte, keyName string, st *scanState, wantRange
 	if len(ruleReps) > 0 && wantRanges {
 		inventory := reps
 		reps = append([]rep(nil), inventory...)
+		back := positions{reps: inventory}
 		for _, r := range ruleReps {
-			r.start = mapPosition(r.start, inventory, false)
-			r.end = mapPosition(r.end, inventory, true)
+			r.start = back.of(r.start, false)
+			r.end = back.of(r.end, true)
 			reps = append(reps, r)
 		}
 		sort.SliceStable(reps, func(i, j int) bool { return reps[i].start < reps[j].start })
