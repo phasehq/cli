@@ -793,7 +793,9 @@ func TestEngineEndToEnd(t *testing.T) {
 
 	t.Run("status says what is read, and counts what was", func(t *testing.T) {
 		status := e.status(t, func(status Status) bool { return status.Counts["owner_lookup_failed"] == 1 })
-		if status.Counts["read"] != 1 || status.Counts["unread_not_tool"] != 1 {
+		// The stand-in reader hands over a host the proxy's own table doesn't read,
+		// so the proxy only relayed the tool's flow, and that is what is counted.
+		if status.Counts["read"] != 0 || status.Counts["unread_by_proxy"] != 1 || status.Counts["unread_not_tool"] != 1 {
 			t.Fatalf("counts: %v", status.Counts)
 		}
 		if !reflect.DeepEqual(status.ReadTools, map[string][]string{"claude": {modelHost}}) {
@@ -857,7 +859,9 @@ func TestEngineCapturesModelHostsByNameWhenItCapturesLess(t *testing.T) {
 
 	t.Run("status says which routes are captured", func(t *testing.T) {
 		status := e.status(t, func(status Status) bool { return status.Counts["unread_not_tool"] == 1 })
-		if !reflect.DeepEqual(status.Routes, routes) || status.Counts["read"] != 1 || !contains(status.Domains, modelHost) {
+		// The proxy's own table doesn't read the stand-in reader's host: the tool's
+		// flow went through the proxy, and wasn't read.
+		if !reflect.DeepEqual(status.Routes, routes) || status.Counts["read"] != 0 || status.Counts["unread_by_proxy"] != 1 || !contains(status.Domains, modelHost) {
 			t.Fatalf("status: %+v", status)
 		}
 	})
