@@ -211,9 +211,8 @@ type InventoryStatus struct {
 	// OtherScheme counts stored entries in a matching scheme this build does
 	// not match: kept, and in need of registering again.
 	OtherScheme int
-	// OtherKey reports a file written under another key: nothing in it was
-	// matched, and all of it was dropped. It is no count, since under another
-	// key nothing tells this tenant's records from any other's.
+	// OtherKey reports a file under another key, none of it matched and all of
+	// it dropped. No count: such a file does not say whose its records were.
 	OtherKey bool
 	// Damaged counts stored entries that could not be read or validated.
 	Damaged int
@@ -756,11 +755,9 @@ func (s InventoryStore) Remove() error {
 }
 
 // Forget removes what is stored for logins of the store's tenant, or for the
-// whole tenant, as a logout does. It makes no key or file, and waits for a
-// store in use as Remove does. With the key it touches no other tenant's
-// records. The key is all that says whose a record is, so a file it does not
-// open, or a keystore that does not give it, leaves no way to pick: the whole
-// file goes, and everyone says so. What could not be removed is the error.
+// whole tenant, as a logout does, and waits for a store in use as Remove does.
+// The key is all that says whose a record is: without one that opens the file
+// the whole file goes, and everyone says so.
 func (s InventoryStore) Forget(logins []string, wholeTenant bool) (everyone bool, err error) {
 	if s.Tenant == "" {
 		return false, nil
@@ -842,8 +839,8 @@ func DeleteStoredInventoryKey() error {
 
 // Purge removes the stored inventory: the key from the keystore, then the
 // entries. It is what phase ai disable does. A key the keystore cannot
-// delete is replaced, so that nothing stored under it is matched again, and
-// one it can neither delete nor replace is the error: the entries go all the same.
+// delete is replaced, so that nothing stored under it is matched again. One
+// it can neither delete nor replace is the error, and the entries still go.
 //
 // The key goes first: a proxy registering meanwhile writes before the file
 // is removed, or finds the file gone and its key with it, and writes nothing.
@@ -852,8 +849,7 @@ func (s InventoryStore) Purge() error {
 }
 
 // deleteKey removes the master without reading it first: a read the keystore
-// refuses says nothing of whether a key is there, and a key left behind
-// unsaid would outlive the disable.
+// refuses says nothing of whether a key is there.
 func (s InventoryStore) deleteKey() error {
 	if deleter, ok := s.keyring().(interface {
 		Delete(service, user string) error
@@ -871,8 +867,7 @@ func (s InventoryStore) deleteKey() error {
 		return nil
 	}
 	// A key that cannot be deleted, or may be there unread, is replaced: what
-	// is stored under it is then another key's, to every proxy. A keystore
-	// that will not take the new one either is the error.
+	// is stored under it is then another key's. A refused replacement is the error.
 	_, raw, err := s.newKey()
 	clear(raw)
 	if err != nil {
@@ -953,10 +948,8 @@ func (inv *Inventory) read() inventoryFile {
 	}
 	rest := data[inventoryHeaderSize:]
 	seen := map[[inventoryTagSize]byte]struct{}{}
-	// lost says the bytes being read are a stretch no record was found in. It
-	// is counted once and searched a byte at a time for the next head that
-	// opens, so one damaged length or head costs its own record and no other.
-	// unopened bounds the heads tried in such stretches.
+	// lost is a stretch no record was found in: counted once, and searched a
+	// byte at a time for the next head that opens. unopened bounds the search.
 	lost, unopened := false, 0
 	for len(rest) > 0 {
 		if len(file.records)+unopened >= maxInventoryRecords {
@@ -1001,10 +994,8 @@ func (inv *Inventory) read() inventoryFile {
 	return file
 }
 
-// recordAt reads the record rest begins with: a length that fits, and a head
-// that opens under this key. It says whose the record is; nothing whose head
-// does not open is a record of this key's, whatever its length said. tried
-// reports that a head was there to try.
+// recordAt reads the record rest begins with: a length that fits and a head
+// that opens under this key. tried reports that a head was there to try.
 func (inv *Inventory) recordAt(rest []byte) (record inventoryRecord, tried, ok bool) {
 	if len(rest) < 4 {
 		return record, false, false
@@ -1179,12 +1170,10 @@ func (inv *Inventory) Add(batch []StoredEntries) {
 	inv.reached(reason, dropped)
 }
 
-// AddWithin is Add for a caller that has an answer to give in time: it
-// returns once the batch is stored or wait has passed, whichever is first. A
-// write that takes longer (a store in use, a keystore that waits on a person,
-// a large file) finishes behind the caller, and Status says how it went. With
-// inventoryWritesBehind writes already waiting, the batch is not queued behind
-// them: it stays in memory, and Status says the store is busy.
+// AddWithin is Add for a caller with an answer to give: it returns once the
+// batch is stored or wait has passed, and a slower write finishes behind it.
+// Past inventoryWritesBehind waiting writes a batch is not queued: it stays in
+// memory, and Status says the store is busy.
 func (inv *Inventory) AddWithin(batch []StoredEntries, wait time.Duration) {
 	inv.mu.Lock()
 	durable := inv.status.Durable

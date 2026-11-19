@@ -55,12 +55,9 @@ func inventoryLoginKind(kind string) bool {
 	return kind == InventoryLoginUser || kind == InventoryLoginServiceAccount || kind == InventoryLoginAgent
 }
 
-// inventoryConsole is a Console as a tenant names it: the address it is
-// served at, in one form. Scheme and host are lower case, with no default port
-// or trailing dot. The path is the one the Console is served under, as the
-// client that opens a session reads a host (agentapi.DeploymentPath), cleaned
-// and with no trailing slash: two Consoles of one origin are two tenants. A
-// query is dropped. "" if unknown.
+// inventoryConsole is a Console as a tenant names it, in one form: its origin
+// and the path it is served under, read as the client that opens a session
+// reads it and cleaned, so two Consoles of one origin differ. "" if unknown.
 func inventoryConsole(host string) string {
 	parsed, err := url.Parse(strings.TrimSpace(host))
 	if err != nil || parsed.Opaque != "" {

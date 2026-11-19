@@ -447,10 +447,8 @@ func newLeakGuardFromEnvironment() (*leakGuard, error) {
 	return newLeakGuard(os.Getenv(LeakProtectionEnvironmentKey))
 }
 
-// leakStoreWait is how long a registration's answer waits for the store. The
-// values are in the index by then, and a client gives the whole registration
-// a second (leakguard.Timeout): a write that takes longer finishes behind the
-// answer. Tests lengthen it, to find a value stored once it is acknowledged.
+// leakStoreWait is how long a registration's answer waits for the store, well
+// inside the second a client gives it (leakguard.Timeout). Tests lengthen it.
 var leakStoreWait = 250 * time.Millisecond
 
 // errLeakInventoryFull is what a registration gets once the session's own

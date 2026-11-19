@@ -28,9 +28,8 @@ func (t TokenType) IdentityKind() string {
 // longest first: what stands before one is where the Console is served.
 var publicAPIPaths = []string{"/service/public/v1/agents", "/service/public"}
 
-// DeploymentPath is the path a Console is served under, of the path of a host
-// as NewClient reads it: "" at an origin's root, "/phase" for a Console at
-// https://example.com/phase however much of its API's path was written after.
+// DeploymentPath is the path a Console is served under, of a host's path as
+// NewClient reads it: "" at an origin's root, whatever of the API's follows.
 func DeploymentPath(hostPath string) string {
 	hostPath = strings.TrimSuffix(hostPath, "/")
 	for _, api := range publicAPIPaths {

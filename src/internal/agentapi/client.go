@@ -68,9 +68,8 @@ func (e *Error) Error() string {
 }
 
 type Client struct {
-	baseURL *url.URL
-	// deployment is the path the Console is served under, before its API's.
-	deployment    string
+	baseURL       *url.URL
+	deployment    string // the path the Console is served under, before its API's
 	authorization string
 	tokenType     TokenType
 	httpClient    *http.Client

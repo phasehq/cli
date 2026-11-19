@@ -185,9 +185,8 @@ type LeakInventoryStatus struct {
 	// because they were made by a version that matches differently. They are
 	// kept, and matched again once a command reads their value.
 	UnmatchedScheme int `json:"unmatchedScheme"`
-	// UnmatchedKey reports that the store was written under a key that has
-	// since been replaced: nothing in it was matched and it has been dropped.
-	// It is no count: such a file does not say whose its records were.
+	// UnmatchedKey reports a store under a key since replaced: none of it was
+	// matched, all of it dropped. No count: it does not say whose records.
 	UnmatchedKey bool `json:"unmatchedKey"`
 	// Unstored counts registrations from commands that are not of the proxy's
 	// own login: kept until the proxy exits, counted whatever they held.
