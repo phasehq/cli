@@ -2,6 +2,7 @@ package aiproxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha1" // #nosec G505 -- required by RFC 6455 for Sec-WebSocket-Accept.
 	"crypto/tls"
@@ -708,7 +709,7 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 		if result.event.EventID != "" {
 			response.Header.Set(eventIDHeader, result.event.EventID)
 		}
-		writeErr := response.Write(tlsClient)
+		writeErr := writeTunnelResponse(tlsClient, response)
 		result.response.Body.Close()
 		if bodyWithheld() {
 			return
@@ -765,6 +766,51 @@ func responseForMITMClient(upstream *http.Response, request *http.Request) *http
 	return response
 }
 
+// headWriter holds a response's head, which net/http writes a few bytes at a
+// time, and sends it in one write; what follows goes out as it is written.
+type headWriter struct {
+	client io.Writer
+	head   []byte
+	sent   bool
+}
+
+func (w *headWriter) Write(data []byte) (int, error) {
+	if w.sent {
+		return w.client.Write(data)
+	}
+	// The blank line that ends a head may be split between two writes.
+	searched := max(len(w.head)-3, 0)
+	w.head = append(w.head, data...)
+	if !bytes.Contains(w.head[searched:], []byte("\r\n\r\n")) {
+		return len(data), nil
+	}
+	if err := w.flush(); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+// flush sends a head that is still held, whole or not.
+func (w *headWriter) flush() error {
+	if w.sent {
+		return nil
+	}
+	w.sent = true
+	_, err := w.client.Write(w.head)
+	w.head = nil
+	return err
+}
+
+// writeTunnelResponse sends a response's head to a tunnel's client as one TLS
+// record: Codex's WebSocket client gives up on a head that comes in pieces.
+func writeTunnelResponse(client io.Writer, response *http.Response) error {
+	writer := &headWriter{client: client}
+	if err := response.Write(writer); err != nil {
+		return err
+	}
+	return writer.flush()
+}
+
 func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clientReader *bufio.Reader, request *http.Request, result processedResponse, flow FlowContext) {
 	defer request.Body.Close()
 	defer result.response.Body.Close()
@@ -801,7 +847,7 @@ func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clien
 	removeHopHeaders(responseCopy.Header)
 	responseCopy.Header.Set("Connection", "Upgrade")
 	responseCopy.Header.Set("Upgrade", "websocket")
-	if err := responseCopy.Write(client); err != nil {
+	if err := writeTunnelResponse(client, &responseCopy); err != nil {
 		return
 	}
 	stop := make(chan struct{})
@@ -1208,7 +1254,7 @@ func writeFailureResponse(writer io.Writer, request *http.Request, failure *requ
 	}
 	setProxyFailureHeaders(response.Header, failure)
 	response.Header.Set("Content-Type", contentType)
-	return response.Write(writer)
+	return writeTunnelResponse(writer, response)
 }
 
 func proxyFailurePayload(failure *requestFailure) (string, []byte) {
