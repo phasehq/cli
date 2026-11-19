@@ -801,8 +801,8 @@ func joinWithin(values []string, limit int) string {
 
 // noteLeakHandshake records a client's TLS handshake with the proxy's
 // certificate on a host read for leak protection, and reports each pass-through
-// window it opens: nothing that tool sends to that host is read until the
-// window ends.
+// window it opens: nothing a client with that TLS hello sends to that host
+// is read until the window ends.
 func (p *httpProxy) noteLeakHandshake(host string, port int, match *leakHostMatch, ok bool) {
 	window := p.leak.handshakes.note(match.key, ok)
 	if window != 0 && p.observe != nil {

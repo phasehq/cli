@@ -24,7 +24,8 @@ import (
 //	ai/ca.pem                                    CA store (enable, proxy start)    public CA certificate(s)                        kept; replaced on renewal
 //	ai/ca-bundle.pem                             CA store                          CA certificate(s) + system roots, base bundle   kept; replaced with ca.pem
 //	ai/ca.lock                                   CA store                          serializes CA load and publication              kept
-//	ai/runtime-ca-bundle.pem                     every proxy start                 trust bundle child processes are pointed at     kept: live phase ai run children may read it
+//	ai/runtime-ca-bundle-<hash>.pem              every proxy start                 trust bundle child processes are pointed at,    kept while in use; the CA store removes one
+//	                                                                               one per set of trusted roots                    untouched for 30 days
 //	ai/env.sh, env.json, env-status.json         hook daemon                       environment harness shells and plugins load     phase ai disable
 //	ai/runtime.json                              hook daemon                       running daemon's PID, generation, proxy URL     daemon exit
 //	ai/runtime.lock                              hooks starting the daemon         daemon ownership                                daemon exit

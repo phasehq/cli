@@ -53,7 +53,7 @@ type httpProxy struct {
 	// test harness that measures leak protection sets it; nil costs one check.
 	observe func(leakObservation)
 	// mirrorHelloWait is how long a client may take to send its TLS hello to a
-	// host whose hello is copied; zero means mirrorHelloTimeout.
+	// host read for leak protection; zero means mirrorHelloTimeout.
 	mirrorHelloWait time.Duration
 	// unreadRepeat is how often the event of a connection passed through
 	// unread is offered again while the connection stays open; zero means a
