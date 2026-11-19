@@ -109,6 +109,15 @@ type Unprotected struct {
 // Protected reports whether anything of the value was indexed.
 func (e *Entries) Protected() bool { return e != nil && len(e.Forms) > 0 }
 
+// Chunks is how many chunks the entries hold: what they cost an index.
+func (e *Entries) Chunks() int {
+	chunks := 0
+	for i := range e.Forms {
+		chunks += len(e.Forms[i].MACs) / macSize
+	}
+	return chunks
+}
+
 // Placeholder is what replaces the value in a request.
 func (e *Entries) Placeholder() string { return "ph:" + e.Type + ":" + e.ID }
 

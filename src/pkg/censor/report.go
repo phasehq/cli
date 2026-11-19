@@ -40,6 +40,9 @@ type Finding struct {
 	// Path is the JSON pointer of the string it was found in, for RewriteJSON. A
 	// string holding JSON adds '#' and the pointer inside it.
 	Path string `json:"path,omitempty"`
+	// Withheld numbers a value whose id is withheld, from 1, the same for the
+	// life of the Index: all that tells two such values of one type apart.
+	Withheld int `json:"-"`
 }
 
 // Match is a Finding with where it sits in the scanned bytes.
@@ -53,6 +56,7 @@ func (h hit) finding() Finding {
 	return Finding{
 		Kind: h.kind, Placeholder: h.placeholder, Action: h.action, Label: h.label, Rule: h.rule,
 		Score: h.score, Form: h.form, Part: h.part, Decoded: h.decoded, Partial: h.partial, Path: h.path,
+		Withheld: int(h.withheld),
 	}
 }
 

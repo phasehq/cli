@@ -34,11 +34,13 @@ import (
 //   - the entries, in one owner-only file in the Phase AI directory.
 //
 // Everything is partitioned by tenant: the Phase host and the organisation a
-// login belongs to. From the master a proxy derives its own tenant's root and
-// nothing of another's (HKDF-SHA-256), and from that root, a label each: the
-// lookup key, which the tenant's clients are handed; a confirming key per
-// principal (a login, named by a keyed tag of it), which that login's clients
-// are handed; and the keys records are sealed and tagged with, which no one is.
+// login belongs to (InventoryIdentity). From the master a proxy derives its
+// own tenant's root and nothing of another's (HKDF-SHA-256), and from that
+// root, a label each: the lookup key, which the tenant's clients are handed;
+// a confirming key per principal (a login, named by a keyed tag of it), which
+// that login's clients are handed; and the keys records are sealed and tagged
+// with, which no one is. One more key comes from the master itself: the file
+// key, which seals each record's head and is every proxy's of this user.
 //
 // The file holds what censor.Entries hold (keyed hashes, lengths, weak flags,
 // a placeholder's type and id), whether an id is a key name and the record's
@@ -49,15 +51,19 @@ import (
 // File layout, store format 1 (integers big-endian):
 //
 //	magic "PHLKINV1" | format uint32 | key id [8]
-//	then records: length uint32 | scheme uint32 | registered int64 (Unix seconds)
-//	              | tenant tag [16] | owner tag [16] | content tag [16] | nonce [12] | sealed body
+//	then records: length uint32 | nonce [12] | sealed head | nonce [12] | sealed body
+//	head: scheme uint32 | registered int64 (Unix seconds)
+//	      | tenant tag [16] | login tag [16] | content tag [16]
 //
-// The sealed body is one flag byte (1: the id is a key name), the principal's
-// id [16] and the entries as censor.Entries.Marshal writes them, under
-// AES-256-GCM with the file header and the record's fields before the nonce
-// as additional data. The tags are keyed too: the owner tag is the same for
-// every record of one placeholder, and the content tag for the same entries
-// of the same principal.
+// The head is sealed under the file key (AES-256-GCM, the file header as
+// additional data), so the file in the clear shows how many records it holds
+// and how long each is, and not whose a record is, of which login, or when
+// it was registered. The body is one flag byte (1: the id is a key name), the
+// principal's id [16] and the entries as censor.Entries.Marshal writes them,
+// sealed under the tenant's key with the file header and the head as
+// additional data. The tags are keyed: the login tag is the same for every
+// record of one login of one tenant, and the content tag for the same
+// entries of the same principal.
 //
 // Two numbers version what is stored. The store format is the layout above:
 // a build reads every format up to its own, and leaves a file of a newer
@@ -65,7 +71,8 @@ import (
 // scheme of its entries (censor.EntriesVersion): a record whose scheme this
 // build does not match is kept as it is, for the build that does, and
 // counted. No record replaces another's (a placeholder may name several
-// values): one goes after 30 days unregistered. Scheme 1 is never stored.
+// values): one goes after 30 days unregistered, or when its own login
+// stores past a bound (see inventoryBounds). Scheme 1 is never stored.
 //
 // A file or a key that exists and cannot be read is never written over: the
 // proxy runs from memory and says why. Only "there is none" makes either.
@@ -95,8 +102,13 @@ const (
 	inventoryConfirmLabel = "phase-leak-inventory-confirm-v1"
 	inventorySealLabel    = "phase-leak-inventory-seal-v1"
 	inventoryTagLabel     = "phase-leak-inventory-tag-v1"
+	inventoryFileLabel    = "phase-leak-inventory-file-v1"
+	// inventoryHeadSize is a record's head before it is sealed, and
+	// inventorySealOverhead what AES-GCM adds to what it seals.
+	inventoryHeadSize     = 4 + 8 + 3*inventoryTagSize
+	inventorySealOverhead = 16
 	// inventoryRecordFixed is a record after its length and before its body.
-	inventoryRecordFixed = 4 + 8 + 3*inventoryTagSize + inventoryNonceSize
+	inventoryRecordFixed = inventoryNonceSize + inventoryHeadSize + inventorySealOverhead + inventoryNonceSize
 
 	// inventoryRefreshAfter is how stale a stored entry's time may get before
 	// a registration of the same value writes the file again. Registrations
@@ -106,14 +118,31 @@ const (
 	// time may be before the record is taken for damaged.
 	inventoryClockSlack = 24 * time.Hour
 
-	// maxInventoryFileBytes and maxInventoryRecords bound the file. Past
-	// either, the entries registered longest ago go first.
+	// maxInventoryFileBytes and maxInventoryRecords bound what is read.
 	maxInventoryFileBytes = 64 << 20
 	maxInventoryRecords   = 1 << 16
 	// maxInventoryRecordBytes bounds one record: a registration is at most
 	// 4 MiB on the wire.
 	maxInventoryRecordBytes = 8 << 20
+	// maxInventoryPrincipals bounds the logins one proxy makes a principal
+	// for as clients state them. A stored record's principal needs no room.
+	maxInventoryPrincipals = 128
 )
+
+// storeBound is a number of records and their bytes.
+type storeBound struct{ records, bytes int }
+
+// inventoryBounds bound what is stored in all, for a tenant and for a login.
+// Past one, the login that is writing loses its own oldest, and no one else any.
+var inventoryBounds = struct {
+	file, tenant, login storeBound
+	tenantLogins        int
+}{
+	file:         storeBound{maxInventoryRecords, maxInventoryFileBytes},
+	tenant:       storeBound{8192, 16 << 20},
+	login:        storeBound{4096, 8 << 20},
+	tenantLogins: 64,
+}
 
 // Tests shorten these.
 var (
@@ -151,8 +180,8 @@ const (
 	InventoryReasonBusy = "store_busy"
 	// InventoryReasonNotConfigured: the proxy was started without a store.
 	InventoryReasonNotConfigured = "not_configured"
-	// InventoryReasonNoTenant: the session's login names no host and
-	// organisation or account to keep the inventory for.
+	// InventoryReasonNoTenant: the Console did not say which organisation
+	// and login the session is, so there is no one to keep the inventory for.
 	InventoryReasonNoTenant = "no_tenant"
 )
 
@@ -166,8 +195,8 @@ const NoKeystoreInventoryNotice = "kept in memory only (no system keystore): a r
 type InventoryStore struct {
 	Directory string
 	Keyring   PrivateKeyStore
-	// Tenant names whose inventory this is: the Phase host and the login's
-	// organisation. Empty shares with nobody: memory only, nothing stored.
+	// Tenant names whose inventory this is: an InventoryIdentity's Tenant.
+	// Empty shares with nobody: memory only, nothing stored.
 	Tenant string
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
@@ -187,6 +216,9 @@ type InventoryPrincipal struct {
 	id  [inventoryTagSize]byte
 	key *censor.Key
 }
+
+// ID is the principal's opaque id: something to tell principals apart by.
+func (p InventoryPrincipal) ID() [16]byte { return p.id }
 
 // Key is the lookup key with this principal's confirming key: what a client
 // of the principal is handed, and what the index confirms its entries with.
@@ -234,6 +266,8 @@ type Inventory struct {
 	// tenant is the tag this tenant's records carry in the file.
 	tenant [inventoryTagSize]byte
 	seal   cipher.AEAD
+	// file seals every record's head: derived from the master, not a tenant.
+	file   cipher.AEAD
 	tagKey [32]byte
 	// principals are the keys already expanded, by principal id.
 	principalMu sync.Mutex
@@ -257,9 +291,12 @@ type inventoryRecord struct {
 	scheme     uint32
 	registered int64
 	// tenant is whose record it is. Another tenant's is never opened.
-	tenant  [inventoryTagSize]byte
-	owner   [inventoryTagSize]byte
+	tenant [inventoryTagSize]byte
+	// login is which of the tenant's logins registered it.
+	login   [inventoryTagSize]byte
 	content [inventoryTagSize]byte
+	// head is the record's head as it was before it was sealed.
+	head []byte
 	// raw is the whole record as it is in the file, its length included.
 	raw []byte
 }
@@ -313,6 +350,10 @@ func MemoryInventory() (*Inventory, error) {
 	return memoryInventory(InventoryReasonNotConfigured)
 }
 
+// errInventoryLogins is a proxy asked to make a principal for more logins
+// than it has room for.
+var errInventoryLogins = errors.New("the leak protection inventory holds too many logins")
+
 // Principal is a login's place in the inventory, the same from every proxy
 // while the master lasts. An empty login gets one this process alone holds.
 func (inv *Inventory) Principal(login string) (InventoryPrincipal, error) {
@@ -323,6 +364,13 @@ func (inv *Inventory) Principal(login string) (InventoryPrincipal, error) {
 		}
 	} else {
 		id = inv.tag("principal", []byte(login))
+	}
+	inv.principalMu.Lock()
+	_, known := inv.principals[id]
+	full := len(inv.principals) >= maxInventoryPrincipals
+	inv.principalMu.Unlock()
+	if !known && full {
+		return InventoryPrincipal{}, errInventoryLogins
 	}
 	return inv.principal(id)
 }
@@ -556,6 +604,16 @@ func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byt
 	if len(master) != censor.KeySize || tenant == "" {
 		return nil, errors.New("the inventory master key or tenant is not valid")
 	}
+	// The file key seals record heads, whosever the record is.
+	fileKey, err := hkdf.Key(sha256.New, master, nil, inventoryFileLabel, censor.KeySize)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(fileKey)
+	fileSeal, err := newInventorySeal(fileKey)
+	if err != nil {
+		return nil, err
+	}
 	// The tenant's tag is keyed, so the file names no host or organisation,
 	// and the tenant's root is derived from the master under the tag.
 	tagging, err := hkdf.Key(sha256.New, master, nil, inventoryTenantLabel+"-tag", censor.KeySize)
@@ -584,16 +642,12 @@ func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byt
 	if err != nil {
 		return nil, err
 	}
-	block, err := aes.NewCipher(derived[inventorySealLabel])
-	if err != nil {
-		return nil, err
-	}
-	seal, err := cipher.NewGCM(block)
+	seal, err := newInventorySeal(derived[inventorySealLabel])
 	if err != nil {
 		return nil, err
 	}
 	inv := &Inventory{
-		store: s, directory: directory, lookup: lookup, confirmRoot: derived[inventoryConfirmLabel], keyID: id, tenant: tag, seal: seal,
+		store: s, directory: directory, lookup: lookup, confirmRoot: derived[inventoryConfirmLabel], keyID: id, tenant: tag, seal: seal, file: fileSeal,
 		principals: map[[inventoryTagSize]byte]*censor.Key{},
 		known:      map[[inventoryTagSize]byte]int64{},
 	}
@@ -602,6 +656,14 @@ func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byt
 	clear(derived[inventorySealLabel])
 	clear(derived[inventoryTagLabel])
 	return inv, nil
+}
+
+func newInventorySeal(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }
 
 // errNoInventoryKey is the keystore saying it holds no inventory key: the
@@ -684,6 +746,60 @@ func (s InventoryStore) Remove() error {
 		return err
 	}
 	return nil
+}
+
+// Forget removes what is stored for logins of the store's tenant, or for the
+// whole tenant, as a logout does. It makes no key or file and touches no other.
+func (s InventoryStore) Forget(logins []string, wholeTenant bool) error {
+	if s.Tenant == "" {
+		return nil
+	}
+	directory, err := s.directory()
+	if err != nil {
+		return err
+	}
+	// With no file there is nothing to remove, and the keystore is not asked.
+	if _, err := os.Lstat(filepath.Join(directory, inventoryFileName)); err != nil || !s.KeystoreAvailable() {
+		return nil
+	}
+	id, raw, err := s.storedKey()
+	if errors.Is(err, errNoInventoryKey) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the leak protection inventory key: %w", err)
+	}
+	inv, err := newInventory(s, directory, id, raw, s.Tenant)
+	clear(raw)
+	if err != nil {
+		return err
+	}
+	gone := map[[inventoryTagSize]byte]bool{}
+	for _, login := range logins {
+		if login != "" {
+			gone[inv.loginTag(inv.tag("principal", []byte(login)))] = true
+		}
+	}
+	unlock, err := lockInventory(directory)
+	if err != nil {
+		return fmt.Errorf("lock leak protection inventory: %w", err)
+	}
+	defer unlock()
+	file := inv.read()
+	if !file.present {
+		// No file, or one this key cannot read: nothing of this tenant's to remove.
+		return nil
+	}
+	kept := file.records[:0:0]
+	for _, record := range file.records {
+		if record.tenant != inv.tenant || !(wholeTenant || gone[record.login]) {
+			kept = append(kept, record)
+		}
+	}
+	if len(kept) == len(file.records) {
+		return nil
+	}
+	return inv.write(kept)
 }
 
 // DeleteStoredInventoryKey removes the inventory key from the system
@@ -804,7 +920,7 @@ func (inv *Inventory) read() inventoryFile {
 			break
 		}
 		length := int(binary.BigEndian.Uint32(rest))
-		if length < inventoryRecordFixed+inv.seal.Overhead()+inventoryBodyFixed || length > maxInventoryRecordBytes || length > len(rest)-4 {
+		if length < inventoryRecordFixed+inventorySealOverhead+inventoryBodyFixed || length > maxInventoryRecordBytes || length > len(rest)-4 {
 			file.damaged++
 			break
 		}
@@ -814,10 +930,18 @@ func (inv *Inventory) read() inventoryFile {
 			file.otherKey++
 			continue
 		}
-		record := inventoryRecord{raw: raw, scheme: binary.BigEndian.Uint32(raw[4:]), registered: int64(binary.BigEndian.Uint64(raw[8:]))}
-		copy(record.tenant[:], raw[16:])
-		copy(record.owner[:], raw[16+inventoryTagSize:])
-		copy(record.content[:], raw[16+2*inventoryTagSize:])
+		// The head says whose the record is; one that does not open is no
+		// record of this key's, whatever its length said.
+		sealed := raw[4+inventoryNonceSize : 4+inventoryNonceSize+inventoryHeadSize+inventorySealOverhead]
+		head, err := inv.file.Open(nil, raw[4:4+inventoryNonceSize], sealed, inv.header())
+		if err != nil {
+			file.damaged++
+			continue
+		}
+		record := inventoryRecord{raw: raw, head: head, scheme: binary.BigEndian.Uint32(head), registered: int64(binary.BigEndian.Uint64(head[4:]))}
+		copy(record.tenant[:], head[12:])
+		copy(record.login[:], head[12+inventoryTagSize:])
+		copy(record.content[:], head[12+2*inventoryTagSize:])
 		// No writer stores the same entries twice.
 		if _, twice := seen[record.content]; twice {
 			file.damaged++
@@ -851,8 +975,7 @@ func (inv *Inventory) open(record inventoryRecord, now time.Time) (StoredEntries
 	}
 	fixed := 4 + inventoryRecordFixed
 	nonce := record.raw[fixed-inventoryNonceSize : fixed]
-	additional := append(inv.header(), record.raw[4:fixed-inventoryNonceSize]...)
-	body, err := inv.seal.Open(nil, nonce, record.raw[fixed:], additional)
+	body, err := inv.seal.Open(nil, nonce, record.raw[fixed:], append(inv.header(), record.head...))
 	if err != nil || len(body) < inventoryBodyFixed {
 		return StoredEntries{}, recordDamaged
 	}
@@ -866,7 +989,7 @@ func (inv *Inventory) open(record inventoryRecord, now time.Time) (StoredEntries
 	}
 	entries, err := censor.ParseEntries(wire)
 	if err != nil || entries.Version != int(record.scheme) || !entries.Protected() ||
-		inv.ownerTag(entries) != record.owner || inv.tag("content", body[1:inventoryBodyFixed], wire) != record.content {
+		inv.loginTag([inventoryTagSize]byte(body[1:inventoryBodyFixed])) != record.login || inv.tag("content", body[1:inventoryBodyFixed], wire) != record.content {
 		return StoredEntries{}, recordDamaged
 	}
 	// The record says whose confirming key its hashes were made under.
@@ -889,8 +1012,10 @@ func (inv *Inventory) tag(label string, parts ...[]byte) [inventoryTagSize]byte 
 	return out
 }
 
-func (inv *Inventory) ownerTag(entries *censor.Entries) [inventoryTagSize]byte {
-	return inv.tag("owner", []byte(entries.Type), []byte(entries.ID))
+// loginTag is what a principal's records carry in their head: the same for
+// every record of one login, and nothing two tenants or two logins share.
+func (inv *Inventory) loginTag(principal [inventoryTagSize]byte) [inventoryTagSize]byte {
+	return inv.tag("login", principal[:])
 }
 
 // sealRecord builds the record for one registered value.
@@ -905,7 +1030,7 @@ func (inv *Inventory) sealRecord(stored StoredEntries, wire []byte, now time.Tim
 	body = append(body, wire...)
 	return inv.sealBody(inventoryRecord{
 		scheme: uint32(stored.Entries.Version), registered: now.Unix(), tenant: inv.tenant,
-		owner: inv.ownerTag(stored.Entries), content: inv.contentTag(stored, wire),
+		login: inv.loginTag(stored.Principal.id), content: inv.contentTag(stored, wire),
 	}, body)
 }
 
@@ -914,26 +1039,30 @@ func (inv *Inventory) contentTag(stored StoredEntries, wire []byte) [inventoryTa
 	return inv.tag("content", stored.Principal.id[:], wire)
 }
 
-// sealBody seals a record's body under its fields.
+// sealBody seals a record: its head under the file key, and its body under
+// the tenant's with the head as additional data.
 func (inv *Inventory) sealBody(record inventoryRecord, body []byte) (inventoryRecord, error) {
-	length := inventoryRecordFixed + len(body) + inv.seal.Overhead()
+	length := inventoryRecordFixed + len(body) + inventorySealOverhead
 	if length > maxInventoryRecordBytes {
 		return record, errors.New("the entries are too large to store")
 	}
-	raw := make([]byte, 0, 4+length)
-	raw = binary.BigEndian.AppendUint32(raw, uint32(length))
-	raw = binary.BigEndian.AppendUint32(raw, record.scheme)
-	raw = binary.BigEndian.AppendUint64(raw, uint64(record.registered))
-	raw = append(raw, record.tenant[:]...)
-	raw = append(raw, record.owner[:]...)
-	raw = append(raw, record.content[:]...)
-	additional := append(inv.header(), raw[4:]...)
-	nonce := make([]byte, inventoryNonceSize)
-	if _, err := rand.Read(nonce); err != nil {
+	head := make([]byte, 0, inventoryHeadSize)
+	head = binary.BigEndian.AppendUint32(head, record.scheme)
+	head = binary.BigEndian.AppendUint64(head, uint64(record.registered))
+	head = append(head, record.tenant[:]...)
+	head = append(head, record.login[:]...)
+	head = append(head, record.content[:]...)
+	nonces := make([]byte, 2*inventoryNonceSize)
+	if _, err := rand.Read(nonces); err != nil {
 		return record, err
 	}
-	raw = append(raw, nonce...)
-	record.raw = inv.seal.Seal(raw, nonce, body, additional)
+	raw := make([]byte, 0, 4+length)
+	raw = binary.BigEndian.AppendUint32(raw, uint32(length))
+	raw = append(raw, nonces[:inventoryNonceSize]...)
+	raw = inv.file.Seal(raw, nonces[:inventoryNonceSize], head, inv.header())
+	raw = append(raw, nonces[inventoryNonceSize:]...)
+	record.head = head
+	record.raw = inv.seal.Seal(raw, nonces[inventoryNonceSize:], body, append(inv.header(), head...))
 	return record, nil
 }
 
@@ -1046,6 +1175,7 @@ func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfi
 		held[record.content] = record.registered
 	}
 	changed := len(records) != len(file.records) || !file.present
+	writing := map[[inventoryTagSize]byte]bool{}
 	for _, entry := range fresh {
 		// Another proxy may have stored the same entries since.
 		if at, ok := held[entry.content]; ok && now.Unix()-at < int64(inventoryRefreshAfter/time.Second) && at <= now.Unix() {
@@ -1056,6 +1186,7 @@ func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfi
 			continue
 		}
 		changed = true
+		writing[record.login] = true
 		// Only the same entries, registered again, make way: another value
 		// under the same placeholder, in any scheme, stays.
 		kept := records[:0]
@@ -1067,7 +1198,7 @@ func (inv *Inventory) storeFresh(fresh []pendingEntries, now time.Time, keyConfi
 		records = append(kept, record)
 	}
 	if changed {
-		records = boundInventory(records)
+		records = inv.bound(records, writing)
 		if err := inv.write(records); err != nil {
 			return false, InventoryReasonUnusable
 		}
@@ -1095,17 +1226,55 @@ func (inv *Inventory) withdraw() {
 	}
 }
 
-// boundInventory keeps the file within its caps, dropping the entries
-// registered longest ago, and orders it oldest first.
-func boundInventory(records []inventoryRecord) []inventoryRecord {
+// bound keeps what is stored within inventoryBounds, oldest first. Only the
+// logins that are writing lose records: their own oldest, then their newest.
+func (inv *Inventory) bound(records []inventoryRecord, writing map[[inventoryTagSize]byte]bool) []inventoryRecord {
 	sort.SliceStable(records, func(i, j int) bool { return records[i].registered < records[j].registered })
-	size := inventoryHeaderSize
-	from := len(records)
-	for from > 0 && len(records)-from < maxInventoryRecords && size+len(records[from-1].raw) <= maxInventoryFileBytes {
-		from--
-		size += len(records[from].raw)
+	bounds := inventoryBounds
+	file, tenant := storeBound{bytes: inventoryHeaderSize}, storeBound{}
+	logins := map[[inventoryTagSize]byte]*storeBound{}
+	others := 0
+	for _, record := range records {
+		file.records, file.bytes = file.records+1, file.bytes+len(record.raw)
+		if record.tenant != inv.tenant {
+			continue
+		}
+		tenant.records, tenant.bytes = tenant.records+1, tenant.bytes+len(record.raw)
+		held := logins[record.login]
+		if held == nil {
+			held = &storeBound{}
+			logins[record.login] = held
+			if !writing[record.login] {
+				others++
+			}
+		}
+		held.records, held.bytes = held.records+1, held.bytes+len(record.raw)
 	}
-	return records[from:]
+	// A tenant stores for so many logins: one more that is writing now gets
+	// no room, the ones already there keep theirs.
+	room := bounds.tenantLogins - others
+	admitted := map[[inventoryTagSize]byte]bool{}
+	for at := len(records) - 1; at >= 0; at-- {
+		if login := records[at].login; records[at].tenant == inv.tenant && writing[login] && !admitted[login] && room > 0 {
+			admitted[login] = true
+			room--
+		}
+	}
+	past := func(held, bound storeBound) bool { return held.records > bound.records || held.bytes > bound.bytes }
+	kept := records[:0]
+	for _, record := range records {
+		held := logins[record.login]
+		if record.tenant == inv.tenant && writing[record.login] &&
+			(!admitted[record.login] || past(*held, bounds.login) || past(tenant, bounds.tenant) || past(file, bounds.file)) {
+			size := len(record.raw)
+			held.records, held.bytes = held.records-1, held.bytes-size
+			tenant.records, tenant.bytes = tenant.records-1, tenant.bytes-size
+			file.records, file.bytes = file.records-1, file.bytes-size
+			continue
+		}
+		kept = append(kept, record)
+	}
+	return kept
 }
 
 // write replaces the file: a temporary file beside it, synced, then renamed

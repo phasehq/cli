@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -376,7 +377,7 @@ func foreignSchemeRecord(t *testing.T, inv *Inventory, scheme uint32, id string,
 	body := append(append([]byte{0}, principal.id[:]...), wire...)
 	record, err := inv.sealBody(inventoryRecord{
 		scheme: scheme, registered: now.Unix(), tenant: inv.tenant,
-		owner: inv.tag("owner", []byte("secret"), []byte(id)), content: inv.tag("content", principal.id[:], wire),
+		login: inv.loginTag(principal.id), content: inv.tag("content", principal.id[:], wire),
 	}, body)
 	if err != nil {
 		t.Fatal(err)
@@ -754,29 +755,266 @@ func TestInventoryDamagedFiles(t *testing.T) {
 	}
 }
 
-// The file is bounded: past its caps, what was registered longest ago goes.
-func TestInventoryFileIsBounded(t *testing.T) {
-	var records []inventoryRecord
-	for i := 0; i < 40; i++ {
-		records = append(records, inventoryRecord{registered: int64(1000 - i), raw: make([]byte, 2<<20)})
+// boundedRecord is a record of a size, a time, a tenant and a login, for the
+// bounds alone: nothing opens it.
+func boundedRecord(tenant, login byte, registered int64, size int) inventoryRecord {
+	return inventoryRecord{registered: registered, tenant: [inventoryTagSize]byte{tenant}, login: [inventoryTagSize]byte{login}, raw: make([]byte, size)}
+}
+
+// Past a bound, the login that is writing loses its own oldest records and
+// no other login or tenant loses any.
+func TestInventoryBoundsDropOnlyTheWritersOwnOldest(t *testing.T) {
+	previous := inventoryBounds
+	t.Cleanup(func() { inventoryBounds = previous })
+	inventoryBounds.file, inventoryBounds.tenant, inventoryBounds.login = storeBound{100, 1 << 20}, storeBound{12, 600}, storeBound{8, 400}
+	inv := &Inventory{tenant: [inventoryTagSize]byte{1}}
+	const mine, colleague, other = 1, 2, 9
+	count := func(records []inventoryRecord, tenant, login byte) (n int, oldest int64) {
+		oldest = -1
+		for at, record := range records {
+			if at > 0 && records[at-1].registered > record.registered {
+				t.Fatal("not oldest first")
+			}
+			if record.tenant[0] == tenant && record.login[0] == login {
+				if n++; oldest < 0 {
+					oldest = record.registered
+				}
+			}
+		}
+		return n, oldest
 	}
-	kept := boundInventory(records)
-	size := inventoryHeaderSize
-	for i, record := range kept {
-		size += len(record.raw)
-		if i > 0 && kept[i-1].registered > record.registered {
-			t.Fatal("not oldest first")
+	writing := map[[inventoryTagSize]byte]bool{{mine}: true}
+	var records []inventoryRecord
+	for i := 0; i < 6; i++ {
+		records = append(records, boundedRecord(1, colleague, int64(i), 50), boundedRecord(2, other, int64(i), 1<<16))
+	}
+	// A login's own bound: twenty writes leave its newest eight.
+	for i := 0; i < 20; i++ {
+		records = append(records, boundedRecord(1, mine, int64(100+i), 10))
+	}
+	kept := inv.bound(append([]inventoryRecord{}, records...), writing)
+	if n, oldest := count(kept, 1, mine); n != 6 || oldest != 114 {
+		// The tenant's bound of twelve leaves six beside the colleague's six.
+		t.Fatalf("the writing login keeps %d from %d", n, oldest)
+	}
+	for name, who := range map[string][2]byte{"another login of the tenant": {1, colleague}, "another tenant": {2, other}} {
+		if n, oldest := count(kept, who[0], who[1]); n != 6 || oldest != 0 {
+			t.Fatalf("%s lost records to the writer: %d left, from %d", name, n, oldest)
 		}
 	}
-	if size > maxInventoryFileBytes || len(kept) != 31 || kept[len(kept)-1].registered != 1000 {
-		t.Fatalf("%d records, %d bytes", len(kept), size)
+	// By bytes: records of 150 bytes fit a login's 400 twice.
+	inventoryBounds.tenant = storeBound{100, 1 << 20}
+	large := append([]inventoryRecord{}, records[:12]...)
+	for i := 0; i < 5; i++ {
+		large = append(large, boundedRecord(1, mine, int64(200+i), 150))
 	}
-	var many []inventoryRecord
-	for i := 0; i < maxInventoryRecords+10; i++ {
-		many = append(many, inventoryRecord{registered: int64(i), raw: make([]byte, 1)})
+	if n, oldest := count(inv.bound(large, writing), 1, mine); n != 2 || oldest != 203 {
+		t.Fatalf("by bytes the writing login keeps %d from %d", n, oldest)
 	}
-	if kept := boundInventory(many); len(kept) != maxInventoryRecords || kept[0].registered != 10 {
-		t.Fatalf("%d records from %d", len(kept), kept[0].registered)
+	// A file others have filled: the writer stores what room is left, which
+	// may be nothing, and still no one else loses a record.
+	inventoryBounds.file = storeBound{14, 1 << 30}
+	kept = inv.bound(append([]inventoryRecord{}, records...), writing)
+	if n, _ := count(kept, 1, mine); n != 2 || len(kept) != 14 {
+		t.Fatalf("a full file: the writer keeps %d of %d", n, len(kept))
+	}
+	inventoryBounds.file = storeBound{12, 1 << 30}
+	kept = inv.bound(append([]inventoryRecord{}, records...), writing)
+	if n, _ := count(kept, 1, mine); n != 0 || len(kept) != 12 {
+		t.Fatalf("a file with no room: the writer keeps %d of %d", n, len(kept))
+	}
+	// A tenant stores for so many logins: one more gets no room.
+	inventoryBounds = previous
+	inventoryBounds.tenantLogins = 2
+	crowd := []inventoryRecord{boundedRecord(1, 2, 1, 10), boundedRecord(1, 3, 2, 10), boundedRecord(1, mine, 3, 10)}
+	if kept := inv.bound(crowd, writing); len(kept) != 2 || kept[0].login[0] != 2 || kept[1].login[0] != 3 {
+		t.Fatalf("a login past the tenant's count was stored: %d records", len(kept))
+	}
+}
+
+// Through the store itself: one tenant's volume, in large values or in many
+// small ones, leaves another tenant's record where it was.
+func TestOneTenantsVolumeNeverEvictsAnothers(t *testing.T) {
+	previous := inventoryBounds
+	t.Cleanup(func() { inventoryBounds = previous })
+	storeB := newInventoryTestStore(t)
+	storeA := storeB
+	storeA.Tenant = "https://console.test\norganisation\nanother-organisation"
+	invB, _ := openInventory(t, storeB)
+	ofB := principalOf(t, invB, inventoryLoginB)
+	valueB := inventoryTestValue(t, inventoryTestAlphabet, 40)
+	entriesB, err := censor.IndexValue(ofB.Key(), "secret", "of-b", valueB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invB.Add([]StoredEntries{{Entries: entriesB, Principal: ofB}})
+	one, err := os.Stat(inventoryFilePath(storeB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The file has room for B's record and eleven like it; a tenant for eight.
+	record := int(one.Size()) - inventoryHeaderSize
+	inventoryBounds.file = storeBound{1000, inventoryHeaderSize + 12*record + record/2}
+	inventoryBounds.tenant, inventoryBounds.login = storeBound{8, 1 << 30}, storeBound{6, 1 << 30}
+
+	invA, _ := openInventory(t, storeA)
+	ofA, alsoA := principalOf(t, invA, inventoryLoginA), principalOf(t, invA, inventoryLoginB)
+	var last string
+	for i := 0; i < 40; i++ {
+		who := ofA
+		if i%2 == 1 {
+			who = alsoA
+		}
+		last = inventoryTestValue(t, inventoryTestAlphabet, 40)
+		entries, err := censor.IndexValue(who.Key(), "secret", fmt.Sprintf("a-%d", i), last)
+		if err != nil {
+			t.Fatal(err)
+		}
+		invA.Add([]StoredEntries{{Entries: entries, Principal: who}})
+	}
+	nextA, loadedA := openInventory(t, storeA)
+	if status := nextA.Status(); len(loadedA) != 8 || status.OtherTenant != 1 || !finds(t, nextA, loadedA, last) {
+		t.Fatalf("tenant A after its own volume: %d loaded, %+v", len(loadedA), status)
+	}
+	nextB, loadedB := openInventory(t, storeB)
+	if status := nextB.Status(); len(loadedB) != 1 || status.OtherTenant != 8 || !finds(t, nextB, loadedB, valueB) {
+		t.Fatalf("tenant B after tenant A's volume: %d loaded, %+v", len(loadedB), status)
+	}
+	// And B, writing past its own bounds, drops none of A's.
+	for i := 0; i < 20; i++ {
+		entries, _ := censor.IndexValue(ofB.Key(), "secret", fmt.Sprintf("b-%d", i), inventoryTestValue(t, inventoryTestAlphabet, 40))
+		nextB.Add([]StoredEntries{{Entries: entries, Principal: principalOf(t, nextB, inventoryLoginB)}})
+	}
+	if _, again := openInventory(t, storeA); len(again) != 8 {
+		t.Fatalf("tenant B's volume dropped tenant A's records: %d left", len(again))
+	}
+	if info, err := os.Stat(inventoryFilePath(storeB)); err != nil || int(info.Size()) > inventoryBounds.file.bytes {
+		t.Fatalf("the file passed its bound: %v", err)
+	}
+}
+
+// The file shows in the clear how many records it holds and how long each
+// is: no tag says which are one tenant's, login's or placeholder's.
+func TestInventoryFileShowsNoTenantLoginOrPlaceholder(t *testing.T) {
+	store := newInventoryTestStore(t)
+	other := store
+	other.Tenant = "https://console.test\norganisation\nanother-organisation"
+	inv, _ := openInventory(t, store)
+	a, b := principalOf(t, inv, inventoryLoginA), principalOf(t, inv, inventoryLoginB)
+	for _, who := range []InventoryPrincipal{a, b, a} {
+		entries, _ := censor.IndexValue(who.Key(), "secret", "DATABASE_URL", inventoryTestValue(t, inventoryTestAlphabet, 40))
+		inv.Add([]StoredEntries{{Entries: entries, Principal: who, KeyNamed: true}})
+	}
+	elsewhere, _ := openInventory(t, other)
+	entries, _ := censor.IndexValue(principalOf(t, elsewhere, inventoryLoginA).Key(), "secret", "DATABASE_URL", inventoryTestValue(t, inventoryTestAlphabet, 40))
+	elsewhere.Add([]StoredEntries{{Entries: entries, Principal: principalOf(t, elsewhere, inventoryLoginA), KeyNamed: true}})
+
+	data, err := os.ReadFile(inventoryFilePath(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every 16 bytes of the file after its header, at any offset: none repeats.
+	seen := map[[inventoryTagSize]byte]int{}
+	for at := inventoryHeaderSize; at+inventoryTagSize <= len(data); at++ {
+		window := [inventoryTagSize]byte(data[at : at+inventoryTagSize])
+		if first, twice := seen[window]; twice {
+			t.Fatalf("16 bytes at %d repeat those at %d: a tag in the clear", at, first)
+		}
+		seen[window] = at
+	}
+	unlock, err := lockInventory(inv.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := inv.read()
+	unlock()
+	logins, tenants := map[[inventoryTagSize]byte]int{}, map[[inventoryTagSize]byte]int{}
+	for _, record := range file.records {
+		logins[record.login]++
+		tenants[record.tenant]++
+		for name, tag := range map[string][inventoryTagSize]byte{"tenant": record.tenant, "login": record.login, "content": record.content} {
+			if bytes.Contains(data, tag[:]) {
+				t.Fatalf("a record's %s tag is in the clear", name)
+			}
+		}
+	}
+	// Opened with the file key, the heads group by tenant and by login: the
+	// same key name under two logins is two logins' records, not one owner's.
+	if len(file.records) != 4 || len(tenants) != 2 || len(logins) != 3 || logins[inv.loginTag(a.id)] != 2 || logins[inv.loginTag(b.id)] != 1 {
+		t.Fatalf("%d records, %d tenants, logins %v", len(file.records), len(tenants), logins)
+	}
+	// A head changed in the file is one record lost, and the rest still load.
+	data[inventoryHeaderSize+4+inventoryNonceSize+2] ^= 1
+	if err := os.WriteFile(inventoryFilePath(store), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, loaded := openInventory(t, store)
+	if status := reopened.Status(); len(loaded) != 2 || status.Damaged != 1 || status.OtherTenant != 1 {
+		t.Fatalf("after a damaged head: %d loaded, %+v", len(loaded), status)
+	}
+}
+
+// Logging out removes what one login stored, or all its tenant stored, and
+// nothing of anyone else's; it makes no key and no file.
+func TestForgetRemovesALoginsOrATenantsRecords(t *testing.T) {
+	store := newInventoryTestStore(t)
+	other := store
+	other.Tenant = "https://console.test\norganisation\nanother-organisation"
+	if err := store.Forget([]string{inventoryLoginA}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Keyring.Get(inventoryKeyringService, inventoryKeyringUser); err == nil {
+		t.Fatal("forgetting made a key")
+	}
+	if _, err := os.Stat(inventoryFilePath(store)); !os.IsNotExist(err) {
+		t.Fatalf("forgetting made a file: %v", err)
+	}
+	values := map[string]string{}
+	add := func(s InventoryStore, login, id string) {
+		inv, _ := openInventory(t, s)
+		who := principalOf(t, inv, login)
+		values[id] = inventoryTestValue(t, inventoryTestAlphabet, 40)
+		entries, _ := censor.IndexValue(who.Key(), "secret", id, values[id])
+		inv.Add([]StoredEntries{{Entries: entries, Principal: who}})
+	}
+	add(store, inventoryLoginA, "a-one")
+	add(store, inventoryLoginA, "a-two")
+	add(store, inventoryLoginB, "b-one")
+	add(other, inventoryLoginA, "elsewhere")
+	held := func(s InventoryStore) (ids []string) {
+		inv, loaded := openInventory(t, s)
+		for _, stored := range loaded {
+			if !finds(t, inv, []StoredEntries{stored}, values[stored.Entries.ID]) {
+				t.Fatalf("%s no longer matches", stored.Entries.ID)
+			}
+			ids = append(ids, stored.Entries.ID)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	if err := store.Forget([]string{inventoryLoginA, "", "a login that stored nothing"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := held(store); fmt.Sprint(got) != "[b-one]" {
+		t.Fatalf("after one login is forgotten its tenant holds %v", got)
+	}
+	if got := held(other); fmt.Sprint(got) != "[elsewhere]" {
+		t.Fatalf("another tenant's records after a logout: %v", got)
+	}
+	if err := store.Forget(nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := held(store); len(got) != 0 {
+		t.Fatalf("after its tenant is forgotten: %v", got)
+	}
+	if got := held(other); fmt.Sprint(got) != "[elsewhere]" {
+		t.Fatalf("another tenant's records after a tenant's logout: %v", got)
+	}
+	// A store with no tenant, and a machine with no keystore, have nothing.
+	none := store
+	none.Tenant = ""
+	if err := none.Forget([]string{inventoryLoginA}, true); err != nil {
+		t.Fatal(err)
 	}
 }
 

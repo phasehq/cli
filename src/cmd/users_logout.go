@@ -88,6 +88,19 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		}
 
 		accountID := ids[0]
+		// What the leak protection inventory stored for this login goes with
+		// it: read who it is before its record does.
+		var leaving *config.UserConfig
+		var staying []config.UserConfig
+		if saved, err := config.LoadConfig(); err == nil {
+			for _, user := range saved.PhaseUsers {
+				if user.ID == accountID {
+					leaving = &user
+				} else {
+					staying = append(staying, user)
+				}
+			}
+		}
 		keyring.DeleteCredentials(accountID)
 
 		// Clean up offline cache for this user
@@ -96,6 +109,11 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 
 		if err := config.RemoveUser(accountID); err != nil {
 			return fmt.Errorf("failed to update config: %w", err)
+		}
+		if leaving != nil {
+			if err := forgetLeakInventory(*leaving, staying); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove this login's values from the leak protection inventory: %v\n", err)
+			}
 		}
 		fmt.Println("Logged out successfully.")
 	}

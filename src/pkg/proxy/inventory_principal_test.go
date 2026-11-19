@@ -189,16 +189,21 @@ func TestInventoryTenantsShareNothing(t *testing.T) {
 			continue
 		}
 		foreign++
+		// Any proxy of the user can seal a head: one that says the record is
+		// A's still leaves a body sealed under B's key.
 		forged := record
-		forged.raw = append([]byte{}, record.raw...)
-		copy(forged.raw[16:], nextA.tenant[:])
+		forged.head = append([]byte{}, record.head...)
+		copy(forged.head[12:], nextA.tenant[:])
 		forged.tenant = nextA.tenant
+		headEnd := 4 + inventoryNonceSize + inventoryHeadSize + inventorySealOverhead
+		forged.raw = nextA.file.Seal(append([]byte{}, record.raw[:4+inventoryNonceSize]...), record.raw[4:4+inventoryNonceSize], forged.head, nextA.header())
+		forged.raw = append(forged.raw, record.raw[headEnd:]...)
 		for name, attempt := range map[string]inventoryRecord{"as written": record, "retagged as A's": forged} {
 			if _, verdict := nextA.open(attempt, nextA.store.now()); verdict != recordDamaged {
 				t.Fatalf("A's proxy opened B's record %s", name)
 			}
 		}
-		if record.owner == nextA.ownerTag(ofB.Entries) || record.content == nextA.contentTag(ofB, mustMarshal(t, ofB.Entries)) {
+		if record.login == nextA.loginTag(principalOf(t, nextA, inventoryLoginB).id) || record.content == nextA.contentTag(ofB, mustMarshal(t, ofB.Entries)) {
 			t.Fatal("A's proxy can compute a tag of B's record")
 		}
 	}

@@ -2,8 +2,11 @@ package censor
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -102,7 +105,7 @@ func TestAClientConfirmsOnlyItsOwnPrincipalsEntries(t *testing.T) {
 }
 
 // One index matches every principal: the same value registered by two is
-// held once for each, each confirmed with its own key, and both match.
+// held, and counted, once for each, each confirmed with its own key.
 func TestIndexMatchesEveryPrincipal(t *testing.T) {
 	keyA, keyB := twoPrincipals(t)
 	shared, onlyB := randomString(t, alnum, 40), randomString(t, alnum, 40)
@@ -123,7 +126,7 @@ func TestIndexMatchesEveryPrincipal(t *testing.T) {
 	fromA := add(keyA, "shared", shared)
 	one := index.Stats()
 	fromB := add(keyB, "shared", shared)
-	if two := index.Stats(); two.Forms != 2*one.Forms || two.Chunks != 2*one.Chunks || two.Secrets != 1 {
+	if two := index.Stats(); two.Forms != 2*one.Forms || two.Chunks != 2*one.Chunks || two.Secrets != 2 {
 		t.Fatalf("the two principals' entries are not held apart: %+v then %+v", one, two)
 	}
 	for hash := range confirmingHashes(fromA) {
@@ -150,11 +153,16 @@ func TestIndexMatchesEveryPrincipal(t *testing.T) {
 			t.Fatalf("principal %s's record alone found %q", name, got)
 		}
 	}
-	// Entries made under another lookup key are refused, not held unmatched.
+	// Entries made under another lookup key are refused, not held unmatched:
+	// only AddGuest takes them, and it takes none under the index's own.
 	stranger := newKey(t)
 	e, _ := IndexValue(stranger, "secret", "other", onlyB)
-	if err := index.AddKeyed(stranger, e); err == nil {
+	if index.AddKeyed(stranger, e) == nil || index.AddWithheld(stranger, e) == nil {
 		t.Fatal("entries under another lookup key were added")
+	}
+	own, _ := IndexValue(keyB, "secret", "other", onlyB)
+	if index.AddGuest(keyB, own) == nil {
+		t.Fatal("entries under the index's lookup key were added as a guest's")
 	}
 }
 
@@ -233,7 +241,7 @@ func TestWithheldEntriesNeverNameTheirID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	text := "a " + theirs + " b " + both + " c " + theirs[4:36] + " d"
+	text := "a " + theirs + " b " + both + " c " + hex.EncodeToString([]byte(theirs)) + " d"
 	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]any{"role": "user", "content": text}}})
 	for name, payload := range map[string][]byte{"text": []byte(text), "a body": body} {
 		result := apply(index, payload)
@@ -248,5 +256,190 @@ func TestWithheldEntriesNeverNameTheirID(t *testing.T) {
 		if again := apply(index, result.Out); again.Changed || len(again.Hits)+len(again.Rules) != 0 {
 			t.Fatalf("%s: scanning the rewritten text changed it: %s", name, again.Out)
 		}
+	}
+}
+
+// A value whose id is withheld is replaced where a whole form of it stands
+// and nowhere else: not by a fragment or a line, as one held with its id is.
+func TestWithheldValuesAreMatchedWholeOrNotAtAll(t *testing.T) {
+	keyA, keyB := twoPrincipals(t)
+	value := randomString(t, alnum, 60)
+	lines := randomString(t, alnum, 40) + "\n" + randomString(t, alnum, 40) + "\n" + randomString(t, alnum, 40)
+	index := func(withheld bool) *Index {
+		ix, err := NewIndex(keyA, IndexOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for id, v := range map[string]string{"one": value, "many": lines} {
+			e, err := IndexValue(keyB, "secret", id, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			add := ix.AddKeyed
+			if withheld {
+				add = ix.AddWithheld
+			}
+			if err := add(keyB, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return ix
+	}
+	named, withheld := index(false), index(true)
+	escaped, _ := json.Marshal(lines)
+	for name, tc := range map[string]struct {
+		text  string
+		whole bool
+	}{
+		"the whole value":            {"a " + value + " b", true},
+		"its hex":                    {"a " + hex.EncodeToString([]byte(value)) + " b", true},
+		"a whole value of lines":     {"a\n" + lines + "\nb", true},
+		"the same, escaped":          {"a " + string(escaped) + " b", true},
+		"all but its last character": {"a " + value[:len(value)-1] + " b", false},
+		"all but its first":          {"a " + value[1:] + " b", false},
+		"two chunks of it":           {"a " + value[12:36] + " b", false},
+		"one line of several":        {"a " + strings.Split(lines, "\n")[1] + " b", false},
+		"its hex, cut short":         {"a " + hex.EncodeToString([]byte(value))[:96] + " b", false},
+	} {
+		if got := found(t, named, tc.text); !strings.HasPrefix(got, "ph:secret:") {
+			t.Fatalf("%s is not found when the id may be written: %q", name, got)
+		}
+		got := found(t, withheld, tc.text)
+		if tc.whole && got != "ph:secret" {
+			t.Fatalf("%s of a withheld value was not replaced: %q", name, got)
+		}
+		if !tc.whole && got != "" {
+			t.Fatalf("%s of a withheld value was matched: %q", name, got)
+		}
+	}
+}
+
+// Two withheld values of one type share a placeholder; a finding numbers
+// them apart, the same value the same way every time, and names no id.
+func TestWithheldFindingsTellTheirValuesApart(t *testing.T) {
+	keyA, keyB := twoPrincipals(t)
+	first, second := randomString(t, alnum, 40), randomString(t, alnum, 40)
+	ix, err := NewIndex(keyA, IndexOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, v := range map[string]string{"id-one": first, "id-two": second} {
+		e, _ := IndexValue(keyB, "secret", id, v)
+		if err := ix.AddWithheld(keyB, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mine, _ := IndexValue(keyA, "secret", "mine", randomString(t, alnum, 40))
+	if err := ix.Add(mine); err != nil {
+		t.Fatal(err)
+	}
+	refs := func(text string) []int {
+		_, report := ix.Redact([]byte(text))
+		var out []int
+		for _, f := range report.Findings {
+			if f.Placeholder != "ph:secret" {
+				t.Fatalf("a withheld finding's placeholder: %q", f.Placeholder)
+			}
+			out = append(out, f.Withheld)
+		}
+		reported, _ := json.Marshal(report)
+		if bytes.Contains(reported, []byte("id-")) || bytes.Contains(reported, []byte("ithheld")) {
+			t.Fatalf("the report as it is written: %s", reported)
+		}
+		return out
+	}
+	both := refs(first + " " + second + " " + hex.EncodeToString([]byte(first)))
+	if len(both) != 3 || both[0] == 0 || both[1] == 0 || both[0] == both[1] || both[2] != both[0] {
+		t.Fatalf("the findings do not tell the two values apart: %v", both)
+	}
+	if again := refs(second); len(again) != 1 || again[0] != both[1] {
+		t.Fatalf("a value's number changed: %v then %v", both, again)
+	}
+	if _, report := ix.Redact([]byte(randomString(t, alnum, 8) + " " + first)); report.Findings[0].Withheld != both[0] {
+		t.Fatal("a value's number depends on the text around it")
+	}
+}
+
+// A guest's entries are under a key that shares nothing with the index's:
+// found by their own pass, with no id, whole, and counted and bounded apart.
+func TestGuestEntriesAreMatchedUnderTheirOwnKey(t *testing.T) {
+	home, guest, other := newKey(t), newKey(t), newKey(t)
+	mine, theirs, another := randomString(t, alnum, 40), randomString(t, alnum, 40), randomString(t, alnum, 40)
+	ix, err := NewIndex(home, IndexOptions{MaxGuestSecrets: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, _ := IndexValue(home, "secret", "mine", mine)
+	if err := ix.Add(own); err != nil {
+		t.Fatal(err)
+	}
+	before := ix.Stats()
+	for _, v := range []struct {
+		key       *Key
+		id, value string
+	}{{guest, "guest-id", theirs}, {guest, "guest-id", theirs}, {other, "guest-id", another}} {
+		e, _ := IndexValue(v.key, "secret", v.id, v.value)
+		if err := ix.AddGuest(v.key, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := ix.Stats(); after.Secrets != before.Secrets || after.Guests != 2 {
+		t.Fatalf("guests are not counted apart, once per key: %+v then %+v", before, after)
+	}
+	text := mine + " " + theirs + " " + hex.EncodeToString([]byte(another)) + " " + theirs[:30]
+	out, report := ix.Redact([]byte(text))
+	if string(out) != "ph:secret:mine ph:secret ph:secret "+theirs[:30] {
+		t.Fatalf("redacted to %q", out)
+	}
+	if reported, _ := json.Marshal(report); bytes.Contains(reported, []byte("guest-id")) {
+		t.Fatalf("a guest's id was reported: %s", reported)
+	}
+	// The home key finds nothing of a guest's value, and a guest's nothing of
+	// the home's: nothing is shared.
+	alone, _ := NewIndex(guest, IndexOptions{})
+	if err := alone.Add(own); err != nil {
+		t.Fatal(err)
+	}
+	if got := found(t, alone, mine); got != "" {
+		t.Fatalf("entries of one key matched under another: %q", got)
+	}
+	// The guests' bound is their own, and leaves the index's alone.
+	more, _ := IndexValue(guest, "secret", "one-more", randomString(t, alnum, 40))
+	if err := ix.AddGuest(guest, more); !errors.Is(err, ErrIndexFull) {
+		t.Fatalf("a guest past the guests' bound: %v", err)
+	}
+	room, _ := IndexValue(home, "secret", "room", randomString(t, alnum, 40))
+	if err := ix.Add(room); err != nil {
+		t.Fatalf("the guests' bound refused the index's own: %v", err)
+	}
+}
+
+// One principal's values cannot take the whole index: past its bound its own
+// registrations are refused and another principal's are still taken.
+func TestOnePrincipalCannotFillTheIndex(t *testing.T) {
+	keyA, keyB := twoPrincipals(t)
+	ix, err := NewIndex(keyA, IndexOptions{MaxSecrets: 4, MaxKeySecrets: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(key *Key, id string) error {
+		e, _ := IndexValue(key, "secret", id, randomString(t, alnum, 40))
+		return ix.AddKeyed(key, e)
+	}
+	if add(keyA, "a1") != nil || add(keyA, "a2") != nil {
+		t.Fatal("within the bound")
+	}
+	if err := add(keyA, "a3"); !errors.Is(err, ErrIndexFull) {
+		t.Fatalf("past one principal's bound: %v", err)
+	}
+	// Another value under an id it holds is no new value.
+	if err := add(keyA, "a2"); err != nil {
+		t.Fatalf("an id already held: %v", err)
+	}
+	if add(keyB, "b1") != nil || add(keyB, "a1") != nil {
+		t.Fatal("another principal was refused room the first had not taken")
+	}
+	if stats := ix.Stats(); stats.Secrets != 4 {
+		t.Fatalf("%+v", stats)
 	}
 }

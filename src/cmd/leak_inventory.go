@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/phasehq/cli/internal/remoteapi"
+	"github.com/phasehq/cli/pkg/config"
+	"github.com/phasehq/cli/pkg/phase"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
@@ -11,6 +15,48 @@ import (
 // in the CA store's directory, with its key in the CA store's keystore.
 func aiInventoryStore() phaseproxy.InventoryStore {
 	return phaseproxy.InventoryStore{Directory: aiCAStore.Directory, Keyring: aiCAStore.Keyring}
+}
+
+// savedLoginIdentities are the identities a saved login may have registered
+// under at a host: a record that is not an Agent's is a user's or a service account's.
+func savedLoginIdentities(host string, user config.UserConfig) []phaseproxy.InventoryIdentity {
+	var identities []phaseproxy.InventoryIdentity
+	for _, kind := range []string{phaseproxy.InventoryLoginAgent, phaseproxy.InventoryLoginUser, phaseproxy.InventoryLoginServiceAccount} {
+		if identity := phase.SavedLoginIdentity(host, kind, user); identity.Known() {
+			identities = append(identities, identity)
+		}
+	}
+	return identities
+}
+
+// forgetLeakInventory removes what the inventory stored for a login that
+// logged out, and all its tenant stored when no saved login of it is left.
+func forgetLeakInventory(user config.UserConfig, remaining []config.UserConfig) error {
+	hosts := []string{user.Host}
+	if override := os.Getenv("PHASE_HOST"); override != "" && override != user.Host {
+		hosts = append(hosts, override)
+	}
+	var failed error
+	for _, host := range hosts {
+		identities := savedLoginIdentities(host, user)
+		if len(identities) == 0 {
+			continue
+		}
+		store := aiInventoryStore()
+		store.Tenant = identities[0].Tenant
+		last := true
+		var logins []string
+		for _, identity := range identities {
+			logins = append(logins, identity.Login)
+		}
+		for _, other := range remaining {
+			for _, identity := range savedLoginIdentities(other.Host, other) {
+				last = last && identity.Tenant != store.Tenant
+			}
+		}
+		failed = errors.Join(failed, store.Forget(logins, last))
+	}
+	return failed
 }
 
 // leakInventorySummary says, for phase ai status, whether the values the
@@ -32,15 +78,15 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 		case phaseproxy.InventoryReasonUnreadable:
 			why = "the inventory file could not be read and is left as it is; phase ai disable removes it"
 		case phaseproxy.InventoryReasonNoTenant:
-			why = "this login names no organisation or account to keep it for"
+			why = "the Console did not say which organisation and login this session is"
 		case phaseproxy.InventoryReasonBusy:
 			why = "another process held the inventory file; the next proxy start stores again"
 		}
-		return "inventory kept in memory only (" + why + ")"
+		return "inventory kept in memory only (" + why + ")" + leakUnstoredSummary(inventory)
 	}
 	line := fmt.Sprintf("inventory kept across restarts (%d loaded at start)", inventory.Loaded)
 	if inventory.NotLoaded > 0 {
-		line += fmt.Sprintf(", %d more not loaded because the inventory is full", inventory.NotLoaded)
+		line += fmt.Sprintf(", %d registered longer ago left out to keep room", inventory.NotLoaded)
 	}
 	if inventory.UnmatchedScheme > 0 {
 		line += fmt.Sprintf(", %d stored by another version of Phase and not matched until read again", inventory.UnmatchedScheme)
@@ -54,5 +100,14 @@ func leakInventorySummary(inventory remoteapi.LeakInventoryStatus) string {
 	if inventory.Damaged > 0 {
 		line += fmt.Sprintf(", %d unreadable and dropped", inventory.Damaged)
 	}
-	return line
+	return line + leakUnstoredSummary(inventory)
+}
+
+// leakUnstoredSummary says how often a command that is not of the session's
+// organisation registered with this proxy: values it never stores.
+func leakUnstoredSummary(inventory remoteapi.LeakInventoryStatus) string {
+	if inventory.Unstored == 0 {
+		return ""
+	}
+	return fmt.Sprintf(", %d registrations from commands of another organisation, or of no login they could state, protected until this proxy exits", inventory.Unstored)
 }

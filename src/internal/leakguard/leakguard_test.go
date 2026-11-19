@@ -20,6 +20,7 @@ import (
 
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/censor"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 func withEnvironment(t *testing.T, values map[string]string) {
@@ -27,12 +28,12 @@ func withEnvironment(t *testing.T, values map[string]string) {
 	previous := Environment
 	Environment = func(key string) string { return values[key] }
 	keyMu.Lock()
-	cachedKey, keyProxy = nil, ""
+	clear(cachedKeys)
 	keyMu.Unlock()
 	t.Cleanup(func() {
 		Environment = previous
 		keyMu.Lock()
-		cachedKey, keyProxy = nil, ""
+		clear(cachedKeys)
 		keyMu.Unlock()
 	})
 }
@@ -57,6 +58,13 @@ type fakeProxy struct {
 	// lookupOnly makes it a proxy that hands out one key, as one that reads
 	// scheme 1 only does.
 	lookupOnly bool
+	// asked holds who each key request said the command is, and stated who
+	// each registration said, with the key id it sent back.
+	asked  []remoteapi.InventoryKeyRequest
+	stated []remoteapi.InventoryRequest
+	// keyID is what the proxy calls its keys now. A registration that sends
+	// another back is refused, as by a proxy whose keys changed.
+	keyID string
 }
 
 func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
@@ -74,17 +82,23 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/inventory/key":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory/key":
 			fake.keyCalls++
 			if fake.keyStatus != 0 {
 				w.WriteHeader(fake.keyStatus)
 				return
 			}
+			var asked remoteapi.InventoryKeyRequest
+			if json.NewDecoder(r.Body).Decode(&asked) != nil || asked.SchemaVersion != 1 || r.Header.Get("Content-Type") != "application/json" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			fake.asked = append(fake.asked, asked)
 			format := censor.EntriesVersion
 			if fake.format != 0 {
 				format = fake.format
 			}
-			answer := remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.LookupBytes()), Format: format}
+			answer := remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.LookupBytes()), Format: format, KeyID: fake.keyID}
 			if !fake.lookupOnly {
 				answer.ConfirmKey = base64.StdEncoding.EncodeToString(key.ConfirmBytes())
 			}
@@ -104,6 +118,12 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			if request.KeyID != fake.keyID {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":{"code":"inventory_key_changed","message":"another key"}}`))
+				return
+			}
+			fake.stated = append(fake.stated, remoteapi.InventoryRequest{Tenant: request.Tenant, Login: request.Login, KeyID: request.KeyID})
 			fake.kinds = append(fake.kinds, request.IDKinds)
 			answer := remoteapi.InventoryResponse{SchemaVersion: 1}
 			for _, raw := range request.Entries {
@@ -801,7 +821,7 @@ func TestADialThatRunsOutOfTimeIsNothingListening(t *testing.T) {
 		err  error
 		want bool
 	}{
-		"a dial that timed out, as the client reports it": {&url.Error{Op: "Get", URL: "http://phase.invalid/v1/inventory/key", Err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: timedOut}}, true},
+		"a dial that timed out, as the client reports it": {&url.Error{Op: "Post", URL: "http://phase.invalid/v1/inventory/key", Err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: timedOut}}, true},
 		"a dial that timed out":                           {timedOut, true},
 		"a read that timed out":                           {&url.Error{Op: "Get", URL: "http://phase.invalid/", Err: &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded}}, false},
 		"a call that outlived its context":                {&url.Error{Op: "Get", URL: "http://phase.invalid/", Err: context.DeadlineExceeded}, false},
@@ -964,4 +984,86 @@ func TestASlowRefusalIsNotWaitedFor(t *testing.T) {
 			t.Fatalf("a refusal after 100ms: %v after %v", err, elapsed)
 		}
 	})
+}
+
+// A registration says who the registering command is, to the key route and
+// with the entries. A command that cannot tell states nothing.
+func TestRegistrationStatesTheCommandsOwnIdentity(t *testing.T) {
+	fake, server := newFakeProxy(t)
+	fake.keyID = "key-one"
+	withEnvironment(t, sessionEnvironment(server))
+	mine := phaseproxy.NewInventoryIdentity("https://console.test", "org-of-the-command", phaseproxy.InventoryLoginUser, "account-1")
+	other := phaseproxy.NewInventoryIdentity("https://console.test", "another-org", phaseproxy.InventoryLoginAgent, "agent-2")
+	values := []Value{{Type: "secret", ID: "one", Value: "Kq7mZ2xVw9LpT4nB8rYc3HdF6sJa1Ge5"}}
+	register := func(identity phaseproxy.InventoryIdentity) {
+		t.Helper()
+		proxy, found := Locate()
+		if !found {
+			t.Fatal("no proxy")
+		}
+		proxy.Identity = identity
+		if result, err := proxy.Register(context.Background(), values); err != nil || result.Added != 1 {
+			t.Fatalf("%+v %v", result, err)
+		}
+	}
+	register(mine)
+	register(mine)
+	register(other)
+	register(phaseproxy.InventoryIdentity{})
+	if result, err := Register(context.Background(), values); err != nil || result.Added != 1 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	// A key is asked for once per identity: each may be handed another.
+	if len(fake.asked) != 3 || fake.asked[0].Tenant != mine.Tenant || fake.asked[0].Login != mine.Login || fake.asked[1].Login != other.Login || fake.asked[2].Tenant != "" || fake.asked[2].Login != "" {
+		t.Fatalf("the key requests: %+v", fake.asked)
+	}
+	want := []phaseproxy.InventoryIdentity{mine, mine, other, {}, {}}
+	if len(fake.stated) != len(want) {
+		t.Fatalf("%d registrations", len(fake.stated))
+	}
+	for at, stated := range fake.stated {
+		if stated.Tenant != want[at].Tenant || stated.Login != want[at].Login || stated.KeyID != "key-one" {
+			t.Fatalf("registration %d stated %+v", at, stated)
+		}
+	}
+	for _, body := range fake.bodies {
+		if bytes.Contains(body, []byte("capability")) || bytes.Contains(body, []byte("Kq7mZ2xVw9LpT4nB8rYc3HdF6sJa1Ge5")) {
+			t.Fatalf("a registration carries more than hashes and who the command is: %s", body)
+		}
+	}
+}
+
+// A proxy that no longer uses the key a command holds refuses its entries:
+// the command fetches the key again and registers again, once.
+func TestRegistrationFetchesTheKeyAgainWhenTheProxysChanged(t *testing.T) {
+	fake, server := newFakeProxy(t)
+	fake.keyID = "key-one"
+	withEnvironment(t, sessionEnvironment(server))
+	values := []Value{{Type: "secret", ID: "one", Value: "Kq7mZ2xVw9LpT4nB8rYc3HdF6sJa1Ge5"}}
+	if result, err := Register(context.Background(), values); err != nil || result.Added != 1 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	fake.mu.Lock()
+	fake.keyID = "key-two"
+	fake.mu.Unlock()
+	if result, err := Register(context.Background(), values); err != nil || result.Added != 1 {
+		t.Fatalf("after the proxy's key changed: %+v %v", result, err)
+	}
+	fake.mu.Lock()
+	if fake.keyCalls != 2 || len(fake.stated) != 2 || fake.stated[1].KeyID != "key-two" {
+		t.Fatalf("%d key requests, registrations %+v", fake.keyCalls, fake.stated)
+	}
+	calls := fake.keyCalls
+	fake.mu.Unlock()
+	// Nothing changed since: the key it holds is used, and not asked for again.
+	if result, err := Register(context.Background(), values); err != nil || result.Added != 1 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.keyCalls != calls || fake.posts != 4 {
+		t.Fatalf("%d more key requests, %d posts", fake.keyCalls-calls, fake.posts)
+	}
 }

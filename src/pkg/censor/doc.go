@@ -21,21 +21,39 @@
 // and is one for every client of one tenant (for the Phase AI proxy, a Phase
 // host and an organisation), so a scan rolls one hash per position whoever
 // of the tenant registered what. The confirming key keys the SHA-256 that
-// confirms a chunk and the tail hash, and is one per principal: the login a
-// registering daemon acts as. The daemon that scans holds the confirming key
-// of every principal of its tenant, hands a client the lookup key and the
-// confirming key of its own principal only, and adds the Entries it gets back
-// to its Index under that principal (Index.AddKeyed), which validates them as
-// untrusted input. A candidate is confirmed with the key of the principal
-// whose entries it is from, so one Index matches the values of every login
-// of the tenant. Nothing is shared between tenants: an Index has one lookup
-// key and refuses entries made under another, and the same value indexed in
-// two tenants gives unrelated lookup values and hashes.
+// confirms a chunk and the tail hash, and is one per principal: a login of
+// the tenant. The daemon that scans holds the confirming key of every
+// principal of its tenant, hands a client the lookup key and the confirming
+// key of the one login that client says it is, and adds the Entries it gets
+// back to its Index under that principal (Index.AddKeyed), which validates
+// them as untrusted input. A candidate is confirmed with the key of the
+// principal whose entries it is from, so one Index matches the values of
+// every login of the tenant. Nothing is shared between tenants: Add, AddKeyed
+// and AddWithheld refuse entries made under another lookup key than the
+// index's, and the same value indexed in two tenants gives unrelated lookup
+// values and hashes.
 //
 // Entries of another login than the one a scan is for are added with
-// Index.AddWithheld: the value is replaced all the same, by ph:<type> with no
-// id, and no finding names the id, which that login may not be allowed to
-// see. Where the same value is also held with its id, the id is written.
+// Index.AddWithheld: the value is replaced by ph:<type> with no id, and no
+// finding names the id, which that login may not be allowed to see. Such a
+// value is replaced only where a whole form of it stands (see Limits). Where
+// the same value is also held with its id, the id is written. Two withheld
+// values of one type share their placeholder; Finding.Withheld numbers them
+// apart for whoever counts what was found, and is never written anywhere.
+//
+// A client that is not of the daemon's tenant, or cannot say whose it is, is
+// a guest: it is handed a key that shares nothing with the index's, lookup
+// key included, and its Entries are added with Index.AddGuest. They are
+// withheld as above, found by a pass of their own over the scanned text
+// while any are held, counted and bounded apart, and belong to the daemon's
+// process alone: the Phase AI proxy makes a guest's key when it starts,
+// derives it from nothing it keeps, and stores nothing made under it.
+//
+// What an Index counts (IndexStats.Secrets) it counts once per principal
+// that added a type and id, so no count says whether another principal holds
+// an id; and what one principal may add is bounded apart from the whole
+// (IndexOptions.MaxKeySecrets, MaxKeyChunks), so one client's volume leaves
+// room for the others.
 //
 // The daemon may keep the keys and the Entries for the daemon that starts
 // after it: what that changes, and what each party can do, is under Limits.
@@ -197,7 +215,7 @@
 // cost that is linear too, and nearly none on text that holds no prefix.
 //
 // An indexed value is replaced by ph:<type>:<id>, as given when it was indexed
-// (ph:<type> alone when its id is withheld);
+// (ph:<type> alone when its id is withheld, and then only where it is whole);
 // a rule match by ph:<label>:<n>, where n is the same for the same value for
 // the life of the Index. Reports hold counts, placeholders, labels, form names
 // and JSON pointers, never matched content.
@@ -303,6 +321,17 @@
 //     base64 of such a value. The whole form is found as before, and so is
 //     such a value in every other form. Entries of scheme 1 keep the lengths
 //     of the item above for these forms.
+//   - A value whose id is withheld (another login's, or a guest's) is matched
+//     whole or not at all: where every chunk and the tail of one of its
+//     forms stand, which is the whole value in any encoding listed above, a
+//     JSON value's whole leaf, or a URL's whole password. What this costs: a
+//     fragment of such a value, a copy cut short by one character, and single
+//     lines of a multi-line value such as a PEM body are not caught, at any
+//     length, though the same value held with its id is caught by them as
+//     the items above say. It is the price of not answering a guess: the
+//     reader of a scan, who cannot name that value, would otherwise learn
+//     from a replaced fragment that 12 guessed bytes are part of it, and
+//     could work a value out chunk by chunk. Whole, a guess is the value.
 //   - A value transformed in any other way (reversed, split, re-encoded in a
 //     form not listed above, encrypted, compressed without base64 around it, or
 //     inside a base64 string of 16 KiB or more) is not found.
@@ -332,28 +361,40 @@
 //   - Between tenants nothing can be tested at all, by a client or by a
 //     proxy: a session of one tenant holds no key of another, does not
 //     open, load or match its records, and writes nothing of them anywhere
-//     but a count of records. A value of another tenant in a request goes
-//     through as it is.
-//   - The file alone says nothing a guess can be tested against. It shows
-//     how many values are stored, about how long each is, when each was
-//     last registered and which share a placeholder, and no hash.
+//     but a count of records. A stored value of another tenant in a request
+//     goes through as it is. A proxy's tenant and login are what the Console
+//     said its session is, never what a client says: a client states its
+//     own, the proxy compares the two, and a command of another tenant
+//     (another account's token in its environment, say) is a guest. Its
+//     values are replaced by ph:<type> while that proxy runs and are never
+//     stored, for the proxy's tenant or for its own.
+//   - The file alone says nothing a guess can be tested against. In the
+//     clear it shows how many records it holds in all and how long each is,
+//     which grows with its value's length. Each record's head is sealed under
+//     a key derived from the master, so the file does not show whose a record
+//     is, of which login, when it was registered, or which records share a
+//     tenant, a login or a placeholder; and it shows no hash.
 //   - A client of a session (any process holding the proxy's capability, an
-//     AI Agent included) is handed the lookup key and its own principal's
-//     confirming key. With the file as well it is where the file alone is:
-//     neither key opens the seal. If it had its tenant's Entries out of
-//     their seal, it could confirm a guessed chunk of its own principal's
-//     values, which it could read anyway, and none of another principal's:
-//     of those it would have the 24 bits a chunk, which list the guesses that fit them
-//     (one in 2^24) and say nothing of which is right. A chunk of b unknown
-//     bits is left with 2^(b-24) guesses that all fit; one the client knows
-//     but 24 bits of is found. It would also have what Entries state
-//     openly: each form's length and which chunks are structure.
+//     AI Agent included) is handed the lookup key and the confirming key of
+//     the login it states: honestly, its own. With the file as well it is
+//     where the file alone is: neither key opens a seal. If it had its
+//     tenant's Entries out of their seal, it could confirm a guessed chunk
+//     of its own principal's values, which it could read anyway, and none of
+//     another principal's: of those it would have the 24 bits a chunk, which
+//     list the guesses that fit them (one in 2^24) and say nothing of which
+//     is right. A chunk of b unknown bits is left with 2^(b-24) guesses that
+//     all fit; one the client knows but 24 bits of is found. It would also
+//     have what Entries state openly: each form's length and which chunks
+//     are structure. A client is trusted to say which login it is, as leak
+//     protection is against accidents: one that states another login of its
+//     tenant is handed that login's confirming key, and no other tenant's
+//     key by any statement.
 //   - Such a client can still put guesses in a request and see whether the
-//     proxy replaces them, as with any value of its tenant the proxy knows:
-//     one guess a chunk's bytes of traffic, at the speed of a scan, with
-//     nothing stored to narrow them by. That is the proxy doing its work,
-//     and is not what the keys are for. What comes back for another login's
-//     value is ph:<type>, never its id.
+//     proxy replaces them. Of a value of its own login that is one guess a
+//     chunk's bytes of traffic. Of another login's, or a guest's, only a
+//     guess of the whole value (or of a whole leaf, or a URL's whole
+//     password) is answered, by ph:<type> and never its id: a chunk of such
+//     a value is confirmed to no one. Nothing stored narrows either.
 //   - A process of the same user that reads the keystore has the master, so
 //     every key of every tenant, and the file opens to it. It confirms a
 //     guessed chunk of any principal's value by hashing it, and the 24 bits come off the work:

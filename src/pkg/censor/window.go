@@ -8,6 +8,9 @@ import "math/bits"
 // scan makes one pass per window that holds anything, so an index of one
 // scheme costs what it did before there were several.
 type window struct {
+	// key is the lookup key the chunks here are rolled under: the index's, or
+	// a guest's, which is then a window, and a pass, of its own.
+	key  *Key
 	size int
 	// runs says every chunk here is made of letters and digits, so the pass
 	// only rolls inside runs of them that are at least a chunk long.
@@ -37,16 +40,19 @@ func init() {
 
 // windowFor returns the window for chunks of a size, making it when it is the
 // first of them. Called with the index's lock held.
-func (ix *Index) windowFor(size int, runs bool, lookupBits int) *window {
+func (ix *Index) windowFor(key *Key, size int, runs bool, lookupBits int) *window {
 	drop := uint(64 - lookupBits)
 	for _, w := range ix.windows {
-		if w.size == size && w.runs == runs && w.drop == drop {
+		if w.size == size && w.runs == runs && w.drop == drop && w.key.lookup == key.lookup {
 			return w
 		}
 	}
-	w := &window{size: size, runs: runs, drop: drop, outPow: 1, chunks: map[uint64][]chunkRef{}}
+	if key.lookup == ix.key.lookup {
+		key = ix.key
+	}
+	w := &window{key: key, size: size, runs: runs, drop: drop, outPow: 1, chunks: map[uint64][]chunkRef{}}
 	for i := 0; i < size-1; i++ {
-		w.outPow *= ix.key.base
+		w.outPow *= key.base
 	}
 	w.resizeBloom(bloomMinBits)
 	ix.windows = append(ix.windows, w)
@@ -149,7 +155,7 @@ func (ix *Index) findSpans(data []byte) []span {
 // roll looks for the chunks of one window in data[from:to].
 func (ix *Index) roll(w *window, search *spanSearch, from, to int) {
 	c := w.size
-	k := ix.key
+	k := w.key
 	data := search.data
 	// The loop reads these at every byte.
 	bloom, shift, drop, outPow, base, table := w.bloom, w.bloomShift, w.drop, w.outPow, k.base, &k.table

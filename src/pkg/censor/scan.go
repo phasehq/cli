@@ -43,6 +43,7 @@ type hit struct {
 	rule        string
 	action      string
 	score       int
+	withheld    int32  // which withheld value it is, from 1; 0 when the id is written
 	form        string // raw, base64, hex, url, json, line, ..., or pattern
 	part        string // url-password or leaf:<n> for a part of an indexed value
 	decoded     bool   // found by decoding a base64 or hex run
@@ -92,6 +93,11 @@ type tryKey struct {
 // each side when a value is followed directly by similar-looking text.
 func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (span, bool) {
 	f := &ix.forms[ref.form]
+	withheld := ix.owners[f.owner].withheld
+	// A line is a fragment of its value, and a withheld value is matched whole.
+	if withheld && f.name == formLine {
+		return span{}, false
+	}
 	c := f.chunk
 	start := p - int(ref.idx)*c
 	key := tryKey{form: ref.form, start: start}
@@ -131,6 +137,11 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 		}
 	}
 	if !full {
+		// A value whose id is withheld is replaced whole or not at all: a
+		// part of it found would confirm a guess of that part to the reader.
+		if withheld {
+			return span{}, false
+		}
 		// A piece made only of structure, such as PEM armour or a token's type
 		// prefix, says nothing about this value: every value of its kind has it.
 		strong := false
@@ -183,7 +194,7 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 			e++
 		}
 	}
-	return span{start: s, end: e, form: ref.form, full: full, verified: hi - lo + 1, checked: start + (hi+1)*c, named: !ix.owners[f.owner].withheld}, true
+	return span{start: s, end: e, form: ref.form, full: full, verified: hi - lo + 1, checked: start + (hi+1)*c, named: !withheld}, true
 }
 
 // minPartialBits is the least a single verified chunk of a base64 or hex form
@@ -341,7 +352,7 @@ func better(a, b span) bool {
 func (ix *Index) hitFor(s span) hit {
 	f := ix.forms[s.form]
 	o := ix.owners[f.owner]
-	return hit{kind: kindInventory, placeholder: o.placeholder, action: actionRedact, form: f.name, part: o.part, partial: !s.full}
+	return hit{kind: kindInventory, placeholder: o.placeholder, withheld: o.ref, action: actionRedact, form: f.name, part: o.part, partial: !s.full}
 }
 
 // inventoryPass finds every indexed value in data, then decodes long base64 and

@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -208,9 +211,17 @@ func TestLeakProtectionSummarySaysHowTheInventoryIsKept(t *testing.T) {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "store_busy"},
 			"; inventory kept in memory only (another process held the inventory file; the next proxy start stores again)",
 		},
-		"a full index at start": {
-			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 10000, NotLoaded: 12},
-			"; inventory kept across restarts (10000 loaded at start), 12 more not loaded because the inventory is full",
+		"more stored than a start loads": {
+			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 5000, NotLoaded: 12},
+			"; inventory kept across restarts (5000 loaded at start), 12 registered longer ago left out to keep room",
+		},
+		"commands of another account": {
+			remoteapi.LeakInventoryStatus{Storage: "stored", Loaded: 2, Unstored: 3},
+			"; inventory kept across restarts (2 loaded at start), 3 registrations from commands of another organisation, or of no login they could state, protected until this proxy exits",
+		},
+		"a session the Console did not name": {
+			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "no_tenant", Unstored: 1},
+			"; inventory kept in memory only (the Console did not say which organisation and login this session is), 1 registrations from commands of another organisation, or of no login they could state, protected until this proxy exits",
 		},
 		"no store": {
 			remoteapi.LeakInventoryStatus{Storage: "memory", Reason: "not_configured"},
@@ -225,5 +236,134 @@ func TestLeakProtectionSummarySaysHowTheInventoryIsKept(t *testing.T) {
 	// A proxy of an earlier version reports no inventory, and the line is as it was.
 	if line := leakProtectionSummary(remoteapi.LeakProtectionStatus{Mode: "censor", SecretsKnown: 3}); line != prefix {
 		t.Errorf("%q", line)
+	}
+}
+
+// storeFor registers one value as a proxy of a tenant would for a login.
+func storeFor(t *testing.T, store phaseproxy.InventoryStore, identity phaseproxy.InventoryIdentity, id string) {
+	t.Helper()
+	store.Tenant = identity.Tenant
+	inventory, _, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := inventory.Principal(identity.Login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := censor.IndexValue(principal.Key(), "secret", id, "Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3Jw3Rk8Tn5Vb2"+id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory.Add([]phaseproxy.StoredEntries{{Entries: entries, Principal: principal}})
+}
+
+// storedIDs are the ids a tenant's next proxy would load.
+func storedIDs(t *testing.T, store phaseproxy.InventoryStore, tenant string) []string {
+	t.Helper()
+	store.Tenant = tenant
+	_, loaded, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, stored := range loaded {
+		ids = append(ids, stored.Entries.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// A logout removes what the inventory stored for that login, and for its
+// organisation once no saved login of it is left. Others' records and the key stay.
+func TestLogoutRemovesTheLoginsStoredValues(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
+	t.Setenv("PHASE_HOST", "")
+	gokeyring.MockInit()
+	keystore := &memoryKeystore{values: map[string]string{}}
+	original := aiCAStore
+	aiCAStore = phaseproxy.CAStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: keystore}
+	t.Cleanup(func() { aiCAStore = original })
+
+	const host = "https://console.test"
+	orgOne, orgTwo := "org-one", "org-two"
+	users := []config.UserConfig{
+		{Host: host, ID: "account-a", OrganizationID: &orgOne},
+		{Host: host + "/", ID: "agent-local", PrincipalType: config.PrincipalAgent, PrincipalID: "agent-9", OrganizationID: &orgOne},
+		{Host: host, ID: "account-c", OrganizationID: &orgTwo},
+	}
+	for _, user := range users {
+		if err := config.AddUser(user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	userA := phaseproxy.NewInventoryIdentity(host, orgOne, phaseproxy.InventoryLoginUser, "account-a")
+	agent := phaseproxy.NewInventoryIdentity(host, orgOne, phaseproxy.InventoryLoginAgent, "agent-9")
+	userC := phaseproxy.NewInventoryIdentity(host, orgTwo, phaseproxy.InventoryLoginUser, "account-c")
+	// A service account another machine's login stored for in organisation one.
+	visitor := phaseproxy.NewInventoryIdentity(host, orgOne, phaseproxy.InventoryLoginServiceAccount, "a-service-account")
+	for id, identity := range map[string]phaseproxy.InventoryIdentity{"of-a": userA, "of-agent": agent, "of-c": userC, "of-visitor": visitor} {
+		storeFor(t, aiInventoryStore(), identity, id)
+	}
+	key, err := keystore.Get(inventoryTestKeyService, inventoryTestKeyUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logout := func(account string) {
+		t.Helper()
+		if err := config.SetDefaultUser(account); err != nil {
+			t.Fatal(err)
+		}
+		if _, stderr, err := runPhaseCommand(t, "", "users", "logout"); err != nil || strings.Contains(stderr, "leak protection") {
+			t.Fatalf("logout of %s: %v %s", account, err, stderr)
+		}
+	}
+	held := func() string {
+		t.Helper()
+		return fmt.Sprint(storedIDs(t, aiInventoryStore(), userA.Tenant), storedIDs(t, aiInventoryStore(), userC.Tenant))
+	}
+	// One login of organisation one logs out: its own records go.
+	logout("account-a")
+	if got := held(); got != "[of-agent of-visitor] [of-c]" {
+		t.Fatalf("after one login of an organisation logged out: %s", got)
+	}
+	// The last saved login of organisation one: everything of it goes.
+	logout("agent-local")
+	if got := held(); got != "[] [of-c]" {
+		t.Fatalf("after an organisation's last login logged out: %s", got)
+	}
+	if after, err := keystore.Get(inventoryTestKeyService, inventoryTestKeyUser); err != nil || after != key {
+		t.Fatalf("a logout replaced or removed the inventory key: %v", err)
+	}
+	logout("account-c")
+	if got := held(); got != "[] []" {
+		t.Fatalf("after every login logged out: %s", got)
+	}
+}
+
+// A logout with nothing stored makes no key and no file.
+func TestLogoutWithNoInventoryWritesNothing(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
+	gokeyring.MockInit()
+	keystore := &memoryKeystore{values: map[string]string{}}
+	original := aiCAStore
+	aiCAStore = phaseproxy.CAStore{Directory: filepath.Join(t.TempDir(), "ai"), Keyring: keystore}
+	t.Cleanup(func() { aiCAStore = original })
+	organisation := "org-one"
+	if err := config.AddUser(config.UserConfig{Host: "https://console.test", ID: "account-a", OrganizationID: &organisation}); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, err := runPhaseCommand(t, "", "users", "logout"); err != nil || strings.Contains(stderr, "leak protection") {
+		t.Fatalf("logout: %v %s", err, stderr)
+	}
+	if _, err := keystore.Get(inventoryTestKeyService, inventoryTestKeyUser); err != gokeyring.ErrNotFound {
+		t.Fatalf("a logout made an inventory key: %v", err)
+	}
+	if _, err := os.Lstat(aiCAStore.Directory); !os.IsNotExist(err) {
+		t.Fatalf("a logout wrote to the Phase AI directory: %v", err)
 	}
 }

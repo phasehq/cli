@@ -11,6 +11,7 @@ import (
 	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/censor"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 const (
@@ -28,21 +29,48 @@ func (h *controlHandler) leakStatus() *remoteapi.LeakProtectionStatus {
 	return h.leak.status()
 }
 
-// inventoryKey hands a client the lookup key and the confirming key of this
-// proxy's own principal: never another principal's, never the master.
-func (h *controlHandler) inventoryKey(w http.ResponseWriter) {
+// maxInventoryKeyBody bounds a key request: two short strings.
+const maxInventoryKeyBody = 4096
+
+const invalidInventoryKeyMessage = "The key request must be {\"schemaVersion\":1} with, when the command knows them, its tenant and login."
+
+// inventoryKey hands a command the keys it indexes with, by who it says it
+// is (leakGuard.place): never the master, never a stored tenant's to another's.
+func (h *controlHandler) inventoryKey(w http.ResponseWriter, req *http.Request) {
 	if h.leak == nil {
 		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection is not running in this proxy.", false)
 		return
 	}
+	// A GET states nothing: the command is nobody's.
+	var stated phaseproxy.InventoryIdentity
+	if req.Method == http.MethodPost {
+		if !controlJSONContentType(req) {
+			writeControlError(w, http.StatusUnsupportedMediaType, "invalid_control_content_type", "The request Content-Type must be application/json.", false)
+			return
+		}
+		var request remoteapi.InventoryKeyRequest
+		decoder := json.NewDecoder(io.LimitReader(req.Body, maxInventoryKeyBody))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF || request.SchemaVersion != agentapi.SchemaVersion {
+			writeControlError(w, http.StatusBadRequest, "invalid_inventory", invalidInventoryKeyMessage, false)
+			return
+		}
+		stated = phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login}
+	}
+	place, err := h.leak.place(stated)
+	if err != nil {
+		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
+		return
+	}
 	h.writeForward(w, remoteapi.InventoryKeyResponse{
 		SchemaVersion: agentapi.SchemaVersion, Format: censor.EntriesVersion,
-		Key:        base64.StdEncoding.EncodeToString(h.leak.key.LookupBytes()),
-		ConfirmKey: base64.StdEncoding.EncodeToString(h.leak.key.ConfirmBytes()),
+		Key:        base64.StdEncoding.EncodeToString(place.key.LookupBytes()),
+		ConfirmKey: base64.StdEncoding.EncodeToString(place.key.ConfirmBytes()),
+		KeyID:      place.keyID(),
 	}, nil)
 }
 
-const invalidInventoryMessage = "The inventory must be {\"schemaVersion\":1,\"entries\":[...]} with at most 4096 entries; idKinds, when sent, says phase_id or key_name for each entry."
+const invalidInventoryMessage = "The inventory must be {\"schemaVersion\":1,\"entries\":[...]} with at most 4096 entries; idKinds, when sent, says phase_id or key_name for each entry; tenant, login and keyId are as the key route took and gave them."
 
 // inventoryKeyNamed reads what a registration says of its ids: for each
 // entry, whether the id is a secret's key name. The client says so; nothing
@@ -114,10 +142,23 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 		}
 		entries = append(entries, entry)
 	}
-	added, unprotected, err := h.leak.add(entries, keyNamed)
+	// Where the entries go is decided here, from what this request states,
+	// and never from what an earlier one did.
+	place, err := h.leak.place(phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login})
+	if err != nil {
+		writeControlError(w, http.StatusServiceUnavailable, "leak_protection_unavailable", "Leak protection could not make a key.", false)
+		return
+	}
+	// Entries made under other keys than this place's would be held and
+	// never matched: the command fetches the key again.
+	if request.KeyID != "" && request.KeyID != place.keyID() {
+		writeControlError(w, http.StatusConflict, "inventory_key_changed", "The entries were made under a key this proxy does not use for this command. Fetch the key again and register again.", true)
+		return
+	}
+	added, unprotected, err := h.leak.addAt(place, entries, keyNamed)
 	switch {
 	case errors.Is(err, errLeakInventoryFull):
-		writeControlError(w, http.StatusInsufficientStorage, "leak_inventory_full", "The leak protection inventory is full: this proxy cannot protect more values. Restart the Phase AI session to start a new inventory.", false)
+		writeControlError(w, http.StatusInsufficientStorage, "leak_inventory_full", "The leak protection inventory has no room for more values from this login. A proxy that starts again has room: it starts with the values registered most recently.", false)
 		return
 	case err != nil:
 		writeControlError(w, http.StatusBadRequest, "invalid_inventory", "An inventory entry is not valid.", false)

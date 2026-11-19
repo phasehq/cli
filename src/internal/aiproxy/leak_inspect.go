@@ -121,8 +121,8 @@ type leakScan struct {
 	redacted  int
 	alerts    int
 	left      int
-	// placeholders are the distinct placeholders found, in the order found
-	// and up to maxScanPlaceholders. A placeholder found many times is one.
+	// placeholders are the distinct ones found, in order, as leakFound
+	// remembers them and up to maxScanPlaceholders. One found many times is one.
 	placeholders []string
 	// replaceable are those of them found where the request can be rewritten.
 	// They were replaced when changed is set.
@@ -177,8 +177,23 @@ func (s *leakScan) addFinding(f censor.Finding, where string) {
 		s.labels = append(s.labels, f.Label)
 	}
 	if f.Placeholder != "" {
-		s.keep(&s.placeholders, &s.seen, f.Placeholder)
+		s.keep(&s.placeholders, &s.seen, leakFound(f))
 	}
+}
+
+// leakFound is what a finding is remembered and counted by: its placeholder
+// and, for a withheld value, its number among them. It is never written.
+func leakFound(f censor.Finding) string {
+	if f.Withheld == 0 {
+		return f.Placeholder
+	}
+	return f.Placeholder + "\x00" + strconv.Itoa(f.Withheld)
+}
+
+// leakPlaceholder is the placeholder of what leakFound remembered.
+func leakPlaceholder(found string) string {
+	placeholder, _, _ := strings.Cut(found, "\x00")
+	return placeholder
 }
 
 // keep adds a placeholder to one of the scan's lists unless the list holds it
@@ -211,7 +226,7 @@ func (s *leakScan) addReport(report *censor.Report, where string) {
 	for _, finding := range report.Findings {
 		s.addFinding(finding, where)
 		if finding.Action != "left" && finding.Placeholder != "" {
-			s.keep(&s.replaceable, &s.seenReplaceable, finding.Placeholder)
+			s.keep(&s.replaceable, &s.seenReplaceable, leakFound(finding))
 		}
 	}
 }
