@@ -3,6 +3,7 @@ package censor
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -110,6 +111,44 @@ func TestAPlaceholderWithNoIDHidesNoTokenAfterAColon(t *testing.T) {
 	for _, text := range []string{"see ph:secret and ph:secret, then ph:secret:some-id.", "password: ph:secret"} {
 		if out, report := ix.Redact([]byte(text)); string(out) != text || report.Found() {
 			t.Errorf("%q was matched again: %q", text, out)
+		}
+	}
+}
+
+// A run that decodes to a value a store handed over and to one a client
+// registered is not a store's alone, whichever comes first in it: a caller
+// that stops a request for the registered one still does.
+func TestADecodedRunIsAStoresOnlyWhenAllInItIs(t *testing.T) {
+	key := newKey(t)
+	ix, err := NewIndex(key, IndexOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, registered := strongValue(t, 30), strongValue(t, 30)
+	fromStore, _ := IndexValue(key, "secret", "stored", stored)
+	if err := ix.AddLoaded(key, fromStore, false); err != nil {
+		t.Fatal(err)
+	}
+	fromClient, _ := IndexValue(key, "secret", "registered", registered)
+	if err := ix.Add(fromClient); err != nil {
+		t.Fatal(err)
+	}
+	inHex := func(value string) string { return hex.EncodeToString([]byte(value)) }
+	run := func(text string) string { return base64.StdEncoding.EncodeToString([]byte(text)) }
+	for name, c := range map[string]struct {
+		text   string
+		loaded bool
+	}{
+		"the stored value alone":         {run(inHex(stored)), true},
+		"the registered value alone":     {run(inHex(registered)), false},
+		"stored, then registered":        {run(inHex(stored) + " " + inHex(registered)), false},
+		"registered, then stored":        {run(inHex(registered) + " " + inHex(stored)), false},
+		"stored twice":                   {run(inHex(stored) + " " + inHex(stored)), true},
+		"stored, then registered, plain": {run("a=" + stored + " b=" + registered), false},
+	} {
+		matches := ix.Find([]byte("k=" + c.text))
+		if len(matches) != 1 || matches[0].Kind != kindInventory || matches[0].Loaded != c.loaded {
+			t.Errorf("%s: %+v, want one match with loaded=%v", name, matches, c.loaded)
 		}
 	}
 }

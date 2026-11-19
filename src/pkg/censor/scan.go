@@ -570,11 +570,18 @@ func (ix *Index) decodePass(data []byte, depth int, placed [][2]int, st *scanSta
 		out = append(out, data[last:start]...)
 		out = append(out, inner[0].placeholder...)
 		last = i
+		// The run is a store's alone only when everything found in it is: a
+		// value a client registered behind one that is not still counts.
+		loaded := true
+		for _, h := range inner {
+			loaded = loaded && h.loaded
+		}
 		for j, h := range inner {
 			h.decoded = true
 			h.form = kind + ">" + h.form
 			hits = append(hits, h)
 			if j == 0 {
+				h.loaded = loaded
 				reps = append(reps, rep{start: start, end: i, hit: h})
 			}
 		}

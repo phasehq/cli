@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1360,5 +1361,55 @@ func TestAFilledLookupValueConfirmsNoChunkOfAnotherLoginsValue(t *testing.T) {
 	// B's value is still found whole, through the crowd, and names no id.
 	if out, _ := asA.guard.index.Redact([]byte("a " + valueOfB + " b")); string(out) != "a ph:secret b" {
 		t.Fatalf("B's value: %q", out)
+	}
+}
+
+// A value registered with this proxy stops a request that holds it in a URL,
+// wherever it stands in an encoded run beside one known only from the store.
+func TestARegisteredValueBehindAStoredOneInAnEncodedRunBlocks(t *testing.T) {
+	store := newTestInventoryStore(t)
+	stored, fresh := randomLeakValue(t, 30), randomLeakValue(t, 30)
+	first := newStoredLeakRigAs(t, store, leakLoginA)
+	if answer := registerThroughControl(t, first.proxy, []leakguard.Value{{Type: "secret", ID: "stored", Value: stored}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatal("the first registration")
+	}
+	first.proxy.CloseHijacked()
+	rig := newStoredLeakRigAs(t, store, leakLoginA)
+	if answer := registerThroughControl(t, rig.proxy, []leakguard.Value{{Type: "secret", ID: "fresh", Value: fresh}}, phaseIDs(1)); answer == nil || answer.Added != 1 {
+		t.Fatal("the second registration")
+	}
+	encoded := func(text string) string { return url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(text))) }
+	inHex := func(text string) string { return hex.EncodeToString([]byte(text)) }
+	for name, query := range map[string]string{
+		"the registered one alone":                  "k=" + fresh,
+		"the stored one, then the registered one":   "a=" + stored + "&b=" + fresh,
+		"the registered one, then the stored one":   "a=" + fresh + "&b=" + stored,
+		"base64 of the registered one":              "k=" + encoded("x:"+fresh),
+		"base64 of stored:registered":               "k=" + encoded(stored+":"+fresh),
+		"base64 of registered:stored":               "k=" + encoded(fresh+":"+stored),
+		"hex of the stored then the registered":     "k=" + inHex(stored+" "+fresh),
+		"the two joined":                            "k=" + stored + fresh,
+		"base64 of text holding both":               "k=" + encoded("a="+stored+" b="+fresh),
+		"base64 of hex of each, the stored first":   "k=" + encoded(inHex(stored)+" "+inHex(fresh)),
+		"base64 of hex of each, the stored last":    "k=" + encoded(inHex(fresh)+" "+inHex(stored)),
+		"base64 of base64 of text holding both":     "k=" + encoded(base64.StdEncoding.EncodeToString([]byte("a="+stored+" b="+fresh))),
+		"base64 of hex of the stored and the plain": "k=" + encoded(inHex(stored)+" "+fresh),
+	} {
+		before := rig.receivedCount()
+		response := postMessages(t, rig.client(rig.phaseRoots), "https://api.anthropic.com/v1/messages?"+query, anthropicBody("nothing"), "")
+		if response.StatusCode != http.StatusForbidden || rig.receivedCount() != before {
+			t.Errorf("%s: a value registered with this proxy is in the URL and the request was answered %d", name, response.StatusCode)
+		}
+	}
+	// One known only from the store is reported and passes, however encoded.
+	for name, query := range map[string]string{
+		"the stored one alone":        "k=" + stored,
+		"base64 of hex of the stored": "k=" + encoded(inHex(stored)+" "+inHex(stored)),
+	} {
+		before := rig.receivedCount()
+		response := postMessages(t, rig.client(rig.phaseRoots), "https://api.anthropic.com/v1/messages?"+query, anthropicBody("nothing"), "")
+		if response.StatusCode != http.StatusOK || rig.receivedCount() != before+1 || !strings.Contains(rig.lastReceived().rawQuery, strings.TrimPrefix(query, "k=")) {
+			t.Errorf("%s: a value known only from the store stopped the request (%d)", name, response.StatusCode)
+		}
 	}
 }
