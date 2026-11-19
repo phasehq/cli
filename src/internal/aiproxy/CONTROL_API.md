@@ -359,9 +359,10 @@ a reboot still has its values replaced before anything registers them again:
   secret's id or key name) may be one the session's login cannot see. When
   the session's own login registered the same value, its own placeholder
   with its id is written. Such a value, and a guest's, is replaced only
-  where it stands whole: the whole value in any of its encodings, a JSON
-  value's whole leaf, or a URL's whole password. A fragment of it, a copy
-  cut short, or single lines of a multi-line value are not replaced, so
+  where it stands whole: the whole value in any of its encodings, a whole
+  string of a JSON value, a whole value of text that is names and values (a
+  kubeconfig, an env file), or a URL's whole password or token. A fragment
+  of it, a copy cut short, or single lines of a multi-line value are not replaced, so
   that no command learns from the proxy that a guessed piece belongs to a
   value it cannot name. Each such value found is reported once, like any
   other; an event names it `ph:<type>` and counts it.

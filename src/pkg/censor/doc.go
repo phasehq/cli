@@ -349,7 +349,8 @@
 //   - A value whose id is withheld (another login's, or a guest's) is matched
 //     whole or not at all: where every chunk and the tail of one of its
 //     forms stand, which is the whole value in any encoding listed above, a
-//     JSON value's whole leaf, or a URL's whole password. What this costs: a
+//     whole string of a JSON value or a whole value of text that is names
+//     and values, or a URL's whole password or token. What this costs: a
 //     fragment of such a value, a copy cut short by one character, and single
 //     lines of a multi-line value such as a PEM body are not caught, at any
 //     length, though the same value held with its id is caught by them as
