@@ -528,6 +528,44 @@ func TestCursorUnaryCallsAreOverwrittenInPlace(t *testing.T) {
 	}
 }
 
+// On a host that speaks Connect a path shaped like a call is conversation
+// content whatever the body's type; any other path keeps its own rules.
+func TestCursorCallShapedPathsGetEveryRule(t *testing.T) {
+	rig, service := newConnectRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	client := rig.clientOffering(rig.phaseRoots, true, false)
+	token := "ghp_" + strings.Repeat("Ab3dEf6hIj9lMn2pQr5t", 2)[:36]
+	text := "git token " + token + " and " + leakSecretOne
+	callPath := "https://" + cursorAPIHost + "/aiserver.v1.AnyService/AnyCall"
+	traces := "https://" + cursorAPIHost + "/v1/traces"
+	message := []byte(`{"text":"` + text + `"}`)
+
+	postConnect(t, client, callPath, "application/json", message, nil)
+	if body := string(service.last(t).body); strings.Contains(body, token) || strings.Contains(body, leakSecretOne) || !strings.Contains(body, "ph:github_token:") {
+		t.Fatalf("JSON on a call's path was not read with every rule: %q", body)
+	}
+	postConnect(t, client, traces, "application/json", message, nil)
+	if body := string(service.last(t).body); !strings.Contains(body, token) || strings.Contains(body, leakSecretOne) {
+		t.Fatalf("JSON on the traces path was not read with its own rules: %q", body)
+	}
+	protobuf := agentMessage(text)
+	postConnect(t, client, callPath, "application/x-protobuf", protobuf, nil)
+	if body := service.last(t).body; len(body) != len(protobuf) || bytes.Contains(body, []byte(token)) || bytes.Contains(body, []byte(leakSecretOne)) ||
+		!bytes.Contains(body, []byte(overwritten("ph:github_token:1", len(token)))) {
+		t.Fatalf("x-protobuf on a call's path: %d bytes of %d, %q", len(body), len(protobuf), body)
+	}
+
+	for path, want := range map[string]bool{
+		"/agent.v1.AgentService/Run": true, "/aiserver.v1.ChatService/StreamUnifiedChatWithTools": true,
+		"/v1/traces": false, "/Service/Run": false, "/agent.v1.AgentService/": false, "/agent.v1.AgentService/Run/more": false,
+		"agent.v1.AgentService/Run": false, "/": false, "": false,
+	} {
+		if connectCallPath(path) != want {
+			t.Errorf("%q has the shape of a call: %v", path, !want)
+		}
+	}
+}
+
 // Every Connect call carries conversation content, whatever its path, so
 // every pattern rule applies to it. Anything else Cursor's hosts take is read
 // for registered values and Phase's own tokens only.

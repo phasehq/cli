@@ -416,9 +416,10 @@ func (p *httpProxy) inspectForLeaks(req, upstream *http.Request, binding *bindin
 	}
 	opts := guard.scanOptionsFor(match, req.URL.Path)
 	// On a host that speaks Connect the Content-Type says what the body is,
-	// and a Connect or gRPC call carries conversation content whatever its path.
+	// and a Connect or gRPC call carries conversation content whatever its path
+	// or, on a path shaped like a call, whatever its type.
 	kind := match.body(req.Header)
-	if kind.conversation() {
+	if kind.conversation() || (match.inPlace() && connectCallPath(req.URL.Path)) {
 		opts = censor.ScanOptions{}
 	}
 	protocol := leakProtocolHTTP

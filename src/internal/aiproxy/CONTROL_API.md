@@ -452,7 +452,9 @@ domain read.
 
 Two flags of a table entry, both set for Cursor (`cursor.sh` and every name
 under it): `http2`, the host's clients may speak HTTP/2, and `connect`, the
-host's API is Connect (connectrpc.com) over protobuf.
+host's API is Connect (connectrpc.com) over protobuf. On such a host a path
+shaped like a call (`/<dotted.package.Service>/<Method>`) is read with every
+pattern rule whatever its body's type; any other path keeps its own rules.
 
 Cursor's command-line agent takes the proxy and its certificate from its
 environment (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`). Its unary calls go to
@@ -517,9 +519,10 @@ a body is (the type alone: `application/connect+proto; charset=utf-8` is
 | anything else (`application/octet-stream`, none) | bytes whose length must not change: overwritten in place when their length is stated, sent on unread over HTTP/2 when it is not |
 
 Connect and gRPC calls, in protobuf or JSON, carry conversation content
-whatever their path, so every pattern rule applies to them. Everything else on such a host,
-traces for one, is read for registered values and Phase's own tokens only,
-with the rules of its path.
+whatever their path, and so does any body on a path shaped like a call, so
+every pattern rule applies to them. Everything else on such a host, traces
+for one, is read for registered values and Phase's own tokens only, with the
+rules of its path.
 
 A stream is a sequence of envelopes: a flag byte, the payload's length in
 four bytes, big-endian, and the payload, which is one message. The proxy

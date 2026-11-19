@@ -108,6 +108,14 @@ func (m *leakHostMatch) body(header http.Header) leakBody {
 	return leakBodyUnframed
 }
 
+// connectCallPath reports whether a path has the shape of a Connect or gRPC
+// call: /<package.Service>/<Method>, the service's name dotted.
+func connectCallPath(path string) bool {
+	service, method, found := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	return strings.HasPrefix(path, "/") && found && method != "" && !strings.Contains(method, "/") &&
+		strings.Contains(service, ".")
+}
+
 // isGRPCType reports whether a media type is gRPC or gRPC-Web, with or
 // without the name of what its messages are encoded as.
 func isGRPCType(mediaType string) bool {
