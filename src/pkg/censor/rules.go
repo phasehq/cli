@@ -914,6 +914,14 @@ type placed struct {
 // be a label or a type this matcher writes. That is a placeholder written
 // right after a word, as in /botph:telegram_bot_token:1/ and -pph:secret:db.
 func placeholders(data []byte, label, typed func(part []byte) bool) []placed {
+	return placeholdersAfter(data, label, typed, nil)
+}
+
+// placeholdersAfter is placeholders for bytes the inventory has just written
+// into. bare are the placeholders with no id it wrote, in order: each ends
+// where it was written, so a colon and a token right after one are text like
+// any other.
+func placeholdersAfter(data []byte, label, typed func(part []byte) bool, bare [][2]int) []placed {
 	var found []placed
 	for from := 0; ; {
 		at := bytes.Index(data[from:], placeholderPrefix)
@@ -922,6 +930,14 @@ func placeholders(data []byte, label, typed func(part []byte) bool) []placed {
 		}
 		at += from
 		from = at + len(placeholderPrefix)
+		for len(bare) > 0 && bare[0][0] < at {
+			bare = bare[1:]
+		}
+		if len(bare) > 0 && bare[0][0] == at {
+			found = append(found, placed{start: at, end: bare[0][1]})
+			from = bare[0][1]
+			continue
+		}
 		colon := identifierRun(data, from)
 		if colon == from || colon >= len(data) || data[colon] != ':' {
 			// ph:<type> alone stands for a value whose id is withheld.
@@ -1085,6 +1101,12 @@ func unhex(b byte) byte {
 // ph:<label>:<n>; alerted ones are only recorded, with their score. It returns
 // the rewritten bytes, the hits, and the found ranges in data's coordinates.
 func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []hit, []rep) {
+	return ix.rulePassAfter(data, keyName, rules, nil)
+}
+
+// rulePassAfter is rulePass over bytes the inventory has rewritten, where
+// bare says which placeholders it wrote with no id (see placeholders).
+func (ix *Index) rulePassAfter(data []byte, keyName string, rules *Rules, bare [][2]int) ([]byte, []hit, []rep) {
 	if rules == nil {
 		return data, nil, nil
 	}
@@ -1099,10 +1121,10 @@ func (ix *Index) rulePass(data []byte, keyName string, rules *Rules) ([]byte, []
 	// What this matcher already wrote into the text is not looked at again: no
 	// candidate begins there, and a keyword there is no keyword. That is what
 	// leaves text that was rewritten once the same when it is scanned again.
-	held := placeholders(data, func(part []byte) bool { return rules.labels[string(part)] }, func(part []byte) bool {
+	held := placeholdersAfter(data, func(part []byte) bool { return rules.labels[string(part)] }, func(part []byte) bool {
 		_, typed := ix.types[string(part)]
 		return typed
-	})
+	}, bare)
 	keys = outside(keys, held)
 	findKeys := func() []keywordHit {
 		if !keysDone {

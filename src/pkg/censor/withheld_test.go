@@ -50,6 +50,70 @@ func TestTheFindingsCapKeepsARegisteredValueBehindALoadedOne(t *testing.T) {
 	}
 }
 
+// A value held without its id is written as ph:<type>. Text that follows it
+// at once with a colon is not its id: a token there is the rules' to take,
+// as it is when the value before it is unknown or held with its id.
+func TestAPlaceholderWithNoIDHidesNoTokenAfterAColon(t *testing.T) {
+	home, another := twoPrincipals(t)
+	theirs, mine := randomString(t, alnum, 24), randomString(t, alnum, 24)
+	token := "gh" + "p_" + randomString(t, alnum, 36)
+	keyID := "AKIA" + randomString(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16)
+	indexes := map[string]*Index{}
+	for _, name := range []string{"unknown", "another principal's", "a guest's", "its own"} {
+		ix, err := NewIndex(home, IndexOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		indexes[name] = ix
+	}
+	stored, _ := IndexValue(another, "secret", "theirs", theirs)
+	if err := indexes["another principal's"].AddLoaded(another, stored, true); err != nil {
+		t.Fatal(err)
+	}
+	guest := newKey(t)
+	registered, _ := IndexValue(guest, "secret", "theirs", theirs)
+	if err := indexes["a guest's"].AddGuest(guest, registered); err != nil {
+		t.Fatal(err)
+	}
+	own, _ := IndexValue(home, "secret", "mine", mine)
+	if err := indexes["its own"].Add(own); err != nil {
+		t.Fatal(err)
+	}
+	for tail, label := range map[string]string{token: "github_token", keyID: "aws_access_key_id"} {
+		for _, shape := range []string{"VALUE:TAIL", "git clone https://VALUE:TAIL@github.com/acme/x.git", "curl -u VALUE:TAIL https://api.example.com"} {
+			for name, ix := range indexes {
+				value, placeholder := theirs, "ph:secret"
+				switch name {
+				case "unknown":
+					placeholder = theirs
+				case "its own":
+					value, placeholder = mine, "ph:secret:mine"
+				}
+				text := strings.Replace(strings.Replace(shape, "VALUE", value, 1), "TAIL", tail, 1)
+				want := strings.Replace(strings.Replace(shape, "VALUE", placeholder, 1), "TAIL", "ph:"+label+":1", 1)
+				if out, _ := ix.Redact([]byte(text)); string(out) != want {
+					t.Errorf("a value that is %s before %q: %q, want %q", name, shape, out, want)
+				}
+				body, _ := json.Marshal(map[string]any{"messages": []any{map[string]any{"role": "user", "content": text}}})
+				if out, _, err := ix.RewriteJSON(body, ScanOptions{}); err != nil || bytes.Contains(out, []byte(tail)) {
+					t.Errorf("a value that is %s before %q in a JSON body: the token was left (%v)", name, shape, err)
+				}
+				if out, _ := ix.RewriteBinary(protoString(protoNumber(nil, 1, 7), 2, []byte(text)), ScanOptions{}); bytes.Contains(out, []byte(tail)) {
+					t.Errorf("a value that is %s before %q in a binary body: the token was left", name, shape)
+				}
+			}
+		}
+	}
+	// What was written with no id is still not read again, and an id written
+	// after a type is still an id.
+	ix := indexes["another principal's"]
+	for _, text := range []string{"see ph:secret and ph:secret, then ph:secret:some-id.", "password: ph:secret"} {
+		if out, report := ix.Redact([]byte(text)); string(out) != text || report.Found() {
+			t.Errorf("%q was matched again: %q", text, out)
+		}
+	}
+}
+
 // forged is entries of 63 one-chunk forms that all sit under one lookup value
 // and confirm nothing: what a client posts to fill a lookup value's bound.
 func forged(t testing.TB, id string, lookup []byte) *Entries {

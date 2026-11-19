@@ -683,6 +683,22 @@ func (m *gzipMembers) Read(p []byte) (int, error) {
 	}
 }
 
+// bareIn is where the inventory wrote a placeholder with no id into the bytes
+// it rewrote, given its replacements in order. Text right after one is not
+// its id, whatever it looks like: the rules are told where each ends.
+func bareIn(reps []rep) [][2]int {
+	var bare [][2]int
+	shift := 0
+	for _, r := range reps {
+		start := r.start + shift
+		if r.hit.withheld != 0 {
+			bare = append(bare, [2]int{start, start + len(r.hit.placeholder)})
+		}
+		shift += len(r.hit.placeholder) - (r.end - r.start)
+	}
+	return bare
+}
+
 // scanBlock runs the inventory and then the pattern rules over one block. keyName
 // is the JSON key holding it, if any, which counts as a keyword. It returns the
 // rewritten bytes, the inventory and rule hits, and every found range in data's
@@ -690,7 +706,7 @@ func (m *gzipMembers) Read(p []byte) (int, error) {
 func (ix *Index) scanBlock(data []byte, keyName string, st *scanState, wantRanges bool, rules *Rules) ([]byte, []hit, []hit, []rep, bool) {
 	out, hits, reps := ix.inventoryPass(data, 0, st)
 	changed := len(reps) > 0
-	rewritten, ruleHits, ruleReps := ix.rulePass(out, keyName, rules)
+	rewritten, ruleHits, ruleReps := ix.rulePassAfter(out, keyName, rules, bareIn(reps))
 	if len(ruleReps) > 0 && wantRanges {
 		inventory := reps
 		reps = append([]rep(nil), inventory...)
