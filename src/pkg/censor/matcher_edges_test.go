@@ -469,3 +469,51 @@ func TestAURLWithAnEscapedPasswordKeepsItsHostAsStructure(t *testing.T) {
 		}
 	}
 }
+
+// The key block rule takes a block that begins with key material. Two string
+// constants that hold the armour lines, with code between them, are no block:
+// the header is reported and the source is left as it is.
+func TestArmourConstantsInSourceAreNotAKeyBlock(t *testing.T) {
+	ix := build(t)
+	for _, source := range []string{
+		"package pemutil\n\nconst (\n\tbegin = \"-----BEGIN PRIVATE KEY-----\"\n\tend   = \"-----END PRIVATE KEY-----\"\n)\n\nfunc Wrap(b64 string) string {\n\treturn begin + \"\\n\" + b64 + \"\\n\" + end\n}\n",
+		"const begin = \"-----BEGIN PRIVATE KEY-----\"\n\nfunc parse(s string) error {\n\tif !strings.HasPrefix(s, begin) { return errBad }\n\treturn nil\n}\n\nconst end = \"-----END PRIVATE KEY-----\"\n",
+		"if (pem.startsWith('-----BEGIN RSA PRIVATE KEY-----') && pem.trim().endsWith('-----END RSA PRIVATE KEY-----')) {\n",
+		"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+	} {
+		out, findings := scanned(t, ix, source)
+		if out != source || len(findings) != 1 || findings[0].Rule != "private-key-header" || findings[0].Action != actionAlert {
+			t.Errorf("%+v\n%s", findings, out)
+		}
+	}
+
+	// A key is taken whole however it is carried.
+	key := strings.TrimSpace(fakePEM(t))
+	lines := strings.Split(key, "\n")
+	body := lines[1 : len(lines)-1]
+	pieces := "var key = \"" + lines[0] + "\\n\" +\n"
+	for _, line := range body {
+		pieces += "\t\"" + line + "\\n\" +\n"
+	}
+	pieces += "\t\"" + lines[len(lines)-1] + "\"\n"
+	for name, text := range map[string]string{
+		"as it is":                 key + "\n",
+		"with carriage returns":    strings.ReplaceAll(key, "\n", "\r\n"),
+		"indented":                 "    " + strings.ReplaceAll(key, "\n", "\n    "),
+		"with a literal \\n":       "TLS_KEY=\"" + strings.ReplaceAll(key, "\n", "\\n") + "\"",
+		"escaped twice":            "{\"key\":\"" + strings.ReplaceAll(key, "\n", "\\\\n") + "\"}",
+		"on one line":              strings.ReplaceAll(key, "\n", " "),
+		"in pieces of a string":    pieces,
+		"encrypted, with a header": "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF0123456789ABCDEF\n\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n",
+	} {
+		out, findings := scanned(t, ix, text)
+		if len(findings) != 1 || findings[0].Rule != "private-key-block" || findings[0].Action != actionRedact || strings.Contains(out, "PRIVATE KEY") {
+			t.Errorf("%s: %+v\n%s", name, findings, out)
+		}
+		for _, line := range body {
+			if strings.Contains(out, line) {
+				t.Errorf("%s: a line of the key was left\n%s", name, out)
+			}
+		}
+	}
+}
