@@ -784,3 +784,52 @@ func TestAURLWithATokenForItsUserIsProtected(t *testing.T) {
 		}
 	}
 }
+
+func reasons(e *Entries) map[string]int {
+	count := map[string]int{}
+	for _, u := range e.Unprotected {
+		count[u.Reason]++
+	}
+	return count
+}
+
+// Next to strings, the numbers of a JSON value are not indexed. Those that
+// look like key material, an array of 16 integers or more and an integer of 12
+// digits or more, are listed as unprotected, so that it is not silent.
+func TestNumbersThatLookLikeKeyMaterialAreListed(t *testing.T) {
+	numbers := make([]string, 64)
+	for i, b := range randomBytes(t, 64) {
+		numbers[i] = strconv.Itoa(int(b))
+	}
+	keypair := "[" + strings.Join(numbers, ",") + "]"
+	address := randomString(t, alnum, 44)
+	key := newKey(t)
+	for name, tc := range map[string]struct {
+		value string
+		want  int
+	}{
+		"a keypair next to its address":  {`{"name":"deployer","publicKey":"` + address + `","secretKey":` + keypair + `}`, 1},
+		"a long integer":                 {`{"publicKey":"` + address + `","seed":-123456789012345678,"created":1700000000}`, 1},
+		"both, nested":                   {`[{"publicKey":"` + address + `","keys":{"secretKey":` + keypair + `,"pin":123456789012}}]`, 2},
+		"numbers that are not key":       {`{"publicKey":"` + address + `","created":1700000000,"ratio":0.123456789012345,"big":1.5e300,"tags":[1,2,3],"mixed":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,"x"]}`, 0},
+		"an array of 15":                 {`{"publicKey":"` + address + `","bytes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}`, 0},
+		"a keypair and no string at all": {keypair, 0},
+		"an object and no string at all": {`{"secretKey":` + keypair + `}`, 0},
+		"a string and nothing else":      {`{"publicKey":"` + address + `"}`, 0},
+	} {
+		e, err := IndexValue(key, "secret", "wallet", tc.value)
+		if err != nil || !e.Protected() || reasons(e)[ReasonNumbers] != tc.want {
+			t.Errorf("%s: %v, unprotected %+v", name, err, e.Unprotected)
+			continue
+		}
+		// The daemon takes the entries with the reason in them.
+		encoded, err := e.Marshal()
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if _, err := ParseEntries(encoded); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

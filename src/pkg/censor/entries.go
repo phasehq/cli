@@ -41,6 +41,7 @@ const (
 	ReasonTooLong     = "too long to protect"
 	ReasonShortLeaf   = "too short for a leaf"
 	ReasonPublicLeaf  = "looks public (a URL or an email address)"
+	ReasonNumbers     = "numbers, which are not indexed next to strings"
 	partURLPassword   = "url-password"
 	partLeafPrefix    = "leaf:"
 	maxReasonLength   = 128
@@ -52,6 +53,7 @@ var identifier = regexp.MustCompile(identifierPattern)
 
 var knownReasons = map[string]bool{
 	ReasonTooShort: true, ReasonLowEntropy: true, ReasonTooLong: true, ReasonShortLeaf: true, ReasonPublicLeaf: true,
+	ReasonNumbers: true,
 }
 
 // Entries is what indexing one value produces: keyed hashes and their layout,
@@ -133,6 +135,11 @@ func IndexValue(key *Key, typ, id, value string) (*Entries, error) {
 			if credential := urlCredential(l.value); credential != "" {
 				b.addValue(part, credential)
 			}
+		}
+		// Numbers are not indexed next to strings. Those that look like key
+		// material are listed, so that it is not silent.
+		for n := keyNumbers(value); n > 0 && len(b.entries.Unprotected) < maxUnprotected; n-- {
+			b.skip("", ReasonNumbers)
 		}
 		return b.finish()
 	}

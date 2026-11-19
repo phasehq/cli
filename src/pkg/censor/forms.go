@@ -342,6 +342,54 @@ func jsonLeaves(value string) []leaf {
 	return leaves
 }
 
+// keyNumbers counts what in a JSON document looks like key material written as
+// numbers: an array of 16 or more integers, as the bytes of a keypair are, and
+// an integer of 12 or more digits.
+func keyNumbers(value string) int {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	var root any
+	if decoder.Decode(&root) != nil {
+		return 0
+	}
+	digits := func(node any) int {
+		number, ok := node.(json.Number)
+		text := strings.TrimPrefix(string(number), "-")
+		if !ok || strings.ContainsAny(text, ".eE") {
+			return 0
+		}
+		return len(text)
+	}
+	count := 0
+	var walk func(node any)
+	walk = func(node any) {
+		switch typed := node.(type) {
+		case json.Number:
+			if digits(typed) >= 12 {
+				count++
+			}
+		case []any:
+			integers := len(typed) >= 16
+			for _, item := range typed {
+				integers = integers && digits(item) > 0
+			}
+			if integers {
+				count++
+				return
+			}
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(root)
+	return count
+}
+
 // looksPublic keeps a key file's URLs and identity out of the index: redacting them
 // would hide ordinary text without protecting anything. A URL with a password in
 // it, or a token for its user, is a credential.
