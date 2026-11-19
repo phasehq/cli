@@ -823,16 +823,16 @@ func (inv *Inventory) forget(file inventoryFile, logins []string, wholeTenant bo
 }
 
 // DeleteStoredInventoryKey removes the inventory key from the system
-// keystore, as DeleteStoredCAKey removes the CA key: for a purge of all local
-// data, and when Phase AI is disabled. A missing key or keystore is not an
-// error.
+// keystore, as DeleteStoredCAKey removes the CA key, for a purge of all local
+// data. A missing key is not an error; a keystore that does not answer is
+// ErrKeystoreUnreachable, as it is for the CA key beside it.
 func DeleteStoredInventoryKey() error {
 	err := gokeyring.Delete(inventoryKeyringService, inventoryKeyringUser)
 	if err == nil || errors.Is(err, gokeyring.ErrNotFound) {
 		return nil
 	}
 	if !(CAStore{}).KeystoreAvailable() {
-		return nil
+		return ErrKeystoreUnreachable
 	}
 	return err
 }
@@ -863,7 +863,7 @@ func (s InventoryStore) deleteKey() error {
 		return nil
 	}
 	// A machine with no keystore never stored a key, or a file under one.
-	if err != nil && !s.KeystoreAvailable() && !s.stored() {
+	if err != nil && !s.KeystoreAvailable() && !s.Stored() {
 		return nil
 	}
 	// A key that cannot be deleted, or may be there unread, is replaced: what
@@ -876,9 +876,9 @@ func (s InventoryStore) deleteKey() error {
 	return nil
 }
 
-// stored reports whether the store's file is there: one is written only once
+// Stored reports whether the store's file is there: one is written only once
 // a keystore has taken a key.
-func (s InventoryStore) stored() bool {
+func (s InventoryStore) Stored() bool {
 	directory, err := s.directory()
 	if err != nil {
 		return false

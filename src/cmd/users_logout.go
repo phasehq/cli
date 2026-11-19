@@ -49,11 +49,14 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
 		}
 		cancel()
+		// A keystore that could not be reached keeps what it holds: said in
+		// one line, of the keys this machine made.
+		var left []string
 		if err := phaseproxy.DeleteStoredCAKey(); errors.Is(err, phaseproxy.ErrKeystoreUnreachable) {
 			// Only a machine that made a Phase AI CA can have stored its key.
 			if directory, dirErr := hookRuntimeDir(); dirErr == nil {
 				if _, statErr := os.Stat(filepath.Join(directory, "ca.pem")); statErr == nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), "The system keystore could not be reached, so a Phase AI CA key stored in it was not removed.")
+					left = append(left, "a Phase AI CA key")
 				}
 			}
 		} else if err != nil {
@@ -61,8 +64,19 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		}
 		// The leak protection inventory's entries go with ~/.phase below; its
 		// key is in the keystore beside the CA key.
-		if err := phaseproxy.DeleteStoredInventoryKey(); err != nil {
+		if err := phaseproxy.DeleteStoredInventoryKey(); errors.Is(err, phaseproxy.ErrKeystoreUnreachable) {
+			// Only a machine that stored an inventory made its key.
+			if directory, dirErr := hookRuntimeDir(); dirErr == nil && (phaseproxy.InventoryStore{Directory: directory}).Stored() {
+				left = append(left, "a leak protection inventory key")
+			}
+		} else if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove the leak protection inventory key from the system keystore: %v\n", err)
+		}
+		switch len(left) {
+		case 1:
+			fmt.Fprintf(cmd.ErrOrStderr(), "The system keystore could not be reached, so %s stored in it was not removed.\n", left[0])
+		case 2:
+			fmt.Fprintf(cmd.ErrOrStderr(), "The system keystore could not be reached, so %s and %s stored in it were not removed.\n", left[0], left[1])
 		}
 		phaseHomeDir := filepath.Dir(config.PhaseSecretsDir)
 		if _, err := os.Stat(phaseHomeDir); err == nil {

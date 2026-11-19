@@ -481,7 +481,9 @@ a reboot still has its values replaced before anything registers them again:
   that refuses the read still loses it. A master the keystore cannot delete
   is replaced, and one it will neither delete nor replace is not left behind
   unsaid: the disable fails with that and asks to be run again. The file is
-  removed either way.
+  removed either way. A purge from a shell that cannot reach the keystore
+  says in one line which keys it left there, the CA's, the inventory's or
+  both, and only of those this machine made.
 
 What each party can do with this. What is stored per chunk is 24 bits of its
 rolling hash, under the lookup key, and a SHA-256 truncated to 128 bits, under

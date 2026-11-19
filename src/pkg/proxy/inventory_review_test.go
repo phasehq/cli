@@ -399,6 +399,30 @@ func TestInventoryPurgeDoesNotNeedToReadTheKey(t *testing.T) {
 	})
 }
 
+// A purge of all local data removes the inventory key as it removes the CA
+// key beside it: a keystore that does not answer may still hold it, and that
+// is reported; one that answers and holds no key is not.
+func TestDeleteStoredInventoryKeyReportsAKeystoreItCouldNotReach(t *testing.T) {
+	t.Cleanup(gokeyring.MockInit)
+	gokeyring.MockInitWithError(errors.New("secret service unreachable"))
+	if err := DeleteStoredInventoryKey(); !errors.Is(err, ErrKeystoreUnreachable) {
+		t.Fatalf("an unreachable keystore was reported as %v", err)
+	}
+	gokeyring.MockInit()
+	if err := DeleteStoredInventoryKey(); err != nil {
+		t.Fatalf("a keystore with no inventory key: %v", err)
+	}
+	if err := gokeyring.Set(inventoryKeyringService, inventoryKeyringUser, "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteStoredInventoryKey(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gokeyring.Get(inventoryKeyringService, inventoryKeyringUser); !errors.Is(err, gokeyring.ErrNotFound) {
+		t.Fatalf("the inventory key is still in the keystore: %v", err)
+	}
+}
+
 // shortLockWaits makes the store's waits short enough for a test to sit out.
 func shortLockWaits(t *testing.T, proxy, removal time.Duration) {
 	t.Helper()

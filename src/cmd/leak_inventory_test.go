@@ -131,6 +131,64 @@ func TestLogoutPurgeRemovesTheLeakInventory(t *testing.T) {
 	}
 }
 
+// A purge from a shell that cannot reach the system keystore says once what
+// it left there: the CA key, the inventory key, or both, each only where this
+// machine made one. The inventory's entries go with ~/.phase all the same.
+func TestLogoutPurgeNamesEveryKeyAnUnreachableKeystoreKept(t *testing.T) {
+	const caOnly = "The system keystore could not be reached, so a Phase AI CA key stored in it was not removed.\n"
+	const inventoryOnly = "The system keystore could not be reached, so a leak protection inventory key stored in it was not removed.\n"
+	const both = "The system keystore could not be reached, so a Phase AI CA key and a leak protection inventory key stored in it were not removed.\n"
+	for name, c := range map[string]struct {
+		ca, inventory bool
+		want          string
+	}{
+		"a CA and an inventory": {true, true, both},
+		"an inventory alone":    {false, true, inventoryOnly},
+		"a CA alone":            {true, false, caOnly},
+		"neither":               {false, false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			console := newFakeAgentConsole(t)
+			isolateAgentCommand(t, console.server.URL)
+			t.Cleanup(gokeyring.MockInit)
+			gokeyring.MockInit()
+			aiDirectory := filepath.Join(filepath.Dir(config.PhaseSecretsDir), "ai")
+			originalDirectory := hookRuntimeDir
+			hookRuntimeDir = func() (string, error) { return aiDirectory, nil }
+			t.Cleanup(func() { hookRuntimeDir = originalDirectory })
+			if err := config.AddUser(config.UserConfig{Host: console.server.URL, ID: "user-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(aiDirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if c.inventory {
+				// Stored while the keystore answered, as from the desktop.
+				storeAValue(t, phaseproxy.InventoryStore{Directory: aiDirectory})
+			}
+			if c.ca {
+				if err := os.WriteFile(filepath.Join(aiDirectory, "ca.pem"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gokeyring.MockInitWithError(errors.New("secret service unreachable"))
+			_, stderr, err := runPhaseCommand(t, "", "users", "logout", "--purge")
+			if err != nil {
+				t.Fatalf("purge: %v %s", err, stderr)
+			}
+			if c.want == "" && strings.Contains(stderr, "keystore") {
+				t.Fatalf("a machine that made no key was warned of one: %q", stderr)
+			}
+			if !strings.Contains(stderr, c.want) || strings.Count(stderr, "could not be reached") > 1 {
+				t.Fatalf("the purge said %q, want one line: %q", stderr, c.want)
+			}
+			if _, err := os.Stat(filepath.Join(aiDirectory, inventoryTestFile)); !os.IsNotExist(err) {
+				t.Fatalf("the inventory file is still there after purge: %v", err)
+			}
+		})
+	}
+}
+
 // phase ai disable removes the file and the key (replaced where it cannot be
 // deleted). The lock file stays: removed, two proxies could each hold it.
 func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
