@@ -46,8 +46,7 @@ func TestCopyClaudeHookExecutablePreservesSourceModTimeAcrossHarnessCopies(t *te
 
 func TestInstallClaudeBootstrapPluginUsesExecFormAndIsIdempotent(t *testing.T) {
 	parent := t.TempDir()
-	t.Setenv("HOME", parent)
-	t.Setenv("USERPROFILE", parent)
+	isolateHarnessHome(t, parent)
 	root := filepath.Join(parent, ClaudeBootstrapPluginName)
 	firstExecutable := filepath.Join(parent, "Phase CLI", "phase")
 	if err := os.MkdirAll(filepath.Dir(firstExecutable), 0o700); err != nil {

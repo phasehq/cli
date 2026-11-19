@@ -26,8 +26,7 @@ func TestDefaultCursorBootstrapPluginPathUsesOfficialUserLocalDirectory(t *testi
 
 func TestInstallCursorBootstrapPluginIsIdempotentAndPreservesUnrelatedFiles(t *testing.T) {
 	parent := t.TempDir()
-	t.Setenv("HOME", parent)
-	t.Setenv("USERPROFILE", parent)
+	isolateHarnessHome(t, parent)
 	root := filepath.Join(parent, CursorBootstrapPluginName)
 	firstExecutable := filepath.Join(parent, "Phase CLI", "phase")
 	if err := os.MkdirAll(filepath.Dir(firstExecutable), 0o700); err != nil {

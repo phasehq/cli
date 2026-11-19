@@ -14,8 +14,7 @@ import (
 
 func TestInstallCodexBootstrapPluginBuildsPortableMarketplace(t *testing.T) {
 	parent := t.TempDir()
-	t.Setenv("HOME", parent)
-	t.Setenv("USERPROFILE", parent)
+	isolateHarnessHome(t, parent)
 	root := filepath.Join(parent, "Phase's Codex Marketplace")
 	firstExecutable := filepath.Join(parent, "Phase CLI", "phase")
 	if err := os.MkdirAll(filepath.Dir(firstExecutable), 0o700); err != nil {

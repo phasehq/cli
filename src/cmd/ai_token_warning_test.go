@@ -15,7 +15,7 @@ func TestBroadTokenWarningSkipsCommandsThatDoNotUseTheLogin(t *testing.T) {
 		t.Setenv(name, "")
 	}
 	t.Setenv("CLAUDECODE", "1")
-	t.Setenv("HOME", t.TempDir())
+	isolateHarnessHome(t, t.TempDir())
 	t.Setenv("PHASE_SERVICE_TOKEN", "pss_user:v1:"+strings.Repeat("a", 64)+":"+strings.Repeat("b", 64)+":"+strings.Repeat("c", 64)+":"+strings.Repeat("d", 64))
 	for _, args := range [][]string{{"--version"}, {"help"}, {"completion", "bash"}, {"ai", "--help"}, {"auth", "--help"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

@@ -16,9 +16,7 @@ import (
 func isolateAISetup(t *testing.T) (string, string) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
+	isolateHarnessHome(t, home)
 	for _, marker := range []string{"CLAUDECODE", "CURSOR_AGENT", "CODEX", "OPENCODE", "AGENT"} {
 		t.Setenv(marker, "")
 	}
@@ -31,6 +29,17 @@ func isolateAISetup(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	return home, source
+}
+
+// isolateHarnessHome points HOME and every variable a harness uses to find its
+// config at the test home, so a test never writes into a real profile.
+func isolateHarnessHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, name := range []string{"XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR", "CLAUDE_CONFIG_DIR", "CLAUDE_ENV_FILE", "CODEX_HOME"} {
+		t.Setenv(name, "")
+	}
 }
 
 func runAIDisableForTest() error {

@@ -11,7 +11,7 @@ import (
 // The guides are read by Agents that may have no session and no login, so the
 // command touches neither.
 func TestAIGuideListsTopicsAndPrintsOne(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHarnessHome(t, t.TempDir())
 	var out bytes.Buffer
 	aiGuideCmd.SetOut(&out)
 	if err := runAIGuide(aiGuideCmd, nil); err != nil {

@@ -26,8 +26,7 @@ func TestHarnessPluginIdentitiesShareStableV1Name(t *testing.T) {
 
 func TestInstallSharedHookExecutableUsesStableV1PathAndDigestMetadata(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	source := filepath.Join(home, "build", "phase")
 	if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
 		t.Fatal(err)
@@ -85,8 +84,7 @@ func TestInstallSharedHookExecutableUsesStableV1PathAndDigestMetadata(t *testing
 
 func TestInstallSharedHookExecutableRepairsOwnedDriftAndRejectsUnownedFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	source := filepath.Join(home, "phase")
 	if err := os.WriteFile(source, []byte("expected"), 0o700); err != nil {
 		t.Fatal(err)

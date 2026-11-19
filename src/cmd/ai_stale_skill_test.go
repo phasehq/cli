@@ -17,8 +17,7 @@ import (
 func staleSkillHome(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	previousConfig := config.AIConfigPath
 	config.AIConfigPath = filepath.Join(home, "no-ai.json")
 	previousCheck := staleSkillCheck
@@ -96,8 +95,7 @@ func TestStaleSkillNoticeGoesToStderrOnceAndLeavesStdoutAlone(t *testing.T) {
 
 func TestStaleSkillNoticeIsSilentWhenNothingIsInstalled(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	previousConfig := config.AIConfigPath
 	config.AIConfigPath = filepath.Join(home, "no-ai.json")
 	previousCheck := staleSkillCheck

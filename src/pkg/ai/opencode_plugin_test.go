@@ -13,8 +13,7 @@ import (
 
 func TestInstallOpenCodePluginIsDependencyFreeAndIdempotent(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	first := filepath.Join(home, "first-phase")
 	if err := os.WriteFile(first, []byte("first"), 0o700); err != nil {
@@ -97,8 +96,7 @@ func TestInstalledOpenCodeOnlyDelegatesExplicitPhaseControlCalls(t *testing.T) {
 		t.Skip("node is unavailable")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	pluginPath := filepath.Join(home, OpenCodePluginName+".js")
 	helper := filepath.Join(home, "phase-hook-v1")
 	helperSource := "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":1,\"managed\":true,\"command\":\"phase-rewritten\"}'\n"
@@ -181,8 +179,7 @@ func TestInstalledOpenCodePluginAppliesPublishedEnvironmentOnlyWhileProxyIsAlive
 		t.Skip("node is unavailable")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	pluginPath := filepath.Join(home, OpenCodePluginName+".js")
 	helper := filepath.Join(home, "phase-hook-v1")
 	kickLog := filepath.Join(home, "kicks.log")
@@ -261,8 +258,7 @@ check(Object.keys(missing.env).length === 1 && missing.env.ONLY === "1", "missin
 
 func TestUninstallOpenCodePluginPreservesForeignFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -280,8 +276,7 @@ func TestUninstallOpenCodePluginPreservesForeignFile(t *testing.T) {
 
 func TestUninstallOpenCodePluginRemovesOwnedFiles(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	executable := filepath.Join(home, "phase")
 	if err := os.WriteFile(executable, []byte("phase"), 0o700); err != nil {
@@ -311,8 +306,7 @@ func TestInstalledOpenCodePluginExportsOneDefaultDefinition(t *testing.T) {
 		t.Skip("node is unavailable")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", OpenCodePluginName+".js")
 	if _, err := InstallOpenCodePlugin(pluginPath, filepath.Join(home, "phase-hook-v1"), filepath.Join(home, ".phase", "ai", "env.json")); err != nil {
 		t.Fatal(err)
@@ -349,8 +343,7 @@ func TestDefaultOpenCodePluginPathUsesDotConfigOnEveryPlatform(t *testing.T) {
 
 func TestOpenCodePathsFollowItsConfigDirectory(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("HOME", filepath.Join(root, "home"))
-	t.Setenv("USERPROFILE", filepath.Join(root, "home"))
+	isolateHarnessHome(t, filepath.Join(root, "home"))
 	check := func(want string) {
 		t.Helper()
 		if path, err := DefaultOpenCodePluginPath(); err != nil || path != filepath.Join(want, "plugins", OpenCodePluginName+".js") {

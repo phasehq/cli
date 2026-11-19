@@ -74,8 +74,7 @@ func TestResolveAIEnableCATrustPropagatesPromptFailure(t *testing.T) {
 
 func TestInstallConfiguredAIHarnessAdaptersRefreshesEveryHelper(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	source, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -145,8 +144,7 @@ func TestCodexHookReviewRequiredWhenExistingAdapterIsRefreshed(t *testing.T) {
 
 func TestInstallConfiguredAIHarnessAdaptersDoNotNeedCodexForAnotherHarness(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	isolateHarnessHome(t, home)
 	t.Setenv("PATH", t.TempDir())
 	source, err := os.Executable()
 	if err != nil {
