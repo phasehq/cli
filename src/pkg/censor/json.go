@@ -413,9 +413,18 @@ func (w *walker) handleString(start, end int, signed bool) {
 	// or a file produced, whatever its keys are called, so nothing in it is
 	// exempt.
 	signed = signed || w.atEncryptedContent()
-	here := w.pointer()
+	// A report lists MaxFindings and only counts the rest, so only those are
+	// given a path: one is as long as the keys above the string.
+	var here string
+	if len(w.hits) < MaxFindings {
+		here = w.pointer()
+	}
 	for _, h := range entry.hits {
-		h.path = here + h.path
+		if len(w.hits) < MaxFindings {
+			h.path = here + h.path
+		} else {
+			h.path = ""
+		}
 		if signed && h.action == actionRedact {
 			h.action = actionLeft
 		}
@@ -528,6 +537,9 @@ func (c *blockCache) put(hash uint64, length int, entry *cacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	size := 64 + len(entry.literal) + 64*len(entry.hits)
+	for _, h := range entry.hits {
+		size += len(h.path)
+	}
 	if c.bytes+size > cacheMaxBytes {
 		c.entries = map[cacheKey]*cacheEntry{}
 		c.bytes = 0

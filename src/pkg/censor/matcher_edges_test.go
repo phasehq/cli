@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -671,6 +672,51 @@ func TestManyRangesMapBackInOnePass(t *testing.T) {
 	}{{5, 5, false}, {10, 10, false}, {15, 10, false}, {15, 40, true}, {21, 40, false}, {41, 60, false}, {45, 64, true}, {52, 64, false}, {60, 72, false}, {3, 3, false}, {30, 49, false}} {
 		if got := back.of(tc.pos, tc.end); got != tc.want {
 			t.Errorf("position %d maps to %d, want %d", tc.pos, got, tc.want)
+		}
+	}
+}
+
+// A finding's path is as long as the keys above its string. A report lists
+// MaxFindings and only counts the rest, so only those are given a path: past
+// the cap a long key does not cost a copy of itself for every finding more.
+func TestPathsAreBuiltOnlyForListedFindings(t *testing.T) {
+	password := randomString(t, alnum, 24)
+	ix := build(t, secret{ID: "pw", Value: password})
+	key := strings.Repeat("k", 8<<10)
+	scan := func(content func(values []string) any, count int) uint64 {
+		values := make([]string, count)
+		for i := range values {
+			values[i] = password
+		}
+		body, _ := json.Marshal(map[string]any{"messages": []any{map[string]any{"role": "user", "content": content(values)}}})
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		out, report, err := ix.RewriteJSON(body, ScanOptions{})
+		runtime.ReadMemStats(&after)
+		if err != nil || bytes.Contains(out, []byte(password)) || report.Inventory != count || len(report.Findings) != MaxFindings || !report.Truncated {
+			t.Fatalf("%v, %d found of %d, %d listed", err, report.Inventory, count, len(report.Findings))
+		}
+		for i, f := range report.Findings {
+			if want := "/" + strconv.Itoa(i); len(f.Path) < len(key) || f.Path[len(f.Path)-len(want):] != want {
+				t.Fatalf("finding %d has the path %.40s...%s", i, f.Path, f.Path[len(f.Path)-8:])
+			}
+		}
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	for name, content := range map[string]func(values []string) any{
+		"in the body": func(values []string) any { return map[string]any{key: map[string]any{"v": values}} },
+		"in JSON held in a string": func(values []string) any {
+			inner, _ := json.Marshal(map[string]any{key: map[string]any{"v": values}})
+			return string(inner)
+		},
+	} {
+		// 10,000 findings more, every one past the cap. Scanning their strings
+		// allocates some 20 MB; a path for each would add 80 MB of keys.
+		few, many := scan(content, 6000), scan(content, 16000)
+		if more := (int64(many) - int64(few)) >> 20; more > 50 {
+			t.Errorf("%s: 10,000 findings past the cap cost %d MB", name, more)
+		} else {
+			t.Logf("%s: 10,000 findings past the cap cost %d MB", name, more)
 		}
 	}
 }
