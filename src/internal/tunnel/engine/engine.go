@@ -152,9 +152,6 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(cfg.StateDirectory, 0o700); err != nil {
 		return err
 	}
-	// An engine that was killed leaves its proxy's state behind. It names no proxy
-	// of this engine's.
-	_ = os.Remove(ProxyStatePath(cfg.StateDirectory))
 	// Before anything dials out: once everything is captured, a socket that isn't
 	// pinned to the real interface would come straight back into the tunnel.
 	tunnel.Physical.Refresh()
@@ -196,6 +193,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("listen for the helper on 127.0.0.1:%d: %w", cfg.WireGuardPort, err)
 	}
 	defer device.Close()
+	// An engine that was killed leaves its proxy's state behind. It names no proxy
+	// of this engine's. Only now is it known to be nobody's: an engine that is still
+	// running holds the port this one has just taken, and its state is left alone
+	// by an engine that stops above for want of the port.
+	_ = os.Remove(ProxyStatePath(cfg.StateDirectory))
 
 	e := &engine{cfg: cfg, router: router, started: time.Now()}
 	e.link = &helperLink{path: cfg.SocketPath, device: device, port: cfg.WireGuardPort, routes: routes, logf: cfg.Logf, ready: make(chan struct{})}

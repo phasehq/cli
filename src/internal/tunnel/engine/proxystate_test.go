@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -165,5 +166,37 @@ func TestAnEngineStartsWithoutAnotherEnginesProxyState(t *testing.T) {
 	}
 	if _, err := os.Lstat(ProxyStatePath(directory)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the other engine's state is still there: %v", err)
+	}
+}
+
+// A second engine can't take the port a running engine listens on, and stops. It
+// leaves the running engine's proxy state as it was: without it, no command on this
+// machine could register a secret value with the proxy that reads for the tunnel.
+func TestASecondEngineLeavesTheRunningEnginesProxyStateAlone(t *testing.T) {
+	directory := t.TempDir()
+	running := ProxyState{Version: ProxyStateVersion, PID: os.Getpid(), Started: time.Now().UTC(), ProxyURL: "http://phase:running@127.0.0.1:9553"}
+	payload, _ := json.Marshal(running)
+	if err := os.WriteFile(ProxyStatePath(directory), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The running engine's port.
+	held, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	err = Run(ctx, Config{
+		Runtime: fakeRuntime{session: testSession(t)}, SocketPath: filepath.Join(directory, "no-helper"), StateDirectory: directory,
+		ProxyAddress: "127.0.0.1:1", PostgresAddress: "127.0.0.1:2", WireGuardPort: held.LocalAddr().(*net.UDPAddr).Port,
+		Upstream: &tunnel.Upstream{Servers: []string{"127.0.0.1"}, OnlyOverrides: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "listen for the helper") {
+		t.Fatalf("a second engine on the same port returned %v", err)
+	}
+	state, err := ReadProxyState(directory)
+	if err != nil || state.ProxyURL != running.ProxyURL || state.PID != running.PID {
+		t.Fatalf("the running engine's proxy state after a second engine tried to start: %+v, %v", state, err)
 	}
 }
