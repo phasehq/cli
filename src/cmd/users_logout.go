@@ -59,6 +59,11 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		} else if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove the Phase AI CA key from the system keystore: %v\n", err)
 		}
+		// The leak protection inventory's entries go with ~/.phase below; its
+		// key is in the keystore beside the CA key.
+		if err := phaseproxy.DeleteStoredInventoryKey(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove the leak protection inventory key from the system keystore: %v\n", err)
+		}
 		phaseHomeDir := filepath.Dir(config.PhaseSecretsDir)
 		if _, err := os.Stat(phaseHomeDir); err == nil {
 			if err := os.RemoveAll(phaseHomeDir); err != nil {

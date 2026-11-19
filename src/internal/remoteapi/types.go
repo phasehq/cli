@@ -133,6 +133,38 @@ type LeakProtectionStatus struct {
 	// Both are absent when every rule applies, as with the shipped file.
 	RulesSkipped int      `json:"rulesSkipped,omitempty"`
 	SkippedRules []string `json:"skippedRules,omitempty"`
+	// Inventory says whether the values the proxy knows outlive it.
+	Inventory *LeakInventoryStatus `json:"inventory,omitempty"`
+}
+
+// Where the leak protection inventory is kept.
+const (
+	// LeakInventoryStored: the key is in the system keystore and the entries
+	// in a file, so a proxy that starts again knows the same values.
+	LeakInventoryStored = "stored"
+	// LeakInventoryMemory: the inventory goes with the proxy process.
+	LeakInventoryMemory = "memory"
+)
+
+// LeakInventoryStatus describes how the leak protection inventory is kept:
+// counts and a reason, never an entry, a hash or an id.
+type LeakInventoryStatus struct {
+	// Storage is LeakInventoryStored or LeakInventoryMemory.
+	Storage string `json:"storage"`
+	// Reason says why the inventory is in memory only: no_keystore,
+	// newer_store_format, key_replaced, store_unusable or not_configured.
+	Reason string `json:"reason,omitempty"`
+	// Loaded counts the values the proxy knew from the store when it started.
+	Loaded int `json:"loaded"`
+	// UnmatchedScheme counts stored entries this version cannot match,
+	// because they were made by a version that matches differently. They are
+	// kept, and matched again once a command reads their value.
+	UnmatchedScheme int `json:"unmatchedScheme"`
+	// UnmatchedKey counts stored entries made under a key that has since been
+	// replaced. They are never matched and have been dropped.
+	UnmatchedKey int `json:"unmatchedKey"`
+	// Damaged counts stored entries that could not be read.
+	Damaged int `json:"damaged,omitempty"`
 }
 
 // MirroredHostStatus counts, since the proxy process started, the client

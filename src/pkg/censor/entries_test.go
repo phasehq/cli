@@ -356,15 +356,22 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 	}
 	// A form whose length is not a multiple of the chunk, so it has a tail.
 	tailed := -1
+	chunkOf := func(f Form) int {
+		c, err := schemes[good.Version].chunkOf(&f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
 	for i, f := range good.Forms {
-		if f.Length%chunkSize != 0 {
+		if f.Length%chunkOf(f) != 0 {
 			tailed = i
 			break
 		}
 	}
 	whole := -1
 	for i, f := range good.Forms {
-		if f.Length%chunkSize == 0 {
+		if f.Length%chunkOf(f) == 0 {
 			whole = i
 			break
 		}
@@ -374,7 +381,9 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 	}
 	mutations := map[string]func(e *Entries){
 		"version 0":            func(e *Entries) { e.Version = 0 },
-		"version 2":            func(e *Entries) { e.Version = 2 },
+		"version 3":            func(e *Entries) { e.Version = EntriesVersion + 1 },
+		"wide in scheme 1":     func(e *Entries) { e.Version = 1 },
+		"narrow hex form":      func(e *Entries) { narrowHexForm(t, e) },
 		"empty type":           func(e *Entries) { e.Type = "" },
 		"type with a colon":    func(e *Entries) { e.Type = "a:b" },
 		"long id":              func(e *Entries) { e.ID = strings.Repeat("x", 65) },
@@ -433,11 +442,11 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 		"empty":          "",
 		"null":           "null",
 		"array":          "[]",
-		"unknown field":  strings.Replace(string(wire), `"v":1`, `"v":1,"extra":true`, 1),
+		"unknown field":  strings.Replace(string(wire), `"v":2`, `"v":2,"extra":true`, 1),
 		"trailing data":  string(wire) + `{}`,
 		"trailing text":  string(wire) + `x`,
 		"bad base64":     strings.Replace(string(wire), `"rolls":"`, `"rolls":"!`, 1),
-		"string version": strings.Replace(string(wire), `"v":1`, `"v":"1"`, 1),
+		"string version": strings.Replace(string(wire), `"v":2`, `"v":"2"`, 1),
 	} {
 		if _, err := ParseEntries([]byte(raw)); err == nil {
 			t.Fatalf("%s: accepted", name)
@@ -587,4 +596,23 @@ func FuzzParseEntries(f *testing.F) {
 		}
 		ix.Find([]byte(fmt.Sprintf("probe %x", data)))
 	})
+}
+
+// narrowHexForm rewrites the entries' hex form as plain 12-byte chunks, which
+// scheme 2 exists to keep out of an index.
+func narrowHexForm(t *testing.T, e *Entries) {
+	t.Helper()
+	for i := range e.Forms {
+		f := &e.Forms[i]
+		if f.Form != formHex || !f.Wide {
+			continue
+		}
+		n := f.Length / chunkSize
+		f.Wide, f.Rolls, f.MACs, f.Weak, f.Tail = false, make([]byte, 8*n), make([]byte, macSize*n), make([]byte, (n+7)/8), nil
+		if f.Length%chunkSize != 0 {
+			f.Tail = make([]byte, macSize)
+		}
+		return
+	}
+	t.Fatal("the test value has no wide hex form")
 }

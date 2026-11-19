@@ -484,7 +484,7 @@ func TestInventoryControlRoutes(t *testing.T) {
 		"wrong schema":       {"application/json", []byte(`{"schemaVersion":2,"entries":[]}`), http.StatusBadRequest, "invalid_inventory"},
 		"trailing data":      {"application/json", []byte(`{"schemaVersion":1,"entries":[]} {}`), http.StatusBadRequest, "invalid_inventory"},
 		"entry not object":   {"application/json", []byte(`{"schemaVersion":1,"entries":["x"]}`), http.StatusBadRequest, "invalid_inventory"},
-		"bad entry version":  {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":2,"type":"secret","id":"x","forms":[]}]}`), http.StatusBadRequest, "invalid_inventory"},
+		"bad entry version":  {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":3,"type":"secret","id":"x","forms":[]}]}`), http.StatusBadRequest, "invalid_inventory"},
 		"bad entry id":       {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"a b","forms":[]}]}`), http.StatusBadRequest, "invalid_inventory"},
 		"entry extra field":  {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"x","forms":[],"value":"plain"}]}`), http.StatusBadRequest, "invalid_inventory"},
 		"oversized":          {"application/json", append([]byte(`{"schemaVersion":1,"entries":["`), bytes.Repeat([]byte("a"), maxInventoryBodyBytes)...), http.StatusRequestEntityTooLarge, "inventory_too_large"},

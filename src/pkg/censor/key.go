@@ -11,10 +11,11 @@ import (
 // KeySize is the length of an exported Key in bytes.
 const KeySize = 32
 
-// Key is the secret that every hash in an index is keyed with. The daemon makes
-// one per process and hands its bytes to each client that indexes values, so the
-// client's entries and the daemon's scans agree. Without the key, the entries
-// are opaque; with it, they still only confirm a guessed chunk.
+// Key is the secret that every hash in an index is keyed with. The daemon holds
+// one, kept apart from any entries it stores, and hands its bytes to each
+// client that indexes values, so the client's entries and the daemon's scans
+// agree. Without the key, the entries are opaque; with it, they still only
+// confirm a guessed chunk.
 type Key struct {
 	raw     [KeySize]byte
 	macKey  [32]byte

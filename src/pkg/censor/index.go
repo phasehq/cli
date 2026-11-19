@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/bits"
 	"sync"
 )
 
@@ -46,15 +45,17 @@ type Index struct {
 	maxSecrets int
 	maxChunks  int
 
-	mu           sync.RWMutex
-	bloom        []uint64
-	bloomShift   uint
-	chunks       map[uint64][]chunkRef
-	chunkCount   int
-	forms        []form
+	mu sync.RWMutex
+	// windows hold the chunks, by chunk size: see window.
+	windows    []*window
+	chunkCount int
+	forms      []form
+	// liveForms counts the forms a scan still matches: all but those a newer
+	// scheme's entries replaced.
+	liveForms    int
 	owners       []owner
 	ownerIndex   map[ownerKey]int32
-	secrets      map[secretKey]struct{}
+	secrets      map[secretKey]*secretForms
 	types        map[string]struct{} // the types of the values indexed: the middle of their placeholders
 	fingerprints map[[32]byte]struct{}
 
@@ -80,6 +81,13 @@ type IndexStats struct {
 
 type secretKey struct{ typ, id string }
 
+// secretForms is what is indexed for one placeholder: its forms, and the
+// newest matching scheme among them.
+type secretForms struct {
+	scheme int
+	forms  []int32
+}
+
 type ownerKey struct{ typ, id, part string }
 
 type owner struct {
@@ -95,6 +103,13 @@ type form struct {
 	tailLen int
 	tail    [macSize]byte
 	formShape
+	// chunk is the size of the form's chunks, and tailBack how far before the
+	// tail its hash begins: both are fixed by the entries' scheme.
+	chunk    int
+	tailBack int
+	// dead marks a form that entries of a newer scheme replaced. Its chunks
+	// stay filed until the index goes, and match nothing.
+	dead bool
 
 	// weak marks chunks that are structure, such as PEM armour, a token's type
 	// prefix or a URL's host. A partial match needs at least one chunk that isn't.
@@ -121,9 +136,8 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 		rules:        rules,
 		maxSecrets:   opts.MaxSecrets,
 		maxChunks:    opts.MaxChunks,
-		chunks:       map[uint64][]chunkRef{},
 		ownerIndex:   map[ownerKey]int32{},
-		secrets:      map[secretKey]struct{}{},
+		secrets:      map[secretKey]*secretForms{},
 		types:        map[string]struct{}{},
 		fingerprints: map[[32]byte]struct{}{},
 		ruleNums:     map[[macSize]byte]int{},
@@ -136,7 +150,6 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 	if ix.maxChunks <= 0 {
 		ix.maxChunks = DefaultMaxChunks
 	}
-	ix.resizeBloom(bloomMinBits)
 	return ix, nil
 }
 
@@ -144,10 +157,15 @@ func NewIndex(key *Key, opts IndexOptions) (*Index, error) {
 // them first and refuses anything malformed. Adding the same value again
 // changes nothing; adding another value under the same type and id protects
 // both. Entries with no forms are accepted and do nothing.
+//
+// Entries of every supported scheme are matched side by side. Entries of a
+// newer scheme than those held for the same type and id replace them: the
+// value was indexed again, and the older entries are no longer needed.
 func (ix *Index) Add(e *Entries) error {
 	if err := e.validate(); err != nil {
 		return err
 	}
+	s := schemes[e.Version]
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 
@@ -160,42 +178,74 @@ func (ix *Index) Add(e *Entries) error {
 	seen := map[[32]byte]bool{}
 	for i := range e.Forms {
 		f := &e.Forms[i]
-		fp := fingerprint(e.Type, e.ID, f)
+		fp := fingerprint(e.Version, e.Type, e.ID, f)
 		if _, dup := ix.fingerprints[fp]; dup || seen[fp] {
 			continue
 		}
 		seen[fp] = true
 		fresh = append(fresh, pending{form: f, fingerprint: fp})
-		newChunks += f.Length / chunkSize
+		c, _ := s.chunkOf(f)
+		newChunks += f.Length / c
 	}
 	if len(fresh) == 0 {
 		return nil
 	}
 	secret := secretKey{e.Type, e.ID}
-	if _, known := ix.secrets[secret]; !known && len(ix.secrets) >= ix.maxSecrets {
+	held := ix.secrets[secret]
+	if held == nil && len(ix.secrets) >= ix.maxSecrets {
 		return fmt.Errorf("%w: it holds %d values already", ErrIndexFull, ix.maxSecrets)
 	}
-	if ix.chunkCount+newChunks > ix.maxChunks {
+	// What these entries replace is not counted against them.
+	replaced := 0
+	if held != nil && held.scheme < e.Version {
+		for _, at := range held.forms {
+			if !ix.forms[at].dead {
+				replaced += len(ix.forms[at].macs)
+			}
+		}
+	}
+	if ix.chunkCount-replaced+newChunks > ix.maxChunks {
 		return fmt.Errorf("%w: %d more chunks would pass the limit of %d", ErrIndexFull, newChunks, ix.maxChunks)
 	}
 
-	ix.secrets[secret] = struct{}{}
+	if held == nil {
+		held = &secretForms{scheme: e.Version}
+		ix.secrets[secret] = held
+	}
+	if held.scheme < e.Version {
+		ix.retire(held)
+		held.scheme = e.Version
+	}
 	ix.types[e.Type] = struct{}{}
 	for _, p := range fresh {
-		ix.addForm(e.Type, e.ID, p.form)
+		held.forms = append(held.forms, int32(len(ix.forms)))
+		ix.addForm(s, e.Type, e.ID, p.form)
 		ix.fingerprints[p.fingerprint] = struct{}{}
 	}
-	// The filter keeps 64 bits per distinct hash, which keeps lookups cheap, so it
-	// grows once the hashes outnumber its words.
-	if len(ix.chunks) > len(ix.bloom) {
-		ix.resizeBloom(len(ix.chunks) * 64)
+	for _, w := range ix.windows {
+		w.grow()
 	}
 	// Strings scanned before this value was known may have been cached as clean.
 	ix.cache.reset()
 	return nil
 }
 
-func (ix *Index) addForm(typ, id string, f *Form) {
+// retire stops matching the forms held for a placeholder, when entries of a
+// newer scheme arrive for it.
+func (ix *Index) retire(held *secretForms) {
+	for _, at := range held.forms {
+		f := &ix.forms[at]
+		if f.dead {
+			continue
+		}
+		ix.chunkCount -= len(f.macs)
+		ix.liveForms--
+		f.dead, f.macs, f.weak = true, nil, nil
+	}
+	held.forms = nil
+}
+
+func (ix *Index) addForm(s *scheme, typ, id string, f *Form) {
 	ok := ownerKey{typ, id, f.Part}
 	ownerIdx, exists := ix.ownerIndex[ok]
 	if !exists {
@@ -203,15 +253,19 @@ func (ix *Index) addForm(typ, id string, f *Form) {
 		ix.owners = append(ix.owners, owner{typ: typ, id: id, part: f.Part, placeholder: "ph:" + typ + ":" + id})
 		ix.ownerIndex[ok] = ownerIdx
 	}
-	n := f.Length / chunkSize
+	c, _ := s.chunkOf(f)
+	n := f.Length / c
+	w := ix.windowFor(c, f.Wide)
 	stored := form{
 		owner:     ownerIdx,
 		name:      f.Form,
 		length:    f.Length,
 		macs:      make([][macSize]byte, n),
 		weak:      make([]bool, n),
-		tailLen:   f.Length - n*chunkSize,
-		formShape: formShapes[f.Form],
+		tailLen:   f.Length - n*c,
+		formShape: s.shapes[f.Form],
+		chunk:     c,
+		tailBack:  s.tailBack(c),
 	}
 	formIdx := int32(len(ix.forms))
 	// A chunk that repeats within a form is looked up through its first place
@@ -230,26 +284,21 @@ func (ix *Index) addForm(typ, id string, f *Form) {
 			continue
 		}
 		seen[h] = struct{}{}
-		refs, present := ix.chunks[h]
-		if !present {
-			ix.setBloom(h)
-		}
-		if len(refs) >= maxRefsPerHash {
-			continue
-		}
-		ix.chunks[h] = append(refs, chunkRef{form: formIdx, idx: int32(i)})
+		w.add(h, chunkRef{form: formIdx, idx: int32(i)})
 	}
 	if stored.tailLen > 0 {
 		copy(stored.tail[:], f.Tail)
 	}
 	ix.forms = append(ix.forms, stored)
+	ix.liveForms++
 	ix.chunkCount += n
 }
 
-// fingerprint identifies a form of a value under its owner, so adding the same
-// value twice adds nothing.
-func fingerprint(typ, id string, f *Form) [32]byte {
+// fingerprint identifies a form of a value under its owner and scheme, so
+// adding the same value twice adds nothing.
+func fingerprint(version int, typ, id string, f *Form) [32]byte {
 	h := sha256.New()
+	h.Write([]byte{byte(version), byte(version >> 8), byte(version >> 16), byte(version >> 24)})
 	for _, s := range []string{typ, id, f.Part, f.Form} {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
@@ -268,28 +317,5 @@ func fingerprint(typ, id string, f *Form) [32]byte {
 func (ix *Index) Stats() IndexStats {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
-	return IndexStats{Secrets: len(ix.secrets), Owners: len(ix.owners), Forms: len(ix.forms), Chunks: ix.chunkCount}
-}
-
-// resizeBloom rebuilds the filter with at least size bits, a power of two.
-func (ix *Index) resizeBloom(size int) {
-	bitsWanted := bloomMinBits
-	for bitsWanted < size {
-		bitsWanted <<= 1
-	}
-	ix.bloom = make([]uint64, bitsWanted/64)
-	ix.bloomShift = uint(64 - bits.TrailingZeros(uint(bitsWanted)))
-	for h := range ix.chunks {
-		ix.setBloom(h)
-	}
-}
-
-func (ix *Index) setBloom(h uint64) {
-	bit := h >> ix.bloomShift
-	ix.bloom[bit/64] |= 1 << (bit % 64)
-}
-
-func (ix *Index) bloomHas(h uint64) bool {
-	bit := h >> ix.bloomShift
-	return ix.bloom[bit/64]&(1<<(bit%64)) != 0
+	return IndexStats{Secrets: len(ix.secrets), Owners: len(ix.owners), Forms: ix.liveForms, Chunks: ix.chunkCount}
 }

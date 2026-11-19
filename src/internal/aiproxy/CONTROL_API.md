@@ -207,20 +207,76 @@ depends on how the proxy was found:
 | the runtime state, any other failure | One warning line on stderr, once per process, and the command carries on, whoever is logged in. A timeout, an HTTP error, an answer that cannot be read and a full inventory are such failures: a proxy is there and did not take the values. |
 | nothing | Nothing is registered. An Agent-token login is told once that leak protection is not active; any other login is told nothing. |
 
+#### The inventory across restarts
+
+The inventory outlives the proxy process (`phaseproxy.InventoryStore`), so a
+conversation resumed after the hook-managed proxy's idle exit, an upgrade or
+a reboot still has its values replaced before anything registers them again:
+
+- The key is kept in the system keystore, beside the CA key (service
+  `phase-cli-ai-leak-inventory`), one per user, made on first use and never
+  written to disk. It carries an id.
+- The entries are kept in `leak-inventory.bin` in the Phase AI directory,
+  owner-only, replaced whole through a temporary file, sync and rename, and
+  read only as a regular owner-only file of this user that is not a symlink.
+  Each record is one registered value: its entries as they came over this
+  API and whether its id is a key name, sealed (AES-256-GCM) under a key
+  derived from the inventory key, with the matching scheme and the time it
+  was last registered beside it. The file's header names its store format and
+  the key's id.
+- Every proxy of the user loads the file when it starts and writes what is
+  registered with it, under `leak-inventory.lock`: the file is read again
+  under the lock and written whole, so nothing another proxy stored is lost.
+  A proxy does not pick up what another registers while both run.
+- An entry not registered again for 30 days is dropped. The file is bounded
+  at 64 MiB and 65536 records; past that the oldest registrations go.
+- Two versions are stored. The store format is the file's layout: a version
+  of Phase reads every format up to its own and leaves a newer file
+  untouched, running from memory. The matching scheme is each record's own:
+  records of a scheme the running version does not match stay in the file as
+  they are, are not matched, and are counted under `unmatchedScheme`.
+- Entries under another key id are not matched, are counted under
+  `unmatchedKey` and are dropped when the proxy that found them starts.
+- A file that is damaged, cut short, too large or not what it claims never
+  stops the proxy: what can be authenticated and passes the same validation
+  as a registration is loaded, and the rest is counted and dropped.
+- On a machine with no system keystore nothing is stored: no key, no file,
+  and the inventory is in memory as before.
+- `phase ai disable` removes the file and the key, and `phase auth logout
+  --purge` removes the key with the CA key and the file with `~/.phase`.
+
+What this changes for the key: it is no longer new with every proxy process,
+and a process that was given it once (this route gives it to any process
+holding the proxy capability) can use it for as long as it is the user's
+key. The file without the key says nothing that a guess can be tested
+against. Someone who holds both the key and the file can confirm a guessed
+chunk of a value by hashing it, and can try every value of a chunk that
+holds few bits. The smallest chunk stored is 12 bytes of a value's form, and
+24 characters where the form is hex digits or the base64 of a hex value, so
+that such a chunk carries up to 96 bits instead of 48; `pkg/censor`'s Limits
+list what stays within reach (the hex of text, short hex values, values made
+of digits, and entries stored before this version until their value is read
+again).
+
 Every caller reaches the control API through one client,
 `phaseproxy.ControlClient`: `phase ai status`, the hooks and this registration.
 
 ```http
 GET http://phase.invalid/v1/inventory/key
 
-200 {"schemaVersion":1,"key":"<base64, 32 bytes>","format":1}
+200 {"schemaVersion":1,"key":"<base64, 32 bytes>","format":2}
 ```
+
+`format` is the matching scheme the proxy's own version indexes under
+(`censor.EntriesVersion`). The proxy takes entries of every scheme it still
+matches (1 and 2), each as it was made; `pkg/censor`'s documentation says what
+a scheme covers.
 
 ```http
 POST http://phase.invalid/v1/inventory
 Content-Type: application/json
 
-{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"<secret id>","forms":[...]}],"idKinds":["phase_id"]}
+{"schemaVersion":1,"entries":[{"v":2,"type":"secret","id":"<secret id>","forms":[...]}],"idKinds":["phase_id"]}
 
 200 {"schemaVersion":1,"added":1,"unprotected":0}
 ```
@@ -240,11 +296,27 @@ Content-Type: application/json
 - A value too short or plain to protect is counted once for its type and id,
   however often it is registered, and at most 4096 such are remembered; past
   that the count stays where it is.
+- Entries of a newer scheme than those held for the same `type` and `id`
+  replace them, in the proxy and in its store: the value was indexed again.
 - No route returns entries, hashes or the id of a secret. `GET /v1/status`
   adds `leakProtection` with counts, host names, reasons and rule ids only:
-  `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...]}`.
+  `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...],"inventory":{...}}`.
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
+- `inventory` says whether the values outlive the proxy, in counts:
+  `{"storage":"stored","loaded":9,"unmatchedScheme":0,"unmatchedKey":0}`.
+  `storage` is `stored` or `memory`, and `reason` says why it is `memory`:
+  `no_keystore` (the machine has no system keystore), `newer_store_format`
+  (the file was written by a newer version of Phase and is left as it is),
+  `key_replaced` (the key was replaced or removed while this proxy ran),
+  `store_unusable` (the directory or file could not be written) or
+  `not_configured`. `loaded` is how many values the proxy knew from the store
+  when it started. `unmatchedScheme` counts stored entries of a matching
+  scheme this version does not match: they are kept and need registering
+  again. `unmatchedKey` counts stored entries made under a key that has been
+  replaced: they are never matched and were dropped. `damaged`, when
+  present, counts stored entries that could not be read. `phase ai status`
+  prints this on its `Leaks:` line.
 - A host the table reads is listed under `unreadHosts`, and not under
   `inspectedHosts`, while it is not being read, for any tool or any one
   client of a tool: in a pass-through window (which is for the client that

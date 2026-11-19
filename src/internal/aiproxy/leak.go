@@ -13,6 +13,7 @@ import (
 
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/censor"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 // LeakProtectionEnvironmentKey selects what the proxy does with model traffic:
@@ -41,13 +42,18 @@ func leakModeFrom(value string) string {
 
 // leakGuard is the proxy process's inventory of secret values the CLI handed
 // out, and what it knows about the hosts it inspects. It holds keyed hashes
-// only and lives in memory for the life of the process: a recycled backend
-// session keeps it, and nothing is written anywhere.
+// only. A recycled backend session keeps it, and what is registered is also
+// written to the user's inventory store, when there is one, for the proxy
+// that starts after this one (see leak_inventory.go).
 type leakGuard struct {
 	mode  string
 	hosts leakHostTable
 	key   *censor.Key
 	index *censor.Index
+	// inventory is where registered values are stored, and loaded is how
+	// many values it held that this proxy knew from its start.
+	inventory *phaseproxy.Inventory
+	loaded    int
 	// limitedRules are the rules applied off the conversation paths: only
 	// Phase's own token formats. Elsewhere a pattern rule could fire on the
 	// harness's own login or telemetry token and break it.
@@ -99,10 +105,17 @@ const leakRuleAbsent = "the rule file does not hold this rule"
 // apply, and a Phase token rule it does not hold, never stop the proxy: the
 // rules that do apply still protect, and status says what was left out.
 func newLeakGuardWithRules(mode string, rules *censor.Rules) (*leakGuard, error) {
-	key, err := censor.NewKey()
+	inventory, err := phaseproxy.MemoryInventory()
 	if err != nil {
 		return nil, err
 	}
+	return newLeakGuardWithInventory(mode, rules, inventory)
+}
+
+// newLeakGuardWithInventory makes the guard whose hashes are keyed with the
+// inventory's key, and which stores what is registered there.
+func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phaseproxy.Inventory) (*leakGuard, error) {
+	key := inventory.Key()
 	index, err := censor.NewIndex(key, censor.IndexOptions{Rules: rules})
 	if err != nil {
 		return nil, err
@@ -112,7 +125,7 @@ func newLeakGuardWithRules(mode string, rules *censor.Rules) (*leakGuard, error)
 		return nil, err
 	}
 	return &leakGuard{
-		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, limitedRules: limited,
+		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, inventory: inventory, limitedRules: limited,
 		skipped:  append(rules.Skipped(), absent...),
 		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, keyNamed: map[string]struct{}{},
 		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(), connections: newConnectionLog(),
@@ -319,8 +332,16 @@ const maxUnprotectedNames = 4096
 // that the entry's id is a secret's key name; an entry it does not cover has
 // an id the Console issued.
 func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
+	// What was indexed is stored for the next proxy, however far the batch
+	// got. Storing never fails a registration: status reports the store.
+	var stored []phaseproxy.StoredEntries
+	defer func() { g.inventory.Add(stored) }()
 	for i, entry := range entries {
-		protected, err := g.addOne(entry, i < len(keyNamed) && keyNamed[i])
+		named := i < len(keyNamed) && keyNamed[i]
+		protected, err := g.addOne(entry, named)
+		if err == nil && protected {
+			stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named})
+		}
 		switch {
 		case errors.Is(err, censor.ErrIndexFull):
 			return added, unprotected, errLeakInventoryFull
@@ -406,6 +427,7 @@ func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
 	status := &remoteapi.LeakProtectionStatus{
 		Mode: g.mode, SecretsKnown: g.index.Stats().Secrets, Unprotected: g.unprotectedCount(),
 		RulesSkipped: len(g.skipped), SkippedRules: g.skippedRuleIDs(),
+		Inventory: g.inventoryStatus(),
 	}
 	if g.mode == leakModeOff {
 		unread = append(inspected, unread...)

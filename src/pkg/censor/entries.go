@@ -12,10 +12,14 @@ import (
 	"strings"
 )
 
-// EntriesVersion is the only version of Entries this package reads and writes.
-const EntriesVersion = 1
+// EntriesVersion is the matching scheme IndexValue writes: the current one.
+// Entries of every scheme in SupportedSchemes are read and matched. The
+// package documentation says what a scheme version covers and when it changes.
+const EntriesVersion = 2
 
 const (
+	// chunkSize is the chunk of scheme 1, and the smallest of any scheme: no
+	// shorter text can hold a chunk.
 	chunkSize        = 12
 	macSize          = 16
 	minValueLength   = 12
@@ -61,6 +65,7 @@ var knownReasons = map[string]bool{
 // and the daemon's Key, and sends them to the daemon, which adds them to its
 // Index without seeing the value.
 type Entries struct {
+	// Version is the matching scheme the entries were built under.
 	Version int    `json:"v"`
 	Type    string `json:"type"`
 	ID      string `json:"id"`
@@ -71,7 +76,7 @@ type Entries struct {
 }
 
 // Form is one encoded form of a value (or of one part of it), cut into
-// non-overlapping chunks of 12 bytes.
+// non-overlapping chunks: of 12 bytes, or of 24 when it is Wide.
 type Form struct {
 	// Part is empty for the value itself, "url-password" for a URL's password or
 	// the token that is its user, and "leaf:<n>" for the n-th string leaf of a
@@ -79,10 +84,13 @@ type Form struct {
 	Part   string `json:"part,omitempty"`
 	Form   string `json:"form"`
 	Length int    `json:"len"`
-	Rolls  []byte `json:"rolls"`          // the keyed rolling hash of each chunk, 8 bytes little-endian each
-	MACs   []byte `json:"macs"`           // the keyed SHA-256 of each chunk, truncated to 16 bytes each
-	Weak   []byte `json:"weak"`           // a bit per chunk, low bit first: structure, never a partial hit alone
-	Tail   []byte `json:"tail,omitempty"` // the keyed SHA-256 of the bytes after the last whole chunk
+	// Wide says the chunks are 24 bytes, as scheme 2 cuts a form made of hex
+	// digits and the base64 of a value made of hex digits.
+	Wide  bool   `json:"wide,omitempty"`
+	Rolls []byte `json:"rolls"`          // the keyed rolling hash of each chunk, 8 bytes little-endian each
+	MACs  []byte `json:"macs"`           // the keyed SHA-256 of each chunk, truncated to 16 bytes each
+	Weak  []byte `json:"weak"`           // a bit per chunk, low bit first: structure, never a partial hit alone
+	Tail  []byte `json:"tail,omitempty"` // the keyed SHA-256 of the bytes after the last whole chunk; from scheme 2, of that chunk and them
 }
 
 // Unprotected is a value, or part of one, that was not indexed.
@@ -103,13 +111,17 @@ func (e *Entries) Placeholder() string { return "ph:" + e.Type + ":" + e.ID }
 // except keyed hashes and lengths. A value too short, too plain or too long to
 // protect gives Entries with no Forms and the reason in Unprotected.
 func IndexValue(key *Key, typ, id, value string) (*Entries, error) {
+	return indexValue(key, schemes[EntriesVersion], typ, id, value)
+}
+
+func indexValue(key *Key, s *scheme, typ, id, value string) (*Entries, error) {
 	if key == nil {
 		return nil, errors.New("indexing a value needs a key")
 	}
 	if err := checkIdentifiers(typ, id); err != nil {
 		return nil, err
 	}
-	b := &entriesBuilder{key: key, entries: &Entries{Version: EntriesVersion, Type: typ, ID: id}}
+	b := &entriesBuilder{key: key, scheme: s, entries: &Entries{Version: s.version, Type: typ, ID: id}}
 	value = strings.TrimSpace(value)
 	if len(value) > MaxValueLength {
 		b.skip("", ReasonTooLong)
@@ -146,6 +158,7 @@ func IndexValue(key *Key, typ, id, value string) (*Entries, error) {
 
 type entriesBuilder struct {
 	key     *Key
+	scheme  *scheme
 	entries *Entries
 	chunks  int
 }
@@ -191,7 +204,7 @@ func (b *entriesBuilder) addValue(part, value string) {
 		if decoys != nil {
 			decoy = decoys[i].bytes
 		}
-		b.addForm(part, candidate, decoy)
+		b.addForm(part, value, candidate, decoy)
 	}
 	if strings.Contains(value, "\n") {
 		for _, line := range strings.Split(value, "\n") {
@@ -206,13 +219,13 @@ func (b *entriesBuilder) addValue(part, value string) {
 				continue
 			}
 			seenForm[line] = true
-			b.addForm(part, rawForm{name: formLine, bytes: []byte(line)}, nil)
+			b.addForm(part, line, rawForm{name: formLine, bytes: []byte(line)}, nil)
 		}
 	}
 }
 
-func (b *entriesBuilder) addForm(part string, candidate rawForm, decoy []byte) {
-	c := chunkSize
+func (b *entriesBuilder) addForm(part, value string, candidate rawForm, decoy []byte) {
+	c, wide := b.scheme.chunkFor(candidate, value)
 	if len(candidate.bytes) < c {
 		return
 	}
@@ -224,6 +237,7 @@ func (b *entriesBuilder) addForm(part string, candidate rawForm, decoy []byte) {
 		Part:   part,
 		Form:   candidate.name,
 		Length: len(candidate.bytes),
+		Wide:   wide,
 		Rolls:  make([]byte, 0, 8*n),
 		MACs:   make([]byte, 0, macSize*n),
 		Weak:   make([]byte, (n+7)/8),
@@ -238,7 +252,7 @@ func (b *entriesBuilder) addForm(part string, candidate rawForm, decoy []byte) {
 		f.MACs = append(f.MACs, mac[:]...)
 	}
 	if tail := candidate.bytes[n*c:]; len(tail) > 0 {
-		mac := b.key.mac(tail)
+		mac := b.key.mac(candidate.bytes[n*c-b.scheme.tailBack(c):])
 		f.Tail = mac[:]
 	}
 	b.chunks += n
@@ -297,7 +311,8 @@ func (e *Entries) validate() error {
 	if e == nil {
 		return errors.New("no entries")
 	}
-	if e.Version != EntriesVersion {
+	s := schemes[e.Version]
+	if s == nil {
 		return fmt.Errorf("entries version %d is not supported", e.Version)
 	}
 	if err := checkIdentifiers(e.Type, e.ID); err != nil {
@@ -315,20 +330,24 @@ func (e *Entries) validate() error {
 		if !validPart(f.Part) {
 			return fmt.Errorf("form %d: part is not valid", i)
 		}
-		if _, ok := formShapes[f.Form]; !ok {
+		if _, ok := s.shapes[f.Form]; !ok {
 			return fmt.Errorf("form %d: unknown form %q", i, truncate(f.Form))
 		}
-		if f.Length < chunkSize || f.Length > maxFormLength {
+		c, err := s.chunkOf(f)
+		if err != nil {
+			return fmt.Errorf("form %d: %w", i, err)
+		}
+		if f.Length < c || f.Length > maxFormLength {
 			return fmt.Errorf("form %d: length %d is out of bounds", i, f.Length)
 		}
-		n := f.Length / chunkSize
+		n := f.Length / c
 		if len(f.Rolls) != 8*n || len(f.MACs) != macSize*n || len(f.Weak) != (n+7)/8 {
 			return fmt.Errorf("form %d: chunk data does not match its length", i)
 		}
 		if n%8 != 0 && f.Weak[len(f.Weak)-1]>>(n%8) != 0 {
 			return fmt.Errorf("form %d: weak flags past the last chunk", i)
 		}
-		if hasTail := f.Length%chunkSize != 0; (hasTail && len(f.Tail) != macSize) || (!hasTail && len(f.Tail) != 0) {
+		if hasTail := f.Length%c != 0; (hasTail && len(f.Tail) != macSize) || (!hasTail && len(f.Tail) != 0) {
 			return fmt.Errorf("form %d: tail does not match its length", i)
 		}
 		chunks += n

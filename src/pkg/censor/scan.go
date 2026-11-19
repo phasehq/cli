@@ -80,61 +80,6 @@ type tryKey struct {
 	start int
 }
 
-// findSpans returns every place in data where a chunk of an indexed form verified,
-// widened to as much of the form's extent as could be confirmed.
-func (ix *Index) findSpans(data []byte) []span {
-	c := chunkSize
-	k := ix.key
-	if len(data) < c || len(ix.chunks) == 0 {
-		return nil
-	}
-	h := k.roll(data[:c])
-	var tried map[tryKey]int
-	// covered is how far each form's verified chunks already reach. A chunk
-	// inside them is part of a match already extended, so trying it again would
-	// only walk the same bytes, once per repeat of a repeating value.
-	var covered map[int32]int
-	var spans []span
-	for p := 0; ; p++ {
-		if ix.bloomHas(h) {
-			if refs, ok := ix.chunks[h]; ok {
-				var here [macSize]byte
-				hashed := false
-				for _, ref := range refs {
-					if end, ok := covered[ref.form]; ok && p+c <= end {
-						continue
-					}
-					if !hashed {
-						here, hashed = k.mac(data[p:p+c]), true
-					}
-					if here != ix.forms[ref.form].macs[ref.idx] {
-						continue
-					}
-					if tried == nil {
-						tried = map[tryKey]int{}
-						covered = map[int32]int{}
-					}
-					if found, ok := ix.try(data, p, ref, tried); ok {
-						spans = append(spans, found)
-						reach := found.checked
-						// A base64 or hex match took its whole run, and another
-						// copy further on in the run would take the same.
-						if ix.forms[ref.form].wholeRun {
-							reach = found.end
-						}
-						covered[ref.form] = max(covered[ref.form], reach)
-					}
-				}
-			}
-		}
-		if p+c >= len(data) {
-			break
-		}
-		h = (h-k.table[data[p]]*k.outPow)*k.base + k.table[data[p+c]]
-	}
-	return spans
-}
-
 // try works out the extent around a confirmed chunk.
 //
 // When only part of the extent verifies, the leak was truncated. The verified chunks
@@ -144,8 +89,8 @@ func (ix *Index) findSpans(data []byte) []span {
 // the hashes can't confirm, at the cost of at most chunk-1 neighbouring bytes on
 // each side when a value is followed directly by similar-looking text.
 func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (span, bool) {
-	c := chunkSize
 	f := &ix.forms[ref.form]
+	c := f.chunk
 	start := p - int(ref.idx)*c
 	key := tryKey{form: ref.form, start: start}
 	// tried holds how far the chunks verified in a row the last time: a chunk
@@ -177,7 +122,7 @@ func (ix *Index) try(data []byte, p int, ref chunkRef, tried map[tryKey]int) (sp
 		switch {
 		case f.tailLen == 0:
 			full = true
-		case e+f.tailLen <= len(data) && ix.key.mac(data[e:e+f.tailLen]) == f.tail:
+		case e+f.tailLen <= len(data) && ix.key.mac(data[e-f.tailBack:e+f.tailLen]) == f.tail:
 			e += f.tailLen
 			full = true
 		}

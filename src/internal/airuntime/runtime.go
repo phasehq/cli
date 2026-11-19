@@ -62,6 +62,9 @@ type ProxySession struct {
 	Client  *agentapi.Client
 	CA      *proxy.CA
 	CAPaths proxy.CAPaths
+	// Inventory is where the proxy keeps its leak protection inventory
+	// across restarts: beside the CA. Nil keeps it in memory.
+	Inventory *proxy.InventoryStore
 	// HarnessLabel names the one AI tool this session's proxy serves, as
 	// phase ai run and phase ai exec resolve it. It is empty for a proxy that
 	// serves whatever harness reaches it, such as the hook-managed daemon.
@@ -242,7 +245,8 @@ func (r *Runtime) withSession(ctx context.Context, engine Engine, command []stri
 	if err != nil {
 		return err
 	}
-	proxySession := &ProxySession{Config: session, Client: r.Client, CA: ca, CAPaths: paths}
+	proxySession := &ProxySession{Config: session, Client: r.Client, CA: ca, CAPaths: paths,
+		Inventory: &proxy.InventoryStore{Directory: caStore.Directory, Keyring: caStore.Keyring}}
 	if command == nil {
 		return engine.Serve(ctx, proxySession)
 	}

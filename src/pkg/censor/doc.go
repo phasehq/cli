@@ -10,11 +10,15 @@
 // URL-encoded, with %XX in either case; JSON-escaped; newlines as a literal \n;
 // each line that is one run of base64 or hex characters, as those of a PEM body
 // are) into non-overlapping 12-byte chunks and keeps, per chunk, a keyed rolling
-// hash and a keyed SHA-256, with the chunk's index and the form's length. The
+// hash and a keyed SHA-256, with the chunk's index and the form's length. A
+// form made of hex digits, and the base64 of a value made of hex digits, is cut
+// into 24-byte chunks instead (see Matching schemes). The
 // resulting Entries carry no plaintext and nothing derived from the value but
-// keyed hashes and lengths. The daemon that scans makes the Key, hands its bytes
+// keyed hashes and lengths. The daemon that scans holds the Key, hands its bytes
 // to the indexing client, and adds the Entries it gets back to its Index, which
-// validates them as untrusted input.
+// validates them as untrusted input. The daemon may keep the Key and the
+// Entries for the daemon that starts after it: what that changes is under
+// Limits.
 //
 // A document is indexed by what it holds, not as text. A JSON value is indexed
 // string by string. So is text of two or more lines of which at least half are
@@ -37,6 +41,58 @@
 // email address and a certificate. Numbers next to strings in a JSON value
 // are not indexed, and those that look like key material are listed: an array
 // of 16 integers or more, and an integer of 12 digits or more.
+//
+// # Matching schemes
+//
+// Keyed hashes cannot be turned into other keyed hashes without the value, so
+// Entries say how they were made: Entries.Version is their matching scheme,
+// and EntriesVersion is the scheme IndexValue writes. A scheme version covers
+// everything that decides whether entries made by one build are matched by
+// another:
+//
+//   - the chunk sizes, and which forms are cut at which;
+//   - the hash construction: how the confirming hash's key and the rolling
+//     hash's table and base are derived from the Key, the rolling polynomial,
+//     the confirming hash and its truncation, and what the tail hash covers;
+//   - the set of encoded forms, their names, and how each is built from a
+//     value (alignments, trimming, escaping, case), with how a value is split
+//     into parts (JSON leaves, a URL's password, lines);
+//   - how weak chunks are marked, and the minimum length and entropy below
+//     which a value or a line is not indexed;
+//   - the layout of Entries on the wire.
+//
+// A change to any of these that makes new entries differ from what an older
+// build would write for the same value and key is a new scheme version. What
+// the scan does with a verified chunk (how far a match is widened, when one
+// chunk alone is enough, the decode pass) is not part of a scheme: it applies
+// to entries of every scheme, and may change without one.
+//
+// The schemes so far:
+//
+//   - 1: every form in 12-byte chunks; the tail hash covers the bytes after
+//     the last whole chunk.
+//   - 2: as 1, but a form made of hex digits (the hex of any value, and a
+//     value that is itself hex digits), and the base64 of a value made of hex
+//     digits, are cut into 24-byte chunks, marked Wide; and the tail hash
+//     covers the last whole chunk as well as the bytes after it. Nothing in
+//     such entries is a hash of fewer than 24 characters of those forms, or of
+//     fewer than 12 bytes of any form. A form too short for one 24-byte chunk
+//     keeps a 12-byte one, so a short value is still found.
+//
+// An Index matches every scheme in SupportedSchemes side by side, each as it
+// was made, so entries a daemon stored under an older scheme go on working
+// after an upgrade. Nothing converts them: when the value is next indexed, by
+// IndexValue under the current scheme, adding those entries replaces the
+// older-scheme entries held for the same type and id. Entries of a scheme a
+// build does not match are refused by ParseEntries and Add; a store keeps
+// them as they are for the build that does, and reports them as needing to
+// be registered again.
+//
+// A scheme is a value in scheme.go, and a later one is added beside the
+// others: one that changes chunk sizes or the tail needs nothing else, and
+// one that changes the hash construction or the forms adds its own beside
+// those of the schemes still matched. A scheme is removed by deleting it,
+// after which its entries are those of a scheme the build does not match.
 //
 // # Scanning
 //
@@ -97,7 +153,9 @@
 // A chunk that repeats within a form is indexed at its first place only, one
 // rolling hash leads to a bounded number of chunks across the index, and a
 // match already extended over a stretch is not tried again inside it, so a
-// scan stays linear in the body whatever has been indexed. One pass over a
+// scan stays linear in the body whatever has been indexed. The scan makes one
+// pass per chunk size that is indexed, and looks for 24-byte chunks only
+// inside runs of letters and digits, which is all they can hold. One pass over a
 // block finds every keyword and every place a rule's prefix begins, and what a
 // rule may read from those places is bounded by the block, so the rules add a
 // cost that is linear too, and nearly none on text that holds no prefix.
@@ -196,11 +254,18 @@
 //   - A fragment of a base64 or hex form needs more when one chunk of the form
 //     carries under 48 bits of the value, because other text of the same kind
 //     then repeats such a chunk by chance. That is so for the base64 of a value
-//     made of hex digits, of digits, or of one case of letters with or without
-//     digits, and for the hex of any text. Such a fragment is caught only when
-//     it holds two whole chunks next to each other: for certain from 35
-//     characters, at some offsets from 24, and never below. The whole form is
-//     found as before.
+//     made of digits, or of one case of letters with or without digits. Such a
+//     fragment is caught only when it holds two whole chunks next to each
+//     other: for certain from 35 characters, at some offsets from 24, and never
+//     below. The whole form is found as before.
+//   - A fragment of a form that scheme 2 cuts into 24-byte chunks needs one
+//     of them whole: it is caught for certain from 47 characters (twice the
+//     chunk, less one), at some offsets from 24, and never below. Those forms
+//     are the hex of any value, a value that is itself hex digits (a 64-digit
+//     key, say: 23 characters of it were enough under scheme 1), and the
+//     base64 of such a value. The whole form is found as before, and so is
+//     such a value in every other form. Entries of scheme 1 keep the lengths
+//     of the item above for these forms.
 //   - A value transformed in any other way (reversed, split, re-encoded in a
 //     form not listed above, encrypted, compressed without base64 around it, or
 //     inside a base64 string of 16 KiB or more) is not found.
@@ -219,7 +284,22 @@
 //     was at times found by the lines around it, and nothing in a comment is.
 //   - Pattern rules see a format only when it is written plainly; a random value
 //     with no known format is found by them only next to a keyword.
-//   - Whoever holds the Key can confirm a guessed 12-byte chunk against the
-//     index, so the Key must stay with the daemon and the clients it trusts to
-//     index values.
+//   - Whoever holds the Key and the Entries can confirm a guessed chunk: hash
+//     the guess and compare. Without the Key the Entries say nothing that a
+//     guess can be tested against, and without the Entries the Key says
+//     nothing at all. So the Key must stay with the daemon and the clients it
+//     trusts to index values, and a daemon that keeps both across restarts
+//     must keep the Key apart from the Entries (the Phase AI proxy keeps it in
+//     the system keystore and the Entries, sealed under a key derived from
+//     it, in a file). Someone who gets both can try every value of a chunk
+//     that holds few bits: 12 hex digits are 48 bits, which is within reach.
+//     Scheme 2 therefore stores no hash of fewer than 24 hex digits (96 bits,
+//     when the digits are the value's own). What stays within reach is a
+//     chunk whose bytes are more predictable than that: 24 digits of the hex
+//     of text carry about 72 bits, 24 characters of the base64 of a hex value
+//     72, 24 digits of the hex of a hex value 48, a 12-byte chunk of a value
+//     made of decimal digits 40, and a chunk of a value an attacker mostly
+//     knows already very few. A hex value shorter than 24 digits keeps a
+//     12-digit chunk, and entries stored under scheme 1 keep theirs until
+//     the value is indexed again.
 package censor

@@ -26,6 +26,8 @@ import (
 //	ai/ca.lock                                   CA store                          serializes CA load and publication              kept
 //	ai/runtime-ca-bundle-<hash>.pem              every proxy start                 trust bundle child processes are pointed at,    kept while in use; the CA store removes one
 //	                                                                               one per set of trusted roots                    untouched for 30 days
+//	ai/leak-inventory.bin                        every proxy (inventory store)     leak protection entries: keyed hashes, sealed   phase ai disable; entries after 30 days unregistered
+//	ai/leak-inventory.lock                       inventory store                   serializes the proxies' reads and writes        phase ai disable
 //	ai/env.sh, env.json, env-status.json         hook daemon                       environment harness shells and plugins load     phase ai disable
 //	ai/runtime.json                              hook daemon                       running daemon's PID, generation, proxy URL     daemon exit
 //	ai/runtime.lock                              hooks starting the daemon         daemon ownership                                daemon exit
@@ -39,6 +41,7 @@ import (
 //	ai/bin/phase-hook-v1, .metadata.json         phase ai enable                   stable helper every harness adapter runs        phase ai disable
 //	ai/codex-marketplace/                        phase ai enable --harness codex   Codex plugin marketplace                        phase ai disable
 //	ai/.phase-runtime-*, .phase-ca-*             atomic writers                    temporary files                                 by the writer; leftovers by sweep
+//	ai/.phase-inventory-*                        inventory store                   temporary files                                 by the writer; leftovers by the next proxy start
 //
 // Names earlier builds wrote are in formerAINames and formerAIPatterns, the
 // one place that knows about them, except the top-level phase-hook-v1 helper

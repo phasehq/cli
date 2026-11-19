@@ -179,15 +179,15 @@ func validateExplicitListenPort(address, label string) error {
 }
 
 // leakGuard returns the process-wide leak protection, made on first use with
-// the mode in the process's environment.
-func (e *Engine) leakGuard() (*leakGuard, error) {
+// the mode in the process's environment and the inventory the store holds.
+func (e *Engine) leakGuard(store *phaseproxy.InventoryStore) (*leakGuard, error) {
 	engineRuntimeInitMu.Lock()
 	defer engineRuntimeInitMu.Unlock()
 	if e.runtime == nil {
 		e.runtime = &engineRuntime{}
 	}
 	if e.runtime.leak == nil {
-		guard, err := newLeakGuardFromEnvironment()
+		guard, err := newStoredLeakGuard(os.Getenv(LeakProtectionEnvironmentKey), store)
 		if err != nil {
 			return nil, fmt.Errorf("start leak protection: %w", err)
 		}
@@ -290,7 +290,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	leak, err := e.leakGuard()
+	leak, err := e.leakGuard(session.Inventory)
 	if err != nil {
 		return err
 	}

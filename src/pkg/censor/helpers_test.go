@@ -78,7 +78,19 @@ func build(t testing.TB, secrets ...secret) *Index {
 	return ix
 }
 
+// buildScheme is build with entries of one matching scheme.
+func buildScheme(t testing.TB, version int, secrets ...secret) *Index {
+	t.Helper()
+	ix, _ := buildSchemeWithEntries(t, newKey(t), version, secrets...)
+	return ix
+}
+
 func buildWithEntries(t testing.TB, key *Key, secrets ...secret) (*Index, map[string]*Entries) {
+	t.Helper()
+	return buildSchemeWithEntries(t, key, EntriesVersion, secrets...)
+}
+
+func buildSchemeWithEntries(t testing.TB, key *Key, version int, secrets ...secret) (*Index, map[string]*Entries) {
 	t.Helper()
 	ix, err := NewIndex(key, IndexOptions{})
 	if err != nil {
@@ -90,7 +102,7 @@ func buildWithEntries(t testing.TB, key *Key, secrets ...secret) (*Index, map[st
 		if typ == "" {
 			typ = "secret"
 		}
-		e, err := IndexValue(key, typ, s.ID, s.Value)
+		e, err := IndexValueScheme(key, version, typ, s.ID, s.Value)
 		if err != nil {
 			t.Fatal(err)
 		}
