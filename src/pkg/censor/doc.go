@@ -10,17 +10,33 @@
 // URL-encoded, with %XX in either case; JSON-escaped; newlines as a literal \n;
 // each line that is one run of base64 or hex characters, as those of a PEM body
 // are) into non-overlapping 12-byte chunks and keeps, per chunk, a keyed rolling
-// hash and a keyed SHA-256, with the chunk's index and the form's length. A JSON
-// value is indexed leaf by leaf, and a URL's password on its own as well. The
+// hash and a keyed SHA-256, with the chunk's index and the form's length. The
 // resulting Entries carry no plaintext and nothing derived from the value but
 // keyed hashes and lengths. The daemon that scans makes the Key, hands its bytes
 // to the indexing client, and adds the Entries it gets back to its Index, which
 // validates them as untrusted input.
 //
-// Chunks that are structure rather than secret (PEM armour, a token's type
-// prefix, a URL's scheme and host, a JWT's header and claims, and chunks under
-// 2.8 bits per byte) never produce a partial match alone. A value under 12
-// bytes or 2.5 bits per byte is not indexed and is reported as unprotected.
+// A document is indexed by what it holds, not as text. A JSON value is indexed
+// string by string. So is text of two or more lines of which at least half are
+// a name and a value (name: value or name=value, as in a kubeconfig, an env
+// file or an INI file) and which does not begin with armour, as a PEM block
+// does. Each value after a name is indexed on its own, without the quotes
+// around it; so is a line that is neither a name and a value nor a comment, a
+// header or a marker, as a value that has no name; and a line that is one run
+// of base64 or hex characters is indexed as a line. Nothing else of such text
+// is indexed: not its names, its comments or its headers, and not the text as
+// a whole, so that a file of the same kind is not taken for it. A URL's
+// password, or the token that is its user, is indexed on its own as well.
+//
+// Chunks that are structure rather than secret (PEM armour, as text or in
+// base64, a token's type prefix, a URL's scheme and host, a JWT's header and
+// claims, and chunks under 2.8 bits per byte) never produce a partial match
+// alone. A value under 12 bytes or 2.5 bits per byte is not indexed and is
+// listed as unprotected. So, in a document, are a string of a JSON value under
+// 20 bytes and a value of text under 12, a URL with no credential in it, an
+// email address and a certificate. Numbers next to strings in a JSON value
+// are not indexed, and those that look like key material are listed: an array
+// of 16 integers or more, and an integer of 12 digits or more.
 //
 // # Scanning
 //
@@ -198,6 +214,9 @@
 //     more of a piece of a value than the first limit above does. What is
 //     missed stays as it was, and the report does not mention it.
 //   - A value under 12 bytes, or with little entropy, is not protected at all.
+//   - Of text that is names and values, only the values are found. A value
+//     under 12 bytes there is not protected, where the same text indexed whole
+//     was at times found by the lines around it, and nothing in a comment is.
 //   - Pattern rules see a format only when it is written plainly; a random value
 //     with no known format is found by them only next to a keyword.
 //   - Whoever holds the Key can confirm a guessed 12-byte chunk against the
