@@ -366,6 +366,23 @@ func TestLeakProtectionRewritesAZstdBody(t *testing.T) {
 	}
 }
 
+// A Phase token percent-encoded in the query is what the service decodes, so
+// it is refused like one sent with literal colons.
+func TestLeakProtectionBlocksAnEncodedPhaseTokenInTheURL(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	client := rig.client(rig.phaseRoots)
+	token := "pss_user:v1:" + strings.Repeat("a1b2c3d4", 8) + ":" + strings.Repeat("e5f6a7b8", 8) + ":" + strings.Repeat("c9d0e1f2", 8) + ":" + strings.Repeat("a3b4c5d6", 8)
+	for _, query := range []string{"t=" + token, url.Values{"t": {token}}.Encode()} {
+		request, _ := http.NewRequest(http.MethodPost, "https://chatgpt.com"+codexSocketPath+"?"+query, strings.NewReader(`{"input":"x"}`))
+		if status := doRequest(t, client, request); status != http.StatusForbidden {
+			t.Fatalf("?%s: status %d", query, status)
+		}
+	}
+	if rig.receivedCount() != 0 {
+		t.Fatal("a request with a Phase token in its URL reached the provider")
+	}
+}
+
 func TestLeakProtectionBlocksASecretInTheURL(t *testing.T) {
 	rig := newLeakRig(t, leakModeCensor)
 	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})

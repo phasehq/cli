@@ -310,12 +310,43 @@ func (g *leakGuard) findInURL(target *url.URL, opts censor.ScanOptions) []censor
 	buffer := leakMetaBuffers.Get().(*bytes.Buffer)
 	buffer.Reset()
 	defer leakMetaBuffers.Put(buffer)
-	buffer.WriteString(target.EscapedPath())
-	if target.RawQuery != "" || target.ForceQuery {
-		buffer.WriteByte('?')
-		buffer.WriteString(target.RawQuery)
+	path, query := target.EscapedPath(), target.RawQuery
+	writeURL := func(path, query string) {
+		buffer.WriteString(path)
+		if query != "" || target.ForceQuery {
+			buffer.WriteByte('?')
+			buffer.WriteString(query)
+		}
 	}
-	return g.index.FindWith(buffer.Bytes(), opts)
+	writeURL(path, query)
+	matches := g.index.FindWith(buffer.Bytes(), opts)
+	// The service reads the URL decoded, so a value percent-encoded on the wire
+	// is looked for in that form too. The wire form stays read: decoding turns
+	// a '+' in a value into a space.
+	decodedPath, err := url.PathUnescape(path)
+	if err != nil {
+		decodedPath = path
+	}
+	decodedQuery, err := url.QueryUnescape(query)
+	if err != nil {
+		decodedQuery = query
+	}
+	if decodedPath == path && decodedQuery == query {
+		return matches
+	}
+	type finding struct{ kind, placeholder, rule string }
+	seen := make(map[finding]struct{}, len(matches))
+	for _, match := range matches {
+		seen[finding{match.Kind, match.Placeholder, match.Rule}] = struct{}{}
+	}
+	buffer.Reset()
+	writeURL(decodedPath, decodedQuery)
+	for _, match := range g.index.FindWith(buffer.Bytes(), opts) {
+		if _, found := seen[finding{match.Kind, match.Placeholder, match.Rule}]; !found {
+			matches = append(matches, match)
+		}
+	}
+	return matches
 }
 
 // holdsRegistered reports whether text holds a value registered for leak

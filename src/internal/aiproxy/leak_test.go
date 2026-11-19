@@ -304,6 +304,21 @@ func TestLeakMetaSkipsLoginHeadersAndReadsTheRest(t *testing.T) {
 	if scan := urlScan("/v1/messages?t=" + token); !scan.block || !containsString(scan.labels, "phase_service_token") {
 		t.Fatalf("a Phase token in the URL does not block: %+v", scan)
 	}
+	// The service reads the URL decoded, so a token percent-encoded in the
+	// query or the path blocks as well, and one found in both forms counts once.
+	user := "pss_user:v1:" + strings.Repeat("a1b2c3d4", 8) + ":" + strings.Repeat("e5f6a7b8", 8) + ":" + strings.Repeat("c9d0e1f2", 8) + ":" + strings.Repeat("a3b4c5d6", 8)
+	for _, target := range []string{
+		"/v1/messages?" + url.Values{"t": {user}}.Encode(),
+		"/v1/" + strings.ReplaceAll(user, ":", "%3A") + "/messages",
+	} {
+		if scan := urlScan(target); !scan.block || !scan.phaseToken {
+			t.Fatalf("an encoded Phase token in %q does not block: %+v", target, scan)
+		}
+	}
+	registerLeakValues(t, guard, map[string]string{"db": leakSecretTwo})
+	if scan := urlScan("/v1/messages?key=" + leakSecretTwo + "&note=a%20b"); !scan.block || scan.inventory != 1 {
+		t.Fatalf("a value found in the wire and the decoded form: %+v", scan)
+	}
 }
 
 // A pass-through window is a period in which nothing is read, so it must need
