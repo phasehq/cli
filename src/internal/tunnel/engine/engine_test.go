@@ -69,11 +69,15 @@ func (r *fakeReader) ShouldRead(tool, host string) bool { return tool == "claude
 func (r *fakeReader) ToolHosts() map[string][]string {
 	return map[string][]string{"claude": {modelHost}}
 }
-func (r *fakeReader) NoteFlow(connectFrom, tool string) (func(), error) {
+func (r *fakeReader) NoteFlow(connectFrom, peer, tool string) (func(), error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if address, err := netip.ParseAddrPort(connectFrom); err != nil || !address.Addr().IsLoopback() {
 		tool = "from " + connectFrom
+	}
+	// Everything the helper sends is this machine's.
+	if peer != tunnel.LocalPeer {
+		tool = "from peer " + peer
 	}
 	r.notes = append(r.notes, tool)
 	return func() {}, nil

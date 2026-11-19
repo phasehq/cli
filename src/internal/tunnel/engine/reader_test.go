@@ -68,14 +68,14 @@ func TestProxyReaderAsksTheProxy(t *testing.T) {
 	}
 
 	// The proxy is told of a flow by the loopback address its CONNECT comes from.
-	closed, err := reader.NoteFlow("127.0.0.1:50200", "claude")
+	closed, err := reader.NoteFlow("127.0.0.1:50200", tunnel.LocalPeer, "claude")
 	if err != nil || closed == nil {
 		t.Fatalf("a flow wasn't noted: %v", err)
 	}
 	closed()
 	// One it can't keep is an error, and there is still something to call.
 	for _, test := range []struct{ from, tool string }{{"192.0.2.1:50200", "claude"}, {"127.0.0.1:50201", "not a tool's id"}} {
-		closed, err := reader.NoteFlow(test.from, test.tool)
+		closed, err := reader.NoteFlow(test.from, tunnel.LocalPeer, test.tool)
 		if err == nil || closed == nil {
 			t.Fatalf("NoteFlow(%q, %q): %v", test.from, test.tool, err)
 		}
@@ -99,9 +99,32 @@ func TestWithoutAReaderNothingIsReadAndTheProxyIsStillTold(t *testing.T) {
 	if reader.ReadsHost("api.anthropic.com") || reader.ShouldRead("claude", "api.anthropic.com") || len(reader.ToolHosts()) != 0 {
 		t.Fatal("something is read with no reader set")
 	}
-	closed, err := reader.NoteFlow("127.0.0.1:50202", "claude")
+	closed, err := reader.NoteFlow("127.0.0.1:50202", tunnel.LocalPeer, "claude")
 	if err != nil || closed == nil {
 		t.Fatalf("the proxy wasn't told of the flow: %v", err)
+	}
+	closed()
+}
+
+// The proxy keeps what it remembers under the peer a flow came from. So the tunnel
+// and the proxy call this machine by one name, and a peer's id reaches the proxy.
+func TestTheProxyIsToldTheFlowsPeer(t *testing.T) {
+	if tunnel.LocalPeer != aiproxy.PeerLocal {
+		t.Fatalf("the tunnel calls this machine %q and the proxy %q", tunnel.LocalPeer, aiproxy.PeerLocal)
+	}
+	t.Setenv(aiproxy.LeakProtectionEnvironmentKey, "censor")
+	reader := ProxyReader(aiproxy.New())
+	for _, peer := range []string{tunnel.LocalPeer, "sandbox-1"} {
+		closed, err := reader.NoteFlow("127.0.0.1:50210", peer, "claude")
+		if err != nil || closed == nil {
+			t.Fatalf("a flow of %q wasn't noted: %v", peer, err)
+		}
+		closed()
+	}
+	// An id the proxy can't keep things under is refused, and the flow isn't read.
+	closed, err := reader.NoteFlow("127.0.0.1:50211", "not a peer's id", "claude")
+	if err == nil || closed == nil {
+		t.Fatalf("a flow was noted for a peer with no usable id: %v", err)
 	}
 	closed()
 }

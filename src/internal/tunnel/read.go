@@ -25,9 +25,9 @@ type Reader interface {
 	// ShouldRead reports whether host is read for tool.
 	ShouldRead(tool, host string) bool
 	// NoteFlow says who opened a flow, before its CONNECT is sent from connectFrom,
-	// the router's own loopback address for it. tool is the tool the flow is read
-	// for, or "" when it isn't to be read: a Connection's host goes to the proxy for
-	// its credential whoever opened the flow.
+	// the router's own loopback address for it. peer is the peer the flow came from.
+	// tool is the tool the flow is read for, or "" when it isn't to be read: a
+	// Connection's host goes to the proxy for its credential whoever opened the flow.
 	//
 	// The router calls it for every CONNECT it sends. One the proxy was told nothing
 	// about would be taken for a program that was given the proxy through its
@@ -36,11 +36,15 @@ type Reader interface {
 	// done with the connection from connectFrom, whatever became of it, and before it
 	// closes the connection: nothing else can connect from that address until then, so
 	// what was said of it is never taken for another connection's.
-	NoteFlow(connectFrom, tool string) (closed func(), err error)
+	NoteFlow(connectFrom, peer, tool string) (closed func(), err error)
 	// ToolHosts lists the hosts read for each tool, for status and for capturing them
 	// by name. A host that covers its subdomains is written "*.name".
 	ToolHosts() map[string][]string
 }
+
+// PeerRule names the tool a peer's flow belongs to, or "" when it is no tool's. How
+// that is known depends on the peer, so each peer has a rule of its own.
+type PeerRule func(flow Flow) (tool string, err error)
 
 // OwnerFunc finds the program that opened a connection, from the port it left by and
 // where it goes. owner.Lookup is the one used outside tests.
@@ -72,6 +76,14 @@ func (r *Router) FindOwnersWith(find OwnerFunc, wait time.Duration) {
 	if wait > 0 {
 		r.ownerWait = wait
 	}
+	r.mu.Unlock()
+}
+
+// SetPeerRule says how the flows of a peer are named. The local peer's rule is
+// there from the start; a peer with no rule is read for no tool.
+func (r *Router) SetPeerRule(peer string, rule PeerRule) {
+	r.mu.Lock()
+	r.peerRules[peer] = rule
 	r.mu.Unlock()
 }
 
@@ -132,16 +144,22 @@ func unreadBecause(err error) string {
 	return "unread_no_proxy"
 }
 
-// toolFor names the tool a flow to host is read for. It's "" when the program that
-// opened the flow isn't that host's tool, and when the program can't be found in
-// time: not knowing means not reading.
+// toolFor names the tool a flow to host is read for, as the rule of the flow's peer
+// says. It's "" when that isn't the host's tool, and when the rule can't say in
+// time or the peer has none: not knowing means not reading.
 func (r *Router) toolFor(flow Flow, host string, reader Reader) string {
-	process, err := r.ownerOf(flow)
+	r.mu.RLock()
+	rule := r.peerRules[flow.peer()]
+	r.mu.RUnlock()
+	if rule == nil {
+		r.count("unread_no_peer_rule")
+		return ""
+	}
+	tool, err := rule(flow)
 	if err != nil {
 		r.count("owner_lookup_failed")
 		return ""
 	}
-	tool := owner.Identify(process)
 	if tool == "" || !reader.ShouldRead(tool, host) {
 		r.count("unread_not_tool")
 		return ""
@@ -149,12 +167,22 @@ func (r *Router) toolFor(flow Flow, host string, reader Reader) string {
 	return tool
 }
 
+// localTool is the local peer's rule: a flow belongs to the tool that the program
+// which opened it on this machine is. No other peer's flows can be asked about so.
+func (r *Router) localTool(flow Flow) (string, error) {
+	process, err := r.ownerOf(flow)
+	if err != nil {
+		return "", err
+	}
+	return owner.Identify(process), nil
+}
+
 // ownerOf finds the program that opened a flow, by the port the flow left from. A
 // flow reaches the tunnel with the program's own port, so the port names its socket.
 // It never takes longer than the router's wait, whatever the lookup does.
 //
-// It only means something for a program on this machine. A remote peer's flows will
-// need the peer to say who opened them.
+// It only means something for a program on this machine, which is why it is asked
+// through the local peer's rule alone.
 func (r *Router) ownerOf(flow Flow) (owner.Process, error) {
 	r.mu.RLock()
 	find, wait := r.owner, r.ownerWait

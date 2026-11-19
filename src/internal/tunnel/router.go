@@ -100,6 +100,7 @@ type Router struct {
 	// What decides whether a model host is read. See read.go.
 	reader    Reader
 	readNames bool
+	peerRules map[string]PeerRule
 	owner     OwnerFunc
 	ownerWait time.Duration
 	lookups   chan struct{}
@@ -115,11 +116,13 @@ func NewRouter(upstream *Upstream, logf func(string, ...any)) *Router {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Router{
+	r := &Router{
 		Upstream: upstream, names: newNameTable(namePool), counts: map[string]int{}, logf: logf,
 		owner: owner.Lookup, ownerWait: ownerWait, lookups: make(chan struct{}, ownerLookups),
 		route: unpinnedSource,
 	}
+	r.peerRules = map[string]PeerRule{LocalPeer: r.localTool}
+	return r
 }
 
 // Update points the router at a proxy session's front doors and Connections.
@@ -360,7 +363,7 @@ func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
 	if needed {
 		r.count("proxy")
 	}
-	upstream, noted, err := r.connect(authority, tool, needed)
+	upstream, noted, err := r.connect(flow.peer(), authority, tool, needed)
 	if err != nil {
 		if !needed {
 			r.count(unreadBecause(err))
@@ -404,7 +407,7 @@ func (r *Router) passThrough(client, upstream net.Conn, flow Flow) {
 			if connection {
 				r.count("proxy_by_tls_name")
 			}
-			proxied, noted, err := r.connect(net.JoinHostPort(name, "443"), tool, connection)
+			proxied, noted, err := r.connect(flow.peer(), net.JoinHostPort(name, "443"), tool, connection)
 			if err == nil {
 				_ = upstream.Close()
 				defer proxied.Close()
@@ -529,10 +532,10 @@ func (r *Router) loops(dest netip.Addr) bool {
 // would. The proxy's password is presented here on the program's behalf, so behind a
 // tunnel the decoy is the only thing a program has to hold.
 //
-// The proxy is told whose flow it is before the CONNECT is sent: tool is the tool it
-// is read for, or "" when it isn't to be read. That is done for every CONNECT sent
-// from here, because one the proxy knows nothing about is taken for a program that
-// was given the proxy through its environment, for which any model host is read.
+// The proxy is told whose flow it is before the CONNECT is sent: the peer it came
+// from, and the tool it is read for, or "" when it isn't to be read. That is done for
+// every CONNECT sent from here, because one the proxy knows nothing about is taken for
+// a program given the proxy through its environment, for which any model host is read.
 //
 // When the proxy can't keep what it was told, a flow that is only there to be read
 // isn't handed over, and the error is errNotNoted. A flow that needs the proxy, for
@@ -541,7 +544,7 @@ func (r *Router) loops(dest netip.Addr) bool {
 //
 // However the connection ends, here or once the flow is over, it ends in one place:
 // bufferedConn.Close, which tells the proxy first.
-func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn, noted bool, err error) {
+func (r *Router) connect(peer, authority, tool string, needed bool) (proxied net.Conn, noted bool, err error) {
 	r.mu.RLock()
 	address, auth, reader := r.proxyAddress, r.proxyAuth, r.reader
 	r.mu.RUnlock()
@@ -554,7 +557,7 @@ func (r *Router) connect(authority, tool string, needed bool) (proxied net.Conn,
 	}
 	held := &bufferedConn{Conn: conn, reader: bufio.NewReader(conn), closed: func() {}}
 	if reader != nil {
-		closed, noteErr := reader.NoteFlow(conn.LocalAddr().String(), tool)
+		closed, noteErr := reader.NoteFlow(conn.LocalAddr().String(), peer, tool)
 		if closed != nil {
 			held.closed = closed
 		}

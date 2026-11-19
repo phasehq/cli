@@ -6,6 +6,9 @@
 // it opens, from the program's executable: a working directory says nothing about a
 // connection opened before the tool moved into the project, and tools rewrite their
 // own process names.
+//
+// This is the local peer's way to name a flow's tool, and no other peer's: a flow
+// that reached the tunnel from another machine has no program here to find.
 package owner
 
 import (

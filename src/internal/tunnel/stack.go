@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -35,8 +36,19 @@ import (
 type Flow struct {
 	Source netip.AddrPort
 	Dest   netip.AddrPort
+	// Peer is the WireGuard peer the flow's packets came from, by the range its
+	// source address is in. Empty is LocalPeer.
+	Peer string
 	// Prepared is whatever Hooks.Prepare returned for this flow.
 	Prepared any
+}
+
+// peer is the flow's peer with the zero value read as LocalPeer.
+func (f Flow) peer() string {
+	if f.Peer == "" {
+		return LocalPeer
+	}
+	return f.Peer
 }
 
 // Hooks is where captured traffic goes.
@@ -61,6 +73,9 @@ type Stack struct {
 	hooks Hooks
 	stack *stack.Stack
 	ep    *channel.Endpoint
+	// sources says which peer each source address is taken from. Until peers
+	// are set every address is the local peer's, as it is behind the helper.
+	sources atomic.Pointer[[]peerSource]
 }
 
 // NewStack starts a stack for packets of up to mtu bytes.
@@ -101,8 +116,13 @@ func NewStack(hooks Hooks, mtu int) (*Stack, error) {
 		{Destination: header.IPv6EmptySubnet, NIC: nic},
 	})
 	c := &Stack{hooks: hooks, stack: s, ep: ep}
+	c.setPeers([]peer{{id: LocalPeer, sources: everySource}})
 	tcpForwarder := tcp.NewForwarder(s, 0, 4096, func(r *tcp.ForwarderRequest) {
-		flow := flowOf(r.ID())
+		flow, known := c.flowOf(r.ID())
+		if !known {
+			r.Complete(true)
+			return
+		}
 		if hooks.Prepare != nil {
 			prepared, ok := hooks.Prepare(flow)
 			if !ok {
@@ -130,7 +150,10 @@ func NewStack(hooks Hooks, mtu int) (*Stack, error) {
 	})
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	udpForwarder := udp.NewForwarder(s, func(r *udp.ForwarderRequest) {
-		flow := flowOf(r.ID())
+		flow, known := c.flowOf(r.ID())
+		if !known {
+			return
+		}
 		var wq waiter.Queue
 		endpoint, err := r.CreateEndpoint(&wq)
 		if err != nil {
@@ -164,10 +187,20 @@ func enableKeepAlive(endpoint tcpip.Endpoint) {
 	_ = endpoint.SetSockOptInt(tcpip.KeepaliveCountOption, 4)
 }
 
-func flowOf(id stack.TransportEndpointID) Flow {
+// setPeers replaces the peers whose packets reach the stack.
+func (c *Stack) setPeers(peers []peer) {
+	sources := sourcesOf(peers)
+	c.sources.Store(&sources)
+}
+
+// flowOf describes a flow, and names the peer it came from. known is false
+// for a source no peer sends from: such a flow is nobody's, and is refused.
+func (c *Stack) flowOf(id stack.TransportEndpointID) (flow Flow, known bool) {
 	source, _ := netip.AddrFromSlice(id.RemoteAddress.AsSlice())
 	dest, _ := netip.AddrFromSlice(id.LocalAddress.AsSlice())
-	return Flow{Source: netip.AddrPortFrom(source, id.RemotePort), Dest: netip.AddrPortFrom(dest, id.LocalPort)}
+	flow = Flow{Source: netip.AddrPortFrom(source, id.RemotePort), Dest: netip.AddrPortFrom(dest, id.LocalPort)}
+	flow.Peer, known = peerOf(*c.sources.Load(), source)
+	return flow, known
 }
 
 // serveDNS answers until the socket goes quiet. Resolvers commonly send A and AAAA

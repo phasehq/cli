@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 
 	wgconn "golang.zx2c4.com/wireguard/conn"
@@ -144,7 +145,9 @@ func (b *LoopbackBind) BatchSize() int { return 1 }
 
 // EngineDevice is the engine's end of the tunnel: WireGuard into the stack.
 type EngineDevice struct {
-	device     *device.Device
+	device *device.Device
+	// stack is told which source addresses are whose whenever the peers change.
+	stack      *Stack
 	cancel     context.CancelFunc
 	privateKey string
 	PublicKey  string
@@ -171,7 +174,7 @@ func StartEngineDevice(stack *Stack, port int) (*EngineDevice, error) {
 		wg.Close()
 		return nil, err
 	}
-	return &EngineDevice{device: wg, cancel: cancel, privateKey: private, PublicKey: public, Port: port}, nil
+	return &EngineDevice{device: wg, stack: stack, cancel: cancel, privateKey: private, PublicKey: public, Port: port}, nil
 }
 
 // SetPeer accepts the helper's key. Any source address is allowed, because a
@@ -180,7 +183,29 @@ func (d *EngineDevice) SetPeer(peerPublicKey string) error {
 	if !ValidKey(peerPublicKey) {
 		return fmt.Errorf("the helper's key is malformed")
 	}
-	return d.device.IpcSet(fmt.Sprintf("replace_peers=true\npublic_key=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\n", peerPublicKey))
+	return d.setPeers([]peer{{id: LocalPeer, publicKey: peerPublicKey, sources: everySource}})
+}
+
+// setPeers replaces the peers WireGuard takes packets from. The stack is told
+// the same ranges, so a flow is named after the peer WireGuard took it from.
+func (d *EngineDevice) setPeers(peers []peer) error {
+	var config strings.Builder
+	config.WriteString("replace_peers=true\n")
+	for _, peer := range peers {
+		// A key is written into WireGuard's configuration as it is.
+		if !ValidKey(peer.publicKey) {
+			return fmt.Errorf("a peer's key is malformed")
+		}
+		fmt.Fprintf(&config, "public_key=%s\n", peer.publicKey)
+		for _, source := range peer.sources {
+			fmt.Fprintf(&config, "allowed_ip=%s\n", source)
+		}
+	}
+	if err := d.device.IpcSet(config.String()); err != nil {
+		return err
+	}
+	d.stack.setPeers(peers)
+	return nil
 }
 
 // Close stops the device.

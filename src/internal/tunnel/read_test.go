@@ -51,6 +51,8 @@ type fakeReader struct {
 	// refused are the addresses a note was refused for, and closed the ones the
 	// router said it had closed its connection from.
 	refused, closed []string
+	// peers are the peers the noted flows came from, one for each note.
+	peers []string
 }
 
 func (f *fakeReader) covers(listed, host string) bool {
@@ -81,7 +83,7 @@ func (f *fakeReader) ShouldRead(tool, host string) bool {
 	return false
 }
 
-func (f *fakeReader) NoteFlow(connectFrom, tool string) (func(), error) {
+func (f *fakeReader) NoteFlow(connectFrom, peer, tool string) (func(), error) {
 	if f.before != nil {
 		f.before(connectFrom)
 	}
@@ -97,6 +99,7 @@ func (f *fakeReader) NoteFlow(connectFrom, tool string) (func(), error) {
 		return closed, f.refuse
 	}
 	f.notes = append(f.notes, flowNote{connectFrom, tool})
+	f.peers = append(f.peers, peer)
 	return closed, nil
 }
 
