@@ -12,7 +12,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -330,11 +332,16 @@ func (h *Helper) handle(event any) {
 }
 
 func (h *Helper) status() control.Status {
-	return control.Status{
+	status := control.Status{
 		Protocol: control.ProtocolVersion, Version: h.opts.Version, Device: h.deviceName,
 		Attached: h.engine != nil, EnginePID: h.enginePID, Capturing: h.captured.Load(), Reason: h.reason, Since: h.since,
 		Pinned: h.pinned, Domains: h.attach.Domains, Routes: h.attach.Routes, Retry: h.heldUntil,
 	}
+	// While it isn't capturing, any route still on record is one it couldn't remove.
+	if !status.Capturing {
+		status.RoutesLeft = append([]string(nil), h.added...)
+	}
+	return status
 }
 
 // attachEngine sets up the device the first time, and points WireGuard at the engine.
@@ -439,9 +446,14 @@ func (h *Helper) engage() error {
 	h.opts.System.FlushDNS()
 	h.pin()
 	// What was added is kept even when not all of it could be: another VPN may hold
-	// the very same route, and that one isn't this helper's to give back.
+	// the very same route, and that one isn't this helper's to give back. A route
+	// that couldn't be given back earlier is still on record, and isn't kept twice.
 	added, err := h.opts.System.AddRoutes(h.deviceName, h.attach.Routes)
-	h.added = append(h.added, added...)
+	for _, route := range added {
+		if !slices.Contains(h.added, route) {
+			h.added = append(h.added, route)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -468,11 +480,17 @@ func (h *Helper) confirm(wait time.Duration) error {
 // Only the routes this helper added are removed. The system removes a route by where
 // it goes to, whoever added it, so asking for one that was never added here would
 // take away another VPN's route to the same place.
+//
+// A route that couldn't be removed stays on record: it still sends what it covers
+// into the tunnel, so the next step aside tries again, and status says so meanwhile.
 func (h *Helper) stepAside(reason string) {
+	var left []string
 	if h.deviceName != "" && len(h.added) > 0 {
-		h.opts.System.RemoveRoutes(h.deviceName, h.added)
+		if left = h.opts.System.RemoveRoutes(h.deviceName, h.added); len(left) > 0 {
+			h.opts.Logf("couldn't remove the routes %s from %s; they are tried again at the next step aside, and phase down removes them with the device", strings.Join(left, ", "), h.deviceName)
+		}
 	}
-	h.added = nil
+	h.added = left
 	h.unpinNow()
 	h.opts.System.RemoveResolvers()
 	h.opts.System.FlushDNS()
@@ -495,6 +513,8 @@ func (h *Helper) shutdown(reason string) {
 		h.wg.Close()
 		h.wg, h.tunDevice, h.deviceName = nil, nil, ""
 	}
+	// A device's routes go with it, the ones that couldn't be removed included.
+	h.added = nil
 }
 
 // holdOff waits longer each time, so a lasting fault costs a moment of network every

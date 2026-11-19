@@ -65,6 +65,9 @@ type Status struct {
 	Domains   []string  `json:"domains,omitempty"`
 	Routes    []string  `json:"routes,omitempty"`
 	Retry     time.Time `json:"retry,omitempty"`
+	// RoutesLeft are capture routes the helper added and couldn't remove when it
+	// stepped aside. Until they go, what they cover is still sent into the tunnel.
+	RoutesLeft []string `json:"routesLeft,omitempty"`
 }
 
 // ErrNotRunning means nothing answered on the socket.

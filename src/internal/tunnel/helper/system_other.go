@@ -17,7 +17,7 @@ func (unsupported) CheckRange() error                            { return ErrUns
 func (unsupported) CreateDevice(int) (tun.Device, string, error) { return nil, "", ErrUnsupported }
 func (unsupported) Configure(string) error                       { return ErrUnsupported }
 func (unsupported) AddRoutes(string, []string) ([]string, error) { return nil, ErrUnsupported }
-func (unsupported) RemoveRoutes(string, []string)                {}
+func (unsupported) RemoveRoutes(string, []string) []string       { return nil }
 func (unsupported) InstallResolvers([]string) error              { return ErrUnsupported }
 func (unsupported) RemoveResolvers()                             {}
 func (unsupported) FlushDNS()                                    {}

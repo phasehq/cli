@@ -114,7 +114,9 @@ type fakeTable struct {
 	quiet map[netip.Prefix]bool
 	// taken is added by someone else just before route(8) runs.
 	taken map[netip.Prefix]int
-	ran   []string
+	// stubborn makes route(8) fail to remove anything, and say so.
+	stubborn bool
+	ran      []string
 }
 
 const (
@@ -153,6 +155,9 @@ func (f *fakeTable) steps() routeSteps {
 				}
 				f.routes[prefix] = ownIndex
 			case "delete":
+				if f.stubborn {
+					return errors.New("route: writing to routing socket: Operation not permitted")
+				}
 				// By destination, whoever added it.
 				delete(f.routes, prefix)
 			}
@@ -294,4 +299,58 @@ func TestRouteStepsWhenTheTableSaysLittle(t *testing.T) {
 	if added, err := odd.steps().add("utun7", []string{"0.0.0.0/1", "everything"}); err == nil || len(added) != 0 || len(odd.ran) != 0 {
 		t.Fatalf("a route that isn't one was added: %v, %v", added, err)
 	}
+}
+
+// A route that is still there after it was asked to go is said, so that it isn't
+// taken for gone: it goes on sending what it covers into the tunnel.
+func TestRouteStepsSayWhichRoutesTheyCouldNotGiveBack(t *testing.T) {
+	both := []string{"0.0.0.0/1", "128.0.0.0/1"}
+	held := func() map[netip.Prefix]int {
+		return map[netip.Prefix]int{netip.MustParsePrefix("0.0.0.0/1"): ownIndex, netip.MustParsePrefix("128.0.0.0/1"): ownIndex}
+	}
+	t.Run("all of them go", func(t *testing.T) {
+		table := &fakeTable{routes: held()}
+		if left := table.steps().remove("utun7", both); len(left) != 0 || len(table.routes) != 0 {
+			t.Fatalf("left %v, table %v", left, table.routes)
+		}
+	})
+	t.Run("route says it failed", func(t *testing.T) {
+		table := &fakeTable{routes: held(), stubborn: true}
+		if left := table.steps().remove("utun7", both); !reflect.DeepEqual(left, both) || len(table.ran) != 2 {
+			t.Fatalf("left %v, ran %q", left, table.ran)
+		}
+		// Asked again once it can, it removes them.
+		table.stubborn = false
+		if left := table.steps().remove("utun7", both); len(left) != 0 || len(table.routes) != 0 {
+			t.Fatalf("left %v, table %v", left, table.routes)
+		}
+	})
+	t.Run("route says nothing, and one is still there", func(t *testing.T) {
+		table := &fakeTable{routes: held(), quiet: map[netip.Prefix]bool{netip.MustParsePrefix("128.0.0.0/1"): true}}
+		if left := table.steps().remove("utun7", both); !reflect.DeepEqual(left, []string{"128.0.0.0/1"}) {
+			t.Fatalf("left %v, table %v", left, table.routes)
+		}
+	})
+	// With the table unreadable, what route reports is all there is to go by.
+	t.Run("the table can't be read", func(t *testing.T) {
+		table := &fakeTable{routes: held(), unreadable: true, stubborn: true}
+		if left := table.steps().remove("utun7", both); !reflect.DeepEqual(left, both) {
+			t.Fatalf("left %v", left)
+		}
+		table.stubborn = false
+		if left := table.steps().remove("utun7", both); len(left) != 0 {
+			t.Fatalf("left %v", left)
+		}
+	})
+	// What isn't the device's any more isn't left behind by it, and neither is
+	// anything once the device has gone.
+	t.Run("nothing of the helper's", func(t *testing.T) {
+		table := &fakeTable{routes: prefixes("0.0.0.0/1", "128.0.0.0/1"), stubborn: true}
+		if left := table.steps().remove("utun7", both); len(left) != 0 || len(table.ran) != 0 {
+			t.Fatalf("left %v, ran %q", left, table.ran)
+		}
+		if left := table.steps().remove("utun9", both); len(left) != 0 || len(table.ran) != 0 {
+			t.Fatalf("with the device gone: left %v, ran %q", left, table.ran)
+		}
+	})
 }

@@ -36,6 +36,10 @@ type fakeSystem struct {
 	ours   map[string]bool
 	others map[string]bool
 	lost   []string
+	// stuck are routes of the helper's that can't be removed for now, and removals
+	// counts the times it was asked to remove any.
+	stuck    map[string]bool
+	removals int
 }
 
 func (f *fakeSystem) note(entry string) { f.log = append(f.log, entry) }
@@ -50,7 +54,12 @@ func (f *fakeSystem) AddRoutes(_ string, prefixes []string) (added []string, err
 	defer f.mu.Unlock()
 	f.note("add routes")
 	for _, prefix := range prefixes {
-		if f.others[prefix] || f.ours[prefix] {
+		if f.ours[prefix] {
+			// Left from an earlier capture, and the device's own: there to be given back.
+			added = append(added, prefix)
+			continue
+		}
+		if f.others[prefix] {
 			return added, errors.New("route: writing to routing socket: File exists")
 		}
 		if f.ours == nil {
@@ -65,17 +74,23 @@ func (f *fakeSystem) AddRoutes(_ string, prefixes []string) (added []string, err
 
 // RemoveRoutes removes by destination, as the system does: a route of someone else's
 // goes just the same.
-func (f *fakeSystem) RemoveRoutes(_ string, prefixes []string) {
+func (f *fakeSystem) RemoveRoutes(_ string, prefixes []string) (left []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.removals++
 	for _, prefix := range prefixes {
 		if f.others[prefix] {
 			delete(f.others, prefix)
 			f.lost = append(f.lost, prefix)
 		}
+		if f.stuck[prefix] && f.ours[prefix] {
+			left = append(left, prefix)
+			continue
+		}
 		delete(f.ours, prefix)
 	}
 	f.routes = len(f.ours) > 0
+	return left
 }
 
 // stillThere reports whether a route that was there before the helper still is.
@@ -579,4 +594,65 @@ func TestStatusNamesTheAttachedEnginesProcess(t *testing.T) {
 	}
 	stop()
 	h.waitFor("the engine to be let go", func() bool { status := h.status(); return !status.Attached && status.EnginePID == 0 })
+}
+
+// A route the helper couldn't remove when it stepped aside still sends what it covers
+// into the tunnel. It stays on record: status says so, and the next step aside tries
+// again. Forgotten, it would stay until the device went.
+func TestARouteThatCouldNotBeRemovedIsNotForgotten(t *testing.T) {
+	system := &fakeSystem{internetUp: true, tunnelWorks: true, stuck: map[string]bool{"128.0.0.0/1": true}}
+	h := start(t, system, true)
+	stop := h.attach(nil)
+	h.waitFor("capture", h.captured)
+	if status := h.status(); len(status.RoutesLeft) != 0 {
+		t.Fatalf("while capturing, status says routes were left behind: %v", status.RoutesLeft)
+	}
+	stop()
+	h.waitFor("stepping aside after the engine left", func() bool { status := h.status(); return !status.Capturing && !status.Attached })
+	status := h.status()
+	if ours, _ := system.routeState(); !reflect.DeepEqual(ours, []string{"128.0.0.0/1"}) || !reflect.DeepEqual(status.RoutesLeft, []string{"128.0.0.0/1"}) {
+		t.Fatalf("the route still there is %v, and status says %v", ours, status.RoutesLeft)
+	}
+	if _, pinned, resolvers := system.state(); pinned || len(resolvers) != 0 {
+		t.Fatalf("stepping aside stopped at the route: pinned %v, resolvers %v", pinned, resolvers)
+	}
+
+	t.Run("an engine that comes back takes it up again, and it goes with the rest", func(t *testing.T) {
+		stop := h.attach(nil)
+		h.waitFor("capture", h.captured)
+		if ours, _ := system.routeState(); !reflect.DeepEqual(ours, []string{"0.0.0.0/1", "128.0.0.0/1"}) {
+			t.Fatalf("the routes: %v", ours)
+		}
+		system.set(func(f *fakeSystem) { f.stuck = nil })
+		stop()
+		h.waitFor("stepping aside after the engine left", h.clean)
+		if status := h.status(); len(status.RoutesLeft) != 0 {
+			t.Fatalf("status still says %v", status.RoutesLeft)
+		}
+	})
+
+	t.Run("the next step aside tries again", func(t *testing.T) {
+		system.set(func(f *fakeSystem) { f.stuck = map[string]bool{"0.0.0.0/1": true} })
+		stop := h.attach(nil)
+		h.waitFor("capture", h.captured)
+		stop()
+		h.waitFor("the route to be left", func() bool { return len(h.status().RoutesLeft) == 1 })
+		system.mu.Lock()
+		system.stuck = nil
+		before := system.removals
+		system.mu.Unlock()
+		// Asked to stop, it steps aside again, and this time the route goes.
+		if _, err := control.Ask(h.socket, control.Request{Op: control.OpDown}, 15*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		system.mu.Lock()
+		asked := system.removals - before
+		system.mu.Unlock()
+		if ours, _ := system.routeState(); asked != 1 || len(ours) != 0 || !h.clean() {
+			t.Fatalf("asked to remove routes %d more times, and %v is still there", asked, ours)
+		}
+		if status := h.status(); len(status.RoutesLeft) != 0 || status.Device != "" {
+			t.Fatalf("status after down: %+v", status)
+		}
+	})
 }

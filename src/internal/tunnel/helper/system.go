@@ -14,11 +14,12 @@ type System interface {
 	Configure(device string) error
 	// AddRoutes takes capture routes, and returns the ones it added: fewer than it
 	// was asked for when one can't be added. It never replaces a route that is
-	// already there. RemoveRoutes gives back routes that AddRoutes added. The helper
-	// never asks it for one that wasn't, because the system removes a route by where
-	// it goes to, whoever put it there.
+	// already there. RemoveRoutes gives back routes that AddRoutes added, and returns
+	// the ones it couldn't: those are still in place. The helper never asks it for a
+	// route AddRoutes didn't add, because the system removes a route by where it goes
+	// to, whoever put it there.
 	AddRoutes(device string, prefixes []string) (added []string, err error)
-	RemoveRoutes(device string, prefixes []string)
+	RemoveRoutes(device string, prefixes []string) (left []string)
 	// InstallResolvers sends DNS for exactly these domains to the tunnel.
 	InstallResolvers(domains []string) error
 	// RemoveResolvers removes only what InstallResolvers wrote.

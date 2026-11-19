@@ -239,6 +239,19 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 			t.Fatalf("got:\n%s", got)
 		}
 	})
+
+	// A route the helper couldn't remove still leads into the tunnel, and status
+	// says so, with what removes it.
+	t.Run("routes that couldn't be removed", func(t *testing.T) {
+		left := &control.Status{Reason: "the engine stopped", RoutesLeft: []string{"128.0.0.0/1", "8000::/1"}}
+		got := print(left, nil)
+		want := "🚇 Phase isn't in the path: the engine stopped.\n" +
+			"   ⚠️  The helper couldn't remove its routes for 128.0.0.0/1, 8000::/1, so connections there still go into Phase's tunnel and may fail. Run phase down, which removes them.\n" +
+			"   Engine: not running.\n"
+		if got != want {
+			t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+		}
+	})
 }
 
 // phase up says what it has done, and no more: new connections go through Phase, and

@@ -603,6 +603,11 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 		if !helperStatus.Retry.IsZero() && helperStatus.Retry.After(now) {
 			fmt.Fprintf(out, "   It tries again at %s.\n", helperStatus.Retry.Local().Format("15:04:05"))
 		}
+		// Not quite out of the path, then: these still lead into the tunnel.
+		if len(helperStatus.RoutesLeft) > 0 {
+			fmt.Fprintf(out, "   ⚠️  The helper couldn't remove its routes for %s, so connections there still go into Phase's tunnel and may fail. Run phase down, which removes them.\n",
+				strings.Join(helperStatus.RoutesLeft, ", "))
+		}
 	}
 	if status == nil {
 		fmt.Fprintln(out, "   Engine: not running.")

@@ -214,13 +214,14 @@ func (s routeSteps) add(device string, prefixes []string) (added []string, err e
 	return added, nil
 }
 
-// remove gives back routes that add took. One that no longer leaves by the device
-// isn't the helper's any more, and is left alone; so are all of them when the device
-// has gone, since its routes went with it.
-func (s routeSteps) remove(device string, prefixes []string) {
+// remove gives back routes that add took, and returns the ones it couldn't: a route
+// left in place sends what it covers into the tunnel, whoever is there to answer. One
+// that no longer leaves by the device isn't the helper's any more, and is left alone;
+// so are all of them when the device has gone, since its routes went with it.
+func (s routeSteps) remove(device string, prefixes []string) (left []string) {
 	own, err := s.index(device)
 	if err != nil {
-		return
+		return nil
 	}
 	for _, text := range prefixes {
 		prefix, err := netip.ParsePrefix(text)
@@ -230,6 +231,13 @@ func (s routeSteps) remove(device string, prefixes []string) {
 		if index, found, err := s.leaves(prefix); err == nil && (!found || index != own) {
 			continue
 		}
-		_ = s.run("/sbin/route", "-q", "-n", "delete", familyFlag(text), text, "-interface", device)
+		runErr := s.run("/sbin/route", "-q", "-n", "delete", familyFlag(text), text, "-interface", device)
+		// route(8) doesn't always say when it failed. The table does, and when it
+		// can't be read, what route(8) reports is all there is to go by.
+		index, found, err := s.leaves(prefix)
+		if (err == nil && found && index == own) || (err != nil && runErr != nil) {
+			left = append(left, text)
+		}
 	}
+	return left
 }

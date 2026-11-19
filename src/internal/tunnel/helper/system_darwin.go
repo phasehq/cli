@@ -99,8 +99,8 @@ func (Darwin) AddRoutes(device string, prefixes []string) ([]string, error) {
 	return darwinRoutes.add(device, prefixes)
 }
 
-func (Darwin) RemoveRoutes(device string, prefixes []string) {
-	darwinRoutes.remove(device, prefixes)
+func (Darwin) RemoveRoutes(device string, prefixes []string) []string {
+	return darwinRoutes.remove(device, prefixes)
 }
 
 // routeInterface finds the route for exactly this destination in the kernel's table,
