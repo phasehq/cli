@@ -144,6 +144,16 @@ func (r *Router) Update(proxyURL, postgresAddress string, rules []Rule) error {
 	return nil
 }
 
+// Withdraw forgets the proxy's front doors and the capability for them, once the
+// session they belonged to has stopped. Until the next Update a Connection's flow
+// fails, and a model host's goes on unread, as with a proxy that isn't there. The
+// Connections' hosts are kept, so their names stay captured meanwhile.
+func (r *Router) Withdraw() {
+	r.mu.Lock()
+	r.proxyAddress, r.proxyAuth, r.proxyURL, r.postgresAddress = "", "", nil, ""
+	r.mu.Unlock()
+}
+
 // SetRules replaces the Connections' hosts, for a session that changed while it ran.
 func (r *Router) SetRules(rules []Rule) {
 	r.mu.Lock()

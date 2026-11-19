@@ -77,7 +77,13 @@ func (e *engine) publishProxy(proxyURL string) error {
 	if err != nil {
 		return err
 	}
-	return writeOwnerOnly(ProxyStatePath(e.cfg.StateDirectory), payload)
+	if err := writeOwnerOnly(ProxyStatePath(e.cfg.StateDirectory), payload); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.published = true
+	e.mu.Unlock()
+	return nil
 }
 
 // withdrawProxy removes the proxy state: the proxy no longer serves a session.

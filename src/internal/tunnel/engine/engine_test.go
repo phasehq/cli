@@ -391,9 +391,11 @@ type running struct {
 	reader *fakeReader
 	owners *fakeOwners
 	// refreshed is what Console answers a refresh with, and updates are the names the
-	// helper is sent after it attached.
+	// helper is sent after it attached. attaches are the attaches the helper got, for
+	// an engine that was started without waiting for one.
 	refreshed *atomic.Pointer[map[string]any]
 	updates   chan []string
+	attaches  chan control.Attach
 	// stop ends the engine and waits for it to have gone. The test's end does it too.
 	stop func()
 }
@@ -419,6 +421,13 @@ type engineSetup struct {
 	// sealed refuses every address that has no stand-in, for a test that uses the
 	// names of real hosts.
 	sealed bool
+	// before runs on the engine's state directory before the engine starts.
+	before func(t *testing.T, directory string)
+	// runtime replaces how the engine is handed its sessions.
+	runtime func(Runtime) Runtime
+	// unattached returns once the engine runs, for an engine that is never to attach
+	// to the helper. The running engine then has no program behind it.
+	unattached bool
 }
 
 func startEngineWith(t *testing.T, setup engineSetup) *running {
@@ -442,6 +451,9 @@ func startEngineWith(t *testing.T, setup engineSetup) *running {
 	}
 	if err := os.WriteFile(bundlePath, proxyCert, 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if setup.before != nil {
+		setup.before(t, directory)
 	}
 	provider := startProvider(t, providerCA)
 	echoTCP, echoUDP := startEcho(t)
@@ -494,10 +506,14 @@ func startEngineWith(t *testing.T, setup engineSetup) *running {
 		}
 	}
 	t.Cleanup(stop)
+	var runtime Runtime = fakeRuntime{session: session, client: client, ca: proxyCA, paths: phaseproxy.CAPaths{Certificate: certificatePath, Bundle: bundlePath}}
+	if setup.runtime != nil {
+		runtime = setup.runtime(runtime)
+	}
 	go func() {
 		defer close(stopped)
 		done <- Run(ctx, Config{
-			Runtime:    fakeRuntime{session: session, client: client, ca: proxyCA, paths: phaseproxy.CAPaths{Certificate: certificatePath, Bundle: bundlePath}},
+			Runtime:    runtime,
 			SocketPath: filepath.Join(socketDirectory, "s"), StateDirectory: directory,
 			ProxyAddress:    fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 			PostgresAddress: fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
@@ -505,6 +521,9 @@ func startEngineWith(t *testing.T, setup engineSetup) *running {
 			Routes: routes, Reader: readWith, Owner: owners.find,
 		})
 	}()
+	if setup.unattached {
+		return &running{ctx: ctx, directory: directory, attaches: attached, refreshed: refreshed, updates: updates, stop: stop}
+	}
 	var attach control.Attach
 	select {
 	case attach = <-attached:

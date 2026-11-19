@@ -127,8 +127,10 @@ type engine struct {
 	link    *helperLink
 	started time.Time
 
-	mu          sync.Mutex
-	ready       bool
+	mu    sync.Mutex
+	ready bool
+	// published says the proxy's state is written for the session being served.
+	published   bool
 	connections []string
 	domains     []string
 	skipped     int
@@ -293,17 +295,32 @@ func (s *sessionEngine) Serve(ctx context.Context, session *airuntime.ProxySessi
 			return
 		}
 		// From here a command on this machine can register a secret value it hands
-		// out with the proxy's leak protection. Without the state the tunnel works
-		// as before, and such a value isn't known to the proxy.
+		// out with the proxy's leak protection. Without the state such a value isn't
+		// known to the proxy, and nothing would remove it from what a tool sends
+		// its model. So the engine doesn't say it is ready, and says why instead.
 		if err := s.engine.publishProxy(endpoints.ProxyURL.Reveal()); err != nil {
-			s.engine.cfg.Logf("couldn't write the proxy's state, so secret values handed out on this machine aren't registered with leak protection: %v", err)
+			s.engine.setError(fmt.Errorf("couldn't write the proxy's state, so secret values handed out on this machine wouldn't be registered with leak protection: %w", err))
+			return
 		}
 		s.engine.serving(names)
 	}
 	s.inner.OnConnectionsChanged = s.connectionsChanged
-	// The state goes when the proxy stops serving this session, however that ends.
-	defer s.engine.withdrawProxy()
+	// What belongs to this session goes when the proxy stops serving it, however
+	// that ends.
+	defer s.engine.sessionStopped()
 	return s.inner.Serve(ctx, session)
+}
+
+// sessionStopped forgets a session the proxy no longer serves: the state a command
+// finds the proxy by, the router's way to the proxy with the capability it presents
+// there, and that the engine was ready. Kept, the capability would be presented to
+// whatever listened on the proxy's port next.
+func (e *engine) sessionStopped() {
+	e.withdrawProxy()
+	e.router.Withdraw()
+	e.mu.Lock()
+	e.ready, e.published = false, false
+	e.mu.Unlock()
 }
 
 // connectionsChanged follows a session whose Connections changed while it ran: a
@@ -325,7 +342,14 @@ func (s *sessionEngine) connectionsChanged(connections []aiproxy.ConnectionHosts
 	}
 	sort.Strings(names)
 	s.engine.router.SetRules(rules)
-	s.engine.serving(names)
+	// A session whose proxy state couldn't be written isn't one the engine is ready
+	// with, whatever its Connections become.
+	s.engine.mu.Lock()
+	published := s.engine.published
+	s.engine.mu.Unlock()
+	if published {
+		s.engine.serving(names)
+	}
 }
 
 // serving records which Connections the tunnel now serves, and sends the names to
