@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -494,5 +495,124 @@ func TestDescribeEngineProcess(t *testing.T) {
 		if description != test.description || ours != test.ours {
 			t.Errorf("%q: %q, %v", test.listing, description, ours)
 		}
+	}
+}
+
+// withTunnelLockWait shortens how long phase up and phase down wait for one another.
+func withTunnelLockWait(t *testing.T, wait time.Duration) {
+	t.Helper()
+	original := tunnelLockWait
+	tunnelLockWait = wait
+	t.Cleanup(func() { tunnelLockWait = original })
+}
+
+// Two runs of phase up at once start one engine between them. Each looks for an
+// engine before it starts one, and without a lock both find none: the second engine
+// would take the helper from the first every second, and the machine's routes with it.
+func TestTwoRunsOfUpStartOneEngine(t *testing.T) {
+	directory := withTunnelStateDirectory(t)
+	startFakeTunnelHelper(t, control.Status{})
+	pid, _ := standInEngine(t, "phase")
+	var mu sync.Mutex
+	launches := 0
+	original := launchTunnelEngine
+	launchTunnelEngine = func(directory, _ string, _ []string) (int, error) {
+		mu.Lock()
+		launches++
+		mu.Unlock()
+		// An engine takes a moment to start, and is on record only afterwards.
+		time.Sleep(300 * time.Millisecond)
+		return pid, os.WriteFile(tunnelEnginePIDPath(directory), []byte(strconv.Itoa(pid)), 0o600)
+	}
+	t.Cleanup(func() { launchTunnelEngine = original })
+
+	outputs := make([]bytes.Buffer, 2)
+	failures := make([]error, 2)
+	var done sync.WaitGroup
+	for run := range outputs {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			failures[run] = ensureTunnelEngine(&outputs[run], directory, "", nil)
+		}()
+	}
+	done.Wait()
+	said := outputs[0].String() + outputs[1].String()
+	if failures[0] != nil || failures[1] != nil || launches != 1 {
+		t.Fatalf("%d engines were started: %v, %v\n%s", launches, failures[0], failures[1], said)
+	}
+	if strings.Count(said, "Started the engine as you") != 1 || strings.Count(said, "The engine is already running (pid "+strconv.Itoa(pid)+")") != 1 {
+		t.Fatalf("the two runs said:\n%s", said)
+	}
+}
+
+// phase down waits its turn behind a phase up that is starting an engine: looking
+// before the engine is on record, it would find nothing to stop.
+func TestDownWaitsForAnUpThatIsStartingAnEngine(t *testing.T) {
+	directory := withTunnelStateDirectory(t)
+	fake := startFakeTunnelHelper(t, control.Status{Capturing: true})
+	unlock, err := lockTunnel(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan tunnelStop, 1)
+	go func() { finished <- stopTunnel(directory) }()
+	select {
+	case stopped := <-finished:
+		unlock()
+		t.Fatalf("phase down didn't wait for phase up: %+v", stopped)
+	case <-time.After(400 * time.Millisecond):
+	}
+	if fake.askedTo(control.OpDown) != 0 {
+		unlock()
+		t.Fatal("the helper was asked to step aside while phase up was still starting an engine")
+	}
+	unlock()
+	select {
+	case stopped := <-finished:
+		if !stopped.steppedAside || fake.askedTo(control.OpDown) != 1 {
+			t.Fatalf("stopping reported %+v", stopped)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("phase down never took its turn")
+	}
+}
+
+// Stepping aside is never refused. When the lock can't be had, phase down goes ahead
+// without it; phase up, which only adds to what runs, says to try again instead.
+func TestALockThatIsNeverGivenUp(t *testing.T) {
+	directory := withTunnelStateDirectory(t)
+	fake := startFakeTunnelHelper(t, control.Status{Capturing: true})
+	withTunnelLockWait(t, 200*time.Millisecond)
+	unlock, err := lockTunnel(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	if stopped := stopTunnel(directory); !stopped.steppedAside || fake.askedTo(control.OpDown) != 1 {
+		t.Fatalf("with the lock held by another, stopping reported %+v", stopped)
+	}
+
+	launched := false
+	original := launchTunnelEngine
+	launchTunnelEngine = func(string, string, []string) (int, error) { launched = true; return 0, nil }
+	t.Cleanup(func() { launchTunnelEngine = original })
+	var out bytes.Buffer
+	if err := ensureTunnelEngine(&out, directory, "", nil); !errors.Is(err, errTunnelBusy) || launched {
+		t.Fatalf("with the lock held by another, phase up returned %v (started an engine: %v)", err, launched)
+	}
+}
+
+// With no state directory there is nothing of phase up's to wait for, and phase down
+// still asks the helper to step aside. It makes no directory of its own.
+func TestDownNeedsNoStateDirectory(t *testing.T) {
+	directory := filepath.Join(withTunnelStateDirectory(t), "never-made")
+	fake := startFakeTunnelHelper(t, control.Status{Capturing: true})
+	if stopped := stopTunnel(directory); !stopped.steppedAside || fake.askedTo(control.OpDown) != 1 {
+		t.Fatalf("stopping reported %+v", stopped)
+	}
+	if _, err := os.Stat(directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("phase down made the state directory: %v", err)
 	}
 }

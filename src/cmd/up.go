@@ -104,23 +104,8 @@ func runUp(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintln(out, "\n🚇 Tunnel")
-	// Two engines would take the helper from each other every second, and the
-	// machine's routes with it.
-	if description, attached := otherEngineAttached(directory); attached {
-		return fmt.Errorf("%s is attached to the Phase helper, and isn't the engine phase up started. Run phase down first, then phase up again", description)
-	}
-	if pid, running := tunnelEnginePID(directory); running {
-		// A running engine keeps the routes it started with.
-		if current, err := engine.ReadStatus(directory); err == nil && !sameTunnelRoutes(current.Routes, routes) {
-			return errors.New("phase up is already running, and captures something else; run phase down first, then phase up again")
-		}
-		fmt.Fprintf(out, "   The engine is already running (pid %d).\n", pid)
-	} else {
-		pid, err := startTunnelEngine(directory, workflow, routes)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "   Started the engine as you (pid %d). It holds the credentials, and the helper never sees them.\n", pid)
+	if err := ensureTunnelEngine(out, directory, workflow, routes); err != nil {
+		return err
 	}
 	// From here phase up ends in one of two ways: Phase is capturing, and says so, or
 	// nothing is left running. An engine left to keep trying would start capturing
@@ -133,6 +118,67 @@ func runUp(cmd *cobra.Command, _ []string) error {
 	}
 	engineStatus, _ := engine.ReadStatus(directory)
 	printUpResult(out, status, engineStatus)
+	return nil
+}
+
+// tunnelLockWait is how long phase up and phase down wait for one another, and
+// launchTunnelEngine starts the engine. Tests replace both.
+var (
+	tunnelLockWait     = 30 * time.Second
+	launchTunnelEngine = startTunnelEngine
+)
+
+var errTunnelBusy = errors.New("another phase up or phase down is still at work on this machine; wait for it to finish, then run this again")
+
+// lockTunnel takes the one lock phase up and phase down share, waiting for whichever
+// of them holds it. Without it two runs of phase up each find no engine and start one,
+// and a phase down between a run's look for an engine and its record of the one it
+// started finds nothing to stop.
+func lockTunnel(directory string) (unlock func(), err error) {
+	path := filepath.Join(directory, "up.lock")
+	for deadline := time.Now().Add(tunnelLockWait); ; time.Sleep(50 * time.Millisecond) {
+		file, acquired, err := tryLockLeaseFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if acquired {
+			return func() { _ = unlockLeaseFile(file) }, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, errTunnelBusy
+		}
+	}
+}
+
+// ensureTunnelEngine starts the engine, unless one is running already. It holds the
+// lock from before it looks for an engine until the one it started is on record.
+func ensureTunnelEngine(out io.Writer, directory, workflow string, routes []string) error {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	unlock, err := lockTunnel(directory)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// Two engines would take the helper from each other every second, and the
+	// machine's routes with it.
+	if description, attached := otherEngineAttached(directory); attached {
+		return fmt.Errorf("%s is attached to the Phase helper, and isn't the engine phase up started. Run phase down first, then phase up again", description)
+	}
+	if pid, running := tunnelEnginePID(directory); running {
+		// A running engine keeps the routes it started with.
+		if current, err := engine.ReadStatus(directory); err == nil && !sameTunnelRoutes(current.Routes, routes) {
+			return errors.New("phase up is already running, and captures something else; run phase down first, then phase up again")
+		}
+		fmt.Fprintf(out, "   The engine is already running (pid %d).\n", pid)
+		return nil
+	}
+	pid, err := launchTunnelEngine(directory, workflow, routes)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "   Started the engine as you (pid %d). It holds the credentials, and the helper never sees them.\n", pid)
 	return nil
 }
 
@@ -406,6 +452,12 @@ type tunnelStop struct {
 // was started some other way. Only a process of this user's that is a phase binary
 // running the engine is stopped. Anything else is left alone and named.
 func stopTunnel(directory string) tunnelStop {
+	// It waits its turn behind a phase up that is starting an engine, so that the
+	// engine is on record by the time it is looked for. Stepping aside is never
+	// refused, though: when the lock can't be had, it goes ahead without it.
+	if unlock, err := lockTunnel(directory); err == nil {
+		defer unlock()
+	}
 	var stopped tunnelStop
 	attached := 0
 	if tunnelHelperSocket != "" {
