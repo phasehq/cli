@@ -661,7 +661,7 @@ func TestACommandOfAnotherLoginNeverReachesTheProxysStore(t *testing.T) {
 				t.Fatalf("what the provider received: %s", received.body)
 			}
 			events := daemon.distinctLeakEvents(t, 1)
-			if detail := events[0].Detail; detail["placeholders"] != "ph:secret" || detail["placeholderCount"] != float64(2) || detail["inventoryHits"] != float64(3) {
+			if detail := events[0].Detail; detail["placeholders"] != "ph:secret" || detail["placeholderCount"] != float64(1) || detail["inventoryHits"] != float64(3) {
 				t.Fatalf("the event: %+v", detail)
 			}
 			status, statusBody := rawStatus(t, daemon)
@@ -958,9 +958,10 @@ func TestStatusNeverConfirmsAnotherLoginsID(t *testing.T) {
 	}
 }
 
-// Every value of another login found is reported once, though each is
-// written ph:<type>: two values are two events, the same again is none.
-func TestEachWithheldValueIsReportedOnce(t *testing.T) {
+// Values held without an id are reported as one of their type, however many
+// there are: how many is how their owner filed them. The first found is an
+// event, another of the type is none, and a request with several counts one.
+func TestWithheldValuesOfATypeAreReportedAsOne(t *testing.T) {
 	store := newTestInventoryStore(t)
 	const second = "Hd6Fs1Gp0YaJw3Rk8Tn5Vb2Xq7Zc4Lm9"
 	asB := newStoredLeakRigAs(t, store, leakLoginB)
@@ -971,7 +972,7 @@ func TestEachWithheldValueIsReportedOnce(t *testing.T) {
 	}
 	asB.proxy.CloseHijacked()
 	asA := newStoredLeakRigAs(t, store, leakLoginA)
-	// A guest's value is withheld the same way, and is a third.
+	// A guest's value is withheld the same way, and is one of the type too.
 	if a := registerThroughControlAs(t, asA.proxy, otherTenantA, []leakguard.Value{{Type: "secret", ID: "guest-one", Value: leakSecretThree}}, phaseIDs(1)); a == nil || a.Added != 1 {
 		t.Fatal("the guest's registration")
 	}
@@ -982,33 +983,88 @@ func TestEachWithheldValueIsReportedOnce(t *testing.T) {
 		}
 	}
 	send("first " + leakSecretOne)
-	asA.distinctLeakEvents(t, 1)
+	events := asA.distinctLeakEvents(t, 1)
+	// Another of the type, a guest's, and the conversation so far: nothing new.
 	send("another " + second)
-	events := asA.distinctLeakEvents(t, 2)
 	send("a guest's " + leakSecretThree)
-	events = asA.distinctLeakEvents(t, 3)
-	// The conversation so far, sent again with every model request: nothing new.
 	send("first " + leakSecretOne + " another " + second + " a guest's " + leakSecretThree)
 	time.Sleep(50 * time.Millisecond)
-	if again := asA.leakEventsNow(); len(again) != 3 {
-		t.Fatalf("%d events after the same three values were sent again", len(again))
+	if again := asA.leakEventsNow(); len(again) != 1 {
+		t.Fatalf("%d events after three withheld values of one type were sent", len(again))
 	}
-	shipped, _ := json.Marshal(events)
-	for _, event := range events {
-		if event.Detail["placeholders"] != "ph:secret" || event.Detail["placeholderCount"] != float64(1) {
-			t.Fatalf("an event of a withheld value: %+v", event.Detail)
-		}
+	if detail := events[0].Detail; detail["placeholders"] != "ph:secret" || detail["placeholderCount"] != float64(1) {
+		t.Fatalf("an event of a withheld value: %+v", detail)
 	}
+	shipped, _ := json.Marshal(asA.leakEventsNow())
 	for _, id := range []string{"b-one", "b-two", "guest-one"} {
 		if bytes.Contains(shipped, []byte(id)) {
 			t.Fatalf("an event names %q", id)
 		}
 	}
-	// One request with all three counts three values under one placeholder.
+	// One request with all of them counts one placeholder, found three times.
 	fresh := newStoredLeakRigAs(t, store, leakLoginA)
 	postMessages(t, fresh.client(fresh.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(leakSecretOne+" "+second+" "+leakSecretOne), "")
-	if detail := fresh.distinctLeakEvents(t, 1)[0].Detail; detail["placeholders"] != "ph:secret" || detail["placeholderCount"] != float64(2) || detail["replacedCount"] != float64(2) || detail["inventoryHits"] != float64(3) {
+	if detail := fresh.distinctLeakEvents(t, 1)[0].Detail; detail["placeholders"] != "ph:secret" || detail["placeholderCount"] != float64(1) || detail["replacedCount"] != float64(1) || detail["inventoryHits"] != float64(3) {
 		t.Fatalf("one request with two withheld values: %+v", detail)
+	}
+}
+
+// What one login reads of another's stored values does not tell how the other
+// filed them: as one document, as its leaves one by one, under key names, or
+// both ways. The request sent and the event raised are the same to the byte.
+func TestAnEventDoesNotTellHowAnotherLoginFiledItsValues(t *testing.T) {
+	one, two, three := randomLeakValue(t, 40), randomLeakValue(t, 32), randomLeakValue(t, 28)
+	document := "user: admin\ntoken: " + one + "\npassword: " + two + "\napi_key: " + three + "\n"
+	content := "cat config\n" + document + "and again " + one + " then " + two + " then " + three + " piece " + one[4:36] + " short " + two[:31] + " end"
+	type seen struct{ body, event string }
+	views := map[string]seen{}
+	for name, values := range map[string][]leakguard.Value{
+		"one document":            {{Type: "secret", ID: "doc", Value: document}},
+		"three values":            {{Type: "secret", ID: "one", Value: one}, {Type: "secret", ID: "two", Value: two}, {Type: "secret", ID: "three", Value: three}},
+		"three values, key names": {{Type: "secret", ID: "ONE_KEY", Value: one, KeyName: true}, {Type: "secret", ID: "TWO_KEY", Value: two, KeyName: true}, {Type: "secret", ID: "THREE_KEY", Value: three, KeyName: true}},
+		"a document and values":   {{Type: "secret", ID: "doc", Value: document}, {Type: "secret", ID: "one", Value: one}, {Type: "secret", ID: "two", Value: two}},
+	} {
+		store := newTestInventoryStore(t)
+		asA := newStoredLeakRigAs(t, store, leakLoginA)
+		kinds := make([]string, len(values))
+		for i, value := range values {
+			kinds[i] = "phase_id"
+			if value.KeyName {
+				kinds[i] = "key_name"
+			}
+		}
+		if answer := registerThroughControl(t, asA.proxy, values, kinds); answer == nil || answer.Added != len(values) {
+			t.Fatalf("%s: A's registration: %+v", name, answer)
+		}
+		asA.proxy.CloseHijacked()
+		asB := newStoredLeakRigAs(t, store, leakLoginB)
+		postMessages(t, asB.client(asB.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody(content), "")
+		body := toolResult(t, asB.lastReceived().body)
+		detail, _ := json.Marshal(asB.distinctLeakEvents(t, 1)[0].Detail)
+		views[name] = seen{body, string(detail)}
+		if !strings.Contains(body, "ph:secret") || strings.Contains(body, "ph:secret:") || strings.Contains(body, one) || strings.Contains(body, two) || strings.Contains(body, three) {
+			t.Fatalf("%s: what B's proxy sent: %q", name, body)
+		}
+		for _, value := range values {
+			if strings.Contains(body, value.ID) || strings.Contains(string(detail), value.ID) {
+				t.Errorf("%s: B read an id of A: %s", name, value.ID)
+			}
+		}
+		// Another request with another of them raises nothing more, however filed.
+		postMessages(t, asB.client(asB.phaseRoots), "https://api.anthropic.com/v1/messages", anthropicBody("later "+three), "")
+		time.Sleep(50 * time.Millisecond)
+		if events := asB.leakEventsNow(); len(events) != 1 {
+			t.Errorf("%s: %d events after a later request with another value", name, len(events))
+		}
+	}
+	reference := views["one document"]
+	for name, view := range views {
+		if view.body != reference.body {
+			t.Errorf("the request differs between %q and one document:\n%s\n%s", name, view.body, reference.body)
+		}
+		if view.event != reference.event {
+			t.Errorf("the event differs between %q and one document:\n%s\n%s", name, view.event, reference.event)
+		}
 	}
 }
 

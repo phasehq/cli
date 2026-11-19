@@ -52,7 +52,8 @@
 // value is replaced only where a whole form of it stands (see Limits). Where
 // the same value is also held with its id, the id is written. Two withheld
 // values of one type share their placeholder; Finding.Withheld numbers them
-// apart for whoever counts what was found, and is never written anywhere.
+// apart and is never written anywhere. How many there are is how their owner
+// filed them, so what is told to the reader of a scan counts them as one.
 //
 // A client that does not say it is the daemon's own login (another login of
 // its tenant, another tenant's, or one that cannot say whose it is) is a

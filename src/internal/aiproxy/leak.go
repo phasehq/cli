@@ -614,9 +614,8 @@ func (g *leakGuard) eventPlaceholders(found []string) []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	written := make([]string, 0, len(found))
-	for _, one := range found {
-		placeholder := leakPlaceholder(one)
-		if _, named := g.keyNamed[placeholder]; named && one == placeholder {
+	for _, placeholder := range found {
+		if _, named := g.keyNamed[placeholder]; named {
 			placeholder = placeholder[:strings.LastIndexByte(placeholder, ':')]
 		}
 		if !slices.Contains(written, placeholder) {

@@ -380,8 +380,11 @@ a reboot still has its values replaced before anything registers them again:
   kubeconfig, an env file), or a URL's whole password or token. A fragment
   of it, a copy cut short, or single lines of a multi-line value are not replaced, so
   that no command learns from the proxy that a guessed piece belongs to a
-  value it cannot name. Each such value found is reported once, like any
-  other; an event names it `ph:<type>` and counts it.
+  value it cannot name. Such values are reported as one of their type: an
+  event names them `ph:<type>` and counts them once however many were found,
+  and a later request with another of the type raises no new event. How many
+  there are is how their owner filed them, as one document or as its values
+  one by one, which the reader is not told.
 - Counts are per login. `secretsKnown` counts a type and id once for each
   login of the tenant that registered it, so no count says whether another
   login holds an id, and it counts nothing a guest registered.
@@ -923,7 +926,7 @@ session unavailable. `detail` holds:
 | `inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` | counts; `signedFindings` is what was found in text the provider signed and left as it was |
 | `labels` | rule labels |
 | `placeholders` | the newly seen ones, comma-separated, cut to 512 characters. A placeholder registered as a key name is written `ph:<type>` with no id, once per type |
-| `placeholderCount` | the distinct placeholders of the request, key names included: a placeholder found many times counts once. Exact up to 4096 |
+| `placeholderCount` | the distinct placeholders of the request, key names included: a placeholder found many times counts once, and the values held without an id are one placeholder of their type. Exact up to 4096 |
 | `replacedCount` | how many of them were actually replaced in what went out; 0 in `observe` mode and for a header or a block |
 | `placeholdersCapped` | `true` when the request held more distinct placeholders than are counted (more than 4096, or so many findings that only the first 4096 were listed): the two counts are then a floor. Absent otherwise |
 | `severity` | `high` when the request held 5 or more distinct placeholders, or a Phase token, or was blocked; `medium` for 1 to 4; `low` when it held only alerts or findings in signed text. Not on `unread` and `bypass` events |

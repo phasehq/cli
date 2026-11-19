@@ -41,7 +41,8 @@ type Finding struct {
 	// string holding JSON adds '#' and the pointer inside it.
 	Path string `json:"path,omitempty"`
 	// Withheld numbers a value whose id is withheld, from 1, the same while the
-	// Index holds it: all that tells two such values of one type apart.
+	// Index holds it: all that tells two such values of one type apart, and
+	// nothing to count by in what the reader of the scan is told.
 	Withheld int `json:"-"`
 	// Loaded says the value was found only through entries added with
 	// AddLoaded: a store handed them over, and no client has added them since.

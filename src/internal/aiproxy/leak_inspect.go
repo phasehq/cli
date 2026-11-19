@@ -181,19 +181,11 @@ func (s *leakScan) addFinding(f censor.Finding, where string) {
 	}
 }
 
-// leakFound is what a finding is remembered and counted by: its placeholder
-// and, for a withheld value, its number among them. It is never written.
+// leakFound is what a finding is remembered and counted by: its placeholder.
+// Values held without an id are one of their type, however many were found:
+// how many there are is how their owner filed them, which the reader is not told.
 func leakFound(f censor.Finding) string {
-	if f.Withheld == 0 {
-		return f.Placeholder
-	}
-	return f.Placeholder + "\x00" + strconv.Itoa(f.Withheld)
-}
-
-// leakPlaceholder is the placeholder of what leakFound remembered.
-func leakPlaceholder(found string) string {
-	placeholder, _, _ := strings.Cut(found, "\x00")
-	return placeholder
+	return f.Placeholder
 }
 
 // keep adds a placeholder to one of the scan's lists unless the list holds it
