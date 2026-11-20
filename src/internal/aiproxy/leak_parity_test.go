@@ -21,7 +21,8 @@ func TestAFreshValueIsMatchedAsBeforeAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
+	// A Windows checkout may hold the file with CRLF line endings.
+	want := strings.Split(strings.TrimSuffix(strings.ReplaceAll(string(recorded), "\r\n", "\n"), "\n"), "\n")
 	events := 0
 	for _, line := range want {
 		if strings.HasPrefix(line, "event: ") {
