@@ -197,7 +197,9 @@ such a piece is too plain to count). That lasts until a command registers
 the value with that proxy again, as the next command that reads it does.
 Such a value is then held both ways until the proxy exits: one value to
 every count and one placeholder where it stands, its chunks counted for
-both, and a scan makes a pass for each of the two keys.
+both, and a scan makes a pass for each of the two keys. It is registered
+with this proxy now, by whichever of its entries it is found: where it
+cannot be replaced it stops the request, as below.
 
 The proxy is looked for through an ordered list of sources, and the first one
 that finds a proxy is used (`leakguard.AddSource` adds another):

@@ -42,8 +42,11 @@
 // are what it matches the value by while it runs (Index.AddLive): scheme 1
 // finds shorter pieces of hex digits than a scheme that may be stored (see
 // Limits), and its entries never leave the process. Both are one value to
-// every count, and where both find it one placeholder is written. A daemon
-// that keeps nothing has one key, its process's, and matches by scheme 1 alone.
+// every count, and where both find it one placeholder is written. What the
+// daemon loaded of a value that is registered with it again is told so
+// (Index.Registered) and is no longer a store's alone, whichever of the two
+// finds it. A daemon that keeps nothing has one key, its process's, and
+// matches by scheme 1 alone.
 //
 // Entries of another login than the one a scan is for, which that login's
 // own daemon took and kept, are added with Index.AddWithheld: the value is

@@ -201,10 +201,13 @@ type chunkRef struct {
 	idx  int32
 }
 
-// holding is how entries are held: see AddWithheld, AddLoaded, AddLive and
-// AddGuest.
+// holding is how entries are held: see AddWithheld, AddLoaded, AddLive,
+// Registered and AddGuest.
 type holding struct {
 	withheld, loaded bool
+	// again says only what the index holds of the entries is touched: it is
+	// marked as added again, and nothing is added.
+	again bool
 	// batch is the registration a guest's entries are of, nil for anyone else's.
 	batch *GuestBatch
 	// of is the principal that entries under a live key are counted as.
@@ -322,6 +325,15 @@ func (ix *Index) AddLive(live *Key, e *Entries, principal *Key) error {
 	return ix.add(live, e, holding{of: principal})
 }
 
+// Registered is AddKeyed for entries of a value a client has just registered
+// with the daemon another way (AddLive), where the index may hold them from a
+// store: the forms it holds of them are no longer a store's alone, and
+// nothing is added. Forms held withheld, another principal's, and a guest's
+// are not these entries' and stay as they are.
+func (ix *Index) Registered(key *Key, e *Entries) error {
+	return ix.add(key, e, holding{again: true})
+}
+
 // AddGuest is AddWithheld for entries built under a key that shares nothing
 // with the index's, its lookup key included: a scan makes a pass of its own.
 func (ix *Index) AddGuest(key *Key, e *Entries) error { return ix.NewGuestBatch().Add(key, e) }
@@ -409,7 +421,7 @@ func (ix *Index) add(key *Key, e *Entries, how holding) error {
 	if registered {
 		ix.cache.reset()
 	}
-	if len(fresh) == 0 {
+	if len(fresh) == 0 || how.again {
 		return nil
 	}
 	// Scheme 1 confirms with the lookup key, so its entries are counted with

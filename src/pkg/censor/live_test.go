@@ -1,6 +1,8 @@
 package censor
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -80,6 +82,91 @@ func TestLiveEntriesAreTheirPrincipalsBesideItsStoredOnes(t *testing.T) {
 	// Entries under the live key that are not live are a guest's, or refused.
 	if err := ix.AddKeyed(live, registered); err == nil || !strings.Contains(err.Error(), "key") {
 		t.Fatalf("entries under the live key were taken as a principal's own: %v", err)
+	}
+}
+
+// Entries a client shows the index again are no longer a store's alone, by
+// the forms the index holds of them and no others. Nothing is added, and what
+// the index holds of another value, of another principal's or of a guest's
+// stays as it was.
+func TestEntriesRegisteredAgainAreNoLongerAStoresAlone(t *testing.T) {
+	home, another := twoPrincipals(t)
+	guest := newKey(t)
+	ix, err := NewIndex(home, IndexOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, kept, theirs, guests := strongValue(t, 40), strongValue(t, 40), strongValue(t, 40), strongValue(t, 40)
+	made := func(key *Key, scheme int, id, value string) *Entries {
+		t.Helper()
+		e, err := IndexValueScheme(key, scheme, "secret", id, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	own, stays := made(home, EntriesVersion, "mine", mine), made(home, EntriesVersion, "kept", kept)
+	other, visitor := made(another, EntriesVersion, "theirs", theirs), made(guest, EntriesVersion, "guests", guests)
+	if ix.AddLoaded(home, own, false) != nil || ix.AddLoaded(home, stays, false) != nil || ix.AddLoaded(another, other, true) != nil || ix.AddGuest(guest, visitor) != nil {
+		t.Fatal("adding")
+	}
+	text := mine + " " + kept + " " + theirs + " " + guests
+	body, _ := json.Marshal(map[string]string{"content": strings.Repeat("padding ", 64) + text})
+	// By Find, and by a scan that keeps what it found of a string.
+	loaded := func() string {
+		t.Helper()
+		var found, scanned []bool
+		for _, match := range ix.Find([]byte(text)) {
+			found = append(found, match.Loaded)
+		}
+		_, report, err := ix.RewriteJSON(body, ScanOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, finding := range report.Findings {
+			scanned = append(scanned, finding.Loaded)
+		}
+		if fmt.Sprint(found) != fmt.Sprint(scanned) {
+			t.Fatalf("Find says %v and a scan of a body %v", found, scanned)
+		}
+		return fmt.Sprint(found)
+	}
+	if got := loaded(); got != "[true true true false]" {
+		t.Fatalf("what a store handed over: %s", got)
+	}
+	before := ix.Stats()
+	// What changes nothing: entries the index does not hold, under an id it
+	// does not hold them under, in a scheme it does not hold them in, and
+	// another principal's, shown as theirs or as the index's own.
+	for name, shown := range map[string]error{
+		"a value the index does not hold":       ix.Registered(home, made(home, EntriesVersion, "new", strongValue(t, 40))),
+		"a held value under another id":         ix.Registered(home, made(home, EntriesVersion, "another-id", mine)),
+		"a held value in another scheme":        ix.Registered(home, made(home, 1, "mine", mine)),
+		"another principal's, under its key":    ix.Registered(another, other),
+		"another principal's value, as its own": ix.Registered(home, made(home, EntriesVersion, "theirs", theirs)),
+	} {
+		if shown != nil {
+			t.Fatalf("%s: %v", name, shown)
+		}
+		if got := loaded(); got != "[true true true false]" || ix.Stats() != before {
+			t.Fatalf("%s changed the index: %s, %+v then %+v", name, got, before, ix.Stats())
+		}
+	}
+	if ix.Registered(guest, visitor) == nil || ix.Registered(newKey(t), own) == nil {
+		t.Fatal("entries under a key that is not the index's were taken as registered again")
+	}
+	if out, _ := ix.Redact([]byte(mine + " " + theirs)); string(out) != "ph:secret:mine ph:secret" {
+		t.Fatalf("what is written changed: %q", out)
+	}
+	// Its own entries, as the index holds them: that value and no other.
+	if err := ix.Registered(home, own); err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded(); got != "[false true true false]" || ix.Stats() != before {
+		t.Fatalf("after its own entries were shown again: %s, %+v then %+v", got, before, ix.Stats())
+	}
+	if err := ix.Registered(home, stays); err != nil || loaded() != "[false false true false]" || ix.Stats() != before {
+		t.Fatalf("after the other value's entries were shown again: %s %v", loaded(), err)
 	}
 }
 

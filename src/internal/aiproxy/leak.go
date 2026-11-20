@@ -520,7 +520,7 @@ func (g *leakGuard) addAt(place leakPlace, entries, live []*censor.Entries, keyN
 			}
 		case len(live) > 0:
 			// Matched by what was made for this process; kept by the other.
-			if protected, err = g.addLive(live[i], named); err == nil && protected && entry.Protected() {
+			if protected, err = g.addLive(live[i], entry, named); err == nil && protected && entry.Protected() {
 				stored = append(stored, phaseproxy.StoredEntries{Entries: entry, KeyNamed: named, Principal: g.principal})
 			}
 		default:
@@ -569,11 +569,16 @@ func (g *leakGuard) addOne(principal phaseproxy.InventoryPrincipal, entry *censo
 }
 
 // addLive indexes one entry a command of the session's own login made under
-// the process's live key: the login's own, by its id, pieces and all.
-func (g *leakGuard) addLive(entry *censor.Entries, keyNamed bool) (protected bool, err error) {
+// the process's live key: the login's own, by its id, pieces and all. stored
+// is the same value's entry for the store. What the index loaded of it is
+// registered with this proxy now, and stops a request as the live entry does.
+func (g *leakGuard) addLive(entry, stored *censor.Entries, keyNamed bool) (protected bool, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.named(entry, keyNamed, g.index.AddLive(g.live, entry, g.principal.Key()))
+	if err = g.index.AddLive(g.live, entry, g.principal.Key()); err == nil {
+		err = g.index.Registered(g.principal.Key(), stored)
+	}
+	return g.named(entry, keyNamed, err)
 }
 
 // named records what is known of the id of an entry the index was given, and

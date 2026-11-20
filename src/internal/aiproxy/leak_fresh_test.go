@@ -2,8 +2,12 @@ package aiproxy
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/phasehq/cli/internal/leakguard"
@@ -269,5 +273,95 @@ func TestLiveEntriesAreTakenFromTheSessionsOwnLoginAlone(t *testing.T) {
 	}
 	if sent := sentFor(t, next, "x "+freshHex32[:23]+" y"); sent != "x ph:secret:hex32 y" {
 		t.Fatalf("a piece of a value registered with the next proxy: %q", sent)
+	}
+}
+
+// A value a proxy loaded from the store, and a command then registered with
+// it again, stops a request wherever a value that was only registered does:
+// whole, in pieces and encoded. The stored scheme finds some of those where
+// the live one does not, and what it finds is registered too. A value the
+// store holds that was not registered again is still only reported.
+func TestAValueRegisteredAgainStopsARequestAsOneOnlyRegisteredDoes(t *testing.T) {
+	values := append([]leakguard.Value(nil), freshValues...)
+	for i := 0; i < 8; i++ {
+		values = append(values, leakguard.Value{Type: "secret", ID: fmt.Sprintf("token-%d", i), Value: randomLeakValue(t, 40)})
+	}
+	kept := leakguard.Value{Type: "secret", ID: "kept", Value: randomLeakValue(t, 40)}
+	store := newTestInventoryStore(t)
+	first := newStoredLeakRigAs(t, store, leakLoginA)
+	if result := registerWithClient(t, first, leakLoginA, append([]leakguard.Value{kept}, values...)); result.Added != len(values)+1 {
+		t.Fatalf("the first registration: %+v", result)
+	}
+	first.proxy.CloseHijacked()
+	again := newStoredLeakRigAs(t, store, leakLoginA)
+	if result := registerWithClient(t, again, leakLoginA, values); result.Added != len(values) {
+		t.Fatalf("registering again: %+v", result)
+	}
+	only := newStoredLeakRigAs(t, newTestInventoryStore(t), leakLoginA)
+	if result := registerWithClient(t, only, leakLoginA, values); result.Added != len(values) {
+		t.Fatalf("registering with a proxy that loaded nothing: %+v", result)
+	}
+	// What a proxy's index says of a URL: a value is in it, and one that stops it.
+	says := func(rig *leakRig, query string) (found, stops bool) {
+		for _, match := range rig.guard.index.Find([]byte("/v1/messages?k=" + query)) {
+			found = found || match.Kind == "inventory"
+			stops = stops || (match.Kind == "inventory" && !match.Loaded)
+		}
+		return found, stops
+	}
+	status := func(rig *leakRig, query string) int {
+		t.Helper()
+		return postMessages(t, rig.client(rig.phaseRoots), "https://api.anthropic.com/v1/messages?k="+query, anthropicBody("nothing"), "").StatusCode
+	}
+	// A value whole, cut and encoded, and its hex from every start, 48
+	// characters and longer.
+	arrangements := func(value string) []string {
+		inHex := hex.EncodeToString([]byte(value))
+		out := []string{value, value[1:], value[:len(value)-1], value[4:30], inHex, strings.ToUpper(inHex),
+			url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(value))), url.QueryEscape(base64.StdEncoding.EncodeToString([]byte("x:" + value)))}
+		for from := 0; from+48 <= len(inHex); from++ {
+			out = append(out, inHex[from:min(len(inHex), from+48+(from*7)%40)])
+		}
+		return out
+	}
+	stopped, sent := 0, 0
+	for _, value := range values {
+		for _, query := range arrangements(value.Value) {
+			if _, stops := says(only, query); !stops {
+				continue
+			}
+			stopped++
+			if _, stops := says(again, query); !stops {
+				t.Errorf("%s as %q stops a request at a proxy it was only registered with, and not at one that loaded it first", value.ID, query)
+				continue
+			}
+			// Every sixth of them as a request.
+			if stopped%6 != 0 {
+				continue
+			}
+			sent++
+			if at, here := status(only, query), status(again, query); at != http.StatusForbidden || here != http.StatusForbidden {
+				t.Errorf("%s as %q in a URL: HTTP %d where it was only registered, HTTP %d where it was loaded first", value.ID, query, at, here)
+			}
+		}
+	}
+	if stopped < 20*len(values) || sent < 3*len(values) {
+		t.Fatalf("%d arrangements stop a request and %d were sent: too few to say anything", stopped, sent)
+	}
+	// The value nobody registered again: found, reported, and never a stop.
+	for _, query := range arrangements(kept.Value) {
+		if _, stops := says(again, query); stops {
+			t.Errorf("a value known only from the store stops a request as %q", query)
+		}
+	}
+	if found, _ := says(again, kept.Value); !found || status(again, kept.Value) != http.StatusOK {
+		t.Fatal("a value known only from the store is not found in a URL, or stopped the request")
+	}
+	if found, _ := says(only, kept.Value); found {
+		t.Fatal("a proxy that loaded nothing knows a value it was never given")
+	}
+	// Nothing was added for it: one value each, as loaded.
+	if status, _ := rawStatus(t, again); status.SecretsKnown != len(values)+1 || status.Inventory.Loaded != len(values)+1 {
+		t.Fatalf("status once registered again: %+v %+v", status, status.Inventory)
 	}
 }
