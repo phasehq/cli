@@ -56,7 +56,9 @@ func TestTheFindingsCapKeepsARegisteredValueBehindALoadedOne(t *testing.T) {
 // as it is when the value before it is unknown or held with its id.
 func TestAPlaceholderWithNoIDHidesNoTokenAfterAColon(t *testing.T) {
 	home, another := twoPrincipals(t)
-	theirs, mine := randomString(t, alnum, 24), randomString(t, alnum, 24)
+	// Fixed, so that neither ends in a word the rules take for a name: a
+	// name before the colon makes all that follows it that name's value.
+	const theirs, mine = "Zx9Qv7Lm3Rt5Yb1Nc8Hf2Jd6", "Wq4Gz8Vn2Xb6Mh0Lr5Fy9Cj3"
 	token := "gh" + "p_" + randomString(t, alnum, 36)
 	keyID := "AKIA" + randomString(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16)
 	indexes := map[string]*Index{}

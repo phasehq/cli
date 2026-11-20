@@ -16,7 +16,8 @@ func TestLiveEntriesAreTheirPrincipalsBesideItsStoredOnes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hexKey := randomString(t, lowerHex, 64)
+	// Fixed: one hex chunk in five is too plain to find a piece by.
+	const hexKey = "3b7e1a9c5d2f4e6081a2b3c4d5e6f70812345678c0ffee11deadbeef01234567"
 	// A piece no 24-byte chunk of the value lies whole in.
 	piece := hexKey[3:40]
 	stored, err := IndexValue(home, "secret", "key-id", hexKey)
