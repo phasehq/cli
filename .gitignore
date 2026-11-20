@@ -1,6 +1,7 @@
 # Go build output
 bin/
 dist/
+/src/phase
 
 # Go module
 vendor/

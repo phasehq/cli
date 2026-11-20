@@ -2,9 +2,23 @@ package ai
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 
 	"github.com/phasehq/cli/pkg/config"
 )
+
+// agentLogin is set when this process acts with an Agent token. An Agent is
+// the AI tool by definition, so its output is masked whether or not a harness
+// was detected.
+var agentLogin atomic.Bool
+
+// SetAgentLogin records whether this process acts with an Agent token.
+func SetAgentLogin(active bool) { agentLogin.Store(active) }
+
+// AgentLogin reports whether this process acts with an Agent token.
+func AgentLogin() bool { return agentLogin.Load() }
 
 // IsAIAgent returns true if the CLI is being invoked by a known AI coding agent.
 // WARNING: This is not a realiable way to detect if an AI is calling the CLI. Certain AI agents like VSCode don't seem to be wrapping. Inside threats could easily bypass this by stripping execution env var configs.
@@ -47,28 +61,67 @@ func DetectAIAgent() string {
 	return ""
 }
 
+// DetectAIAgentCommand identifies a supported Agent harness from the child
+// executable launched by `phase ai run`. The explicit child wins over ambient
+// detection because users commonly start Phase from an ordinary terminal.
+func DetectAIAgentCommand(command []string) string {
+	if detected := DetectAIAgentExecutable(command); detected != "" {
+		return detected
+	}
+	return DetectAIAgent()
+}
+
+// DetectAIAgentExecutable identifies only the explicitly launched executable.
+// Callers that mutate harness arguments must use this stricter form so an
+// ambient Agent marker never causes flags to be added to an unrelated child.
+func DetectAIAgentExecutable(command []string) string {
+	if len(command) > 0 {
+		executable := strings.ReplaceAll(strings.TrimSpace(command[0]), `\`, "/")
+		name := strings.ToLower(filepath.Base(executable))
+		name = strings.TrimSuffix(name, ".exe")
+		switch name {
+		case "claude", "claude-code":
+			return "claude-code"
+		case "cursor", "cursor-agent":
+			return "cursor"
+		case "codex":
+			return "codex"
+		case "opencode":
+			return "opencode"
+		case "goose":
+			return "goose"
+		case "amp":
+			return "amp"
+		}
+	}
+	return ""
+}
+
 // ShouldRedact returns whether a secret of the given type should have its value
-// redacted from CLI output. Requires both AI agent detection AND ai.json config.
+// redacted from CLI output. Requires both AI agent detection AND an enabled
+// ai.json config.
 //
 // Rules:
-//   - sealed: ALWAYS redacted when AI detected + ai.json exists
-//   - secret: redacted when ai.json maskSecretValues is true
-//   - config: NEVER redacted
-//   - no ai.json: no redaction (AI feature not enabled)
+//   - sealed and secret: redacted when AI detected + AI mode enabled
+//   - config: never redacted
+//   - no ai.json or AI mode disabled: no redaction
+//   - an ai.json that exists but cannot be read: sealed and secret redacted
+//   - an Agent login: everything but type config always redacted, so a type
+//     this build does not know is never shown
 func ShouldRedact(secretType string) bool {
+	if AgentLogin() {
+		return !strings.EqualFold(strings.TrimSpace(secretType), "config")
+	}
 	if !IsAIAgent() {
 		return false
 	}
 	cfg := config.LoadAIConfig()
 	if cfg == nil {
+		if _, err := os.Stat(config.AIConfigPath); err != nil {
+			return false
+		}
+	} else if !cfg.Enabled {
 		return false
 	}
-	switch secretType {
-	case "sealed":
-		return true
-	case "secret":
-		return cfg.MaskSecretValues
-	default:
-		return false
-	}
+	return secretType == "sealed" || secretType == "secret"
 }

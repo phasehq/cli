@@ -1,0 +1,10 @@
+{
+  "kind": "access_change",
+  "title": "Create, update and delete secrets in orders-service",
+  "action": {
+    "type": "agent_grant.allow",
+    "version": 1,
+    "connectionId": "c0a80101-0000-4000-8000-0000000000c1",
+    "allow": {"classes": ["create", "update", "delete"]}
+  }
+}

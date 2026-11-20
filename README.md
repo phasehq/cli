@@ -37,9 +37,13 @@ Commands:
   users switch                      🪄 Switch between Phase users, orgs and hosts
   users logout                      🏃 Logout from phase-cli
   users keyring                     🔐 Display information about the Phase keyring
-  ai enable                         🪄 Enable AI integrations and configure secret visibility
-  ai disable                        🚫 Disable AI integrations and remove skill docs
+  ai enable                         🪄 Enable the local Phase AI credential proxy
+  ai disable                        🚫 Disable AI integrations
+  ai status                         📡 Show Phase AI setup and proxy health
   ai skill                          📄 Print the Phase AI skill document
+  ai guide                          📖 Print a Phase AI guide for Agents
+  ai run                            🚀 Launch an AI Agent behind the Phase AI credential proxy
+  ai exec                           ⚡ Execute one command behind a transient Phase AI credential proxy
   console                           🖥️ Open the Phase Console in your browser
   docs                              📖 Open the Phase CLI Docs in your browser
   completion                        ⌨️ Generate the autocompletion script for the specified shell
@@ -51,8 +55,8 @@ Flags:
 
 ## Features
 
-- **End-to-end encryption** — secrets are encrypted client-side before leaving your machine
-- **Secret types** — `config` (non-sensitive), `secret` (sensitive), and `sealed` (write-only) with enforced visibility rules
+- **End-to-end encryption** — App secrets in E2E mode are encrypted client-side before leaving your machine
+- **Secret types** — `config` (non-sensitive), `secret` (sensitive), and `sealed` (write-only) with enforced visibility rules; when an AI tool runs the CLI with Phase AI enabled, `secret` and `sealed` values are hidden
 - **`phase run`** — inject secrets as environment variables into any command without code changes
 - **`phase shell`** — launch a sub-shell (bash, zsh, fish, etc.) with secrets preloaded
 - **Dynamic secrets** — generate short-lived credentials (e.g. AWS IAM) with automatic lease management (generate, renew, revoke)
@@ -62,9 +66,9 @@ Flags:
 - **Path-based organisation** — organise secrets in hierarchical paths for monorepos and microservices
 - **Tagging** — tag secrets and filter operations by tag
 - **Random secret generation** — generate hex, alphanumeric, base64, base64url, 128-bit, or 256-bit keys on create or update
-- **AI agent integration** — skill-based integration with Claude Code, Cursor, VS Code Copilot, Codex, and OpenCode with automatic value redaction and safety guardrails
-- **Multiple auth methods** — web-based login, personal access tokens, service account tokens, and AWS IAM identity auth
-- **Multi-user & multi-org** — switch between Phase accounts, orgs, and self-hosted instances
+- **AI Agent proxy** — workflow-scoped third-party Integration credentials for HTTP, PostgreSQL, and AWS without exposing live material
+- **Multiple auth methods** — browser login, personal access tokens, service account tokens, Agent tokens, and AWS IAM identity auth
+- **Multi-user & multi-org** — switch between Phase accounts, orgs and self-hosted instances
 - **OS keyring integration** — credentials stored in macOS Keychain, GNOME Keyring, or Windows Credential Manager
 - **Multiple environments** — dev, staging, production, and custom environments with per-project defaults via `phase init`
 
@@ -125,15 +129,30 @@ phase run 'go run main.go'
 phase run --env production 'python manage.py runserver'
 ```
 
-### AI integration
+## AI Agent proxy
 
-Enable AI agent support (installs a skill doc for your AI coding tool):
+Phase AI gives coding agents (Claude Code, Cursor, Codex, OpenCode, VS Code Copilot) workflow-scoped access to third-party services (HTTP APIs, AWS, PostgreSQL) without ever handing them a live credential. The agent's process receives decoys; a local proxy on `127.0.0.1:9543` (PostgreSQL adapter on `9544`) swaps them for the real credential on the way out, enforces the Connections approved in the Phase Console, and blocks calls that would mint new credentials.
 
 ```bash
-phase ai enable
+phase ai enable --harness claude-code   # install the hook/plugin and skill for one harness; repeat for others
+phase ai status                          # setup, proxy health, Connections, CA expiry
+phase ai disable
 ```
 
-This installs the Phase skill to your chosen AI tool (Claude Code, Cursor, VS Code Copilot, Codex, or OpenCode) and configures secret visibility. Sealed secrets are never revealed to AI agents regardless of settings.
+- **Claude Code and OpenCode** get the Phase environment automatically: provider CLIs just work while the proxy runs, and fall back to failing on the decoy (never to ambient credentials) when it is down.
+- **Cursor and Codex** run Phase-managed commands explicitly with `phase ai exec -- <command>` (`--connection <id>` picks one of several identities for a service); `phase ai run -- <agent>` launches a harness inside the environment.
+- One short skill, `phase-cli`, is installed per harness for both Connections and Phase app secrets; it replaces the application-secrets skill earlier releases installed under the same name. Agents read the detail on demand with `phase ai guide [topic]`, reach the proxy's control API at `http://phase.invalid`, and can request new Connections, which a human approves in the Console.
+
+**Leak protection.** Inside a Phase AI session, every secret value the CLI hands out (`phase secrets export`, `get`, `list --show`, `phase run`, `phase shell`, dynamic secret leases) is registered with the proxy as keyed hashes, never as plaintext, and the proxy replaces it with a `ph:<type>:<id>` placeholder in the requests AI tools send to their model providers; Phase tokens are replaced too, and other well-known token formats in the requests that carry the conversation. A command in a shell that does not load the Phase environment registers with the proxy the harness hooks keep running, when one runs. A value in a URL or in a binary body or message blocks the request instead; one in a header is only reported, since the harness's own headers may carry a registered value on every request. Cursor's traffic is protobuf, in which no length may change: there a value is overwritten where it sits, by its placeholder padded with `*` to the value's length (`ph:secret:<id>*****`), or cut to it when the value is the shorter. Text the provider signed or encrypted (thinking blocks, `encrypted_content`) is never changed, only reported. `PHASE_AI_LEAK_PROTECTION` in the proxy's environment sets the mode: `censor` (default), `observe` (report only) or `off`; `phase ai status` shows it. The limits, in plain words:
+
+- Only traffic that already passes through the Phase AI proxy is covered: everything under `phase ai run`, and the shell commands of harnesses that load the Phase environment. A harness's own model traffic outside `phase ai run` is not read yet.
+- Only the model hosts of known harnesses are read: `api.anthropic.com`, `chatgpt.com/backend-api/`, `api.openai.com`, `openrouter.ai`, `opencode.ai`, and `cursor.sh` with every name under it. Every one of these hosts is read whichever harness the session was started for, so a harness started from another harness's shell is covered too.
+- Cursor's command-line agent (`cursor-agent`) is read: its calls to `api2.cursor.sh`, and the stream of its session, which goes over HTTP/2 to a host named for the session's region. In the Cursor desktop app some processes refuse the proxy's certificate. After two refusals in a row the host they refused is passed through unread for a while, for every Cursor process, and that is reported: a `bypass` event in the Console, and the host under `not inspected` with `tls_refused` in `phase ai status`. Secrets sent there in that time reach Cursor.
+- OpenCode's hosted models (`opencode.ai`) answer only OpenCode's own TLS, so for that host the proxy re-sends what it has read over a connection that opens with a copy of the TLS hello OpenCode sent; when OpenCode offers to resume an earlier TLS session, the copy is of its hello without the session. A connection it cannot open that way (the service picks HTTP/2, the proxy's own handshake with the service fails, or the hello says early data follows) is passed through unread and reported as an `unread` event with the reason.
+- A part of a secret is only certain to be caught when it is at least 23 characters long; a value under 12 characters, or with little variety, is not protected at all (the count shows in `phase ai status`).
+- Responses are not inspected, and a value transformed in an unusual way (reversed, split, encrypted) is not found. It is protection against accidents, not against a tool that sets out to get a value past it.
+
+`phase ai enable` creates a per-installation CA (valid 90 days, renewed automatically) and offers to trust it for the current user; it never changes system-wide trust or requires sudo. Command-line tools and SDKs trust the CA through the proxy environment either way; the user trust store matters for browsers and for Go programs on macOS and Windows. On Linux the offer needs NSS certutil (`libnss3-tools` on Debian/Ubuntu, `nss-tools` on Fedora/RHEL/Alpine, `nss` on Arch, `mozilla-nss-tools` on openSUSE) and is skipped with a hint when it is missing. On a machine with no system keystore the CA key is kept in memory only: each proxy start creates a new CA, and `phase ai enable` creates none and offers no trust.
 
 ## Development
 
@@ -143,18 +162,16 @@ This installs the Phase skill to your chosen AI tool (Claude Code, Cursor, VS Co
 
 ### Project structure
 
-```
+```text
 src/
 ├── main.go          # Entrypoint
 ├── cmd/             # Cobra command definitions
+├── internal/        # Agent API, runtime, and proxy internals
 ├── pkg/
-│   ├── ai/          # AI agent detection, skill doc, redaction
-│   ├── config/      # Config file handling (~/.phase/, .phase.json)
-│   ├── display/     # Output formatting (tree view, tables)
-│   ├── errors/      # Error types
+│   ├── ai/          # Agent detection and embedded skill
+│   ├── config/      # Config file handling
 │   ├── keyring/     # OS keyring integration
-│   ├── phase/       # Phase client helpers (auth, init)
-│   ├── util/        # Misc utilities (color, spinner, browser)
+│   ├── proxy/       # CA, environment, routing, and injection helpers
 │   └── version/     # Version constant
 └── go.mod
 ```

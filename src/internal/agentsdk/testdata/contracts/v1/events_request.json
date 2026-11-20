@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "batchId": "batch-01J00000000000000000000000",
+  "events": [
+    {
+      "eventId": "event-01J00000000000000000000000",
+      "createdAt": "2026-07-12T09:01:02.123Z",
+      "grantId": "grant-aws",
+      "eventType": "request",
+      "protocol": "http",
+      "method": "GET",
+      "host": "sts.amazonaws.com",
+      "port": 443,
+      "path": "/",
+      "provider": "aws",
+      "statusCode": 200,
+      "proxyDecision": "allow",
+      "outcome": "ok",
+      "latencyMs": 42,
+      "credentialAction": "aws_sigv4",
+      "bytesIn": 128,
+      "bytesOut": 512,
+      "reason": "matched_connection_route",
+      "detail": {}
+    }
+  ]
+}

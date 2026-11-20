@@ -1,0 +1,1364 @@
+package aiproxy
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha1" // #nosec G505 -- required by RFC 6455 for Sec-WebSocket-Accept.
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/phasehq/cli/internal/agentapi"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
+	"golang.org/x/net/http2"
+)
+
+type httpProxy struct {
+	state *runtimeState
+	ca    interface {
+		CertificateForHost(string) (*tls.Certificate, error)
+	}
+	transport        http.RoundTripper
+	unboundTransport http.RoundTripper
+	dial             func(context.Context, string, string) (net.Conn, error)
+	unboundDial      func(context.Context, string, string) (net.Conn, error)
+	lockdown         bool
+	events           *eventBuffer
+	manifest         *manifestHandler
+	control          *controlHandler
+	// leak is the process's leak protection; nil leaves model traffic alone.
+	leak *leakGuard
+	// tool is the one AI tool this proxy serves, in the leak protection
+	// table's ids, when the proxy was started for one; empty otherwise. It
+	// names the proxy's own clients in events and decides nothing else.
+	tool string
+	// flows holds what capture layers in this process said about connections
+	// that are about to send a CONNECT; nil when there are none.
+	flows *flowNotes
+	// observe, when set, is told what leak protection did to each body and
+	// each message it read that is text or was framed as text, and of each
+	// connection it did not read. It is handed request content, so only a
+	// test harness that measures leak protection sets it; nil costs one check.
+	observe func(leakObservation)
+	// mirrorHelloWait is how long a client may take to send its TLS hello to a
+	// host read for leak protection; zero means mirrorHelloTimeout.
+	mirrorHelloWait time.Duration
+	// unreadRepeat is how often the event of a connection passed through
+	// unread is offered again while the connection stays open; zero means a
+	// quarter of unreadPeriod. How often it is sent is limited by unreadPeriod
+	// whatever this is.
+	unreadRepeat time.Duration
+	// clock is the time source for expiry checks; nil means time.Now.
+	clock func() time.Time
+	// lifecycle ends with the engine run. Requests read off a hijacked CONNECT
+	// tunnel have no context of their own, so they borrow this one and their
+	// upstream round trips stop when the proxy does.
+	lifecycle context.Context
+	mu        sync.Mutex
+	hijacked  map[net.Conn]struct{}
+	wg        sync.WaitGroup
+	// unaltered sends the requests of hosts whose clients may speak HTTP/2
+	// (unalteredTransport); unalteredOwn is its connections, when they are
+	// the proxy's own to close.
+	unalteredOnce sync.Once
+	unaltered     http.RoundTripper
+	unalteredOwn  *http.Transport
+}
+
+type requestFailure struct {
+	status   int
+	code     string
+	message  string
+	decision string
+	reason   string
+	binding  *binding
+	// eventID is the credential-free ID of the event recorded for this
+	// request, returned to the client so a human can find it in the Console.
+	eventID string
+	// details are added to the error envelope's details: what the access
+	// policy decided, and a request the Agent can send to get past it.
+	details map[string]any
+}
+
+// eventIDHeader carries the proxy's per-request event ID back to the client.
+// It contains no credential material and matches the event the proxy reports
+// to the Console, so a CLI invocation can be correlated with its upstream
+// forwarding, decision, and completion.
+const eventIDHeader = "X-Phase-Event-Id"
+
+type tunnelAuthentication struct {
+	connectionID string
+	// flow says how the tunnel's connection reached the proxy and whose it
+	// is. A tunnel's flow is read only on the hosts listed for its tool.
+	flow FlowContext
+	// upstream, when set, sends every request of the tunnel. The tunnel is to
+	// a host that accepts only its own client's TLS, and these are connections
+	// opened with a copy of the hello the client opened the tunnel with.
+	upstream http.RoundTripper
+	// unbound, when set, sends the tunnel's requests that no Connection
+	// covers. The tunnel is to a host whose clients may speak HTTP/2, and
+	// this adds nothing of its own to what they send.
+	unbound http.RoundTripper
+}
+type selectedConnectionContextKey struct{}
+
+func selectedConnection(req *http.Request) string {
+	value, _ := req.Context().Value(selectedConnectionContextKey{}).(string)
+	return value
+}
+
+const awsSSMTokenCredentialAction = "aws_ssm_token"
+
+type processedResponse struct {
+	response *http.Response
+	event    agentEvent
+	failure  *requestFailure
+	snapshot protocolBindingSnapshot
+}
+
+type bufferedReadWriteCloser struct {
+	io.Reader
+	io.Writer
+	io.Closer
+}
+
+func (e *requestFailure) Error() string { return e.message }
+
+func (p *httpProxy) now() time.Time {
+	if p.clock != nil {
+		return p.clock()
+	}
+	return time.Now()
+}
+
+func (p *httpProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// Whose connection a CONNECT is comes from the capture layer that noted
+	// it, or from the proxy itself; never from anything the request says. The
+	// note is used up here, before anything can refuse the request: one left
+	// behind by a refused CONNECT would name the next connection from the
+	// same address and port.
+	var flow FlowContext
+	if req.Method == http.MethodConnect {
+		flow = p.connectFlow(req)
+	}
+	if !p.authenticateProxyRequest(w, req) {
+		return
+	}
+	if req != nil && req.URL != nil && req.URL.IsAbs() && strings.EqualFold(req.URL.Hostname(), ManifestHost) {
+		if p.manifest != nil && p.manifest.matchesManifest(req) {
+			p.manifest.ServeManifestHTTP(w, req)
+			return
+		}
+		if p.control != nil && strings.HasPrefix(req.URL.Path, "/v1/") {
+			p.control.ServeProxyHTTP(w, req)
+			return
+		}
+		writeProxyError(w, &requestFailure{status: http.StatusNotFound, code: "agent_manifest_route_not_found", message: "The Phase Agent proxy route was not found."})
+		return
+	}
+	if req.Method == http.MethodConnect {
+		p.handleConnect(w, req, flow)
+		return
+	}
+	result := p.process(req, nil)
+	if result.failure != nil {
+		result.failure.eventID = result.event.EventID
+		p.events.Emit(result.event)
+		writeProxyError(w, result.failure)
+		return
+	}
+	if result.event.EventID != "" {
+		p.events.Emit(result.event)
+	}
+	defer result.response.Body.Close()
+	copyResponse(w, result.response, result.event.EventID)
+}
+
+func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication) processedResponse {
+	started := time.Now()
+	host, port, err := requestAuthority(req)
+	if err != nil || req.URL == nil || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
+		failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The proxy request target is invalid.", decision: "block", reason: "unclassifiable_request"}
+		return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
+	}
+	// A request-target in the "scheme:opaque" form has no path: the transport
+	// would send the opaque text as the request line while every check below
+	// reads an empty path. It is refused before a binding is looked for.
+	if req.URL.Opaque != "" {
+		failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The request target must be a path, or an absolute URL of the host the request is sent to.", decision: "block", reason: "unclassifiable_request"}
+		return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
+	}
+	selection := selectedConnection(req)
+	flow := p.ownFlow()
+	if tunnelAuth != nil {
+		selection = tunnelAuth.connectionID
+		flow = tunnelAuth.flow
+	}
+	binding, matchErr := p.state.findBinding(host, port, req.URL.EscapedPath(), selection)
+	if matchErr != nil {
+		failure := &requestFailure{status: http.StatusForbidden, code: "ambiguous_agent_binding", message: "The request matches more than one Agent binding.", decision: "block", reason: "ambiguous_binding"}
+		return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
+	}
+	if binding == nil {
+		if p.lockdown {
+			failure := &requestFailure{
+				status: http.StatusForbidden, code: "unbound_host_blocked", decision: "block", reason: "lockdown_unbound_host",
+				message: "The host is not bound to this Agent Workflow." + connectionNeededGuidance,
+				details: p.state.connectionNeededDetails(host, port),
+			}
+			p.state.noteConnectionNeeded(hintReasonLockdown, host, port, 0)
+			return processedResponse{event: makeEvent(nil, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
+		}
+		upstream, cloneErr := cloneUpstreamRequest(req)
+		if cloneErr != nil {
+			failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The proxy request could not be forwarded.", decision: "block", reason: "unclassifiable_request"}
+			return processedResponse{failure: failure}
+		}
+		// An unbound host is read inside a tunnel only for leak protection;
+		// a WebSocket on it must still reach the service.
+		if tunnelAuth != nil {
+			restoreWebSocketUpgrade(req, upstream)
+		}
+		if stopped := p.inspectForLeaks(req, upstream, nil, flow, host, port, started); stopped != nil {
+			return *stopped
+		}
+		response, roundTripErr := p.transportFor(tunnelAuth, false).RoundTrip(upstream)
+		if errors.Is(roundTripErr, errLeakMessageBlocked) {
+			// Leak protection stopped a message of the request's stream, and
+			// has reported it.
+			return processedResponse{failure: leakMessageBlocked(nil)}
+		}
+		if roundTripErr != nil {
+			return processedResponse{failure: &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The upstream service is unavailable."}}
+		}
+		// The service refused a request no Connection covers. Its answer is
+		// passed on untouched; how to ask for a Connection is kept for
+		// GET /v1/hints. A model host read for leak protection is the
+		// harness's own business: its refusals are about the harness's login.
+		if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) && p.leak.inspects(flow, host, port) == nil {
+			p.state.noteConnectionNeeded(hintReasonUpstreamRejected, host, port, response.StatusCode)
+		}
+		return processedResponse{response: response}
+	}
+	snapshot, snapshotErr := p.state.snapshotForBinding(binding, "http")
+	if snapshotErr != nil {
+		failure := &requestFailure{status: http.StatusServiceUnavailable, code: "agent_binding_unavailable", message: "The Agent binding is not currently validated.", decision: "error", reason: "binding_unavailable", binding: binding}
+		return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), ""), failure: failure}
+	}
+	binding = snapshot.binding
+	defer snapshot.release()
+	now := p.now()
+	authorization := binding.authorizationDecision(now)
+	if !authorization.allowed {
+		failure := &requestFailure{status: authorization.status, code: authorization.code, message: authorization.message, decision: "block", reason: authorization.reason, binding: binding}
+		if authorization.code == codeAccessExpired {
+			failure.details = accessExpiredDetails(binding.connection)
+			p.state.hints.record(proxyHint{
+				kind: hintAccessExpired, reason: agentapi.AccessExpired, host: host,
+				connectionID: binding.connection.ConnectionID, connectionName: binding.connection.ConnectionName,
+				request: renewRequest(binding.connection.ConnectionID, binding.connection.ConnectionName),
+			}, now)
+		}
+		return processedResponse{event: makeEvent(binding, req, "block", "denied", authorization.reason, authorization.status, time.Since(started), ""), failure: failure}
+	}
+	upstream, cloneErr := cloneUpstreamRequest(req)
+	if cloneErr != nil {
+		failure := &requestFailure{status: http.StatusBadRequest, code: "invalid_proxy_request", message: "The proxy request could not be classified.", decision: "block", reason: "unclassifiable_request", binding: binding}
+		return processedResponse{event: makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), ""), failure: failure}
+	}
+	if tunnelAuth != nil {
+		restoreWebSocketUpgrade(req, upstream)
+	}
+	// Leak protection reads the request as the Agent sent it, before anything
+	// the proxy adds; whatever it rewrites is what is checked, signed and sent
+	// below.
+	if stopped := p.inspectForLeaks(req, upstream, binding, flow, host, port, started); stopped != nil {
+		return *stopped
+	}
+	// The secret guard, then the grant's access policy, both before anything
+	// is re-signed, swapped in or attached.
+	if stopped := p.enforceSecretGuard(req, upstream, binding, started); stopped != nil {
+		return *stopped
+	}
+	if stopped := p.enforceAccessPolicy(req, upstream, binding, host, started, now); stopped != nil {
+		return *stopped
+	}
+	if binding.connection.Injection.Action == "aws_sigv4" {
+		// The re-signed request carries the live key ID, session token and a
+		// replayable signature, so it never crosses the network in plaintext.
+		if upstream.URL.Scheme != "https" && !explicitLoopbackHost(host) {
+			failure := &requestFailure{status: http.StatusForbidden, code: "aws_https_required", message: "Phase sends signed AWS requests only over HTTPS. Use the https:// endpoint.", decision: "block", reason: "aws_https_required", binding: binding}
+			return processedResponse{event: makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.Injection.Action), failure: failure}
+		}
+		// Keep the response representation inspectable so a live AWS identity
+		// can never bypass the exact response redaction boundary via compression.
+		upstream.Header.Set("Accept-Encoding", "identity")
+	}
+	injection := phaseproxy.InjectionResult{Action: awsSSMTokenCredentialAction}
+	var injectionErr error
+	injected := false
+	if !isPresignedSSMDataChannelWebSocket(req, upstream, tunnelAuth, binding.connection, time.Now()) {
+		injection, injectionErr = applyHTTPInjectionWithHistory(upstream, binding.connection, p.state.previousDecoyViews(binding.connection))
+		injected = injectionErr == nil
+	}
+	if injectionErr != nil {
+		failure := &requestFailure{status: http.StatusForbidden, code: "agent_credential_injection_failed", message: injectionErr.Error(), decision: "block", reason: "credential_swap_failed", binding: binding}
+		event := makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), binding.connection.PrimaryInjectionAction())
+		var typed *phaseproxy.InjectionError
+		if errors.As(injectionErr, &typed) && typed.AWSSigV4Failure != "" {
+			event.Detail["aws_sigv4_failure"] = string(typed.AWSSigV4Failure)
+		}
+		return processedResponse{event: event, failure: failure}
+	}
+	if err := p.state.validateProtocolBinding(snapshot); err != nil {
+		failure := &requestFailure{status: http.StatusServiceUnavailable, code: "agent_binding_changed", message: "The Agent binding changed while the request was evaluated; retry it.", decision: "error", reason: "binding_changed", binding: binding}
+		return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
+	}
+	response, roundTripErr := p.transportFor(tunnelAuth, true).RoundTrip(upstream)
+	if roundTripErr != nil {
+		failure := &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The upstream service is unavailable.", decision: "error", reason: "upstream_error", binding: binding}
+		return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
+	}
+	if binding.connection.Injection.Action == "aws_sigv4" {
+		if err := phaseproxy.SanitizeAWSSigV4Response(response, binding.connection); err != nil {
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
+			failure := &requestFailure{status: http.StatusBadGateway, code: "unsafe_aws_response", message: "The AWS response could not be safely returned.", decision: "error", reason: "upstream_response_redaction_failed", binding: binding}
+			return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
+		}
+		// The secret guard's backstop: credential material in the shape STS
+		// uses never reaches the Agent, whatever call returned it.
+		if err := phaseproxy.ScrubAWSCredentialResponse(response, p.recordScrubbedResponse(binding, req, response.StatusCode)); err != nil {
+			_ = response.Body.Close()
+			failure := &requestFailure{status: http.StatusBadGateway, code: "unsafe_aws_response", message: "The AWS response could not be safely returned.", decision: "error", reason: "upstream_response_uninspectable", binding: binding}
+			return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
+		}
+		phaseproxy.LowercaseAmazonMetadataHeaders(response.Header)
+		phaseproxy.LowercaseAmazonMetadataHeaders(response.Trailer)
+	}
+	// A custom Connection's value can be replaced in the Console at any time.
+	// A refusal is the cue to fetch it now rather than at the next periodic
+	// refresh; this request is returned as it is, neither retried nor delayed.
+	if injected && binding.connection.ServiceType == agentapi.CustomHTTPServiceType &&
+		(response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
+		p.state.requestRefreshAfterRejection(time.Now())
+	}
+	event := makeEvent(binding, req, "allow", "ok", authorization.reason, response.StatusCode, time.Since(started), injection.Action)
+	return processedResponse{response: response, event: event, snapshot: snapshot}
+}
+
+// transportFor picks what sends a request. A tunnel with connections of its
+// own sends everything over them, whether a Connection covers the request or
+// not: there is no other way to its host.
+func (p *httpProxy) transportFor(tunnel *tunnelAuthentication, bound bool) http.RoundTripper {
+	if tunnel != nil && tunnel.upstream != nil {
+		return tunnel.upstream
+	}
+	if !bound && tunnel != nil && tunnel.unbound != nil {
+		return tunnel.unbound
+	}
+	if !bound && p.unboundTransport != nil {
+		return p.unboundTransport
+	}
+	return p.transport
+}
+
+func (p *httpProxy) authenticateProxyRequest(w http.ResponseWriter, req *http.Request) bool {
+	credential, selection, ok := selectedProxyAuthorization(req.Header)
+	if ok && p.state.authenticateRuntimeCapability(credential) {
+		if selection != "" && p.state.connectionByID(selection) == nil {
+			writeProxyError(w, &requestFailure{status: http.StatusForbidden, code: "unknown_connection", message: "The selected Connection is unavailable."})
+			return false
+		}
+		*req = *req.WithContext(context.WithValue(req.Context(), selectedConnectionContextKey{}, selection))
+		return true
+	}
+	w.Header().Set("Proxy-Authenticate", `Basic realm="Phase Agent session"`)
+	failure := &requestFailure{
+		status: http.StatusProxyAuthRequired, code: "invalid_runtime_capability",
+		message: "A valid Phase AI runtime capability is required.", decision: "auth_deny", reason: "invalid_runtime_capability",
+	}
+	if p.events != nil {
+		p.events.Emit(makeEvent(nil, req, failure.decision, "denied", failure.reason, failure.status, 0, ""))
+	}
+	writeProxyError(w, failure)
+	return false
+}
+
+// recordScrubbedResponse returns what the response scrubber calls once it has
+// replaced credential material: an event of its own, since the request's
+// event was recorded before its body was read. It carries a count and never a
+// value.
+func (p *httpProxy) recordScrubbedResponse(binding *binding, req *http.Request, status int) func(int) {
+	return func(values int) {
+		if p.events == nil {
+			return
+		}
+		event := makeEvent(binding, req, "allow", outcomeScrubbed, reasonCredentialScrubbed, status, 0, binding.connection.PrimaryInjectionAction())
+		event.Detail = map[string]any{
+			"connectionId": binding.connection.ConnectionID, "connectionName": binding.connection.ConnectionName,
+			"class": agentapi.ClassCredentialMinting, "rule": phaseproxy.SecretGuardRule, "scrubbedValues": values,
+		}
+		p.events.Emit(event)
+	}
+}
+
+// agentEvent is an alias boundary that keeps the HTTP worker independent of
+// the wire package in its signatures.
+type agentEvent = agentapi.Event
+
+func makeEvent(binding *binding, req *http.Request, decision, outcome, reason string, status int, latency time.Duration, action string) agentEvent {
+	method, host, requestPath, port := "UNKNOWN", "invalid", "/", 0
+	if req != nil {
+		method = req.Method
+		if req.URL != nil {
+			host = req.URL.Hostname()
+			requestPath = req.URL.EscapedPath()
+		}
+		if host == "" {
+			host = req.Host
+		}
+		if observedHost, observedPort, err := requestAuthority(req); err == nil {
+			host, port = observedHost, observedPort
+		}
+	}
+	return newRequestEvent(binding, method, host, port, requestPath, decision, outcome, reason, status, latency, action)
+}
+
+// handleConnect serves a CONNECT. flow says how its connection reached the
+// proxy and whose it is, as ServeHTTP read it.
+func (p *httpProxy) handleConnect(w http.ResponseWriter, req *http.Request, flow FlowContext) {
+	p.wg.Add(1)
+	defer p.wg.Done()
+	host, port, err := phaseproxy.ParseAuthority(req.Host, 443)
+	if err != nil {
+		writeProxyError(w, &requestFailure{status: http.StatusBadRequest, code: "invalid_connect_target", message: "The CONNECT target is invalid."})
+		return
+	}
+	if strings.EqualFold(host, ManifestHost) {
+		writeProxyError(w, &requestFailure{status: http.StatusForbidden, code: "reserved_proxy_origin", message: "The CONNECT target is reserved by the Phase Agent proxy."})
+		return
+	}
+	bound, matchErr := p.state.hasBoundHost(host, port, selectedConnection(req))
+	if matchErr != nil {
+		writeProxyError(w, &requestFailure{status: http.StatusForbidden, code: "ambiguous_agent_binding", message: "The CONNECT target is ambiguous."})
+		return
+	}
+	authentication := tunnelAuthentication{connectionID: selectedConnection(req), flow: flow}
+	if !bound {
+		if p.lockdown {
+			failure := &requestFailure{
+				status: http.StatusForbidden, code: "unbound_host_blocked",
+				message:  "The CONNECT target is not bound." + connectionNeededGuidance,
+				decision: "block", reason: "lockdown_unbound_host", details: p.state.connectionNeededDetails(host, port),
+			}
+			p.state.noteConnectionNeeded(hintReasonLockdown, host, port, 0)
+			if p.events != nil {
+				p.events.Emit(newRequestEvent(nil, http.MethodConnect, host, port, "/", failure.decision, "denied", failure.reason, failure.status, 0, ""))
+			}
+			writeProxyError(w, failure)
+			return
+		}
+		// A model host is read for leak protection (for a tunnel's flow,
+		// when it is listed for the flow's tool), unless that tool's client
+		// keeps refusing the proxy's certificate there.
+		if match := p.leak.inspects(authentication.flow, host, port); match != nil {
+			if !p.leak.handshakes.bypassed(match.key) {
+				if err := p.state.availability(); err != nil {
+					writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
+					return
+				}
+				p.mitmConnect(w, req, host, port, authentication, match)
+				return
+			}
+			// A tunnel opened in a window is raw for as long as the client
+			// keeps it, after the window too; status goes on saying so.
+			defer p.leak.connections.passed(match.key.host, leakReasonTLSRefused)()
+		}
+		// A raw tunnel hides the service's answer from the proxy, so the host
+		// is only remembered: GET /v1/hints names the preset it belongs to,
+		// should the service turn the Agent away.
+		p.state.hints.noteUnboundHost(host, port)
+		p.tunnelUnbound(w, req, host, port)
+		return
+	}
+	if err := p.state.availability(); err != nil {
+		writeProxyError(w, &requestFailure{status: http.StatusServiceUnavailable, code: "agent_session_unavailable", message: "The Agent session is unavailable."})
+		return
+	}
+	p.mitmConnect(w, req, host, port, authentication, nil)
+}
+
+// dialUnbound opens a connection the way the proxy does for a host no
+// Connection covers.
+func (p *httpProxy) dialUnbound(ctx context.Context, address string) (net.Conn, error) {
+	dial := p.unboundDial
+	if dial == nil {
+		dial = p.dial
+	}
+	return dial(ctx, "tcp", address)
+}
+
+func (p *httpProxy) tunnelUnbound(w http.ResponseWriter, req *http.Request, host string, port int) {
+	upstream, err := p.dialUnbound(req.Context(), net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		writeProxyError(w, &requestFailure{status: http.StatusBadGateway, code: "upstream_unavailable", message: "The CONNECT target is unavailable."})
+		return
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		upstream.Close()
+		writeProxyError(w, &requestFailure{status: http.StatusInternalServerError, code: "proxy_hijack_unavailable", message: "CONNECT is unavailable."})
+		return
+	}
+	client, buffered, err := hijacker.Hijack()
+	if err != nil {
+		upstream.Close()
+		return
+	}
+	p.track(client, true)
+	defer p.track(client, false)
+	defer client.Close()
+	defer upstream.Close()
+	defer p.watchPassThrough(req.Context(), client, upstream, host, port, selectedConnection(req))()
+	_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	if buffered.Flush() != nil {
+		return
+	}
+	copyBidirectional(withBuffered(client, buffered.Reader), upstream)
+}
+
+// watchPassThrough starts the watcher of a pass-through tunnel to a host no
+// Connection covers, and returns what stops it.
+func (p *httpProxy) watchPassThrough(ctx context.Context, client, upstream net.Conn, host string, port int, selection string) func() {
+	done := make(chan struct{})
+	go p.watchUnboundTunnel(ctx, client, upstream, done, func() bool {
+		bound, err := p.state.hasBoundHost(host, port, selection)
+		return err == nil && !bound
+	})
+	return func() { close(done) }
+}
+
+// watchUnboundTunnel closes an already-established pass-through tunnel as
+// soon as Phase can no longer validate the active session. New requests are
+// rejected by the normal authentication/availability gate; this watcher makes
+// the same fail-closed guarantee apply to idle raw CONNECT streams. It also
+// closes the tunnel once its target has become bound to a Connection, so a
+// client holding it open reconnects and gets the credential handling it lacks.
+func (p *httpProxy) watchUnboundTunnel(ctx context.Context, client, upstream net.Conn, stop <-chan struct{}, stillUnbound func() bool) {
+	for {
+		changed := p.state.changeSignal()
+		if p.state.availability() != nil || (stillUnbound != nil && !stillUnbound()) {
+			_ = client.Close()
+			_ = upstream.Close()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			_ = client.Close()
+			_ = upstream.Close()
+			return
+		case <-stop:
+			return
+		case <-changed:
+		}
+	}
+}
+
+// mitmConnect answers a CONNECT with the proxy's certificate and serves the
+// tunnel's requests. leak is set for a tunnel no Connection covers, read only
+// for leak protection: whether the client completed TLS with that certificate
+// is counted, and a host that accepts only its own client's TLS gets upstream
+// connections opened with a copy of the client's hello.
+func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host string, port int, authentication tunnelAuthentication, leak *leakHostMatch) {
+	certificate, err := p.ca.CertificateForHost(host)
+	if err != nil {
+		writeProxyError(w, &requestFailure{status: http.StatusBadGateway, code: "certificate_generation_failed", message: "The proxy could not establish a protected tunnel."})
+		return
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		writeProxyError(w, &requestFailure{status: http.StatusInternalServerError, code: "proxy_hijack_unavailable", message: "CONNECT is unavailable."})
+		return
+	}
+	client, buffered, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	p.track(client, true)
+	defer p.track(client, false)
+	defer client.Close()
+	_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	if buffered.Flush() != nil {
+		return
+	}
+	tunnelContext, stopTunnel := context.WithCancel(req.Context())
+	defer stopTunnel()
+	if p.lifecycle != nil {
+		defer context.AfterFunc(p.lifecycle, stopTunnel)()
+	}
+	termination := &tls.Config{Certificates: []tls.Certificate{*certificate}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
+	terminated := withBuffered(client, buffered.Reader)
+	if leak != nil {
+		// A pass-through window is the client's that refused the certificate,
+		// so the hello is read first to tell whose connection this is.
+		var handedOver bool
+		if terminated, leak, handedOver = p.scopeToHello(tunnelContext, terminated, host, port, leak, authentication.connectionID); handedOver {
+			return
+		}
+	}
+	if leak != nil && leak.rule.MirrorHello {
+		// The client's hello is not answered until the upstream connection
+		// stands: up to then the tunnel can still be handed over unread.
+		replayed, mirror, ok := p.openMirror(tunnelContext, terminated, host, port, leak, authentication.connectionID)
+		if !ok {
+			return
+		}
+		defer mirror.close()
+		authentication.upstream = mirror
+		terminated = replayed
+		// The client's hello is answered with a full handshake whatever
+		// session it offers: that session is the service's. The proxy gives no
+		// ticket of its own either, so the client's next hello is the one it
+		// sends to the service and can be copied as it is.
+		termination.SessionTicketsDisabled = true
+	} else if leak != nil && leak.rule.HTTP2 {
+		// The client chooses. One that offers h2 alone ends the handshake
+		// when it is offered http/1.1 only, and has no other way to its host.
+		termination.NextProtos = []string{http2.NextProtoTLS, "http/1.1"}
+		authentication.unbound = p.unalteredTransport()
+	}
+	tlsClient := tls.Server(terminated, termination)
+	if err := tlsClient.HandshakeContext(tunnelContext); err != nil {
+		if leak != nil && tunnelContext.Err() == nil && refusedCertificate(err) {
+			p.noteLeakHandshake(host, port, leak, false)
+		}
+		return
+	}
+	if leak != nil {
+		p.noteLeakHandshake(host, port, leak, true)
+	}
+	if tlsClient.ConnectionState().NegotiatedProtocol == http2.NextProtoTLS {
+		p.serveHTTP2(tunnelContext, tlsClient, host, port, authentication)
+		return
+	}
+	reader := bufio.NewReader(tlsClient)
+	for {
+		inner, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		inner = inner.WithContext(tunnelContext)
+		innerHost, innerPort, authorityErr := phaseproxy.ParseAuthority(inner.Host, port)
+		if authorityErr != nil || innerHost != host || innerPort != port {
+			_ = writeFailureResponse(tlsClient, inner, &requestFailure{status: http.StatusForbidden, code: "connect_authority_mismatch", message: "The tunneled request target differs from CONNECT."})
+			inner.Body.Close()
+			return
+		}
+		inner.URL.Scheme = "https"
+		inner.URL.Host = net.JoinHostPort(host, strconv.Itoa(port))
+		// http.ReadRequest does not implement Expect: 100-continue, unlike the
+		// net/http server. Clients such as the AWS CLI hold the body back until
+		// they see the 100, so answer it the moment the body is first read.
+		var continueBody *expectContinueBody
+		if inner.ProtoAtLeast(1, 1) && headerContainsToken(inner.Header, "Expect", "100-continue") &&
+			inner.Body != nil && inner.Body != http.NoBody {
+			continueBody = &expectContinueBody{ReadCloser: inner.Body, writer: tlsClient}
+			inner.Body = continueBody
+		}
+		// A client still waiting for 100 Continue never sends its body. After a
+		// final response without that 100 the connection cannot be reused, and
+		// draining the body would block forever; closing keeps both sides in sync.
+		bodyWithheld := func() bool { return continueBody != nil && !continueBody.sent.Load() }
+		result := p.process(inner, &authentication)
+		if result.failure != nil {
+			result.failure.eventID = result.event.EventID
+			p.events.Emit(result.event)
+			_ = writeFailureResponse(tlsClient, inner, result.failure)
+			if bodyWithheld() {
+				return
+			}
+			inner.Body.Close()
+			if inner.Close {
+				return
+			}
+			continue
+		}
+		if result.response.StatusCode == http.StatusSwitchingProtocols {
+			p.handleWebSocket(tunnelContext, tlsClient, reader, inner, result, authentication.flow)
+			return
+		}
+		if result.event.EventID != "" {
+			p.events.Emit(result.event)
+		}
+		response := responseForMITMClient(result.response, inner)
+		if result.event.EventID != "" {
+			response.Header.Set(eventIDHeader, result.event.EventID)
+		}
+		writeErr := writeTunnelResponse(tlsClient, response)
+		result.response.Body.Close()
+		if bodyWithheld() {
+			return
+		}
+		inner.Body.Close()
+		if writeErr != nil || inner.Close || response.Close {
+			return
+		}
+	}
+}
+
+// expectContinueBody answers a tunnelled client's Expect: 100-continue the
+// first time anything reads the request body, as net/http's server does.
+// Requests the proxy rejects before forwarding never read the body, so the
+// client never receives a 100 for them.
+type expectContinueBody struct {
+	io.ReadCloser
+	writer io.Writer
+	once   sync.Once
+	sent   atomic.Bool
+}
+
+func (b *expectContinueBody) Read(destination []byte) (int, error) {
+	b.once.Do(func() {
+		if _, err := io.WriteString(b.writer, "HTTP/1.1 100 Continue\r\n\r\n"); err == nil {
+			b.sent.Store(true)
+		}
+	})
+	return b.ReadCloser.Read(destination)
+}
+
+// responseForMITMClient preserves message framing across the decrypted CONNECT
+// tunnel. Streaming sanitizers intentionally make the final body length
+// unknown; http.Response.Write otherwise adds "Connection: close" to delimit
+// that body without updating the source Response.Close field. Explicit
+// chunking keeps the inner HTTP/1.1 connection reusable and gives the client a
+// prompt, unambiguous end of body.
+func responseForMITMClient(upstream *http.Response, request *http.Request) *http.Response {
+	response := new(http.Response)
+	*response = *upstream
+	response.Request = request
+	response.Proto = request.Proto
+	response.ProtoMajor = request.ProtoMajor
+	response.ProtoMinor = request.ProtoMinor
+	if response.ContentLength < 0 && response.Body != nil && response.Body != http.NoBody &&
+		request.Method != http.MethodHead && response.StatusCode >= 200 && response.StatusCode != http.StatusNoContent &&
+		response.StatusCode != http.StatusNotModified && !response.Close {
+		if response.ProtoAtLeast(1, 1) && len(response.TransferEncoding) == 0 {
+			response.TransferEncoding = []string{"chunked"}
+		} else if len(response.TransferEncoding) == 0 {
+			response.Close = true
+		}
+	}
+	return response
+}
+
+// headWriter holds a response's head, which net/http writes a few bytes at a
+// time, and sends it in one write; what follows goes out as it is written.
+type headWriter struct {
+	client io.Writer
+	head   []byte
+	sent   bool
+}
+
+func (w *headWriter) Write(data []byte) (int, error) {
+	if w.sent {
+		return w.client.Write(data)
+	}
+	// The blank line that ends a head may be split between two writes.
+	searched := max(len(w.head)-3, 0)
+	w.head = append(w.head, data...)
+	if !bytes.Contains(w.head[searched:], []byte("\r\n\r\n")) {
+		return len(data), nil
+	}
+	if err := w.flush(); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+// flush sends a head that is still held, whole or not.
+func (w *headWriter) flush() error {
+	if w.sent {
+		return nil
+	}
+	w.sent = true
+	_, err := w.client.Write(w.head)
+	w.head = nil
+	return err
+}
+
+// writeTunnelResponse sends a response's head to a tunnel's client as one TLS
+// record: Codex's WebSocket client gives up on a head that comes in pieces.
+func writeTunnelResponse(client io.Writer, response *http.Response) error {
+	writer := &headWriter{client: client}
+	if err := response.Write(writer); err != nil {
+		return err
+	}
+	return writer.flush()
+}
+
+func (p *httpProxy) handleWebSocket(ctx context.Context, client *tls.Conn, clientReader *bufio.Reader, request *http.Request, result processedResponse, flow FlowContext) {
+	defer request.Body.Close()
+	defer result.response.Body.Close()
+	upstream, writable := result.response.Body.(io.ReadWriteCloser)
+	// A WebSocket no Connection covers runs on a host read for leak
+	// protection; it lives as long as the session does.
+	check := func() error { return p.state.validateProtocolBinding(result.snapshot) }
+	if result.snapshot.binding == nil {
+		check = p.state.availability
+	}
+	host, port, _ := requestAuthority(request)
+	match := p.leak.inspects(flow, host, port)
+	inspected := match.inspectsPath(request.URL.Path)
+	// The proxy took the extension offer out to keep frames readable, so a
+	// server that selects one anyway would carry compressed frames past it.
+	extended := inspected && len(result.response.Header.Values("Sec-WebSocket-Extensions")) > 0
+	if !validWebSocketResponse(request, result.response) || extended || !writable || check() != nil {
+		failure := &requestFailure{status: http.StatusBadGateway, code: "invalid_websocket_upgrade", message: "The upstream WebSocket handshake was invalid.", decision: "error", reason: "upstream_error"}
+		if result.snapshot.binding != nil {
+			failure.binding = result.snapshot.binding
+		}
+		p.events.Emit(makeEvent(failure.binding, request, failure.decision, "error", failure.reason, failure.status, 0, result.event.CredentialAction))
+		_ = writeFailureResponse(client, request, failure)
+		return
+	}
+	if result.event.EventID != "" {
+		p.events.Emit(result.event)
+	}
+	responseCopy := *result.response
+	responseCopy.Request = request
+	responseCopy.Body = nil
+	responseCopy.ContentLength = 0
+	responseCopy.Header = result.response.Header.Clone()
+	removeHopHeaders(responseCopy.Header)
+	responseCopy.Header.Set("Connection", "Upgrade")
+	responseCopy.Header.Set("Upgrade", "websocket")
+	if err := writeTunnelResponse(client, &responseCopy); err != nil {
+		return
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go p.watchWebSocket(ctx, client, upstream, check, stop)
+	if inspected {
+		p.relayInspectedWebSocket(clientReader, client, upstream, request, host, port, match)
+		return
+	}
+	copyBidirectional(&bufferedReadWriteCloser{Reader: clientReader, Writer: client, Closer: client}, upstream)
+}
+
+// relayInspectedWebSocket copies the server's frames back untouched, one
+// frame at a time, and reads the client's on the way out. Whichever side ends
+// first ends both.
+func (p *httpProxy) relayInspectedWebSocket(clientReader *bufio.Reader, client *tls.Conn, upstream io.ReadWriteCloser, request *http.Request, host string, port int, match *leakHostMatch) {
+	downstream := &wsDownstream{client: client}
+	done := make(chan struct{}, 2)
+	go func() { downstream.relay(upstream); done <- struct{}{} }()
+	go func() {
+		p.pumpLeakFrames(clientReader, upstream, downstream, request, host, port, match)
+		done <- struct{}{}
+	}()
+	<-done
+	_ = client.Close()
+	_ = upstream.Close()
+	<-done
+}
+
+func (p *httpProxy) watchWebSocket(ctx context.Context, client, upstream io.Closer, check func() error, stop <-chan struct{}) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		changed := p.state.changeSignal()
+		if check() != nil {
+			_ = client.Close()
+			_ = upstream.Close()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			_ = client.Close()
+			_ = upstream.Close()
+			return
+		case <-stop:
+			return
+		case <-changed:
+		case <-ticker.C:
+		}
+	}
+}
+
+func (p *httpProxy) track(connection net.Conn, add bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.hijacked == nil {
+		p.hijacked = make(map[net.Conn]struct{})
+	}
+	if add {
+		p.hijacked[connection] = struct{}{}
+	} else {
+		delete(p.hijacked, connection)
+	}
+}
+
+func (p *httpProxy) CloseHijacked() {
+	p.mu.Lock()
+	for connection := range p.hijacked {
+		_ = connection.Close()
+	}
+	p.mu.Unlock()
+	p.wg.Wait()
+	// Connections the proxy opened for itself and no request holds any more.
+	if p.unalteredOwn != nil {
+		p.unalteredOwn.CloseIdleConnections()
+	}
+}
+
+func selectedProxyAuthorization(header http.Header) (string, string, bool) {
+	values := header.Values("Proxy-Authorization")
+	if len(values) != 1 || !strings.HasPrefix(values[0], "Basic ") {
+		return "", "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(values[0], "Basic "))
+	if err != nil {
+		return "", "", false
+	}
+	username, password, found := strings.Cut(string(decoded), ":")
+	selection := strings.TrimPrefix(username, "phase.")
+	if username == "phase" {
+		selection = ""
+	} else if selection == username || !controlIdentifier.MatchString(selection) {
+		return "", "", false
+	}
+	return password, selection, found && password != ""
+}
+
+func cloneUpstreamRequest(req *http.Request) (*http.Request, error) {
+	if req.URL == nil || req.URL.User != nil || req.URL.Host == "" || req.URL.Opaque != "" {
+		return nil, errors.New("invalid upstream request")
+	}
+	clone := req.Clone(req.Context())
+	clone.URL = new(url.URL)
+	*clone.URL = *req.URL
+	clone.RequestURI = ""
+	clone.Header = req.Header.Clone()
+	// Trailers a client announced on an HTTP/2 stream are filled in as its
+	// body ends, in the request itself: what is sent on has to see them.
+	if req.ProtoMajor == 2 {
+		clone.Trailer = req.Trailer
+	}
+	// TE: trailers is how an HTTP/2 client says it takes trailers, and gRPC
+	// services refuse a call without it.
+	trailers := req.ProtoMajor == 2 && headerContainsToken(req.Header, "Te", "trailers")
+	removeHopHeaders(clone.Header)
+	if trailers {
+		clone.Header.Set("Te", "trailers")
+	}
+	clone.Header.Del("Proxy-Authorization")
+	// The proxy settles 100-continue with its own client (net/http server on
+	// the explicit path, expectContinueBody inside a tunnel). Forwarding Expect
+	// would only make the upstream transport wait for a second 100.
+	clone.Header.Del("Expect")
+	return clone, nil
+}
+
+func validWebSocketRequest(request *http.Request) bool {
+	if request == nil || request.Method != http.MethodGet || request.ProtoMajor != 1 || request.ProtoMinor != 1 ||
+		!headerContainsToken(request.Header, "Connection", "upgrade") || !singleHeaderEquals(request.Header, "Upgrade", "websocket") ||
+		!singleHeaderEquals(request.Header, "Sec-WebSocket-Version", "13") {
+		return false
+	}
+	keys := request.Header.Values("Sec-WebSocket-Key")
+	if len(keys) != 1 {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(keys[0]))
+	return err == nil && len(decoded) == 16
+}
+
+func restoreWebSocketUpgrade(source, target *http.Request) {
+	if validWebSocketRequest(source) {
+		target.Header.Set("Connection", "Upgrade")
+		target.Header.Set("Upgrade", "websocket")
+	}
+}
+
+// isPresignedSSMDataChannelWebSocket identifies the AWS-issued, short-lived
+// StreamUrl used by Session Manager. Keep this exception at the authenticated
+// MITM boundary; ordinary unsigned or merely SSM-shaped AWS requests must still
+// fail SigV4 injection.
+func isPresignedSSMDataChannelWebSocket(request, upstream *http.Request, authentication *tunnelAuthentication, connection agentapi.Connection, now time.Time) bool {
+	if authentication == nil || request == nil || upstream == nil || request.URL == nil || upstream.URL == nil ||
+		!strings.EqualFold(connection.ServiceType, "aws") || !strings.EqualFold(connection.Injection.Action, "aws_sigv4") ||
+		!strings.EqualFold(connection.Protocol, "http") || connection.Injection.ServiceFrom != "host" || connection.Injection.RegionFrom != "host" ||
+		!validWebSocketRequest(request) || hasHeader(request.Header, "Authorization") || hasHeader(upstream.Header, "Authorization") ||
+		request.URL.Scheme != "https" || request.ContentLength != 0 || len(request.TransferEncoding) != 0 ||
+		(request.Body != nil && request.Body != http.NoBody) ||
+		request.URL.RawQuery != upstream.URL.RawQuery || request.URL.EscapedPath() != upstream.URL.EscapedPath() {
+		return false
+	}
+	region, ok := ssmMessagesRegion(request.URL.Hostname())
+	if !ok || !strings.EqualFold(request.URL.Hostname(), upstream.URL.Hostname()) {
+		return false
+	}
+	const prefix = "/v1/data-channel/"
+	channelID, found := strings.CutPrefix(request.URL.EscapedPath(), prefix)
+	if !found || channelID == "" || len(channelID) > 256 {
+		return false
+	}
+	for _, character := range channelID {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return validSSMPresignedQuery(request.URL.RawQuery, region, now)
+}
+
+func hasHeader(header http.Header, name string) bool {
+	for key := range header {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func ssmMessagesRegion(host string) (string, bool) {
+	if host == "" || strings.HasSuffix(host, ".") || host != strings.ToLower(host) {
+		return "", false
+	}
+	labels := strings.Split(host, ".")
+	standard := len(labels) == 4 && labels[2] == "amazonaws" && labels[3] == "com"
+	china := len(labels) == 5 && labels[2] == "amazonaws" && labels[3] == "com" && labels[4] == "cn"
+	if (!standard && !china) || (labels[0] != "ssmmessages" && labels[0] != "ssmmessages-fips") {
+		return "", false
+	}
+	parts := strings.Split(labels[1], "-")
+	if len(parts) < 3 {
+		return "", false
+	}
+	switch parts[0] {
+	case "af", "ap", "ca", "cn", "eu", "eusc", "il", "me", "mx", "sa", "us":
+	default:
+		return "", false
+	}
+	if _, err := strconv.ParseUint(parts[len(parts)-1], 10, 8); err != nil {
+		return "", false
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if part == "" {
+			return "", false
+		}
+		for _, character := range part {
+			if character < 'a' || character > 'z' {
+				return "", false
+			}
+		}
+	}
+	return labels[1], true
+}
+
+func validSSMPresignedQuery(rawQuery, region string, now time.Time) bool {
+	if rawQuery == "" || len(rawQuery) > 16<<10 {
+		return false
+	}
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Split(rawQuery, "&") {
+		key, _, found := strings.Cut(field, "=")
+		if !found || key == "" || strings.ContainsAny(key, "%+") {
+			return false
+		}
+	}
+	allowed := map[string]struct{}{
+		"role": {}, "cell-number": {}, "X-Amz-Algorithm": {}, "X-Amz-Credential": {}, "X-Amz-Date": {},
+		"X-Amz-Expires": {}, "X-Amz-SignedHeaders": {}, "X-Amz-Signature": {}, "X-Amz-Security-Token": {},
+	}
+	for key, values := range query {
+		if _, ok := allowed[key]; !ok || len(values) != 1 || values[0] == "" {
+			return false
+		}
+	}
+	single := func(key string) (string, bool) {
+		values, found := query[key]
+		if !found || len(values) != 1 {
+			return "", false
+		}
+		return values[0], true
+	}
+	role, roleOK := single("role")
+	cellNumber, cellOK := single("cell-number")
+	algorithm, algorithmOK := single("X-Amz-Algorithm")
+	credential, credentialOK := single("X-Amz-Credential")
+	dateValue, dateOK := single("X-Amz-Date")
+	expiresValue, expiresOK := single("X-Amz-Expires")
+	signedHeaders, headersOK := single("X-Amz-SignedHeaders")
+	signature, signatureOK := single("X-Amz-Signature")
+	if !roleOK || !cellOK || !algorithmOK || !credentialOK || !dateOK || !expiresOK || !headersOK || !signatureOK ||
+		role != "publish_subscribe" || algorithm != "AWS4-HMAC-SHA256" || signedHeaders != "host" ||
+		len(cellNumber) > 4096 || !isPrintableASCIIWithSpace(cellNumber) || len(signature) != 64 || !isLowerHex(signature) {
+		return false
+	}
+	securityToken, tokenOK := single("X-Amz-Security-Token")
+	if !tokenOK || len(securityToken) > 8192 || !isPrintableASCII(securityToken) {
+		return false
+	}
+	scope := strings.Split(credential, "/")
+	if len(scope) != 5 || !validAWSAccessKeyID(scope[0]) || scope[2] != region || scope[3] != "ssmmessages" || scope[4] != "aws4_request" {
+		return false
+	}
+	signingTime, err := time.Parse("20060102T150405Z", dateValue)
+	if err != nil || scope[1] != dateValue[:8] {
+		return false
+	}
+	expires, err := strconv.ParseUint(expiresValue, 10, 16)
+	if err != nil || expires == 0 || expires > 300 || strconv.FormatUint(expires, 10) != expiresValue {
+		return false
+	}
+	now = now.UTC()
+	return !signingTime.After(now.Add(5*time.Minute)) && !now.After(signingTime.Add(time.Duration(expires)*time.Second).Add(5*time.Minute))
+}
+
+func validAWSAccessKeyID(value string) bool {
+	if len(value) < 16 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isLowerHex(value string) bool {
+	for _, character := range value {
+		if (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isPrintableASCII(value string) bool {
+	for _, character := range value {
+		if character < 0x21 || character > 0x7e {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func isPrintableASCIIWithSpace(value string) bool {
+	for _, character := range value {
+		if character < 0x20 || character > 0x7e {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func validWebSocketResponse(request *http.Request, response *http.Response) bool {
+	if !validWebSocketRequest(request) || response == nil || response.StatusCode != http.StatusSwitchingProtocols ||
+		!headerContainsToken(response.Header, "Connection", "upgrade") || !singleHeaderEquals(response.Header, "Upgrade", "websocket") {
+		return false
+	}
+	accept := response.Header.Values("Sec-WebSocket-Accept")
+	if len(accept) != 1 {
+		return false
+	}
+	return strings.TrimSpace(accept[0]) == webSocketAccept(request.Header.Get("Sec-WebSocket-Key"))
+}
+
+func webSocketAccept(key string) string {
+	digest := sha1.Sum([]byte(strings.TrimSpace(key) + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")) // #nosec G401 -- RFC 6455 mandates SHA-1 here.
+	return base64.StdEncoding.EncodeToString(digest[:])
+}
+
+func singleHeaderEquals(header http.Header, name, expected string) bool {
+	values := header.Values(name)
+	return len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), expected)
+}
+
+func headerContainsToken(header http.Header, name, expected string) bool {
+	for _, value := range header.Values(name) {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), expected) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func removeHopHeaders(header http.Header) {
+	for _, value := range header.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			header.Del(strings.TrimSpace(name))
+		}
+	}
+	for _, name := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade"} {
+		header.Del(name)
+	}
+}
+
+func copyResponse(w http.ResponseWriter, response *http.Response, eventID string) {
+	removeHopHeaders(response.Header)
+	// Assign keys directly so deliberately non-canonical names (S3 user
+	// metadata) reach the client exactly as the upstream sent them.
+	for key, values := range response.Header {
+		w.Header()[key] = append(w.Header()[key], values...)
+	}
+	if eventID != "" {
+		w.Header().Set(eventIDHeader, eventID)
+	}
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, response.Body)
+}
+
+func writeProxyError(w http.ResponseWriter, failure *requestFailure) {
+	if failure.status == 0 {
+		failure.status = http.StatusBadGateway
+	}
+	contentType, body := proxyFailurePayload(failure)
+	setProxyFailureHeaders(w.Header(), failure)
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(failure.status)
+	_, _ = w.Write(body)
+}
+
+func writeFailureResponse(writer io.Writer, request *http.Request, failure *requestFailure) error {
+	contentType, body := proxyFailurePayload(failure)
+	response := &http.Response{
+		StatusCode: failure.status, Status: fmt.Sprintf("%d %s", failure.status, http.StatusText(failure.status)),
+		ProtoMajor: 1, ProtoMinor: 1, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))),
+		ContentLength: int64(len(body)), Request: request,
+	}
+	setProxyFailureHeaders(response.Header, failure)
+	response.Header.Set("Content-Type", contentType)
+	return writeTunnelResponse(writer, response)
+}
+
+func proxyFailurePayload(failure *requestFailure) (string, []byte) {
+	if failure != nil && failure.binding != nil && failure.binding.connection.Injection.Action == "aws_sigv4" {
+		code := "PhaseProxyError"
+		switch failure.code {
+		case "agent_connection_denied":
+			code = "PhaseAccessDenied"
+		case "credential_minting_uninspectable":
+			code = "PhaseCredentialMintingBlocked"
+		case codeAccessPolicyBlocked:
+			code = "PhaseAccessPolicyBlocked"
+			if failure.details["rule"] == phaseproxy.SecretGuardRule {
+				code = "PhaseCredentialMintingBlocked"
+			}
+		case codeAccessPolicyAsk:
+			code = "PhaseAccessPolicyAsk"
+		case codeAccessPolicyUninspectable, codeAccessPolicyUnsupported, codeProviderRulesMissing:
+			code = "PhaseAccessPolicyBlocked"
+		case codeAccessExpired:
+			code = "PhaseAccessExpired"
+		}
+		message := failure.message
+		// An AWS client shows only the code and the message, so the request
+		// the JSON envelope carries in details.request is spelled out here.
+		if request, ok := failure.details["request"].(json.RawMessage); ok && len(request) > 0 {
+			message = strings.Replace(message, "the JSON in details.request", "this JSON", 1) + " JSON: " + string(request)
+		}
+		if failure.binding.connection.ConnectionID != "" {
+			message += " Connection: " + failure.binding.connection.ConnectionID + "."
+		}
+		if failure.binding.connection.GrantID != "" {
+			message += " Grant: " + failure.binding.connection.GrantID + "."
+		}
+		payload, _ := xml.Marshal(struct {
+			XMLName xml.Name `xml:"ErrorResponse"`
+			XMLNS   string   `xml:"xmlns,attr"`
+			Error   struct {
+				Type    string `xml:"Type"`
+				Code    string `xml:"Code"`
+				Message string `xml:"Message"`
+			} `xml:"Error"`
+			RequestID string `xml:"RequestId"`
+		}{
+			XMLNS: "https://phase.dev/agent-proxy/errors/v1",
+			Error: struct {
+				Type    string `xml:"Type"`
+				Code    string `xml:"Code"`
+				Message string `xml:"Message"`
+			}{Type: "Sender", Code: code, Message: message},
+			RequestID: awsFailureRequestID(failure),
+		})
+		return "text/xml; charset=utf-8", append([]byte(xml.Header), payload...)
+	}
+	details := map[string]any{}
+	if failure != nil {
+		for name, value := range failure.details {
+			details[name] = value
+		}
+	}
+	if failure != nil && failure.binding != nil {
+		details["connectionId"] = failure.binding.connection.ConnectionID
+		details["grantId"] = failure.binding.connection.GrantID
+	}
+	payload, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"code": failure.code, "message": failure.message, "retryable": false, "details": details,
+	}})
+	return "application/json", payload
+}
+
+// awsFailureRequestID prefers the proxy event ID so an AWS-shaped error can be
+// looked up in the Console like any other proxied request.
+func awsFailureRequestID(failure *requestFailure) string {
+	if failure.eventID != "" {
+		return failure.eventID
+	}
+	return "phase-" + failure.binding.connection.ConnectionID
+}
+
+func setProxyFailureHeaders(header http.Header, failure *requestFailure) {
+	if failure == nil {
+		return
+	}
+	header.Set("X-Phase-Error-Code", failure.code)
+	if failure.eventID != "" {
+		header.Set(eventIDHeader, failure.eventID)
+	}
+	if failure.binding == nil {
+		return
+	}
+	if controlIdentifier.MatchString(failure.binding.connection.ConnectionID) {
+		header.Set("X-Phase-Connection-Id", failure.binding.connection.ConnectionID)
+	}
+	if controlIdentifier.MatchString(failure.binding.connection.GrantID) {
+		header.Set("X-Phase-Grant-Id", failure.binding.connection.GrantID)
+	}
+}
+
+func copyBidirectional(left, right io.ReadWriteCloser) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(left, right); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(right, left); done <- struct{}{} }()
+	<-done
+	_ = left.Close()
+	_ = right.Close()
+	<-done
+}

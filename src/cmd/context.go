@@ -24,7 +24,7 @@ func mapKeys(m map[string]bool) []string {
 // from the account's app list when the fetch came back empty — otherwise a
 // path that matches no secrets would report a blank app and environment and
 // look like a broken .phase.json.
-func contextNames(p *sdk.Phase, secrets []sdk.SecretResult, appName, envName, appID string) (string, string) {
+func contextNames(p phase.SecretsBackend, secrets []sdk.SecretResult, appName, envName, appID string) (string, string) {
 	apps := map[string]bool{}
 	envs := map[string]bool{}
 	for _, s := range secrets {

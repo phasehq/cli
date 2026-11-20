@@ -78,8 +78,15 @@ nfpms:
       - rpm
       - apk
     bindir: /usr/bin
-    replaces:
-      - "phase (<< 2.0.0)"
+    # Each packager spells version relations differently; nfpm now rejects
+    # the deb form for rpm.
+    overrides:
+      deb:
+        replaces:
+          - "phase (<< 2.0.0)"
+      rpm:
+        replaces:
+          - "phase < 2.0.0"
     ids:
       - phase-cli
 

@@ -1,13 +1,17 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/offline"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +20,9 @@ var usersLogoutCmd = &cobra.Command{
 	Short: "🏃 Logout from phase-cli",
 	RunE:  runUsersLogout,
 }
+
+// caTrustLeftover reads the user's trust store; tests replace it.
+var caTrustLeftover = phaseproxy.UserCATrustLeftover
 
 func init() {
 	usersLogoutCmd.Flags().Bool("purge", false, "Purge all local data")
@@ -34,6 +41,24 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		for _, id := range ids {
 			keyring.DeleteCredentials(id)
 		}
+		// ~/.phase also holds the Phase AI directory: its logs, spooled audit
+		// events and trust files. Stop the proxy first so it writes nothing
+		// back, and drop the CA key from the system keystore with them.
+		stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+		if err := stopHookRuntime(stopContext); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
+		}
+		cancel()
+		if err := phaseproxy.DeleteStoredCAKey(); errors.Is(err, phaseproxy.ErrKeystoreUnreachable) {
+			// Only a machine that made a Phase AI CA can have stored its key.
+			if directory, dirErr := hookRuntimeDir(); dirErr == nil {
+				if _, statErr := os.Stat(filepath.Join(directory, "ca.pem")); statErr == nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), "The system keystore could not be reached, so a Phase AI CA key stored in it was not removed.")
+				}
+			}
+		} else if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Could not remove the Phase AI CA key from the system keystore: %v\n", err)
+		}
 		phaseHomeDir := filepath.Dir(config.PhaseSecretsDir)
 		if _, err := os.Stat(phaseHomeDir); err == nil {
 			if err := os.RemoveAll(phaseHomeDir); err != nil {
@@ -42,6 +67,10 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 			fmt.Println("Logged out and purged all local data.")
 		} else {
 			fmt.Println("No local data found to purge.")
+		}
+		// The purge leaves the user's trust store alone, and says so.
+		if leftover := caTrustLeftover(); leftover != "" {
+			fmt.Println(leftover)
 		}
 	} else {
 		// Remove current user

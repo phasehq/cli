@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/phasehq/cli/pkg/ai"
 	"github.com/phasehq/cli/pkg/phase"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	"github.com/phasehq/cli/pkg/util"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
 	"github.com/spf13/cobra"
@@ -49,11 +52,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if err := requireReservedSessionNames(); err != nil {
+		return err
+	}
+
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
 		return err
+	}
+	if err := refuseAgentDynamicSecretFlags(cmd, p); err != nil {
+		return err
+	}
+	// An Agent is the AI tool whether or not a harness was detected.
+	if ai.AgentLogin() && !ai.IsAIAgent() {
+		if blocked, ok := ai.IsBlockedCommand(command); ok {
+			return fmt.Errorf("command '%s' is blocked in AI mode to prevent secret exposure via environment variables. Use 'phase secrets get <key>' instead", blocked)
+		}
 	}
 
 	// Fetch secrets
@@ -82,6 +98,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 	for _, secret := range allSecrets {
 		resolvedSecrets[secret.Key] = secret.Value
 	}
+	skipped := skipReservedSessionVariables(resolvedSecrets)
+	var injected []sdk.SecretResult
+	for _, secret := range allSecrets {
+		if _, kept := resolvedSecrets[secret.Key]; kept {
+			injected = append(injected, secret)
+		}
+	}
+	if err := protectSecrets(cmd.Context(), p, injected); err != nil {
+		return err
+	}
 
 	// Print injection stats to stderr (matches Python CLI behavior)
 	secretCount := len(resolvedSecrets)
@@ -101,6 +127,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	if secretCount == 0 {
 		fmt.Fprint(os.Stderr, emptyResultHint(path, tags, "inject", false))
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "Phase: did not inject %s: the Phase AI session reserves these names for its proxy and credentials.\n",
+			strings.Join(skipped, ", "))
 	}
 
 	// Build environment: inherit current env and append secrets
@@ -127,6 +157,56 @@ func runRun(cmd *cobra.Command, args []string) error {
 			os.Exit(exitErr.ExitCode())
 		}
 		return err
+	}
+	return nil
+}
+
+// requireReservedSessionNames refuses to run inside a Phase AI session that did
+// not export its reserved names: without them phase run cannot tell which
+// app secrets would replace a decoy, so it injects nothing rather than all.
+func requireReservedSessionNames() error {
+	if os.Getenv("PHASE_AI_ENABLED") != "1" {
+		return nil
+	}
+	if _, present := os.LookupEnv(phaseproxy.ReservedEnvironmentKey); !present {
+		return errors.New("The Phase AI session did not provide its reserved names (" + phaseproxy.ReservedEnvironmentKey +
+			"), so phase run cannot keep app secrets from replacing its credentials; restart the harness session, or update Phase.")
+	}
+	return nil
+}
+
+// skipReservedSessionVariables removes, inside a Phase AI session, every
+// secret whose name the session owns: proxy routing, trust settings, Phase
+// runtime variables and the credential variables of the session's providers,
+// which the session exports in PHASE_AI_RESERVED_ENV. Injecting one would
+// replace a decoy with a live value or route traffic around the proxy. It
+// returns the names it removed, sorted; outside a session it removes nothing.
+func skipReservedSessionVariables(secrets map[string]string) []string {
+	if os.Getenv("PHASE_AI_ENABLED") != "1" {
+		return nil
+	}
+	reserved := phaseproxy.SplitReservedEnvironment(os.Getenv(phaseproxy.ReservedEnvironmentKey))
+	var skipped []string
+	for name := range secrets {
+		if phaseproxy.ReservedRunEnvironmentKey(name, reserved) {
+			skipped = append(skipped, name)
+			delete(secrets, name)
+		}
+	}
+	sort.Strings(skipped)
+	return skipped
+}
+
+// refuseAgentDynamicSecretFlags refuses a dynamic-secret flag an Agent login
+// set explicitly; the commands' own defaults stay silent.
+func refuseAgentDynamicSecretFlags(cmd *cobra.Command, backend phase.SecretsBackend) error {
+	if _, agent := backend.(*phase.AgentBackend); !agent {
+		return nil
+	}
+	for _, name := range []string{"generate-leases", "lease-ttl"} {
+		if cmd.Flags().Changed(name) {
+			return phase.ErrAgentDynamicSecrets
+		}
 	}
 	return nil
 }

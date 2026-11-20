@@ -1,0 +1,1105 @@
+package cmd
+
+import (
+	"net/url"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"unicode"
+)
+
+const phaseShellRedirect = "\x00redirect"
+
+var powerShellWebCmdlet = regexp.MustCompile(`(?i)(^|[\s;|&({="'])(invoke-webrequest|invoke-restmethod|iwr|irm)($|[\s;|)}"'])`)
+
+// shellCommandUsesPowerShellWeb reports a PowerShell web cmdlet, as a whole
+// word, in a command naming phase.invalid. Windows PowerShell's web cmdlets
+// ignore HTTP(S)_PROXY, so hooks deny the call and point the Agent at curl.
+func shellCommandUsesPowerShellWeb(command string) bool {
+	return strings.Contains(strings.ToLower(command), "phase.invalid") && powerShellWebCmdlet.MatchString(command)
+}
+
+type phaseShellWord struct {
+	value   string
+	control bool
+	glob    bool // an unquoted *, ? or [ the shell may expand into more words
+}
+
+// shellCommandRequiresPhase recognizes only a single, plain Phase control call:
+// one simple command that runs curl, curl.exe or wget directly against
+// phase.invalid, with only allow-listed options and the redirections the parser
+// already accepts. Harnesses hand the hook the command as the agent typed it,
+// and the skill tells agents to call curl directly, so a managed call never
+// needs a wrapper, interpreter, substitution, assignment or expansion to be
+// looked through. Everything else -- provider clients, Phase CLI commands,
+// wrapped or nested commands, and any ordinary shell work -- stays ambient.
+// Mixed command lines are denied separately by shellCommandMixesPhase.
+func shellCommandRequiresPhase(command string) bool {
+	// PowerShell also delimits strings with typographic quotes, which the
+	// tokenizer reads as ordinary characters.
+	if strings.ContainsAny(command, "‘’‚‛“”„") {
+		return false
+	}
+	words, valid := phaseTokenizeShell(command)
+	if !valid {
+		return false
+	}
+	simple := make([]string, 0, len(words))
+	for _, word := range words {
+		// A separator, pipe, subshell or $(...) all emit a control word, so
+		// the command is not one simple command.
+		if word.control || word.glob {
+			return false
+		}
+		simple = append(simple, word.value)
+	}
+	return phasePlainNetworkCall(simple)
+}
+
+// phasePlainNetworkCall proves that words form a single curl or wget call that
+// reaches only phase.invalid. It rejects a leading assignment or wrapper (the
+// client must be the first word), an empty or expansion-bearing word, and any
+// client but curl, curl.exe or wget.
+func phasePlainNetworkCall(words []string) bool {
+	arguments := make([]string, 0, len(words))
+	for index := 0; index < len(words); index++ {
+		word := words[index]
+		if word == phaseShellRedirect {
+			// The next word is this redirection's target; reject an expansion
+			// in it, then skip both.
+			if index+1 < len(words) {
+				if target := words[index+1]; target == "" || strings.ContainsAny(target, "$`") {
+					return false
+				}
+			}
+			index++
+			continue
+		}
+		// A backtick or $ expands at run time; an empty word is the quoted
+		// argument that lets a later option swallow a real target.
+		if word == "" || strings.ContainsAny(word, "$`") {
+			return false
+		}
+		arguments = append(arguments, word)
+	}
+	if len(arguments) == 0 {
+		return false
+	}
+	client := phaseNetworkClient(arguments[0])
+	if client == "" {
+		return false
+	}
+	return phaseCurlWgetRequiresPhase(client, arguments[1:])
+}
+
+// phaseNetworkClient maps a command word to the Phase-managed HTTP client it
+// names, or "" when it is neither curl nor wget. The name must be written
+// directly, so a path or a wrapper does not qualify.
+func phaseNetworkClient(word string) string {
+	switch strings.ToLower(word) {
+	case "curl", "curl.exe":
+		return "curl"
+	case "wget", "wget.exe":
+		return "wget"
+	}
+	return ""
+}
+
+// shellCommandMixesPhase reports command lines that would otherwise run both
+// managed and ordinary top-level shell work inside one credential environment.
+// Hooks reject these and ask the Agent to split them into separate tool calls.
+func shellCommandMixesPhase(command string) bool {
+	command, heredocCommands, valid := phaseStripShellHeredocs(command)
+	if !valid {
+		return false
+	}
+	command = strings.TrimSpace(command)
+	nested, valid := phaseShellSubcommands(command)
+	if command == "" || !valid {
+		return false
+	}
+	hasManaged := false
+	hasOrdinary := false
+	for _, heredocCommand := range heredocCommands {
+		if shellCommandMixesPhase(heredocCommand) {
+			return true
+		}
+		if shellCommandRequiresPhase(heredocCommand) {
+			hasManaged = true
+		} else {
+			hasOrdinary = true
+		}
+	}
+	for _, subcommand := range nested {
+		if shellCommandMixesPhase(subcommand) {
+			return true
+		}
+		if shellCommandRequiresPhase(subcommand) {
+			hasManaged = true
+		} else if strings.TrimSpace(subcommand) != "" {
+			hasOrdinary = true
+		}
+	}
+	words, valid := phaseTokenizeShell(command)
+	if !valid {
+		return false
+	}
+	segment := make([]string, 0, 8)
+	nestedMix := false
+	classify := func() {
+		if !phaseShellSegmentHasCommand(segment) {
+			return
+		}
+		// A script handed to sh -c, eval, or a wrapper such as env must not
+		// smuggle ordinary work alongside a Phase control call.
+		if script, nested := phaseNestedShellScript(segment); nested && shellCommandMixesPhase(script) {
+			nestedMix = true
+		}
+		if phaseSimpleCommandRequiresPhase(segment) {
+			hasManaged = true
+		} else {
+			hasOrdinary = true
+		}
+	}
+	for _, word := range words {
+		if word.control {
+			classify()
+			segment = segment[:0]
+		} else {
+			segment = append(segment, word.value)
+		}
+	}
+	classify()
+	return nestedMix || (hasManaged && hasOrdinary)
+}
+
+type phaseHeredoc struct {
+	delimiter string
+	stripTabs bool
+	quoted    bool
+	shellBody bool
+	body      []string
+}
+
+// phaseStripShellHeredocs removes inert data lines while returning content that
+// the shell can execute. Unquoted heredocs expand command substitutions, and a
+// shell reading stdin can execute the whole body. Keeping those paths separate
+// avoids treating provider names in ordinary generated files as commands.
+func phaseStripShellHeredocs(command string) (string, []string, bool) {
+	lines := strings.Split(command, "\n")
+	pending := make([]phaseHeredoc, 0, 1)
+	executable := make([]string, 0, 1)
+	var quote byte
+	var output strings.Builder
+	for index, line := range lines {
+		if len(pending) == 0 {
+			output.WriteString(line)
+			found, nextQuote, valid := phaseHeredocsOnLine(line, quote)
+			if !valid {
+				return "", nil, false
+			}
+			quote = nextQuote
+			shellBody := phaseLineExecutesHeredocBody(line)
+			for foundIndex := range found {
+				found[foundIndex].shellBody = shellBody
+			}
+			pending = append(pending, found...)
+		} else {
+			candidate := strings.TrimSuffix(line, "\r")
+			if pending[0].stripTabs {
+				candidate = strings.TrimLeft(candidate, "\t")
+			}
+			if candidate == pending[0].delimiter {
+				body := strings.Join(pending[0].body, "\n")
+				if pending[0].shellBody {
+					executable = append(executable, body)
+				} else if !pending[0].quoted {
+					subcommands, valid := phaseShellSubcommands(body)
+					if !valid {
+						return "", nil, false
+					}
+					executable = append(executable, subcommands...)
+				}
+				pending = pending[1:]
+			} else {
+				pending[0].body = append(pending[0].body, line)
+			}
+		}
+		if index+1 < len(lines) {
+			output.WriteByte('\n')
+		}
+	}
+	return output.String(), executable, len(pending) == 0 && quote == 0
+}
+
+func phaseHeredocsOnLine(line string, quote byte) ([]phaseHeredoc, byte, bool) {
+	found := make([]phaseHeredoc, 0, 1)
+	for index := 0; index < len(line); index++ {
+		character := line[index]
+		if character == '\\' {
+			index++
+			continue
+		}
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		if character == '\'' || character == '"' {
+			quote = character
+			continue
+		}
+		if character == '#' && (index == 0 || unicode.IsSpace(rune(line[index-1]))) {
+			break
+		}
+		if character != '<' || index+1 >= len(line) || line[index+1] != '<' {
+			continue
+		}
+		if phaseInsideShellArithmetic(line, index) {
+			index++
+			continue
+		}
+		if index+2 < len(line) && line[index+2] == '<' {
+			index += 2 // here-string, not a heredoc body
+			continue
+		}
+		cursor := index + 2
+		stripTabs := cursor < len(line) && line[cursor] == '-'
+		if stripTabs {
+			cursor++
+		}
+		for cursor < len(line) && unicode.IsSpace(rune(line[cursor])) {
+			cursor++
+		}
+		var delimiter strings.Builder
+		var delimiterQuote byte
+		quoted := false
+		for cursor < len(line) {
+			character = line[cursor]
+			if delimiterQuote != 0 {
+				if character == delimiterQuote {
+					delimiterQuote = 0
+				} else if character == '\\' && delimiterQuote == '"' && cursor+1 < len(line) {
+					cursor++
+					delimiter.WriteByte(line[cursor])
+				} else {
+					delimiter.WriteByte(character)
+				}
+				cursor++
+				continue
+			}
+			if character == '\'' || character == '"' {
+				quoted = true
+				delimiterQuote = character
+				cursor++
+				continue
+			}
+			if character == '\\' && cursor+1 < len(line) {
+				quoted = true
+				cursor++
+				delimiter.WriteByte(line[cursor])
+				cursor++
+				continue
+			}
+			if unicode.IsSpace(rune(character)) || strings.ContainsRune(";&|<>(){}", rune(character)) {
+				break
+			}
+			delimiter.WriteByte(character)
+			cursor++
+		}
+		if delimiterQuote != 0 || delimiter.Len() == 0 {
+			return nil, quote, false
+		}
+		found = append(found, phaseHeredoc{delimiter: delimiter.String(), stripTabs: stripTabs, quoted: quoted})
+		index = cursor - 1
+	}
+	return found, quote, true
+}
+
+func phaseInsideShellArithmetic(line string, index int) bool {
+	prefix := line[:index]
+	open := strings.LastIndex(prefix, "((")
+	close := strings.LastIndex(prefix, "))")
+	return open >= 0 && open > close
+}
+
+func phaseLineExecutesHeredocBody(line string) bool {
+	words, valid := phaseTokenizeShell(line)
+	if !valid {
+		return true
+	}
+	segment := make([]string, 0, 8)
+	for _, word := range words {
+		if word.control {
+			if phaseSimpleCommandReadsShellFromStdin(segment) {
+				return true
+			}
+			segment = segment[:0]
+		} else {
+			segment = append(segment, word.value)
+		}
+	}
+	return phaseSimpleCommandReadsShellFromStdin(segment)
+}
+
+func phaseSimpleCommandReadsShellFromStdin(words []string) bool {
+	cleaned := make([]string, 0, len(words))
+	for index := 0; index < len(words); index++ {
+		if words[index] == phaseShellRedirect {
+			index++
+		} else {
+			cleaned = append(cleaned, words[index])
+		}
+	}
+	words = cleaned
+	for len(words) > 0 && (phaseAssignment(words[0]) || phaseCommandPrefix(words[0])) {
+		words = words[1:]
+	}
+	for len(words) > 0 {
+		executable := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(words[0], `\`, "/"))), ".exe")
+		if executable == "env" || executable == "sudo" || executable == "command" || executable == "exec" ||
+			executable == "nice" || executable == "nohup" || executable == "time" || executable == "timeout" {
+			words = phaseUnwrapCommand(executable, words[1:])
+			continue
+		}
+		if executable == "source" || executable == "." {
+			for _, argument := range words[1:] {
+				if phaseShellStdinPath(argument) {
+					return true
+				}
+			}
+			return false
+		}
+		if !phaseShellInterpreter(executable) {
+			return false
+		}
+		stdinMode := false
+		for index := 1; index < len(words); index++ {
+			argument := words[index]
+			lower := strings.ToLower(argument)
+			isCommand := executable == "cmd" && lower == "/c" ||
+				(executable == "powershell" || executable == "pwsh") && lower == "-command" ||
+				executable != "cmd" && executable != "powershell" && executable != "pwsh" &&
+					strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") && strings.Contains(argument[1:], "c")
+			if isCommand || (executable == "powershell" || executable == "pwsh") && (lower == "-encodedcommand" || lower == "-enc") {
+				return index+1 < len(words) && phaseShellStdinPath(words[index+1])
+			}
+			if lower == "-file" {
+				return index+1 < len(words) && phaseShellStdinPath(words[index+1])
+			}
+			if lower == "-s" || (executable != "powershell" && executable != "pwsh" &&
+				strings.HasPrefix(lower, "-") && !strings.HasPrefix(lower, "--") && strings.Contains(lower[1:], "s")) {
+				stdinMode = true
+				continue
+			}
+			if lower == "--rcfile" || lower == "--init-file" || lower == "-o" || lower == "+o" ||
+				(executable == "fish" && (argument == "-C" || lower == "--init-command")) {
+				index++
+				continue
+			}
+			if phaseShellStdinPath(argument) {
+				return true
+			}
+			if argument == "--" || strings.HasPrefix(argument, "-") || stdinMode {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func phaseShellStdinPath(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0":
+		return true
+	}
+	return false
+}
+
+func phaseShellSegmentHasCommand(words []string) bool {
+	for index := 0; index < len(words); index++ {
+		if words[index] == phaseShellRedirect {
+			index++
+			continue
+		}
+		if phaseAssignment(words[index]) || phaseCommandPrefix(words[index]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func phaseTokenizeShell(command string) ([]phaseShellWord, bool) {
+	words := make([]phaseShellWord, 0, 16)
+	var word strings.Builder
+	var quote rune
+	escaped, comment, ambiguous := false, false, false
+	// pending marks a word with any quoting or escape: an empty one such as ''
+	// is still an argument, and a quoted number is never a descriptor.
+	pending, glob := false, false
+	flush := func() {
+		if word.Len() != 0 || pending {
+			words = append(words, phaseShellWord{value: word.String(), glob: glob})
+			word.Reset()
+		}
+		pending, glob = false, false
+	}
+	characters := []rune(command)
+	for index, character := range characters {
+		if comment {
+			if character == '\n' {
+				comment = false
+				words = append(words, phaseShellWord{control: true})
+			}
+			continue
+		}
+		if escaped {
+			word.WriteRune(character)
+			escaped = false
+			continue
+		}
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+			} else if quote == '"' && character == '\\' {
+				if index+1 < len(characters) && (characters[index+1] == '$' || characters[index+1] == '`' ||
+					characters[index+1] == '"' || characters[index+1] == '\\' || characters[index+1] == '\n') {
+					// Only POSIX shells escape an embedded " this way; cmd and
+					// PowerShell close the string after the backslash, so the
+					// quoting cannot be proved plain across shells.
+					if characters[index+1] == '"' {
+						ambiguous = true
+					}
+					escaped = true
+				} else {
+					word.WriteRune(character)
+				}
+			} else {
+				word.WriteRune(character)
+			}
+			continue
+		}
+		switch character {
+		case '\\':
+			escaped = true
+			pending = true
+		case '\'', '"':
+			quote = character
+			pending = true
+		case '#':
+			if word.Len() == 0 {
+				comment = true
+			} else {
+				word.WriteRune(character)
+			}
+		case '>', '<':
+			if pending || word.Len() != 0 && !phaseDigits(word.String()) {
+				flush()
+			} else {
+				word.Reset()
+				pending = false
+			}
+			if len(words) == 0 || words[len(words)-1].value != phaseShellRedirect {
+				words = append(words, phaseShellWord{value: phaseShellRedirect})
+			}
+		case ';', '&', '|', '\n', '(', ')', '{', '}':
+			// >& and <& duplicate or close a descriptor (2>&1, 2>&-). In cmd,
+			// ^> and ^< are literal, so the & after them still separates.
+			if character == '&' && word.Len() == 0 && index > 0 && (characters[index-1] == '>' || characters[index-1] == '<') &&
+				(index < 2 || characters[index-2] != '^') {
+				break
+			}
+			flush()
+			words = append(words, phaseShellWord{control: true})
+		default:
+			if unicode.IsSpace(character) {
+				flush()
+			} else {
+				word.WriteRune(character)
+				glob = glob || strings.ContainsRune("*?[", character)
+			}
+		}
+	}
+	flush()
+	return words, quote == 0 && !escaped && !ambiguous
+}
+
+// phaseCommandWords drops redirections, leading assignments, and command
+// prefixes, leaving the executable and its arguments.
+func phaseCommandWords(words []string) []string {
+	cleaned := make([]string, 0, len(words))
+	for index := 0; index < len(words); index++ {
+		if words[index] == phaseShellRedirect {
+			index++
+		} else {
+			cleaned = append(cleaned, words[index])
+		}
+	}
+	for len(cleaned) > 0 && (phaseAssignment(cleaned[0]) || phaseCommandPrefix(cleaned[0])) {
+		cleaned = cleaned[1:]
+	}
+	return cleaned
+}
+
+func phaseExecutableName(word string) string {
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(word, `\`, "/"))), ".exe")
+}
+
+func phaseWrapperExecutable(executable string) bool {
+	return executable == "env" || executable == "sudo" || executable == "command" || executable == "exec" ||
+		executable == "nice" || executable == "nohup" || executable == "time" || executable == "timeout"
+}
+
+// phaseInterpreterScript returns the script a shell interpreter or eval runs.
+// ok is false when there is none or it is only known at run time (a
+// variable, an encoded command, or a script file).
+func phaseInterpreterScript(executable string, words []string) (string, bool) {
+	arguments := words[1:]
+	switch executable {
+	case "eval":
+		if len(arguments) == 0 {
+			return "", false
+		}
+		return phaseLiteralScript(strings.Join(arguments, " "))
+	case "powershell", "pwsh":
+		return phasePowerShellScript(arguments)
+	case "cmd":
+		for index, argument := range arguments {
+			if flag := strings.ToLower(argument); flag == "/c" || flag == "/k" {
+				// cmd runs the rest of the line, treating ' as an ordinary
+				// character. Our tokenizer reads it as a POSIX quote, so a
+				// script carrying one cannot be proved plain; keep it ambient.
+				script := strings.Join(arguments[index+1:], " ")
+				if strings.ContainsRune(script, '\'') {
+					return "", false
+				}
+				return phaseLiteralScript(script)
+			}
+		}
+		return "", false
+	case "fish":
+		// fish runs every -c / --command and -C / --init-command value as its
+		// own script. Newlines keep a trailing # comment in one from hiding
+		// the next.
+		var scripts []string
+		for index := 0; index < len(arguments); index++ {
+			argument := arguments[index]
+			if value, found := strings.CutPrefix(argument, "--command="); found {
+				scripts = append(scripts, value)
+				continue
+			}
+			if value, found := strings.CutPrefix(argument, "--init-command="); found {
+				scripts = append(scripts, value)
+				continue
+			}
+			if argument == "--command" || argument == "--init-command" {
+				if index+1 < len(arguments) {
+					index++
+					scripts = append(scripts, arguments[index])
+				}
+				continue
+			}
+			if !strings.HasPrefix(argument, "-") || strings.HasPrefix(argument, "--") {
+				continue
+			}
+			// Short options may be grouped (-ic) and the value may be
+			// attached (-c'git push').
+			if flag := strings.IndexAny(argument[1:], "cC"); flag >= 0 {
+				if attached := argument[flag+2:]; attached != "" {
+					scripts = append(scripts, attached)
+				} else if index+1 < len(arguments) {
+					index++
+					scripts = append(scripts, arguments[index])
+				}
+			}
+		}
+		if len(scripts) == 0 {
+			return "", false
+		}
+		return phaseLiteralScript(strings.Join(scripts, "\n"))
+	}
+	// POSIX shells: the first non-option word after -c is the script; later
+	// words are positional parameters.
+	for index, argument := range arguments {
+		argument = strings.ToLower(argument)
+		if !strings.HasPrefix(argument, "-") || strings.HasPrefix(argument, "--") || !strings.Contains(argument[1:], "c") {
+			continue
+		}
+		script := index + 1
+		if script < len(arguments) && arguments[script] == "--" {
+			script++
+		}
+		if script >= len(arguments) {
+			return "", false
+		}
+		return phaseLiteralScript(arguments[script])
+	}
+	return "", false
+}
+
+// phasePowerShellScript reads pwsh / powershell.exe arguments. -Command (and
+// any prefix of it, such as -c) runs every remaining word; -CommandWithArgs
+// runs only the next word and passes the rest as $args.
+func phasePowerShellScript(arguments []string) (string, bool) {
+	for index := 0; index < len(arguments); index++ {
+		flag := strings.ToLower(arguments[index])
+		if !strings.HasPrefix(flag, "-") && !strings.HasPrefix(flag, "/") {
+			continue
+		}
+		name := strings.TrimLeft(flag, "-/")
+		switch {
+		case name == "":
+			continue
+		case name == "cwa" || (len(name) > len("command") && strings.HasPrefix("commandwithargs", name)):
+			if index+1 >= len(arguments) {
+				return "", false
+			}
+			return phaseLiteralScript(arguments[index+1])
+		case strings.HasPrefix("command", name):
+			return phaseLiteralScript(strings.Join(arguments[index+1:], " "))
+		case name == "e" || name == "ec" || (len(name) > 2 && strings.HasPrefix("encodedcommand", name)),
+			name == "f" || strings.HasPrefix("file", name):
+			// An encoded command or a script file cannot be inspected here.
+			return "", false
+		case name == "ep" || name == "ex" || strings.HasPrefix("executionpolicy", name) && len(name) > 2,
+			name == "wd" || strings.HasPrefix("workingdirectory", name) && len(name) > 1,
+			name == "w" || strings.HasPrefix("windowstyle", name) && len(name) > 1,
+			strings.HasPrefix("configurationname", name) && len(name) > 6,
+			strings.HasPrefix("settingsfile", name) && len(name) > 1,
+			name == "of" || strings.HasPrefix("outputformat", name) && len(name) > 1,
+			name == "if" || strings.HasPrefix("inputformat", name) && len(name) > 1:
+			index++ // the flag's value
+		}
+	}
+	return "", false
+}
+
+// phaseLiteralScript rejects scripts that only exist at run time. The words
+// have lost their quoting, so an expansion or glob anywhere in a script may
+// already have rewritten it in the outer shell, separators included.
+func phaseLiteralScript(script string) (string, bool) {
+	script = strings.TrimSpace(script)
+	if script == "" || strings.ContainsAny(script, "$`%*?[~") {
+		return "", false
+	}
+	return script, true
+}
+
+// phaseNestedShellScript returns the script a command hands to another shell,
+// looking through wrappers such as env or sudo.
+func phaseNestedShellScript(words []string) (string, bool) {
+	words = phaseCommandWords(words)
+	if len(words) == 0 {
+		return "", false
+	}
+	executable := phaseExecutableName(words[0])
+	switch {
+	case phaseShellInterpreter(executable) || executable == "eval":
+		return phaseInterpreterScript(executable, words)
+	case phaseWrapperExecutable(executable):
+		return phaseNestedShellScript(phaseUnwrapCommand(executable, words[1:]))
+	}
+	return "", false
+}
+
+// phaseNetworkCallHasConfigEnv reports a curl or wget call whose shell-visible
+// environment redirects where the client loads its implicit configuration.
+// curl and wget read those files before argv, so such a call could run extra
+// configured transfers with the Phase environment and cannot be proved plain.
+func phaseNetworkCallHasConfigEnv(words []string) bool {
+	config := false
+	for len(words) > 0 {
+		word := words[0]
+		switch {
+		case word == phaseShellRedirect:
+			if len(words) > 1 {
+				words = words[2:]
+			} else {
+				words = words[1:]
+			}
+			continue
+		case phaseAssignment(word):
+			name, _, _ := strings.Cut(word, "=")
+			switch name {
+			case "HOME", "CURL_HOME", "XDG_CONFIG_HOME", "WGETRC", "SYSTEM_WGETRC":
+				config = true
+			}
+			words = words[1:]
+			continue
+		case phaseCommandPrefix(word):
+			words = words[1:]
+			continue
+		}
+		executable := phaseExecutableName(word)
+		// env and sudo carry inline VAR=value assignments ahead of the command.
+		if phaseWrapperExecutable(executable) {
+			words = words[1:]
+			continue
+		}
+		return config && (executable == "curl" || executable == "wget")
+	}
+	return false
+}
+
+func phaseSimpleCommandRequiresPhase(words []string) bool {
+	if phaseNetworkCallHasConfigEnv(words) {
+		return false
+	}
+	words = phaseCommandWords(words)
+	if len(words) == 0 {
+		return false
+	}
+	executable := phaseExecutableName(words[0])
+	if executable == "phase" || executable == "phase-dev" || executable == "phase-hook" {
+		return false
+	}
+	if phaseShellInterpreter(executable) || executable == "eval" {
+		script, ok := phaseInterpreterScript(executable, words)
+		return ok && shellCommandRequiresPhase(script)
+	}
+	if phaseWrapperExecutable(executable) {
+		return phaseSimpleCommandRequiresPhase(phaseUnwrapCommand(executable, words[1:]))
+	}
+	if executable == "curl" || executable == "wget" {
+		return phaseCurlWgetRequiresPhase(executable, words[1:])
+	}
+	if phaseNetworkExecutable(executable) {
+		for _, argument := range words[1:] {
+			if phaseManagedTarget(argument) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// phaseCurlWgetRequiresPhase proves a curl or wget call reaches only Phase.
+// It walks the arguments in order, consuming each option's value where curl
+// and wget would, so a value such as -o cannot be mistaken for a transfer and
+// a transfer cannot be mistaken for a value. Options it does not recognise, or
+// any operand that is not phase.invalid, leave the call unmanaged: the guard
+// manages a call only when it can prove every transfer is Phase.
+func phaseCurlWgetRequiresPhase(executable string, arguments []string) bool {
+	managed := false
+	operandsOnly := false
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		if operandsOnly {
+			if !phaseManagedTarget(argument) {
+				return false
+			}
+			managed = true
+			continue
+		}
+		switch {
+		case argument == "--":
+			operandsOnly = true
+		case strings.HasPrefix(argument, "--"):
+			name, value, hasValue := strings.Cut(argument[2:], "=")
+			name = strings.ToLower(name)
+			kind := phaseNetworkLongOption(executable, name)
+			switch {
+			case kind == phaseOptionTarget:
+				target := value
+				if !hasValue {
+					if index++; index >= len(arguments) {
+						return false
+					}
+					target = arguments[index]
+				}
+				if !phaseManagedTarget(target) {
+					return false
+				}
+				managed = true
+			case kind == phaseOptionValue:
+				if !hasValue {
+					index++ // the option's value is the next argument
+				}
+			case kind == phaseOptionFlag && !hasValue:
+			default:
+				return false
+			}
+		case strings.HasPrefix(argument, "-") && len(argument) > 1:
+			if !phaseNetworkShortCluster(executable, argument[1:], arguments, &index) {
+				return false
+			}
+		default:
+			if !phaseManagedTarget(argument) {
+				return false
+			}
+			managed = true
+		}
+	}
+	return managed
+}
+
+// phaseNetworkShortCluster reads a short-option cluster such as -fsS or -qO-.
+// A value-taking option consumes the rest of the cluster, or the next argument
+// when it is the last in the cluster. An unknown option fails the proof.
+func phaseNetworkShortCluster(executable, cluster string, arguments []string, index *int) bool {
+	for position := 0; position < len(cluster); position++ {
+		flag := cluster[position]
+		takesValue, known := phaseNetworkShortOption(executable, flag)
+		if !known {
+			return false
+		}
+		if !takesValue {
+			continue
+		}
+		if position+1 == len(cluster) {
+			*index++ // the value is the next argument
+		}
+		return true // the rest of the cluster, if any, is the attached value
+	}
+	return true
+}
+
+type phaseOptionKind int
+
+const (
+	phaseOptionUnknown phaseOptionKind = iota
+	phaseOptionFlag
+	phaseOptionValue
+	phaseOptionTarget
+)
+
+func phaseNetworkLongOption(executable, name string) phaseOptionKind {
+	switch executable {
+	case "curl":
+		switch name {
+		case "url":
+			return phaseOptionTarget
+		case "fail", "silent", "show-error", "include", "verbose", "location":
+			return phaseOptionFlag
+		case "request", "header", "data", "data-raw", "data-binary", "data-ascii", "data-urlencode",
+			"json", "max-time", "proxy", "output", "form", "form-string", "user-agent", "referer",
+			"user", "cookie", "write-out":
+			return phaseOptionValue
+		}
+	case "wget":
+		switch name {
+		case "quiet", "no-config":
+			return phaseOptionFlag
+		case "output-document":
+			return phaseOptionValue
+		}
+	}
+	return phaseOptionUnknown
+}
+
+// phaseNetworkShortOption reports whether a short option is recognised and
+// whether it consumes a value. The config (-K) and upload (-T) options, and
+// anything unlisted, are unknown so the call cannot be proved plain.
+func phaseNetworkShortOption(executable string, flag byte) (takesValue, known bool) {
+	switch executable {
+	case "curl":
+		switch flag {
+		case 'f', 's', 'S', 'i', 'v', 'L', 'O', 'G', 'q', '#':
+			return false, true
+		case 'X', 'H', 'd', 'o', 'm', 'x', 'A', 'e', 'u', 'U', 'b', 'w':
+			return true, true
+		}
+	case "wget":
+		switch flag {
+		case 'q':
+			return false, true
+		case 'O':
+			return true, true
+		}
+	}
+	return false, false
+}
+
+func phaseUnwrapCommand(wrapper string, words []string) []string {
+	skippedTimeoutDuration := false
+	for index := 0; index < len(words); index++ {
+		word := words[index]
+		if word == "--" {
+			return words[index+1:]
+		}
+		if wrapper == "command" && (word == "-v" || word == "-V") {
+			return nil
+		}
+		if phaseAssignment(word) {
+			continue
+		}
+		if strings.HasPrefix(word, "-") {
+			lower := strings.ToLower(word)
+			if (wrapper == "sudo" && (word == "-C" || word == "-D" || word == "-g" || word == "-h" || word == "-p" ||
+				word == "-R" || word == "-r" || word == "-T" || word == "-t" || word == "-U" || word == "-u" || lower == "--chdir" ||
+				lower == "--chroot" || lower == "--close-from" || lower == "--command-timeout" || lower == "--group" ||
+				lower == "--host" || lower == "--prompt" || lower == "--role" || lower == "--type" || lower == "--user")) ||
+				(wrapper == "env" && (lower == "-u" || lower == "--unset" || lower == "-c" || lower == "--chdir" ||
+					lower == "-s" || lower == "--split-string")) ||
+				(wrapper == "nice" && (word == "-n" || word == "--adjustment")) ||
+				(wrapper == "timeout" && (lower == "-k" || lower == "--kill-after" || lower == "-s" || lower == "--signal")) ||
+				(wrapper == "time" && (lower == "-f" || lower == "--format" || lower == "-o" || lower == "--output")) ||
+				(wrapper == "exec" && (lower == "-a" || lower == "--argv0")) {
+				if !strings.Contains(word, "=") {
+					index++
+				}
+			}
+			continue
+		}
+		if wrapper == "timeout" && !skippedTimeoutDuration {
+			skippedTimeoutDuration = true
+			continue
+		}
+		return words[index:]
+	}
+	return nil
+}
+
+func phaseShellSubcommands(command string) ([]string, bool) {
+	commands := make([]string, 0, 2)
+	var quote byte
+	for index := 0; index < len(command); index++ {
+		character := command[index]
+		if character == '\\' {
+			index++
+			continue
+		}
+		if quote == '\'' {
+			if character == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if character == '\'' && quote == 0 {
+			quote = '\''
+			continue
+		}
+		if character == '"' {
+			quote ^= '"'
+			continue
+		}
+		if quote == 0 && character == '#' && (index == 0 || unicode.IsSpace(rune(command[index-1]))) {
+			if newline := strings.IndexByte(command[index:], '\n'); newline >= 0 {
+				index += newline
+				continue
+			}
+			return commands, true
+		}
+		if character == '`' {
+			end := strings.IndexByte(command[index+1:], '`')
+			if end < 0 {
+				return nil, false
+			}
+			end += index + 1
+			commands = append(commands, command[index+1:end])
+			index = end
+			continue
+		}
+		if character != '$' || index+1 >= len(command) || command[index+1] != '(' {
+			continue
+		}
+		end, valid := phaseSubcommandEnd(command, index+2)
+		if !valid {
+			return nil, false
+		}
+		if index+2 < len(command) && command[index+2] == '(' {
+			inner, valid := phaseShellSubcommands(command[index+3 : end-1])
+			if !valid {
+				return nil, false
+			}
+			commands = append(commands, inner...)
+		} else {
+			commands = append(commands, command[index+2:end])
+		}
+		index = end
+	}
+	return commands, quote == 0
+}
+
+func phaseSubcommandEnd(command string, start int) (int, bool) {
+	depth := 1
+	var quote byte
+	for index := start; index < len(command); index++ {
+		character := command[index]
+		if character == '\\' {
+			index++
+		} else if quote != 0 {
+			if character == quote {
+				quote = 0
+			}
+		} else if character == '\'' || character == '"' {
+			quote = character
+		} else if character == '(' {
+			depth++
+		} else if character == ')' {
+			depth--
+			if depth == 0 {
+				return index, true
+			}
+		}
+	}
+	return len(command), false
+}
+
+func phaseManagedTarget(value string) bool {
+	if strings.HasPrefix(value, "-") {
+		option, target, present := strings.Cut(value, "=")
+		if !present || !strings.EqualFold(option, "--url") {
+			return false
+		}
+		value = target
+	}
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" {
+		if parsed, err = url.Parse("//" + strings.Trim(value, "[]'\".,")); err != nil {
+			return false
+		}
+		host = strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	}
+	return host == "phase.invalid"
+}
+
+func phaseNetworkExecutable(executable string) bool {
+	return executable == "curl" || executable == "http" || executable == "httpie" || executable == "openssl" || executable == "wget"
+}
+
+func phaseShellInterpreter(executable string) bool {
+	return executable == "bash" || executable == "cmd" || executable == "dash" || executable == "fish" ||
+		executable == "ksh" || executable == "powershell" || executable == "pwsh" || executable == "sh" || executable == "zsh"
+}
+
+func phaseAssignment(value string) bool {
+	name, _, present := strings.Cut(value, "=")
+	if !present || name == "" {
+		return false
+	}
+	for index, character := range name {
+		if character != '_' && !unicode.IsLetter(character) && !(index > 0 && unicode.IsDigit(character)) {
+			return false
+		}
+	}
+	return true
+}
+
+func phaseCommandPrefix(value string) bool {
+	switch strings.ToLower(value) {
+	case "!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while":
+		return true
+	}
+	return false
+}
+
+func phaseDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if !unicode.IsDigit(character) {
+			return false
+		}
+	}
+	return true
+}

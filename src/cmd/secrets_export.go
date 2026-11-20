@@ -48,8 +48,11 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
+		return err
+	}
+	if err := refuseAgentDynamicSecretFlags(cmd, p); err != nil {
 		return err
 	}
 
@@ -71,22 +74,36 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Build maps for key filtering and AI redaction
-	allSecretsMap := make(map[string]string)
-	allSecretsKeySet := make(map[string]bool)
-	typeMap := make(map[string]string)
+	// An Agent login exports real values, to be written to a file or piped to
+	// a program. Other logins are masked by each secret's own type.
+	exportValue := func(secret sdk.SecretResult) string {
+		if !ai.AgentLogin() && ai.ShouldRedact(secret.Type) {
+			return "[REDACTED]"
+		}
+		return secret.Value
+	}
+
+	// The last secret of each key is what a key filter exports.
+	lastByKey := make(map[string]sdk.SecretResult)
 	for _, secret := range allSecrets {
-		allSecretsMap[secret.Key] = secret.Value
-		allSecretsKeySet[secret.Key] = true
-		typeMap[secret.Key] = secret.Type
+		lastByKey[secret.Key] = secret
 	}
 
 	var secretsList []util.KeyValue
+	// What leaves with a real value is registered with leak protection first.
+	var handedOut []sdk.SecretResult
+	exportSecret := func(key string, secret sdk.SecretResult) {
+		value := exportValue(secret)
+		if value == secret.Value {
+			handedOut = append(handedOut, secret)
+		}
+		secretsList = append(secretsList, util.KeyValue{Key: key, Value: value})
+	}
 	if len(filterKeys) > 0 {
 		// Check for missing keys
 		var missingKeys []string
 		for _, key := range filterKeys {
-			if !allSecretsKeySet[key] {
+			if _, ok := lastByKey[key]; !ok {
 				missingKeys = append(missingKeys, key)
 			}
 		}
@@ -105,20 +122,15 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 		}
 		// Export only the requested keys (in the order they were specified)
 		for _, key := range filterKeys {
-			value := allSecretsMap[key]
-			if ai.ShouldRedact(typeMap[key]) {
-				value = "[REDACTED]"
-			}
-			secretsList = append(secretsList, util.KeyValue{Key: key, Value: value})
+			exportSecret(key, lastByKey[key])
 		}
 	} else {
 		for _, secret := range allSecrets {
-			value := secret.Value
-			if ai.ShouldRedact(typeMap[secret.Key]) {
-				value = "[REDACTED]"
-			}
-			secretsList = append(secretsList, util.KeyValue{Key: secret.Key, Value: value})
+			exportSecret(secret.Key, secret)
 		}
+	}
+	if err := protectSecrets(cmd.Context(), p, handedOut); err != nil {
+		return err
 	}
 
 	// An export that produces nothing is otherwise silent; say why on stderr so

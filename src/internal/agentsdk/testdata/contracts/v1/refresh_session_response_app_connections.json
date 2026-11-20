@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "sessionUid": "session-123",
+  "expiresAt": "2026-11-17T11:00:00Z",
+  "configGeneration": 3,
+  "configEnv": {},
+  "connections": [],
+  "appConnections": [
+    {
+      "connectionId": "c0a80101-0000-4000-8000-0000000000c1",
+      "connectionName": "orders-service secrets (Development, Staging)",
+      "grantId": "c0a80101-0000-4000-8000-0000000000d1",
+      "app": {"id": "c0a80101-0000-4000-8000-0000000000e1", "name": "orders-service"},
+      "environments": [
+        {"id": "c0a80101-0000-4000-8000-0000000000f1", "name": "Development", "envType": "dev"},
+        {"id": "c0a80101-0000-4000-8000-0000000000f2", "name": "Staging", "envType": "staging"}
+      ],
+      "access": {
+        "read": {"effect": "allow"},
+        "create": {"effect": "ask"},
+        "update": {"effect": "ask"},
+        "delete": {"effect": "ask"}
+      },
+      "grantExpiresAt": "2026-11-18T09:00:00Z"
+    }
+  ]
+}

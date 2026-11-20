@@ -1,0 +1,12 @@
+{
+  "kind": "setup",
+  "title": "Read secrets in orders-service (development, staging)",
+  "durationSeconds": 3600,
+  "action": {
+    "type": "agent_connection.app_access",
+    "version": 1,
+    "appId": "c0a80101-0000-4000-8000-0000000000e1",
+    "environments": ["development", "staging"],
+    "access": "read"
+  }
+}
