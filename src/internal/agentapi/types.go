@@ -705,7 +705,14 @@ type SessionConfig struct {
 	// AppConnections are the app Connections the Workflow can use. The proxy
 	// only lists them: secrets calls go to the Console with the Agent token.
 	AppConnections []AppConnection `json:"appConnections,omitempty"`
+	// Organisation and Principal say whose session this is: ids only. A
+	// Console that predates them sends neither.
+	Organisation *SessionOrganisation `json:"organisation,omitempty"`
+	Principal    *SessionPrincipal    `json:"principal,omitempty"`
 }
+
+type SessionOrganisation = sdkagents.SessionOrganisation
+type SessionPrincipal = sdkagents.SessionPrincipal
 
 type OpenSessionResponse struct {
 	SessionConfig

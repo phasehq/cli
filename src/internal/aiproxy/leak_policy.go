@@ -52,8 +52,8 @@ type leakPartRule struct {
 	read bool
 	// rewrite: what is found is replaced in place.
 	rewrite bool
-	// block: a known value, or one of Phase's own tokens, that cannot be
-	// replaced stops the request. Anything else found there is only reported.
+	// block: a value registered with this proxy, or one of Phase's own tokens,
+	// that cannot be replaced stops the request. Anything else is only reported.
 	block bool
 }
 
@@ -81,7 +81,8 @@ type leakPartRule struct {
 // and anything there that is not text, is read as protobuf
 // (leakHostMatch.body).
 //
-// observe mode reads the same way and never replaces or blocks.
+// observe mode reads the same way and never replaces or blocks. A value the
+// proxy knows only from its store is reported where it would block (addFixed).
 var leakPartRules = map[leakPart]leakPartRule{
 	leakPartURL:        {read: true, block: true},
 	leakPartHeader:     {read: true},

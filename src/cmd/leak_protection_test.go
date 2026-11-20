@@ -24,6 +24,7 @@ import (
 	"github.com/phasehq/cli/pkg/censor"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/phase"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
 	gokeyring "github.com/zalando/go-keyring"
 )
@@ -287,15 +288,22 @@ func TestAFullInventoryHasItsOwnMessage(t *testing.T) {
 	values := []leakguard.Value{{Type: "secret", ID: "STRIPE_KEY", Value: leakTestSecrets[0].Value}}
 	warnings := captureLeakWarnings(t)
 	err := protectValues(context.Background(), true, values)
-	if !errors.Is(err, errLeakInventoryFull) || !strings.Contains(err.Error(), "full") || strings.Contains(err.Error(), "reach") ||
-		!strings.Contains(err.Error(), "Restarting the Phase AI proxy") {
+	if !errors.Is(err, errLeakInventoryFull) || !strings.Contains(err.Error(), "no room") || strings.Contains(err.Error(), "reach") ||
+		!strings.Contains(err.Error(), "Restarting the Phase AI proxy makes room") {
 		t.Fatalf("Agent: %v", err)
 	}
 	if err := protectValues(context.Background(), false, values); err != nil {
 		t.Fatal(err)
 	}
-	if got := warnings.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "full") || strings.Contains(got, "reach") {
+	got := warnings.String()
+	if strings.Count(got, "\n") != 1 || !strings.Contains(got, "no room") || strings.Contains(got, "reach") {
 		t.Fatalf("warning: %q", got)
+	}
+	// A stored inventory is not cleared by a restart, and nothing says it is.
+	for _, said := range []string{err.Error(), got} {
+		if strings.Contains(said, "clear") || !strings.Contains(said, "registered most recently") {
+			t.Fatalf("the message says what a restart does not do: %q", said)
+		}
 	}
 }
 
@@ -339,6 +347,9 @@ type leakControlProxy struct {
 	keyStatus int
 	keyBody   string
 	stall     time.Duration
+	// asked is who each key request said the command is, and stated who each
+	// registration said.
+	asked, stated []phaseproxy.InventoryIdentity
 }
 
 const leakTestCapability = "runtime-capability"
@@ -367,7 +378,7 @@ func newLeakControlProxy(t *testing.T) (*leakControlProxy, string) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/inventory/key":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory/key":
 			fake.keyCalls++
 			if fake.keyStatus != 0 {
 				w.WriteHeader(fake.keyStatus)
@@ -377,7 +388,13 @@ func newLeakControlProxy(t *testing.T) (*leakControlProxy, string) {
 				_, _ = w.Write([]byte(fake.keyBody))
 				return
 			}
-			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.Bytes()), Format: censor.EntriesVersion})
+			var asked remoteapi.InventoryKeyRequest
+			if json.NewDecoder(r.Body).Decode(&asked) != nil || asked.SchemaVersion != 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			fake.asked = append(fake.asked, phaseproxy.InventoryIdentity{Tenant: asked.Tenant, Login: asked.Login})
+			_ = json.NewEncoder(w).Encode(remoteapi.InventoryKeyResponse{SchemaVersion: 1, Key: base64.StdEncoding.EncodeToString(key.LookupBytes()), ConfirmKey: base64.StdEncoding.EncodeToString(key.ConfirmBytes()), Format: censor.EntriesVersion, KeyID: "fake-key"})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/inventory":
 			fake.posts++
 			if fake.full {
@@ -386,10 +403,11 @@ func newLeakControlProxy(t *testing.T) (*leakControlProxy, string) {
 				return
 			}
 			var request remoteapi.InventoryRequest
-			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.IDKinds) != len(request.Entries) {
+			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.IDKinds) != len(request.Entries) || request.KeyID != "fake-key" {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			fake.stated = append(fake.stated, phaseproxy.InventoryIdentity{Tenant: request.Tenant, Login: request.Login})
 			for index, raw := range request.Entries {
 				entry, err := censor.ParseEntries(raw)
 				if err != nil {
@@ -960,5 +978,72 @@ func TestALockThatSaysNothingIsOnItsWayCostsNoWait(t *testing.T) {
 				t.Fatalf("the commands said %q", got)
 			}
 		})
+	}
+}
+
+// A command tells the proxy it finds who it is itself, on the key request and
+// with every registration. A command that cannot tell states nothing.
+func TestACommandStatesItsOwnLoginToTheProxyItFinds(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
+	noSession(t)
+	fake, proxyURL := newLeakControlProxy(t)
+	hookProxyState(t, directory, proxyURL, os.Getpid())
+	mine := phaseproxy.NewInventoryIdentity("https://console.test", "org-of-the-command", phaseproxy.InventoryLoginUser, "account-1")
+	who := mine
+	asked := 0
+	previous := leakIdentity
+	leakIdentity = func(context.Context) phaseproxy.InventoryIdentity { asked++; return who }
+	t.Cleanup(func() { leakIdentity = previous })
+	lease := []byte(`[{"id":"ds-1","lease":{"id":"lease-123","credentials":[{"key":"DB_PASSWORD","value":"Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3"}]}}]`)
+	if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+		t.Fatal(err)
+	}
+	if err := protectLeaseCredentials(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	who = phaseproxy.InventoryIdentity{}
+	if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !reflect.DeepEqual(fake.asked, []phaseproxy.InventoryIdentity{mine, {}}) || !reflect.DeepEqual(fake.stated, []phaseproxy.InventoryIdentity{mine, mine, {}}) {
+		t.Fatalf("key requests as %+v, registrations as %+v", fake.asked, fake.stated)
+	}
+	// With nothing to register, and with no proxy, nobody is asked who they are.
+	asked = 0
+	if err := protectSecrets(context.Background(), nil, nil); err != nil || asked != 0 {
+		t.Fatalf("a command with nothing to register asked who it is: %v", err)
+	}
+	if err := os.Remove(filepath.Join(directory, hookRuntimeStateFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := protectSecrets(context.Background(), nil, leakTestSecrets); err != nil || asked != 0 {
+		t.Fatalf("a command with no proxy asked who it is: %v", err)
+	}
+}
+
+// End to end: an Agent token in a command's environment, and another login's
+// proxy. The command says it is the Agent the Console says its token is.
+func TestAnAgentCommandStatesWhoTheConsoleSaysItsTokenIs(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	directory := withHookRuntimeDirectory(t)
+	fake, proxyURL := newLeakControlProxy(t)
+	hookProxyState(t, directory, proxyURL, os.Getpid())
+	inactiveNotice, runtimeWarning = sync.Once{}, sync.Once{}
+	if _, stderr, err := runPhaseCommand(t, "", "secrets", "export", "--app-id", "app-orders", "--format", "json"); err != nil {
+		t.Fatalf("%v %s", err, stderr)
+	}
+	want := phaseproxy.NewInventoryIdentity(console.server.URL, "org-orders", phaseproxy.InventoryLoginAgent, "agent-orders")
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !want.Known() || len(fake.stated) == 0 {
+		t.Fatalf("%d registrations reached the proxy", len(fake.stated))
+	}
+	for _, stated := range append(append([]phaseproxy.InventoryIdentity{}, fake.asked...), fake.stated...) {
+		if stated != want {
+			t.Fatalf("the command said it is %q of %q", stated.Login, stated.Tenant)
+		}
 	}
 }

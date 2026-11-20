@@ -52,6 +52,12 @@ func (OSKeyring) Set(service, user, value string) error {
 	return gokeyring.Set(service, user, value)
 }
 
+// Delete removes an entry. It is not part of PrivateKeyStore: a store that
+// cannot delete has its entry replaced instead (see InventoryStore.Purge).
+func (OSKeyring) Delete(service, user string) error {
+	return gokeyring.Delete(service, user)
+}
+
 type CAPaths struct {
 	Certificate    string
 	Bundle         string

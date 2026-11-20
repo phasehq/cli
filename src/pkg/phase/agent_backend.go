@@ -64,6 +64,7 @@ func newAgentBackend() (*AgentBackend, error) {
 	if err != nil {
 		return nil, err
 	}
+	account := keyring.LastAccount()
 	host, err := config.GetDefaultUserHost()
 	if err != nil {
 		return nil, err
@@ -77,7 +78,9 @@ func newAgentBackend() (*AgentBackend, error) {
 		return nil, errors.New("invalid Agent token")
 	}
 	ai.SetAgentLogin(true)
-	return &AgentBackend{client: client}, nil
+	backend := &AgentBackend{client: client}
+	rememberLogin(backend, account)
+	return backend, nil
 }
 
 func agentContext() (context.Context, context.CancelFunc) {

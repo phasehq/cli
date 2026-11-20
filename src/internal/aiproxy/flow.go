@@ -222,7 +222,7 @@ type ReadHost struct {
 // tool it is listed under, and never for a program that is not known to be a
 // listed tool. It is false for every host when leak protection is off.
 func (e *Engine) ShouldRead(tool, host string) bool {
-	guard, err := e.leakGuard()
+	guard, err := e.leakHosts()
 	if err != nil {
 		return false
 	}
@@ -237,7 +237,7 @@ func (e *Engine) ShouldRead(tool, host string) bool {
 // what a capture layer has to route to the proxy for that tool. It is empty
 // for a tool that is not listed and when leak protection is off.
 func (e *Engine) ReadHosts(tool string) []ReadHost {
-	guard, err := e.leakGuard()
+	guard, err := e.leakHosts()
 	if err != nil || guard.mode == leakModeOff {
 		return nil
 	}

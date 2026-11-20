@@ -281,6 +281,25 @@ func (t leakHostTable) mirroredHostNames() []string {
 	return slices.Compact(names)
 }
 
+// publicTexts are what every request to a host the table reads holds: its
+// name and the paths its entry names. A value that is one is no secret.
+func (t leakHostTable) publicTexts() [][]byte {
+	var texts []string
+	for _, harness := range t {
+		for _, rule := range harness.Hosts {
+			if rule.Treatment == leakTreatmentInspect {
+				texts = append(append(texts, rule.Host, rule.PathPrefix), rule.ConversationPaths...)
+			}
+		}
+	}
+	sort.Strings(texts)
+	var public [][]byte
+	for _, text := range slices.Compact(texts) {
+		public = append(public, []byte(text))
+	}
+	return public
+}
+
 // hostNames lists the table's hosts by treatment, a domain written as *.name.
 // A host listed under several tools is named once.
 func (t leakHostTable) hostNames(treatment string) []string {

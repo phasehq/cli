@@ -69,6 +69,7 @@ func (e *Error) Error() string {
 
 type Client struct {
 	baseURL       *url.URL
+	deployment    string // the path the Console is served under, before its API's
 	authorization string
 	tokenType     TokenType
 	httpClient    *http.Client
@@ -101,6 +102,7 @@ func NewClient(host, durableToken string, httpClient *http.Client) (*Client, err
 	if baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
 		return nil, fmt.Errorf("Phase host must not contain user information, a query, or a fragment")
 	}
+	deployment := DeploymentPath(baseURL.Path)
 	basePath := strings.TrimSuffix(baseURL.Path, "/")
 	sdkBasePath := basePath
 	switch {
@@ -167,6 +169,7 @@ func NewClient(host, durableToken string, httpClient *http.Client) (*Client, err
 	}
 	return &Client{
 		baseURL:       baseURL,
+		deployment:    deployment,
 		authorization: fmt.Sprintf("Bearer %s %s", tokenType, lookup),
 		tokenType:     tokenType,
 		httpClient:    &clonedHTTPClient,

@@ -377,7 +377,7 @@ func (w *binaryWalk) proof(start, end, depth int) ([]extent, *viewLayout) {
 		data := w.cur[from:to]
 		for _, s := range w.ix.findSpans(data) {
 			form := &w.ix.forms[s.form]
-			first, last := s.checked-s.verified*chunkSize, s.checked
+			first, last := s.checked-s.verified*form.chunk, s.checked
 			switch {
 			case s.full && !form.wholeRun:
 				first, last = s.start, s.end
@@ -658,7 +658,7 @@ func (w *binaryWalk) idLength(typ string, rest []byte) (int, bool) {
 	}
 	// A registered id ends where it ends, whatever follows it.
 	for n := run; n > 0; n-- {
-		if _, registered := w.ix.secrets[secretKey{typ: typ, id: string(rest[:n])}]; registered {
+		if w.ix.namesID(typ, string(rest[:n])) {
 			return n, false
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
@@ -55,6 +56,10 @@ type Runtime struct {
 	WorkflowID   string
 	HarnessLabel string
 	CAStore      proxy.CAStore
+
+	// nameless says the first session opened named nobody: see identify.
+	identified sync.Once
+	nameless   bool
 }
 
 type ProxySession struct {
@@ -62,6 +67,12 @@ type ProxySession struct {
 	Client  *agentapi.Client
 	CA      *proxy.CA
 	CAPaths proxy.CAPaths
+	// Inventory is where the proxy keeps its leak protection inventory
+	// across restarts: beside the CA. Nil keeps it in memory.
+	Inventory *proxy.InventoryStore
+	// Identity is whose session this is, as the Console's answer that opened
+	// it said: the tenant and the login, never a token. Zero when it did not.
+	Identity proxy.InventoryIdentity
 	// HarnessLabel names the one AI tool this session's proxy serves, as
 	// phase ai run and phase ai exec resolve it. It is empty for a proxy that
 	// serves whatever harness reaches it, such as the hook-managed daemon.
@@ -77,15 +88,13 @@ func New(workflowOverride string) (*Runtime, error) {
 	if aiConfig == nil || !aiConfig.Enabled {
 		return nil, errors.New("Phase AI mode is disabled; a user must run phase ai enable")
 	}
-	host, err := config.GetDefaultUserHost()
+	// One look at the login for the whole start: the host and the token are
+	// one account's, and who that is comes from the session the Console opens.
+	login, err := activeLogin()
 	if err != nil {
 		return nil, ErrAuthenticationRequired
 	}
-	token, err := keyring.GetCredentials()
-	if err != nil {
-		return nil, ErrAuthenticationRequired
-	}
-	client, err := clientForSavedLogin(host, token)
+	client, err := clientForSavedLogin(login.Host, login.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +108,33 @@ func New(workflowOverride string) (*Runtime, error) {
 		workflowID = aiConfig.DefaultWorkflowID
 	}
 	return &Runtime{Client: client, WorkflowID: workflowID}, nil
+}
+
+// activeLogin reads the login the runtime starts with; tests replace it.
+var activeLogin = keyring.ActiveLogin
+
+// sessionIdentity is whose session the Console says it opened: the session's
+// organisation and principal, at the client's host. Zero when it names neither.
+func sessionIdentity(client *agentapi.Client, session *agentapi.OpenSessionResponse) proxy.InventoryIdentity {
+	if client == nil || session == nil || session.Organisation == nil || session.Principal == nil {
+		return proxy.InventoryIdentity{}
+	}
+	// A principal of another kind than the token's is not this client's login.
+	if session.Principal.Type != client.TokenType().IdentityKind() {
+		return proxy.InventoryIdentity{}
+	}
+	return proxy.NewInventoryIdentity(client.Host(), session.Organisation.ID, session.Principal.Type, session.Principal.ID)
+}
+
+// identify is sessionIdentity for this runtime's proxy, which serves one
+// identity for its life: once a first session named nobody, every later one does.
+func (r *Runtime) identify(session *agentapi.OpenSessionResponse) proxy.InventoryIdentity {
+	identity := sessionIdentity(r.Client, session)
+	r.identified.Do(func() { r.nameless = !identity.Known() })
+	if r.nameless {
+		return proxy.InventoryIdentity{}
+	}
+	return identity
 }
 
 func clientForSavedLogin(host, token string) (*agentapi.Client, error) {
@@ -242,7 +278,10 @@ func (r *Runtime) withSession(ctx context.Context, engine Engine, command []stri
 	if err != nil {
 		return err
 	}
-	proxySession := &ProxySession{Config: session, Client: r.Client, CA: ca, CAPaths: paths}
+	// The inventory is the session's tenant's: the proxy opens no other.
+	identity := r.identify(session)
+	proxySession := &ProxySession{Config: session, Client: r.Client, CA: ca, CAPaths: paths,
+		Inventory: &proxy.InventoryStore{Directory: caStore.Directory, Keyring: caStore.Keyring, Tenant: identity.Tenant}, Identity: identity}
 	if command == nil {
 		return engine.Serve(ctx, proxySession)
 	}

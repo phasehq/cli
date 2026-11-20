@@ -19,26 +19,38 @@ import (
 
 func TestKeyBytesRoundTrip(t *testing.T) {
 	key := newKey(t)
-	again, err := KeyFromBytes(key.Bytes())
+	again, err := KeyFromBytes(key.LookupBytes(), key.ConfirmBytes())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if *again != *key {
 		t.Fatal("a key rebuilt from its bytes differs")
 	}
-	exported := key.Bytes()
-	exported[0] ^= 1
-	if bytes.Equal(exported, key.Bytes()) {
-		t.Fatal("Bytes should return a copy")
-	}
-	for _, bad := range [][]byte{nil, make([]byte, 31), make([]byte, 33), make([]byte, 64), make([]byte, KeySize)} {
-		if _, err := KeyFromBytes(bad); err == nil {
-			t.Fatalf("a %d-byte key was accepted", len(bad))
+	for name, export := range map[string]func() []byte{"LookupBytes": key.LookupBytes, "ConfirmBytes": key.ConfirmBytes} {
+		exported := export()
+		exported[0] ^= 1
+		if bytes.Equal(exported, export()) {
+			t.Fatalf("%s should return a copy", name)
 		}
 	}
+	if bytes.Equal(key.LookupBytes(), key.ConfirmBytes()) {
+		t.Fatal("a key's two parts are equal")
+	}
+	for _, bad := range [][]byte{nil, make([]byte, 31), make([]byte, 33), make([]byte, 64), make([]byte, KeySize)} {
+		if _, err := KeyFromBytes(bad, key.ConfirmBytes()); err == nil {
+			t.Fatalf("a %d-byte lookup key was accepted", len(bad))
+		}
+		if _, err := KeyFromBytes(key.LookupBytes(), bad); err == nil {
+			t.Fatalf("a %d-byte confirming key was accepted", len(bad))
+		}
+	}
+	// One secret in both roles is the shape the split exists to end.
+	if _, err := KeyFromBytes(key.LookupBytes(), key.LookupBytes()); err == nil {
+		t.Fatal("the lookup key was accepted as the confirming key")
+	}
 	other := newKey(t)
-	if bytes.Equal(other.Bytes(), key.Bytes()) {
-		t.Fatal("two random keys are equal")
+	if bytes.Equal(other.LookupBytes(), key.LookupBytes()) || bytes.Equal(other.ConfirmBytes(), key.ConfirmBytes()) {
+		t.Fatal("two random keys share a part")
 	}
 }
 
@@ -105,7 +117,7 @@ func TestClientEntriesMatchDirectIndexing(t *testing.T) {
 	daemonKey := newKey(t)
 	direct, _ := buildWithEntries(t, daemonKey, secrets...)
 
-	clientKey, err := KeyFromBytes(daemonKey.Bytes())
+	clientKey, err := KeyFromBytes(daemonKey.LookupBytes(), daemonKey.ConfirmBytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,15 +368,22 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 	}
 	// A form whose length is not a multiple of the chunk, so it has a tail.
 	tailed := -1
+	chunkOf := func(f Form) int {
+		c, err := schemes[good.Version].chunkOf(&f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
 	for i, f := range good.Forms {
-		if f.Length%chunkSize != 0 {
+		if f.Length%chunkOf(f) != 0 {
 			tailed = i
 			break
 		}
 	}
 	whole := -1
 	for i, f := range good.Forms {
-		if f.Length%chunkSize == 0 {
+		if f.Length%chunkOf(f) == 0 {
 			whole = i
 			break
 		}
@@ -374,7 +393,9 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 	}
 	mutations := map[string]func(e *Entries){
 		"version 0":            func(e *Entries) { e.Version = 0 },
-		"version 2":            func(e *Entries) { e.Version = 2 },
+		"version 3":            func(e *Entries) { e.Version = EntriesVersion + 1 },
+		"wide in scheme 1":     func(e *Entries) { e.Version = 1 },
+		"narrow hex form":      func(e *Entries) { narrowHexForm(t, e) },
 		"empty type":           func(e *Entries) { e.Type = "" },
 		"type with a colon":    func(e *Entries) { e.Type = "a:b" },
 		"long id":              func(e *Entries) { e.ID = strings.Repeat("x", 65) },
@@ -383,7 +404,8 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 		"huge form":            func(e *Entries) { e.Forms[0].Length = 1 << 40 },
 		"negative length":      func(e *Entries) { e.Forms[0].Length = -12 },
 		"length and chunks":    func(e *Entries) { e.Forms[0].Length += chunkSize },
-		"missing roll":         func(e *Entries) { e.Forms[0].Rolls = e.Forms[0].Rolls[:len(e.Forms[0].Rolls)-8] },
+		"missing lookup":       func(e *Entries) { e.Forms[0].Lookups = e.Forms[0].Lookups[:len(e.Forms[0].Lookups)-3] },
+		"a whole rolling hash": func(e *Entries) { e.Forms[0].Rolls = make([]byte, 8*(e.Forms[0].Length/chunkSize)) },
 		"extra mac":            func(e *Entries) { e.Forms[0].MACs = append(e.Forms[0].MACs, make([]byte, macSize)...) },
 		"short mac":            func(e *Entries) { e.Forms[0].MACs = e.Forms[0].MACs[:len(e.Forms[0].MACs)-1] },
 		"weak too long":        func(e *Entries) { e.Forms[0].Weak = append(e.Forms[0].Weak, 0) },
@@ -433,11 +455,11 @@ func TestMalformedEntriesAreRefused(t *testing.T) {
 		"empty":          "",
 		"null":           "null",
 		"array":          "[]",
-		"unknown field":  strings.Replace(string(wire), `"v":1`, `"v":1,"extra":true`, 1),
+		"unknown field":  strings.Replace(string(wire), `"v":2`, `"v":2,"extra":true`, 1),
 		"trailing data":  string(wire) + `{}`,
 		"trailing text":  string(wire) + `x`,
-		"bad base64":     strings.Replace(string(wire), `"rolls":"`, `"rolls":"!`, 1),
-		"string version": strings.Replace(string(wire), `"v":1`, `"v":"1"`, 1),
+		"bad base64":     strings.Replace(string(wire), `"lookups":"`, `"lookups":"!`, 1),
+		"string version": strings.Replace(string(wire), `"v":2`, `"v":"2"`, 1),
 	} {
 		if _, err := ParseEntries([]byte(raw)); err == nil {
 			t.Fatalf("%s: accepted", name)
@@ -587,4 +609,23 @@ func FuzzParseEntries(f *testing.F) {
 		}
 		ix.Find([]byte(fmt.Sprintf("probe %x", data)))
 	})
+}
+
+// narrowHexForm rewrites the entries' hex form as plain 12-byte chunks, which
+// scheme 2 exists to keep out of an index.
+func narrowHexForm(t *testing.T, e *Entries) {
+	t.Helper()
+	for i := range e.Forms {
+		f := &e.Forms[i]
+		if f.Form != formHex || !f.Wide {
+			continue
+		}
+		n := f.Length / chunkSize
+		f.Wide, f.Lookups, f.MACs, f.Weak, f.Tail = false, make([]byte, 3*n), make([]byte, macSize*n), make([]byte, (n+7)/8), nil
+		if f.Length%chunkSize != 0 {
+			f.Tail = make([]byte, macSize)
+		}
+		return
+	}
+	t.Fatal("the test value has no wide hex form")
 }

@@ -40,6 +40,13 @@ type Finding struct {
 	// Path is the JSON pointer of the string it was found in, for RewriteJSON. A
 	// string holding JSON adds '#' and the pointer inside it.
 	Path string `json:"path,omitempty"`
+	// Withheld numbers a value whose id is withheld, from 1, the same while the
+	// Index holds it: all that tells two such values of one type apart, and
+	// nothing to count by in what the reader of the scan is told.
+	Withheld int `json:"-"`
+	// Loaded says the value was found only through entries added with
+	// AddLoaded: a store handed them over, and no client has added them since.
+	Loaded bool `json:"-"`
 }
 
 // Match is a Finding with where it sits in the scanned bytes.
@@ -53,6 +60,7 @@ func (h hit) finding() Finding {
 	return Finding{
 		Kind: h.kind, Placeholder: h.placeholder, Action: h.action, Label: h.label, Rule: h.rule,
 		Score: h.score, Form: h.form, Part: h.part, Decoded: h.decoded, Partial: h.partial, Path: h.path,
+		Withheld: int(h.withheld), Loaded: h.loaded,
 	}
 }
 
@@ -106,9 +114,10 @@ func (ix *Index) RedactWith(data []byte, opts ScanOptions) ([]byte, *Report) {
 // and says where each finding sits and what would replace it. Ranges are
 // sorted by start; a rule match that spans an indexed value contains its range.
 // A finding inside a decoded run covers the whole run. At most MaxFindings are
-// returned, and when there are more the first indexed value and the first match
-// of every rule label are among them: a caller that acts on a kind of finding
-// is never kept from seeing one by a crowd of others before it.
+// returned, and when there are more the first indexed value, the first one a
+// client registered when that is another, and the first match of every rule
+// label are among them: a caller that acts on a kind of finding is never kept
+// from seeing one by a crowd of others before it.
 func (ix *Index) Find(data []byte) []Match {
 	return ix.FindWith(data, ScanOptions{})
 }
@@ -126,10 +135,16 @@ func (ix *Index) FindWith(data []byte, opts ScanOptions) []Match {
 	var first map[int]bool
 	if len(reps) > MaxFindings {
 		first = map[int]bool{}
-		seen := map[[2]string]bool{}
+		// A value a store handed over is a kind of its own: a caller may act
+		// on one a client registered and not on it.
+		type kind struct {
+			kind, label string
+			loaded      bool
+		}
+		seen := map[kind]bool{}
 		for i, r := range reps {
-			if kind := [2]string{r.hit.kind, r.hit.label}; !seen[kind] {
-				seen[kind], first[i] = true, true
+			if of := (kind{r.hit.kind, r.hit.label, r.hit.loaded}); !seen[of] {
+				seen[of], first[i] = true, true
 			}
 		}
 	}

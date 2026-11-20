@@ -223,6 +223,9 @@ func leakProtectionSummary(status remoteapi.LeakProtectionStatus) string {
 	if status.Unprotected > 0 {
 		line += fmt.Sprintf(", %d too short or plain to protect", status.Unprotected)
 	}
+	if status.Inventory != nil {
+		line += "; " + leakInventorySummary(*status.Inventory)
+	}
 	if status.RulesSkipped > 0 {
 		line += fmt.Sprintf("; %d pattern %s skipped", status.RulesSkipped, plural(status.RulesSkipped, "rule", "rules"))
 	}
