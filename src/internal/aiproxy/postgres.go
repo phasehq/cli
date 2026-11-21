@@ -29,6 +29,13 @@ import (
 
 const maxPGMessageBytes = 16 << 20
 
+// maxPGParameterStatuses and maxPGParameterStatusBytes bound the settings an
+// upstream announces during login.
+const (
+	maxPGParameterStatuses    = 256
+	maxPGParameterStatusBytes = 64 << 10
+)
+
 var (
 	errPostgresUpstreamUnavailable         = errors.New("PostgreSQL upstream is unavailable")
 	errPostgresUpstreamTLSRequired         = errors.New("PostgreSQL upstream TLS is required")
@@ -326,6 +333,7 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 	}
 	scram := pgSCRAMState{}
 	var statuses [][]byte
+	statusBytes := 0
 	for {
 		kind, payload, readErr := readPGMessage(connection)
 		if readErr != nil {
@@ -333,6 +341,12 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 		}
 		switch kind {
 		case 'S':
+			// A server announces a dozen or so settings; they are held until
+			// login ends, so how many and how large is bounded.
+			statusBytes += len(payload)
+			if len(statuses) == maxPGParameterStatuses || statusBytes > maxPGParameterStatusBytes {
+				return fail(errPostgresUpstreamProtocol)
+			}
 			statuses = append(statuses, append([]byte(nil), payload...))
 		case 'R':
 			if len(payload) < 4 {

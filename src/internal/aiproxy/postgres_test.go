@@ -564,3 +564,62 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 func writePGParameter(writer io.Writer, key, value string) error {
 	return writePGMessage(writer, 'S', []byte(key+"\x00"+value+"\x00"))
 }
+
+// What an upstream announces during login is held until login ends, so how
+// many settings and how many bytes of them are bounded.
+func TestPostgresUpstreamLoginSettingsAreBounded(t *testing.T) {
+	binding := &binding{connection: agentapi.Connection{
+		Protocol: "postgres",
+		Hosts:    []agentapi.HostRule{{Match: "exact", Value: "database.internal", Port: 5432}},
+	}}
+	for name, announce := range map[string]func(net.Conn){
+		"many settings": func(c net.Conn) {
+			for index := 0; index <= maxPGParameterStatuses; index++ {
+				if writePGParameter(c, fmt.Sprintf("setting_%d", index), "on") != nil {
+					return
+				}
+			}
+		},
+		"large settings": func(c net.Conn) {
+			for index := 0; index < 4; index++ {
+				if writePGParameter(c, fmt.Sprintf("setting_%d", index), strings.Repeat("x", 32<<10)) != nil {
+					return
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			go func() {
+				connection, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer connection.Close()
+				_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+				var sslRequest [8]byte
+				if _, err := io.ReadFull(connection, sslRequest[:]); err != nil {
+					return
+				}
+				_, _ = connection.Write([]byte{'N'})
+				if _, err := readPGStartup(connection); err != nil {
+					return
+				}
+				_ = writePGAuth(connection, 0, nil)
+				announce(connection)
+				_ = writePGMessage(connection, 'Z', []byte{'I'})
+			}()
+			adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
+			}}
+			connection, _, err := adapters.connectPostgresUpstream(context.Background(), binding, "phase-user", "test-live-password", map[string]string{"database": "phase-db"})
+			if connection != nil || !errors.Is(err, errPostgresUpstreamProtocol) {
+				t.Fatalf("an unbounded login was accepted: (%v, %v)", connection, err)
+			}
+		})
+	}
+}
