@@ -119,10 +119,18 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		h.pollRequest(w, req, requestID)
-	case req.Method == http.MethodPost && path == "/v1/revoke":
-		h.revoke(w, req)
-	case req.Method == http.MethodPost && path == "/v1/rotate":
-		h.rotate(w, req)
+	case req.Method == http.MethodPost && (path == "/v1/revoke" || path == "/v1/rotate"):
+		// These take no body, so a client that follows an upstream's redirect
+		// could send one; the CLI's own callers mark theirs.
+		if req.Header.Get(phaseproxy.ControlIntentHeader) != "1" {
+			writeControlError(w, http.StatusForbidden, "control_intent_required", "This Phase AI control route accepts only the Phase CLI's own calls.", false)
+			return
+		}
+		if path == "/v1/revoke" {
+			h.revoke(w, req)
+		} else {
+			h.rotate(w, req)
+		}
 	case req.Method == http.MethodPost && path == "/v1/refresh":
 		h.refresh(w, req)
 	default:

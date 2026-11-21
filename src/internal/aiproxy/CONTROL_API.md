@@ -25,6 +25,7 @@ All IDs, URLs and values in the examples are dummies.
 | Content type | JSON in, JSON out. `Cache-Control: no-store` on every control response. |
 | Query strings | Rejected (400 `invalid_control_query`) except `?wait=` on request creation/polling and `?serviceType=` on context. |
 | Browser safety | A `POST` carrying `Origin`, `Referer` or a `Sec-Fetch-Site` other than `none` is refused with 403 `browser_control_mutation_rejected`. |
+| Control intent | `POST /v1/revoke` and `POST /v1/rotate` take no body, so a client that follows an upstream's redirect could send one with the Agent's proxy credentials. They require `X-Phase-Control: 1`, which the CLI's own callers set and a redirected request does not carry; without it they answer 403 `control_intent_required`. |
 | Limits | Request bodies ≤ 128 KiB. IDs match `^[A-Za-z0-9._-]{1,128}$`. `markdown` ≤ 16 KiB. `title` ≤ 120 characters. A Workflow context ≤ 16384 characters. `wait` is 0–300 whole seconds. |
 
 Missing or wrong capability on **any** proxied request:
@@ -1321,8 +1322,8 @@ is returned as it is, never retried or delayed.
 
 ### POST /v1/rotate
 
-No body. Rotates the proxy's *backend* session credential with Console. The
-process-local capability does not change.
+No body; requires `X-Phase-Control: 1`. Rotates the proxy's *backend* session
+credential with Console. The process-local capability does not change.
 
 ```json
 { "schemaVersion": 1, "sessionUid": "sess_01HZX9K3M2", "expiresAt": "2026-10-17T10:12:30Z", "configGeneration": 5, "rotated": true }
@@ -1330,8 +1331,9 @@ process-local capability does not change.
 
 ### POST /v1/revoke
 
-No body. Revokes the session in Console and stops the proxy; used by
-`phase ai disable` and by a hook replacing an outdated daemon.
+No body; requires `X-Phase-Control: 1`. Revokes the session in Console and
+stops the proxy; used by `phase ai disable` and by a hook replacing an outdated
+daemon.
 
 ```json
 { "schemaVersion": 1, "sessionUid": "sess_01HZX9K3M2", "revokedAt": "2026-10-17T10:13:02Z" }
