@@ -46,7 +46,8 @@
 //
 // RewriteJSON walks a JSON body and rewrites string values in place, leaving
 // every other byte as it was; JSON held inside a string is walked too, and
-// base64-only strings of 16 KiB or more are skipped as images or files. The
+// base64-only strings of 16 KiB or more are taken for images or files: they
+// are not decoded, and up to 1 MiB they are matched as they stand. The
 // text of JSON held inside a string is also matched against the indexed values
 // as it stands: that finds a value that is JSON with no string in it, and puts
 // the placeholder where it was, so the string may no longer hold JSON. Redact
@@ -206,8 +207,9 @@
 //     characters, at some offsets from 24, and never below. The whole form is
 //     found as before.
 //   - A value transformed in any other way (reversed, split, re-encoded in a
-//     form not listed above, encrypted, compressed without base64 around it, or
-//     inside a base64 string of 16 KiB or more) is not found.
+//     form not listed above, encrypted, compressed without base64 around it,
+//     inside a base64 string of 16 KiB or more other than as it is or in its
+//     own base64, or anywhere inside one over 1 MiB) is not found.
 //   - The body's JSON object keys are not scanned, only values. Numbers and
 //     keys of JSON held inside a string are matched against the indexed values
 //     and by no rule.
