@@ -13,6 +13,7 @@ import (
 	"github.com/phasehq/cli/internal/tunnel"
 	"github.com/phasehq/cli/internal/tunnel/control"
 	"github.com/phasehq/cli/internal/tunnel/engine"
+	"github.com/phasehq/cli/internal/tunnel/helper"
 	gokeyring "github.com/zalando/go-keyring"
 )
 
@@ -387,5 +388,48 @@ func TestOtherProxySet(t *testing.T) {
 func TestUpHelpSaysAnotherProxyIsNotRead(t *testing.T) {
 	if !strings.Contains(upCmd.Long, otherProxyNote) {
 		t.Fatalf("help: %s", upCmd.Long)
+	}
+}
+
+// The helper is installed through the system's own sudo, never one found on PATH,
+// which could be any program and would be handed the password.
+func TestTheHelperIsInstalledThroughTheSystemsOwnSudo(t *testing.T) {
+	if sudoPath != "/usr/bin/sudo" {
+		t.Fatalf("sudo is run as %q", sudoPath)
+	}
+	if !helper.Supported() {
+		t.Skip("the helper isn't available here")
+	}
+	directory := t.TempDir()
+	fake := func(name, marker string) string {
+		path := filepath.Join(directory, name)
+		script := "#!/bin/sh\necho \"$@\" > " + filepath.Join(directory, marker) + "\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	planted := filepath.Join(directory, "planted")
+	if err := os.Mkdir(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fake("sudo", "planted-ran"), filepath.Join(planted, "sudo")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", planted)
+	original := sudoPath
+	sudoPath = fake("system-sudo", "system-ran")
+	t.Cleanup(func() { sudoPath = original })
+
+	var out bytes.Buffer
+	if err := ensureTunnelHelper(&out, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "planted-ran")); err == nil {
+		t.Fatal("the sudo found on PATH was run")
+	}
+	ran, err := os.ReadFile(filepath.Join(directory, "system-ran"))
+	if err != nil || !strings.Contains(string(ran), "tunnel install --uid") {
+		t.Fatalf("the system's sudo ran with %q (%v)", ran, err)
 	}
 }

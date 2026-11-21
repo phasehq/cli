@@ -311,6 +311,10 @@ func caTrusted(certificate string) bool {
 	return exec.Command("/usr/bin/security", "verify-cert", "-c", certificate, "-p", "ssl").Run() == nil
 }
 
+// sudoPath is the system's own sudo, by its full path, so nothing on PATH can stand
+// in for it and take the password. Tests replace it.
+var sudoPath = "/usr/bin/sudo"
+
 func ensureTunnelHelper(out io.Writer, interactive, reinstall bool) error {
 	reply, err := control.Ask(tunnelHelperSocket, control.Request{Op: control.OpStatus}, 5*time.Second)
 	current := err == nil && reply.Status != nil && reply.Status.Protocol == control.ProtocolVersion
@@ -332,7 +336,7 @@ func ensureTunnelHelper(out io.Writer, interactive, reinstall bool) error {
 		fmt.Fprintln(out, "   device and routes, and never sees a credential.")
 	}
 	fmt.Fprintln(out, "   macOS will ask for your password now.")
-	install := exec.Command("sudo", "-p", "   Password: ", self, "tunnel", "install", "--uid", strconv.Itoa(os.Getuid()))
+	install := exec.Command(sudoPath, "-p", "   Password: ", self, "tunnel", "install", "--uid", strconv.Itoa(os.Getuid()))
 	install.Stdin, install.Stdout, install.Stderr = os.Stdin, out, os.Stderr
 	if err := install.Run(); err != nil {
 		return fmt.Errorf("install the Phase helper: %w", err)
@@ -457,7 +461,7 @@ func runDown(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		fmt.Fprintln(out, "Removing the Phase helper. macOS will ask for your password.")
-		command := exec.Command("sudo", "-p", "Password: ", self, "tunnel", "uninstall")
+		command := exec.Command(sudoPath, "-p", "Password: ", self, "tunnel", "uninstall")
 		command.Stdin, command.Stdout, command.Stderr = os.Stdin, out, os.Stderr
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("remove the Phase helper: %w", err)
