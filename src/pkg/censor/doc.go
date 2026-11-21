@@ -209,10 +209,17 @@
 //   - A value transformed in any other way (reversed, split, re-encoded in a
 //     form not listed above, encrypted, compressed without base64 around it,
 //     inside a base64 string of 16 KiB or more other than as it is or in its
-//     own base64, or anywhere inside one over 1 MiB) is not found.
+//     own base64, or anywhere inside one over 1 MiB) is not found. A value
+//     a process transforms on purpose (encoded over and over, cut into
+//     pieces, put in a protocol field, or compressed past the caps above) is
+//     outside what leak protection can catch.
 //   - The body's JSON object keys are not scanned, only values. Numbers and
 //     keys of JSON held inside a string are matched against the indexed values
-//     and by no rule.
+//     and by no rule. A number in the body's own JSON, outside any string, is
+//     not scanned: a value of digits is matched only as text.
+//   - The two places exempt as signed text are known by their shape alone,
+//     which nothing authenticates: text a client writes there itself is
+//     reported, not replaced.
 //   - In a protobuf message a value is found inside one string or bytes field.
 //     One that a client splits over two fields is not, and neither is one
 //     under 12 bytes. A field that ends inside a value holds a fragment of it,
