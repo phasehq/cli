@@ -27,7 +27,7 @@ import (
 // builds unchanged in the commit the stored inventory was built on. The
 // recorded file is what it wrote there:
 //
-//	git archive 3a3eefd src | tar -x -C <dir>
+//	git archive b256f28 src | tar -x -C <dir>
 //	cp internal/aiproxy/leak_parity_probe_test.go <dir>/src/internal/aiproxy/
 //	cd <dir>/src && go test ./internal/aiproxy/ -run TestRecordLeakParity -args -leak-parity-record=<file>
 //
