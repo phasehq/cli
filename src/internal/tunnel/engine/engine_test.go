@@ -428,6 +428,8 @@ type engineSetup struct {
 	// unattached returns once the engine runs, for an engine that is never to attach
 	// to the helper. The running engine then has no program behind it.
 	unattached bool
+	// otherProxy says another proxy was set where phase up was started.
+	otherProxy bool
 }
 
 func startEngineWith(t *testing.T, setup engineSetup) *running {
@@ -518,7 +520,7 @@ func startEngineWith(t *testing.T, setup engineSetup) *running {
 			ProxyAddress:    fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 			PostgresAddress: fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
 			WireGuardPort:   freePort(t, "udp"), Upstream: upstream, UpstreamRootCAs: roots, Logf: t.Logf,
-			Routes: routes, Reader: readWith, Owner: owners.find,
+			Routes: routes, Reader: readWith, Owner: owners.find, OtherProxy: setup.otherProxy,
 		})
 	}()
 	if setup.unattached {
@@ -968,6 +970,15 @@ func TestAHostNameADNSEntryCannotHoldIsLeftOutAndCounted(t *testing.T) {
 	}
 	status := e.status(t, func(status Status) bool { return status.Ready && status.HelperLinked })
 	if status.SkippedNames != 2 || !contains(status.Connections, "Odd API") || contains(status.Domains, odd) {
+		t.Fatalf("status: %+v", status)
+	}
+}
+
+// Status says when another proxy was set where phase up was started, since tools
+// that use it aren't read.
+func TestStatusSaysWhenAnotherProxyIsSet(t *testing.T) {
+	e := startEngineWith(t, engineSetup{otherProxy: true})
+	if status := e.status(t, func(status Status) bool { return status.Ready }); !status.OtherProxy {
 		t.Fatalf("status: %+v", status)
 	}
 }

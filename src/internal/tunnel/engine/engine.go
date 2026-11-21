@@ -68,6 +68,9 @@ type Config struct {
 	Reader func(*aiproxy.Engine) tunnel.Reader
 	// Owner finds the program that opened a flow. Tests replace it.
 	Owner tunnel.OwnerFunc
+	// OtherProxy says another proxy is set in the engine's environment, the one phase
+	// up was started from. It is only reported.
+	OtherProxy bool
 }
 
 // Status is what `phase status` shows about the engine. It holds no credential.
@@ -86,6 +89,9 @@ type Status struct {
 	// SkippedNames counts the Connections' hosts that aren't among Domains, because
 	// their names aren't ones a DNS entry can hold. It's a number only.
 	SkippedNames int `json:"skippedNames,omitempty"`
+	// OtherProxy says another proxy was set where phase up was started, so tools that
+	// use it aren't read. It never holds the proxy's address.
+	OtherProxy bool `json:"otherProxy,omitempty"`
 
 	// Routes are what is captured in place of everything, when less was asked for.
 	Routes []string `json:"routes,omitempty"`
@@ -389,7 +395,7 @@ func (e *engine) writeStatus(ctx context.Context) {
 		status := Status{
 			PID: os.Getpid(), Started: e.started, Ready: e.ready, Interface: name,
 			Connections: e.connections, Domains: e.domains, SkippedNames: e.skipped, Counts: e.router.Counts(),
-			Routes: e.cfg.Routes, ReadTools: e.router.ReadTools(),
+			Routes: e.cfg.Routes, ReadTools: e.router.ReadTools(), OtherProxy: e.cfg.OtherProxy,
 			TCPBytes:  e.router.Traffic.TCPUp.Load() + e.router.Traffic.TCPDown.Load(),
 			UDPBytes:  e.router.Traffic.UDPUp.Load() + e.router.Traffic.UDPDown.Load(),
 			LastError: e.lastError, HelperLinked: e.link.linked(),

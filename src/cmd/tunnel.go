@@ -75,7 +75,7 @@ var tunnelEngineCmd = &cobra.Command{
 		// tool's processes only. Every other program's traffic to them passes unread.
 		return engine.Run(ctx, engine.Config{
 			Runtime: runtimeInstance, SocketPath: tunnelHelperSocket, StateDirectory: directory, Logf: logger.Printf,
-			Routes: routes, Reader: engine.ProxyReader,
+			Routes: routes, Reader: engine.ProxyReader, OtherProxy: otherProxySet(os.Environ()),
 		})
 	},
 }

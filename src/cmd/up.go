@@ -36,10 +36,36 @@ var upCmd = &cobra.Command{
 		"Traffic for your Connections' hosts goes to the Phase credential proxy, which swaps decoys for real credentials. " +
 		"The model traffic of the AI coding tools Phase knows is read for those tools' own processes, " +
 		"so that a secret value Phase handed out is replaced before it reaches a model. " +
-		"Everything else passes through unread. Your local network and other VPNs, such as Tailscale, keep their own routes. " +
+		"Everything else passes through unread. " + otherProxyNote + " " +
+		"Your local network and other VPNs, such as Tailscale, keep their own routes. " +
 		"The first run installs a small helper, which asks for your password once.",
 	Args: cobra.NoArgs,
 	RunE: runUp,
+}
+
+// otherProxyNote is said wherever phase up says what it reads. A tool that sends its
+// model traffic through another proxy opens only a flow to that proxy, which Phase
+// relays unread.
+const otherProxyNote = "Tools that send model traffic through another proxy, such as one set in HTTPS_PROXY, HTTP_PROXY or ALL_PROXY, are not read."
+
+// otherProxyVariables are the variables tools take another proxy from, in any case.
+var otherProxyVariables = []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"}
+
+// otherProxySet reports whether an environment sets another proxy. It only looks at
+// the names, and whether a value is there: the values are never kept or shown.
+func otherProxySet(environ []string) bool {
+	for _, entry := range environ {
+		name, value, _ := strings.Cut(entry, "=")
+		if value == "" {
+			continue
+		}
+		for _, variable := range otherProxyVariables {
+			if strings.EqualFold(name, variable) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var downCmd = &cobra.Command{
@@ -118,6 +144,8 @@ func runUp(cmd *cobra.Command, _ []string) error {
 		return abandonUp(directory, err)
 	}
 	engineStatus, _ := engine.ReadStatus(directory)
+	// What this run was started with, even when an engine from an earlier run is kept.
+	engineStatus.OtherProxy = otherProxySet(os.Environ())
 	printUpResult(out, status, engineStatus)
 	return nil
 }
@@ -202,6 +230,9 @@ func printUpResult(out io.Writer, status control.Status, engineStatus engine.Sta
 	}
 	if tools := readToolNames(&engineStatus); len(tools) > 0 {
 		fmt.Fprintf(out, "   Model traffic is read for %s, each for its own processes only.\n", strings.Join(tools, ", "))
+	}
+	if engineStatus.OtherProxy {
+		fmt.Fprintln(out, "   ⚠️  A proxy is set where phase up was started. "+otherProxyNote)
 	}
 	fmt.Fprintln(out, "   Your local network and other VPNs, such as Tailscale, keep their own routes.")
 	fmt.Fprintln(out, "   If the engine stops, Phase steps aside and your network works as it did before.")
@@ -752,6 +783,9 @@ func printModelTraffic(out io.Writer, status *engine.Status) {
 	}
 	sort.Strings(tools)
 	fmt.Fprintf(out, "   Model traffic is read for each tool's own processes: %s\n", strings.Join(tools, "; "))
+	if status.OtherProxy {
+		fmt.Fprintln(out, "   ⚠️  A proxy is set where phase up was started. "+otherProxyNote)
+	}
 	fmt.Fprintf(out, "   Model flows: %d read, %d left unread for other programs, %d left unread because the program wasn't found in time.\n",
 		status.Counts["read"], status.Counts["unread_not_tool"], status.Counts["owner_lookup_failed"])
 	// The proxy turned the flow away, or couldn't keep what it was told about it.

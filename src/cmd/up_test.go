@@ -196,6 +196,18 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 		}
 	})
 
+	t.Run("another proxy set where phase up was started", func(t *testing.T) {
+		proxied := *running
+		proxied.OtherProxy = true
+		got := print(capturing(nil), &proxied)
+		if !strings.Contains(got, "   ⚠️  A proxy is set where phase up was started. Tools that send model traffic through another proxy, such as one set in HTTPS_PROXY, HTTP_PROXY or ALL_PROXY, are not read.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "another proxy") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
 	// A flow the proxy took and only relayed isn't among the ones that were read.
 	t.Run("flows the proxy only relayed", func(t *testing.T) {
 		relayed := *running
@@ -321,6 +333,12 @@ func TestUpSaysWhatIsTrue(t *testing.T) {
 	if again := print(nil, engineStatus); again != everything {
 		t.Fatalf("no routes means everything:\n%s", again)
 	}
+	proxied := engineStatus
+	proxied.OtherProxy = true
+	if got := print(nil, proxied); !strings.Contains(got, "   Model traffic is read for claude, codex, each for its own processes only.\n"+
+		"   ⚠️  A proxy is set where phase up was started. Tools that send model traffic through another proxy, such as one set in HTTPS_PROXY, HTTP_PROXY or ALL_PROXY, are not read.\n") {
+		t.Fatalf("got:\n%s", got)
+	}
 
 	part := print([]string{"0.0.0.0/7"}, engine.Status{Ready: true})
 	want = "   ✅ New connections to 0.0.0.0/7, and to the names sent to Phase, now go through it, by utun7. Everything else is untouched.\n" +
@@ -338,5 +356,36 @@ func TestUpSaysWhatIsTrue(t *testing.T) {
 		if strings.Contains(said, "Everything on this Mac") || strings.Contains(said, "verything goes") || strings.Contains(said, "all traffic") {
 			t.Fatalf("it claims what the tunnel doesn't do:\n%s", said)
 		}
+	}
+}
+
+// Only whether another proxy is set is looked at, in any case, and an empty value
+// sets nothing.
+func TestOtherProxySet(t *testing.T) {
+	for _, environ := range [][]string{
+		{"HTTPS_PROXY=http://proxy.example.test:8080"},
+		{"PATH=/usr/bin", "http_proxy=http://proxy.example.test:8080"},
+		{"All_Proxy=socks5://proxy.example.test:1080"},
+	} {
+		if !otherProxySet(environ) {
+			t.Errorf("%q wasn't taken for another proxy", environ)
+		}
+	}
+	for _, environ := range [][]string{
+		nil,
+		{"PATH=/usr/bin", "NO_PROXY=example.test"},
+		{"HTTPS_PROXY="},
+		{"MY_HTTPS_PROXY=http://proxy.example.test:8080"},
+		{"HTTPS_PROXY_URL=http://proxy.example.test:8080"},
+	} {
+		if otherProxySet(environ) {
+			t.Errorf("%q was taken for another proxy", environ)
+		}
+	}
+}
+
+func TestUpHelpSaysAnotherProxyIsNotRead(t *testing.T) {
+	if !strings.Contains(upCmd.Long, otherProxyNote) {
+		t.Fatalf("help: %s", upCmd.Long)
 	}
 }
