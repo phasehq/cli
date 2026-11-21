@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -128,5 +130,51 @@ func TestFindPhaseConfig_InvalidJSONAndNoConfig(t *testing.T) {
 	}
 	if cfg := FindPhaseConfig(8); cfg != nil {
 		t.Fatalf("expected nil with invalid json, got %+v", cfg)
+	}
+}
+
+// A checkout's .phase.json that links outside it is refused, and the file it
+// points at is left exactly as it was.
+func TestWritePhaseConfigRefusesASymbolicLink(t *testing.T) {
+	work := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(work, PhaseEnvConfig)); err != nil {
+		t.Skipf("symbolic links unavailable: %v", err)
+	}
+	withWorkingDir(t, work)
+
+	if err := WritePhaseConfig(&PhaseJSONConfig{Version: "2", AppID: "app"}); err == nil {
+		t.Fatal("wrote through a symbolic link")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil || string(data) != "keep me" {
+		t.Fatalf("outside file changed: %q, %v", data, err)
+	}
+	if info, err := os.Stat(outside); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("outside file mode changed: %v, %v", info.Mode(), err)
+	}
+}
+
+func TestWritePhaseConfigReplacesARegularFile(t *testing.T) {
+	work := t.TempDir()
+	withWorkingDir(t, work)
+	writePhaseConfigFile(t, work, false)
+
+	if err := WritePhaseConfig(&PhaseJSONConfig{Version: "2", AppID: "new-app"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(PhaseEnvConfig)
+	if err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("not a regular file: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+	data, _ := os.ReadFile(PhaseEnvConfig)
+	if !strings.Contains(string(data), "new-app") {
+		t.Fatalf("content = %s", data)
 	}
 }

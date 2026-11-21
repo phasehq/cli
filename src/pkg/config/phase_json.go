@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -57,8 +59,12 @@ func WritePhaseConfig(config *PhaseJSONConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(PhaseEnvConfig, data, 0600); err != nil {
+	// A checkout can ship .phase.json as a link to a file outside it; replace
+	// only a regular file, and by rename, so nothing outside is written.
+	if info, err := os.Lstat(PhaseEnvConfig); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (it may be a symbolic link); remove it and run the command again", PhaseEnvConfig)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return nil
+	return writeFileAtomically(PhaseEnvConfig, data)
 }
