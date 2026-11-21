@@ -387,7 +387,7 @@ func TestAgentSecretsListGetAndExport(t *testing.T) {
 		t.Fatalf("export calls = %+v", exportCalls)
 	}
 	for format, want := range map[string]string{
-		"dotenv": "CONFIG_KEY=\"" + agentConfigValue + "\"",
+		"dotenv": "CONFIG_KEY='" + agentConfigValue + "'",
 		"yaml":   "CONFIG_KEY: " + agentConfigValue,
 		"kv":     "CONFIG_KEY=" + agentConfigValue,
 	} {

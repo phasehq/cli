@@ -7,6 +7,9 @@ import (
 	"encoding/xml"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -152,8 +155,8 @@ func TestExportDotenvAndKVLikeFormats(t *testing.T) {
 	dotenvOut := captureStdout(t, func() { ExportDotenv(sampleSecrets) })
 	dotenv := parseKeyValueLines(t, dotenvOut)
 	for k, v := range sampleSecretsMap {
-		if dotenv[k] != `"`+v+`"` {
-			t.Fatalf("dotenv mismatch for %s: got %q want %q", k, dotenv[k], `"`+v+`"`)
+		if dotenv[k] != `'`+v+`'` {
+			t.Fatalf("dotenv mismatch for %s: got %q want %q", k, dotenv[k], `'`+v+`'`)
 		}
 	}
 
@@ -181,5 +184,31 @@ func TestExportINI_EscapesPercent(t *testing.T) {
 	}
 	if !strings.Contains(out, "DB_PASSWORD = pass%%word") {
 		t.Fatalf("expected escaped percent in ini output, got %q", out)
+	}
+}
+
+// A dotenv export is documented for eval and source, so a value reaches the
+// shell as data: nothing in it runs, and it reads back unchanged.
+func TestExportDotenvIsSafeToEval(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil || runtime.GOOS == "windows" {
+		t.Skip("no POSIX shell")
+	}
+	marker := filepath.Join(t.TempDir(), "ran")
+	value := "a$(touch " + marker + ")`touch " + marker + "`$HOME\\'q'\"d\"\nline two"
+	out := captureStdout(t, func() { ExportDotenv([]KeyValue{{Key: "VALUE", Value: value}}) })
+	script := filepath.Join(t.TempDir(), "export.env")
+	if err := os.WriteFile(script, []byte(out), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := exec.Command(shell, "-c", `eval "$(cat "$1")"; printf %s "$VALUE"`, "sh", script).Output()
+	if err != nil {
+		t.Fatalf("eval failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("evaluating the export ran a command from a value")
+	}
+	if string(got) != value {
+		t.Fatalf("value read back as %q, want %q", got, value)
 	}
 }
