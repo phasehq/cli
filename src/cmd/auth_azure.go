@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/phasehq/cli/pkg/config"
-	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	"github.com/phasehq/golang-sdk/v2/phase/network"
@@ -65,40 +63,8 @@ func runAzureAuth(cmd *cobra.Command, host string) error {
 		return fmt.Errorf("failed to fetch user data: %w", err)
 	}
 
-	accountID, err := phase.AccountID(userData)
-	if err != nil {
+	if err := saveServiceAccountLogin(cmd, host, token, userData); err != nil {
 		return err
-	}
-
-	var orgID, orgName *string
-	if userData.Organisation != nil {
-		orgID = &userData.Organisation.ID
-		orgName = &userData.Organisation.Name
-	}
-
-	var wrappedKeyShare *string
-	if userData.WrappedKeyShare != "" {
-		wrappedKeyShare = &userData.WrappedKeyShare
-	}
-
-	tokenSavedInKeyring := true
-	if err := keyring.SetCredentials(accountID, token); err != nil {
-		tokenSavedInKeyring = false
-	}
-
-	userConfig := config.UserConfig{
-		Host:             host,
-		ID:               accountID,
-		OrganizationID:   orgID,
-		OrganizationName: orgName,
-		WrappedKeyShare:  wrappedKeyShare,
-	}
-	if !tokenSavedInKeyring {
-		userConfig.Token = token
-	}
-
-	if err := config.AddUser(userConfig); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
 	}
 
 	fmt.Println(util.BoldGreen("✅ Authentication successful."))

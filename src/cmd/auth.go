@@ -12,6 +12,7 @@ import (
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/term"
@@ -231,6 +232,31 @@ func saveUserLogin(cmd *cobra.Command, userConfig config.UserConfig, token strin
 		fmt.Fprintln(cmd.ErrOrStderr(), "⚠️  No system keystore is available, so the token is stored in plain text in the Phase config file.")
 	}
 	return nil
+}
+
+// saveServiceAccountLogin saves a token an external identity (AWS IAM, Azure)
+// was exchanged for, the same way as any other personal or service login.
+func saveServiceAccountLogin(cmd *cobra.Command, host, token string, userData *misc.AppKeyResponse) error {
+	accountID, err := phase.AccountID(userData)
+	if err != nil {
+		return err
+	}
+	var orgID, orgName *string
+	if userData.Organisation != nil {
+		orgID = &userData.Organisation.ID
+		orgName = &userData.Organisation.Name
+	}
+	var wrappedKeyShare *string
+	if userData.WrappedKeyShare != "" {
+		wrappedKeyShare = &userData.WrappedKeyShare
+	}
+	return saveUserLogin(cmd, config.UserConfig{
+		Host:             host,
+		ID:               accountID,
+		OrganizationID:   orgID,
+		OrganizationName: orgName,
+		WrappedKeyShare:  wrappedKeyShare,
+	}, token)
 }
 
 // storeLoginToken puts the token in the system keystore. When the keystore

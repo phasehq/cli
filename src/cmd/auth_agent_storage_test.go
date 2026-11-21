@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/phasehq/cli/pkg/config"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 	"github.com/spf13/cobra"
 	gokeyring "github.com/zalando/go-keyring"
 )
@@ -63,5 +64,36 @@ func TestSaveUserLoginRefusesPlainTextWithoutTheFlag(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "plain text") {
 		t.Fatalf("stderr = %q, want a plain-text warning", stderr.String())
+	}
+}
+
+// A token from an AWS IAM or Azure login is stored like any other: a failed
+// keystore write fails the login unless --insecure-storage is set.
+func TestServiceAccountLoginRefusesPlainTextWithoutTheFlag(t *testing.T) {
+	isolateAgentCommand(t, "https://console.phase.invalid")
+	t.Cleanup(gokeyring.MockInit)
+	gokeyring.MockInitWithError(errors.New("secret service unreachable"))
+	userData := &misc.AppKeyResponse{AccountID: "0b5c0a6e-2f6b-4e3a-9a52-1c2d3e4f5a6b"}
+
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("insecure-storage", false, "")
+	cmd.SetErr(&bytes.Buffer{})
+	err := saveServiceAccountLogin(cmd, "https://console.phase.invalid", "pss_service:v2:fake-token", userData)
+	if err == nil || !strings.Contains(err.Error(), "--insecure-storage") {
+		t.Fatalf("err = %v, want the login refused naming --insecure-storage", err)
+	}
+	if data, readErr := os.ReadFile(config.ConfigFilePath); readErr == nil && strings.Contains(string(data), "fake-token") {
+		t.Fatal("the token was written to the config file")
+	}
+
+	if err := cmd.Flags().Set("insecure-storage", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveServiceAccountLogin(cmd, "https://console.phase.invalid", "pss_service:v2:fake-token", userData); err != nil {
+		t.Fatal(err)
+	}
+	user, err := config.GetDefaultUser()
+	if err != nil || user.ID != userData.AccountID || user.Token != "pss_service:v2:fake-token" {
+		t.Fatalf("chosen plain-text storage saved %+v (%v)", user, err)
 	}
 }
