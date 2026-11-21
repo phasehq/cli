@@ -196,15 +196,25 @@ func listen(path string, uid int) (net.Listener, error) {
 	return listener, nil
 }
 
+// accept serves the socket until it is closed. Any other error, such as running out
+// of file descriptors, passes: stopping would leave the tunnel unreachable until a
+// reboot, since launchd only restarts a helper that exits.
 func (h *Helper) accept(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
-		if err != nil {
+		if errors.Is(err, net.ErrClosed) {
 			return
+		}
+		if err != nil {
+			time.Sleep(acceptPause)
+			continue
 		}
 		go h.serve(conn)
 	}
 }
+
+// acceptPause is how long accept waits after an error before it tries again.
+const acceptPause = 100 * time.Millisecond
 
 // serve handles one connection. An attach keeps it open for the engine's whole life.
 func (h *Helper) serve(raw net.Conn) {

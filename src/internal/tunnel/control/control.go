@@ -102,12 +102,29 @@ func (c *Conn) Send(message any) error {
 	return c.encoder.Encode(message)
 }
 
+// MaxMessage bounds one message. The largest, an attach, lists the names and routes
+// to capture, and fits in a small part of it.
+const MaxMessage = 256 << 10
+
+// ErrTooLong means a message ran past MaxMessage before its line ended.
+var ErrTooLong = errors.New("the message is too long")
+
 // Receive reads one message, waiting at most wait.
 func (c *Conn) Receive(message any, wait time.Duration) error {
 	_ = c.conn.SetReadDeadline(time.Now().Add(wait))
-	line, err := c.reader.ReadBytes('\n')
-	if err != nil {
-		return err
+	var line []byte
+	for {
+		chunk, err := c.reader.ReadSlice('\n')
+		if len(line)+len(chunk) > MaxMessage {
+			return ErrTooLong
+		}
+		line = append(line, chunk...)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return err
+		}
 	}
 	return json.Unmarshal(line, message)
 }

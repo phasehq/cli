@@ -1,8 +1,11 @@
 package helper
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -762,5 +765,90 @@ func TestAnAttachWhoseNamesCannotAllBeWrittenCapturesNothing(t *testing.T) {
 	status := h.status()
 	if status.Capturing || len(status.Domains) != 0 || !h.clean() || !strings.Contains(status.Reason, "couldn't capture") {
 		t.Fatalf("status: %+v", status)
+	}
+}
+
+// failingListener fails its first Accept, as one does when the process is out of file
+// descriptors, then hands out one connection, then waits to be closed.
+type failingListener struct {
+	mu     sync.Mutex
+	calls  int
+	conn   net.Conn
+	closed chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	l.calls++
+	calls := l.calls
+	l.mu.Unlock()
+	switch calls {
+	case 1:
+		return nil, errors.New("accept: too many open files")
+	case 2:
+		return l.conn, nil
+	}
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *failingListener) Close() error   { close(l.closed); return nil }
+func (l *failingListener) Addr() net.Addr { return &net.UnixAddr{Name: "fake", Net: "unix"} }
+
+// One failed Accept must not leave the socket unanswered until a reboot.
+func TestTheHelperKeepsAcceptingAfterAnError(t *testing.T) {
+	program, helperEnd := net.Pipe()
+	defer program.Close()
+	listener := &failingListener{conn: helperEnd, closed: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		(&Helper{}).accept(listener)
+		close(done)
+	}()
+	// The connection is served, and turned away: a pipe has no peer to vouch for.
+	_ = program.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := program.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the connection after the error was never served: %v", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("accept stopped before its socket was closed")
+	default:
+	}
+	listener.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("accept kept going after its socket was closed")
+	}
+}
+
+// A message is read only up to its bound, however long its line runs.
+func TestAControlMessageIsBounded(t *testing.T) {
+	receive := func(sent []byte) error {
+		program, helperEnd := net.Pipe()
+		defer program.Close()
+		defer helperEnd.Close()
+		go func() { _, _ = program.Write(sent) }()
+		var request control.Request
+		return control.Wrap(helperEnd).Receive(&request, 5*time.Second)
+	}
+	if err := receive(append(bytes.Repeat([]byte("A"), control.MaxMessage+1), '\n')); !errors.Is(err, control.ErrTooLong) {
+		t.Fatalf("a line past the bound: %v", err)
+	}
+	if err := receive(bytes.Repeat([]byte("A"), 4*control.MaxMessage)); !errors.Is(err, control.ErrTooLong) {
+		t.Fatalf("a line with no end: %v", err)
+	}
+	// Thousands of names to capture still fit.
+	domains := make([]string, 4000)
+	for i := range domains {
+		domains[i] = fmt.Sprintf("host-%d.connection.example.test", i)
+	}
+	attach, err := json.Marshal(control.Request{Op: control.OpAttach, Domains: domains})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := receive(append(attach, '\n')); err != nil {
+		t.Fatalf("an attach of %d bytes: %v", len(attach), err)
 	}
 }
