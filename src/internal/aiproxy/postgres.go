@@ -697,8 +697,11 @@ func (a *protocolAdapters) refusePGCredentialChange(kind byte, payload []byte, b
 	}
 	blocked := &phaseproxy.CredentialMintingBlock{Operation: "PostgreSQL " + operation}
 	message := blocked.Message()
-	if operation == pgNestedTooDeep {
+	switch operation {
+	case pgNestedTooDeep:
 		message = "Phase blocked " + blocked.Operation + ": Phase reads no deeper into DO blocks and function bodies to rule out creating a role or setting a password."
+	case pgDynamicSQL:
+		message = "Phase blocked " + blocked.Operation + ": the statement could not be checked, because the SQL that EXECUTE runs is built at run time, so Phase cannot rule out creating a role or setting a password. Send the statement itself instead."
 	}
 	a.emitProtocolEventWithDetail(binding, "postgres", "QUERY", "block", "denied", "credential_minting_blocked", map[string]any{"blocked_operation": blocked.Operation})
 	refusal := "DO $phase$BEGIN RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = '" + strings.ReplaceAll(message, "'", "''") + "'; END$phase$"
@@ -709,9 +712,13 @@ func (a *protocolAdapters) refusePGCredentialChange(kind byte, payload []byte, b
 // nested too deeply for it to read.
 const pgNestedTooDeep = "code nested more than 4 deep"
 
+// pgDynamicSQL is the operation pgCredentialChange names for a DO block or
+// function body that runs SQL with EXECUTE.
+const pgDynamicSQL = "dynamic SQL (EXECUTE in a DO block or function body)"
+
 // pgCredentialChange names the statement in sql that creates a role or sets a
-// role password. It also reads the code of DO blocks and function bodies, but
-// it is a best-effort guard: SQL assembled at run time (EXECUTE, format) gets past.
+// role password. It also reads the code of DO blocks and function bodies, and
+// names pgDynamicSQL for code that builds SQL at run time, which it cannot read.
 func pgCredentialChange(sql string) string {
 	// Whether a backslash escapes in a quoted string depends on
 	// standard_conforming_strings, which the proxy does not see.
@@ -732,6 +739,13 @@ func pgScanCredentialChange(sql string, depth int, backslashes bool) string {
 			}
 			if operation := pgScanCredentialChange(text, depth+1, backslashes); operation != "" {
 				return operation
+			}
+		}
+		// Code that runs SQL it builds at run time cannot be read here. EXECUTE
+		// ON is a privilege (GRANT EXECUTE ON FUNCTION), not dynamic SQL.
+		if word == "execute" && depth > 0 {
+			if following, _, _, _ := pgToken(sql, next, backslashes); following != "on" {
+				return pgDynamicSQL
 			}
 		}
 		if operation := matcher.next(word); operation != "" {

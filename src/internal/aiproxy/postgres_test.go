@@ -409,6 +409,17 @@ func TestPostgresCredentialChangeStatements(t *testing.T) {
 		"DO U&'BEGIN !0041LTER ROLE app PASSWORD ''x''; END' UESCAPE '!'":        "ALTER ROLE ... PASSWORD",
 		"CREATE FUNCTION f() AS 'BEGIN CREATE ROLE agent; END' LANGUAGE plpgsql": "CREATE ROLE",
 		"SELECT 'DO', 'CREATE ROLE example'":                                     "",
+		// SQL that a DO block or function body builds at run time is refused.
+		"DO $$ BEGIN EXECUTE 'ALTER ROLE CURRENT_USER PASSWORD ''chosen'''; END $$;":                 pgDynamicSQL,
+		"DO $$ BEGIN EXECUTE 'ALTER ROLE CURRENT_USER ' || 'PASSWORD ''chosen'''; END $$;":           pgDynamicSQL,
+		"DO $$ BEGIN EXECUTE format('ALTER %s CURRENT_USER PASSWORD %L', 'ROLE', 'chosen'); END $$;": pgDynamicSQL,
+		"DO 'BEGIN EXECUTE ''SELECT 1''; END'":                                                       pgDynamicSQL,
+		"CREATE FUNCTION f(q text) RETURNS void AS $f$ BEGIN EXECUTE q; END $f$ LANGUAGE plpgsql":    pgDynamicSQL,
+		"DO $$ BEGIN GRANT EXECUTE ON FUNCTION f() TO app; END $$":                                   "",
+		"PREPARE q AS SELECT 1; EXECUTE q":                                                           "",
+		"GRANT EXECUTE ON FUNCTION f() TO app":                                                       "",
+		"DO $$ BEGIN PERFORM execute_count FROM jobs; END $$":                                        "",
+		"CREATE FUNCTION g() RETURNS int AS $g$ SELECT count(*) FROM jobs $g$ LANGUAGE sql":          "",
 	} {
 		if got := pgCredentialChange(sql); got != want {
 			t.Errorf("pgCredentialChange(%q) = %q, want %q", sql, got, want)
@@ -479,6 +490,7 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 		{'B', []byte("\x00s1\x00\x00\x00\x00\x01\x00\x00\x00\x017\x00\x00"), false},
 		{'P', parse("SELECT $1::int"), false},
 		{'Q', []byte("DO $a$DO $b$DO $c$DO $d$DO $e$SELECT 1$e$$d$$c$$b$$a$\x00"), true},
+		{'Q', []byte("DO $$BEGIN EXECUTE 'ALTER ROLE CURRENT_USER ' || 'PASSWORD ''agent-chosen-password'''; END$$\x00"), true},
 	} {
 		go func() { _ = writePGMessage(clientPeer, step.kind, step.payload) }()
 		kind, payload, err := readPGMessage(upstreamPeer)
@@ -495,13 +507,16 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 			!bytes.Contains(payload, []byte("Phase blocked PostgreSQL")) {
 			t.Fatalf("credential change reached the upstream: %q", payload)
 		}
+		if bytes.Contains(step.payload, []byte("EXECUTE")) && !bytes.Contains(payload, []byte("could not be checked")) {
+			t.Fatalf("dynamic SQL was refused without saying it could not be checked: %q", payload)
+		}
 		if kind == 'P' && (!bytes.HasPrefix(payload, []byte("s1\x00DO ")) || !bytes.HasSuffix(payload, []byte("\x00\x00\x01\x00\x00\x00\x17"))) {
 			t.Fatalf("refused Parse lost its statement name or parameter types: %q", payload)
 		}
 	}
 	files := spoolJSONFiles(t, spoolDirectory)
-	if len(files) != 3 {
-		t.Fatalf("blocked statements recorded %d events, want 3", len(files))
+	if len(files) != 4 {
+		t.Fatalf("blocked statements recorded %d events, want 4", len(files))
 	}
 	for _, file := range files {
 		recorded, err := os.ReadFile(file)
