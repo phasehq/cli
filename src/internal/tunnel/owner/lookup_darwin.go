@@ -181,6 +181,10 @@ func holders(sockets []socket, localPort int, remote netip.AddrPort, self int) [
 // processOf reads what a process was started with. The kernel answers for this
 // user's own processes, with no privileges.
 func processOf(pid int) (Process, error) {
+	uid, err := uidOf(pid)
+	if err != nil {
+		return Process{}, err
+	}
 	raw, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
 		return Process{}, fmt.Errorf("read what process %d was started with: %w", pid, err)
@@ -192,7 +196,20 @@ func processOf(pid int) (Process, error) {
 	if err != nil {
 		return Process{}, fmt.Errorf("read what process %d was started with: %w", pid, err)
 	}
-	return Process{PID: pid, Executable: executable, Args: args}, nil
+	return Process{PID: pid, Executable: executable, Args: args, UID: uid}, nil
+}
+
+// uidOf is the user a process runs as, by its effective ID: the one its privileges
+// come from. The kernel answers for any process.
+func uidOf(pid int) (int, error) {
+	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return 0, fmt.Errorf("read which user process %d runs as: %w", pid, err)
+	}
+	if int(info.Proc.P_pid) != pid {
+		return 0, fmt.Errorf("read which user process %d runs as: no such process", pid)
+	}
+	return int(info.Eproc.Ucred.Uid), nil
 }
 
 // parseStart reads the kernel's record of how a process was started: the number of

@@ -27,7 +27,8 @@ type Reader interface {
 	// NoteFlow says who opened a flow, before its CONNECT is sent from connectFrom,
 	// the router's own loopback address for it. peer is the peer the flow came from.
 	// tool is the tool the flow is read for, or "" when it isn't to be read: a
-	// Connection's host goes to the proxy for its credential whoever opened the flow.
+	// Connection's host goes to the proxy for its credential whatever this user's
+	// program opened the flow.
 	//
 	// The router calls it for every CONNECT it sends. One the proxy was told nothing
 	// about would be taken for a program that was given the proxy through its
@@ -124,16 +125,52 @@ func (r *Router) readByName(name string) bool {
 
 // handOver decides whether the proxy takes a TLS flow to host, and what the proxy is
 // told of it: tool is the tool the flow is read for, or "" when it isn't to be read.
-// A Connection's host goes to the proxy whoever opened the flow. A model host goes
-// only when the program that opened the flow is the tool that host is read for.
+// A Connection's host goes to the proxy when the flow is this user's own (see
+// ownFlow). A model host goes only when the program that opened the flow is the tool
+// that host is read for.
 func (r *Router) handOver(flow Flow, host string, connection bool) (toProxy bool, tool string) {
 	reader, _ := r.reading()
 	// Nearly all traffic stops here, having cost one question about its host.
 	if host == "" || reader == nil || !reader.ReadsHost(host) {
-		return connection, ""
+		return connection && r.ownFlow(flow), ""
 	}
-	tool = r.toolFor(flow, host, reader)
+	tool, err := r.toolFor(flow, host, reader)
+	if connection && err != nil && flow.peer() == LocalPeer {
+		// The lookup that names the tool also says whose the flow is, and it failed.
+		connection = false
+	}
 	return connection || tool != "", tool
+}
+
+// errOtherUser means the program that opened a flow on this machine runs as another
+// user.
+var errOtherUser = errors.New("the program runs as another user")
+
+// ownFlow reports whether a flow may be given what only the proxy has, such as a
+// Connection's credential. Every user's traffic on this machine reaches the tunnel,
+// so a flow from here qualifies only when its program is found and runs as this
+// user: not knowing means no. Another peer's flows are that peer's to vouch for.
+func (r *Router) ownFlow(flow Flow) bool {
+	if flow.peer() != LocalPeer {
+		return true
+	}
+	if _, err := r.localOwner(flow); err != nil {
+		if errors.Is(err, errOtherUser) {
+			r.count("unread_other_user")
+		} else {
+			r.count("connection_owner_unknown")
+		}
+		return false
+	}
+	return true
+}
+
+// ownerFailure names the count for a flow whose program couldn't be vouched for.
+func ownerFailure(err error) string {
+	if errors.Is(err, errOtherUser) {
+		return "unread_other_user"
+	}
+	return "owner_lookup_failed"
 }
 
 // errNotNoted means the proxy couldn't keep what it was told about a flow, so the
@@ -195,35 +232,49 @@ func unreadBecause(err error) string {
 
 // toolFor names the tool a flow to host is read for, as the rule of the flow's peer
 // says. It's "" when that isn't the host's tool, and when the rule can't say in
-// time or the peer has none: not knowing means not reading.
-func (r *Router) toolFor(flow Flow, host string, reader Reader) string {
+// time or the peer has none: not knowing means not reading. err is the rule's.
+func (r *Router) toolFor(flow Flow, host string, reader Reader) (string, error) {
 	r.mu.RLock()
 	rule := r.peerRules[flow.peer()]
 	r.mu.RUnlock()
 	if rule == nil {
 		r.count("unread_no_peer_rule")
-		return ""
+		return "", nil
 	}
 	tool, err := rule(flow)
 	if err != nil {
-		r.count("owner_lookup_failed")
-		return ""
+		r.count(ownerFailure(err))
+		return "", err
 	}
 	if tool == "" || !reader.ShouldRead(tool, host) {
 		r.count("unread_not_tool")
-		return ""
+		return "", nil
 	}
-	return tool
+	return tool, nil
 }
 
 // localTool is the local peer's rule: a flow belongs to the tool that the program
-// which opened it on this machine is. No other peer's flows can be asked about so.
+// which opened it on this machine is, when that program is this user's. No other
+// peer's flows can be asked about so.
 func (r *Router) localTool(flow Flow) (string, error) {
-	process, err := r.ownerOf(flow)
+	process, err := r.localOwner(flow)
 	if err != nil {
 		return "", err
 	}
 	return owner.Identify(process), nil
+}
+
+// localOwner finds the program that opened a flow on this machine, and fails with
+// errOtherUser when it runs as another user than the engine.
+func (r *Router) localOwner(flow Flow) (owner.Process, error) {
+	process, err := r.ownerOf(flow)
+	if err != nil {
+		return owner.Process{}, err
+	}
+	if process.UID != r.uid {
+		return owner.Process{}, errOtherUser
+	}
+	return process, nil
 }
 
 // ownerOf finds the program that opened a flow, by the port the flow left from. A

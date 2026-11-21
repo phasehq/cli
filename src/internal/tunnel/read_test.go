@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -32,9 +33,9 @@ const (
 )
 
 var (
-	claudeCode = owner.Process{PID: 4001, Executable: "/Users/someone/.local/share/claude/versions/2.1.316", Args: []string{"claude"}}
-	codexCLI   = owner.Process{PID: 4002, Executable: "/opt/homebrew/bin/codex", Args: []string{"codex"}}
-	browser    = owner.Process{PID: 4003, Executable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
+	claudeCode = owner.Process{PID: 4001, Executable: "/Users/someone/.local/share/claude/versions/2.1.316", Args: []string{"claude"}, UID: os.Getuid()}
+	codexCLI   = owner.Process{PID: 4002, Executable: "/opt/homebrew/bin/codex", Args: []string{"codex"}, UID: os.Getuid()}
+	browser    = owner.Process{PID: 4003, Executable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", UID: os.Getuid()}
 )
 
 type flowNote struct{ from, tool string }
@@ -535,10 +536,10 @@ func TestAnotherProgramsTrafficToTheSameHostIsLeftUnread(t *testing.T) {
 	for name, process := range map[string]owner.Process{
 		"a browser":             browser,
 		"another tool":          codexCLI,
-		"the chat app":          {Executable: "/Applications/Claude.app/Contents/MacOS/Claude"},
-		"a script":              {Executable: "/usr/bin/python3", Args: []string{"python3", "ask.py"}},
-		"nothing known of it":   {},
-		"the phase CLI's proxy": {Executable: "/opt/homebrew/bin/phase", Args: []string{"phase", "ai", "runtime"}},
+		"the chat app":          {Executable: "/Applications/Claude.app/Contents/MacOS/Claude", UID: os.Getuid()},
+		"a script":              {Executable: "/usr/bin/python3", Args: []string{"python3", "ask.py"}, UID: os.Getuid()},
+		"nothing known of it":   {UID: os.Getuid()},
+		"the phase CLI's proxy": {Executable: "/opt/homebrew/bin/phase", Args: []string{"phase", "ai", "runtime"}, UID: os.Getuid()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setup := newReadSetup(t)
@@ -823,9 +824,11 @@ func modelConnection() Rule {
 	return Rule{ConnectionID: "model", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: modelHost, Port: 443}}
 }
 
-// A Connection's host goes to the proxy for its credential whoever opened the flow.
-// When it's a model host too, the proxy is told whether the flow is its tool's.
-func TestAConnectionHostThatIsAlsoAModelHostAlwaysGoesToTheProxy(t *testing.T) {
+// A Connection's host goes to the proxy for its credential whichever of this user's
+// programs opened the flow. When it's a model host too, the proxy is told whether the
+// flow is its tool's. A flow whose program wasn't found goes on unread: nobody can
+// say it is this user's.
+func TestAConnectionHostThatIsAlsoAModelHostGoesToTheProxyForThisUser(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		process owner.Process
@@ -836,7 +839,6 @@ func TestAConnectionHostThatIsAlsoAModelHostAlwaysGoesToTheProxy(t *testing.T) {
 		{"its tool", claudeCode, nil, "claude", "read"},
 		{"a browser", browser, nil, "", "unread_not_tool"},
 		{"another tool", codexCLI, nil, "", "unread_not_tool"},
-		{"nobody found", claudeCode, owner.ErrNotFound, "", "owner_lookup_failed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			setup := newReadSetup(t, modelConnection())
@@ -850,21 +852,134 @@ func TestAConnectionHostThatIsAlsoAModelHostAlwaysGoesToTheProxy(t *testing.T) {
 			setup.counts(map[string]int{"proxy_by_tls_name": 1, test.counted: 1})
 		})
 	}
+	for _, test := range []struct {
+		name    string
+		process owner.Process
+		err     error
+		counted string
+	}{
+		{"nobody found", claudeCode, owner.ErrNotFound, "owner_lookup_failed"},
+		{"another user's tool", otherUsers(claudeCode), nil, "unread_other_user"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			setup := newReadSetup(t, modelConnection())
+			setup.owners.process, setup.owners.err = test.process, test.err
+			setup.open(modelHost)
+			wholeHello(t, setup.arrives(setup.ends.atDestination).hello, modelHost)
+			if setup.reader.noteCount() != 0 {
+				t.Fatal("the proxy was told about a flow it never gets")
+			}
+			setup.counts(map[string]int{"tcp": 1, test.counted: 1})
+		})
+	}
+}
+
+// otherUsers is process as another user would run it.
+func otherUsers(process owner.Process) owner.Process {
+	process.UID = os.Getuid() + 1
+	return process
+}
+
+// Every user's traffic on this Mac reaches the tunnel. A Connection's credential is
+// for this user's own programs: another user's flow to its host, or one whose program
+// can't be found in time, goes to the real host unread, by name and by TLS name.
+func TestAnotherUsersFlowToAConnectionHostGetsNoCredential(t *testing.T) {
+	plain := Rule{ConnectionID: "api", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: plainHost}}
+	// A model host's flow that can't be vouched for counts as a model flow whose
+	// program wasn't found; any other Connection flow has a count of its own.
+	opens := map[string]struct {
+		open    func(*readSetup)
+		unknown string
+	}{
+		"by its TLS name":    {func(s *readSetup) { s.open(plainHost) }, "connection_owner_unknown"},
+		"by its name":        {func(s *readSetup) { s.openByName(plainHost, 443) }, "connection_owner_unknown"},
+		"on another port":    {func(s *readSetup) { s.openByName(plainHost, 8443) }, "connection_owner_unknown"},
+		"a model host too":   {func(s *readSetup) { s.openByName(modelHost, 443) }, "owner_lookup_failed"},
+		"model, by TLS name": {func(s *readSetup) { s.open(modelHost) }, "owner_lookup_failed"},
+	}
+	for name, open := range opens {
+		for _, test := range []struct {
+			name    string
+			process owner.Process
+			err     error
+			hang    bool
+			counted string
+		}{
+			{"another user's tool", otherUsers(claudeCode), nil, false, "unread_other_user"},
+			{"another user's browser", otherUsers(browser), nil, false, "unread_other_user"},
+			{"no program found", owner.Process{}, owner.ErrNotFound, false, open.unknown},
+			{"no lookup on this system", owner.Process{}, owner.ErrUnsupported, false, open.unknown},
+			{"a lookup that never answers", claudeCode, nil, true, open.unknown},
+		} {
+			t.Run(name+"/"+test.name, func(t *testing.T) {
+				rules := []Rule{plain, {ConnectionID: "model", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: modelHost}}}
+				setup := newReadSetup(t, rules...)
+				setup.router.Read(setup.reader, true)
+				setup.router.Upstream.Override[plainHost+":443"] = setup.ends.destination
+				setup.router.Upstream.Override[plainHost+":8443"] = setup.ends.destination
+				setup.router.Upstream.Override[modelHost+":8443"] = setup.ends.destination
+				setup.owners.process, setup.owners.err = test.process, test.err
+				if test.hang {
+					setup.router.FindOwnersWith(setup.owners.find, 50*time.Millisecond)
+					hang := make(chan struct{})
+					setup.owners.hang = hang
+					t.Cleanup(func() { close(hang) })
+				}
+				open.open(setup)
+				setup.arrives(setup.ends.atDestination)
+				select {
+				case seen := <-setup.ends.atProxy:
+					t.Fatalf("the flow went to the proxy: CONNECT %s", seen.authority)
+				default:
+				}
+				if setup.reader.noteCount() != 0 {
+					t.Fatal("the proxy was told about a flow it never gets")
+				}
+				deadline := time.Now().Add(5 * time.Second)
+				for setup.router.Counts()[test.counted] != 1 {
+					if time.Now().After(deadline) {
+						t.Fatalf("counts %v, want one %s", setup.router.Counts(), test.counted)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			})
+		}
+	}
 }
 
 // The proxy is told it isn't to be read all the same: a CONNECT it knew nothing about
-// would be taken for one of its own clients.
-func TestAConnectionHostNobodyReadsNeedsNoLookup(t *testing.T) {
+// would be taken for one of its own clients. Its program is looked up once, to know
+// the flow is this user's.
+func TestAConnectionHostNobodyReadsIsLookedUpOnce(t *testing.T) {
 	setup := newReadSetup(t, Rule{ConnectionID: "api", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: plainHost, Port: 443}})
-	setup.open(plainHost)
+	flow := setup.open(plainHost)
 	seen := setup.arrives(setup.ends.atProxy)
 	if seen.authority != plainHost+":443" || !seen.noted || seen.tool != "" {
 		t.Fatalf("CONNECT %s, noted %q (told at all: %v)", seen.authority, seen.tool, seen.noted)
 	}
+	if asked := setup.owners.lookups(); len(asked) != 1 || asked[0].Source.Port() != flow.Source.Port() || asked[0].Dest != flow.Dest {
+		t.Fatalf("looked up %v for the flow %v to %v", asked, flow.Source, flow.Dest)
+	}
+	setup.counts(map[string]int{"proxy_by_tls_name": 1})
+}
+
+// A flow from another peer is that peer's to vouch for: no program here is looked up.
+func TestAnotherPeersFlowToAConnectionHostNeedsNoLookup(t *testing.T) {
+	setup := newReadSetup(t, Rule{ConnectionID: "api", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: plainHost, Port: 443}})
+	upstream, err := net.Dial("tcp", setup.ends.destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup.run(plainHost, Flow{
+		Source: netip.AddrPortFrom(LocalAddress, uint16(50000+nextSourcePort.Add(1))), Dest: netip.MustParseAddrPort("203.0.113.7:443"),
+		Peer: "sandbox-1", Prepared: upstream,
+	})
+	if seen := setup.arrives(setup.ends.atProxy); seen.authority != plainHost+":443" {
+		t.Fatalf("CONNECT %s", seen.authority)
+	}
 	if asked := setup.owners.lookups(); len(asked) != 0 {
 		t.Fatalf("the flow's program was looked up: %v", asked)
 	}
-	setup.counts(map[string]int{"proxy_by_tls_name": 1})
 }
 
 // Every CONNECT the router sends is told of first, whatever the flow is: a
@@ -1196,5 +1311,63 @@ func TestReadToolsListsEachToolWithItsHosts(t *testing.T) {
 	}
 	if hosts["codex"][0] != "chatgpt.com" {
 		t.Fatal("the reader's own list was reordered")
+	}
+}
+
+// The Postgres adapter signs in with a Connection's credential, so another user's
+// flow to a Postgres Connection's host goes to the real host instead.
+func TestAnotherUsersFlowToAPostgresHostSkipsTheAdapter(t *testing.T) {
+	const dbHost = "db.example.test"
+	listen := func() (string, chan struct{}) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { listener.Close() })
+		reached := make(chan struct{}, 4)
+		go func() {
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				reached <- struct{}{}
+				conn.Close()
+			}
+		}()
+		return listener.Addr().String(), reached
+	}
+	adapter, atAdapter := listen()
+	destination, atDestination := listen()
+	for name, test := range map[string]struct {
+		process owner.Process
+		want    chan struct{}
+	}{
+		"this user's program":    {browser, atAdapter},
+		"another user's program": {otherUsers(browser), atDestination},
+	} {
+		t.Run(name, func(t *testing.T) {
+			router := NewRouter(&Upstream{Servers: []string{}, Override: map[string]string{dbHost + ":5432": destination}}, nil)
+			rule := Rule{ConnectionID: "db", Protocol: "postgres", Host: agentapi.HostRule{Match: "exact", Value: dbHost, Port: 5432}}
+			if err := router.Update("http://phase:secret@127.0.0.1:1", adapter, []Rule{rule}); err != nil {
+				t.Fatal(err)
+			}
+			router.FindOwnersWith(func(context.Context, int, netip.AddrPort) (owner.Process, error) { return test.process, nil }, time.Second)
+			found := answers(t, router.AnswerDNS(query(t, dbHost+".", dnsmessage.TypeA)))
+			if len(found) != 1 {
+				t.Fatal("the host didn't resolve into the tunnel")
+			}
+			program, routerEnd := net.Pipe()
+			defer program.Close()
+			go func() {
+				defer routerEnd.Close()
+				router.HandleTCP(routerEnd, Flow{Source: netip.AddrPortFrom(LocalAddress, 50102), Dest: netip.AddrPortFrom(netip.AddrFrom4(found[0].Body.(*dnsmessage.AResource).A), 5432)})
+			}()
+			select {
+			case <-test.want:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the flow never reached where it should")
+			}
+		})
 	}
 }

@@ -707,6 +707,13 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 	if loops := status.Counts["loop_refused"]; loops > 0 {
 		fmt.Fprintf(out, "   %d were refused because their route led back into Phase: another VPN's range, while that VPN is down.\n", loops)
 	}
+	// Every user's traffic reaches the tunnel, and what Phase holds is for yours alone.
+	if others := status.Counts["unread_other_user"]; others > 0 {
+		fmt.Fprintf(out, "   %d were opened by another user's programs, so they went on unread and got no credential.\n", others)
+	}
+	if unknown := status.Counts["connection_owner_unknown"]; unknown > 0 {
+		fmt.Fprintf(out, "   %d to Connection hosts went on without their credential because the program wasn't found in time.\n", unknown)
+	}
 	if refused := status.Counts["control_refused"]; refused > 0 {
 		fmt.Fprintf(out, "   %d requests to %s were refused because they named another host.\n", refused, tunnel.ControlHost)
 	}

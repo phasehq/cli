@@ -49,7 +49,7 @@ const (
 )
 
 var (
-	codexCLI = owner.Process{PID: 4003, Executable: "/opt/homebrew/bin/codex", Args: []string{"codex"}}
+	codexCLI = owner.Process{PID: 4003, Executable: "/opt/homebrew/bin/codex", Args: []string{"codex"}, UID: os.Getuid()}
 	// ownHello is what a program in these tests offers in its TLS hello, and nothing
 	// else does. A provider that was offered it completed the handshake the program
 	// itself began.

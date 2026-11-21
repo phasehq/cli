@@ -94,6 +94,9 @@ type Status struct {
 	// programs did is in Counts, as numbers only: a flow to a model host is counted
 	// as "read" for the host's own tool, "unread_not_tool" for any other program,
 	// "owner_lookup_failed" when the program couldn't be found in time,
+	// "unread_other_user" when it runs as another user (also counted for a
+	// Connection's flow, which then gets no credential), "connection_owner_unknown"
+	// for a Connection's flow that got none because its program wasn't found,
 	// "unread_no_peer_rule" when the peer it came from has no way to name its tool,
 	// "unread_no_proxy" when the proxy couldn't take it, "unread_not_noted" when
 	// the proxy couldn't be told whose it was, and "unread_by_proxy" when the proxy

@@ -23,6 +23,8 @@ type Process struct {
 	Executable string
 	// Args are its arguments, the first being the name it was started as.
 	Args []string
+	// UID is the user it runs as. A flow is this user's own only when it matches.
+	UID int
 }
 
 // Wait is the longest a lookup takes. A caller's own deadline may be shorter.

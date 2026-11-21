@@ -2,17 +2,21 @@ package tunnel
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
+
+	"github.com/phasehq/cli/internal/tunnel/owner"
 )
 
 // controlProxy stands in for the credential proxy's control API: it answers whoever
@@ -102,6 +106,9 @@ func TestTheControlAPIAnswersOnlyForItsOwnName(t *testing.T) {
 	if err := router.Update("http://phase:secret@"+address, "", nil); err != nil {
 		t.Fatal(err)
 	}
+	router.FindOwnersWith(func(context.Context, int, netip.AddrPort) (owner.Process, error) {
+		return owner.Process{Executable: "/usr/bin/curl", UID: os.Getuid()}, nil
+	}, time.Second)
 	const path = "/v1/connections/api/environment"
 
 	for name, test := range map[string]struct {
@@ -186,5 +193,50 @@ func TestControlAuthority(t *testing.T) {
 	}
 	if !controlAuthority(ControlHost+":8443", 8443) || controlAuthority(ControlHost+":80", 8443) || !controlAuthority(ControlHost, 8443) {
 		t.Error("the port a program came to isn't the one its request may name")
+	}
+}
+
+// The control address answers with what a session holds, so another user's program,
+// or one that can't be found, gets nothing from it.
+func TestTheControlAPIAnswersOnlyThisUsersPrograms(t *testing.T) {
+	for name, find := range map[string]OwnerFunc{
+		"another user's program": func(context.Context, int, netip.AddrPort) (owner.Process, error) {
+			return owner.Process{Executable: "/usr/bin/curl", UID: os.Getuid() + 1}, nil
+		},
+		"no program found": func(context.Context, int, netip.AddrPort) (owner.Process, error) {
+			return owner.Process{}, owner.ErrNotFound
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			proxy, address := startControlProxy(t)
+			router := NewRouter(&Upstream{Servers: []string{"127.0.0.1"}, OnlyOverrides: true}, nil)
+			if err := router.Update("http://phase:secret@"+address, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			router.FindOwnersWith(find, time.Second)
+			found := answers(t, router.AnswerDNS(query(t, ControlHost+".", dnsmessage.TypeA)))
+			if len(found) != 1 {
+				t.Fatal("the control host didn't resolve")
+			}
+			program, routerEnd := net.Pipe()
+			defer program.Close()
+			go func() {
+				defer routerEnd.Close()
+				router.HandleTCP(routerEnd, Flow{Source: netip.AddrPortFrom(LocalAddress, 50101), Dest: netip.AddrPortFrom(netip.AddrFrom4(found[0].Body.(*dnsmessage.AResource).A), 80)})
+			}()
+			_ = program.SetDeadline(time.Now().Add(5 * time.Second))
+			go func() {
+				_, _ = io.WriteString(program, "GET /v1/connections/api/environment HTTP/1.1\r\nHost: "+ControlHost+"\r\nConnection: close\r\n\r\n")
+			}()
+			if body, _ := io.ReadAll(program); len(body) != 0 {
+				t.Fatalf("answered %q", body)
+			}
+			if sent := proxy.requests(); len(sent) != 0 {
+				t.Fatalf("the proxy was asked %q", sent)
+			}
+			if counts := router.Counts(); counts["control"] != 0 {
+				t.Fatalf("counts: %v", counts)
+			}
+		})
 	}
 }

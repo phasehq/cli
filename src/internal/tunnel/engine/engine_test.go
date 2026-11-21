@@ -57,8 +57,8 @@ const (
 )
 
 var (
-	claudeCode = owner.Process{PID: 4001, Executable: "/Users/someone/.local/share/claude/versions/2.1.316", Args: []string{"claude"}}
-	browser    = owner.Process{PID: 4002, Executable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
+	claudeCode = owner.Process{PID: 4001, Executable: "/Users/someone/.local/share/claude/versions/2.1.316", Args: []string{"claude"}, UID: os.Getuid()}
+	browser    = owner.Process{PID: 4002, Executable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", UID: os.Getuid()}
 )
 
 // fakeReader reads modelHost for Claude Code only, as the proxy's own table would.

@@ -180,6 +180,22 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 		}
 	})
 
+	// Another user's flows, and Connection flows whose program wasn't found, are said
+	// apart: neither got a credential.
+	t.Run("flows that weren't this user's own", func(t *testing.T) {
+		others := *running
+		others.Counts = map[string]int{"tcp": 5, "unread_other_user": 3, "connection_owner_unknown": 2}
+		got := print(capturing(nil), &others)
+		if !strings.Contains(got, "   Flows: 0 to Connection hosts, 5 passed through unread.\n"+
+			"   3 were opened by another user's programs, so they went on unread and got no credential.\n"+
+			"   2 to Connection hosts went on without their credential because the program wasn't found in time.\n") {
+			t.Fatalf("got:\n%s", got)
+		}
+		if got := print(capturing(nil), running); strings.Contains(got, "another user") || strings.Contains(got, "without their credential") {
+			t.Fatalf("got:\n%s", got)
+		}
+	})
+
 	// A flow the proxy took and only relayed isn't among the ones that were read.
 	t.Run("flows the proxy only relayed", func(t *testing.T) {
 		relayed := *running

@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,6 +105,8 @@ type Router struct {
 	owner     OwnerFunc
 	ownerWait time.Duration
 	lookups   chan struct{}
+	// uid is the user the engine runs as, whose programs alone get what the proxy has.
+	uid int
 	// helloWait is how long a flow to port 443 is held for its TLS hello.
 	helloWait time.Duration
 
@@ -121,7 +124,7 @@ func NewRouter(upstream *Upstream, logf func(string, ...any)) *Router {
 	r := &Router{
 		Upstream: upstream, names: newNameTable(namePool), counts: map[string]int{}, logf: logf,
 		owner: owner.Lookup, ownerWait: ownerWait, lookups: make(chan struct{}, ownerLookups),
-		helloWait: helloWait, route: unpinnedSource,
+		helloWait: helloWait, route: unpinnedSource, uid: os.Getuid(),
 	}
 	r.peerRules = map[string]PeerRule{LocalPeer: r.localTool}
 	return r
@@ -330,9 +333,18 @@ func (r *Router) HandleTCP(client net.Conn, flow Flow) {
 	_, protocol := r.captured(name, port)
 	switch protocol {
 	case "control":
+		// It answers with what a session holds, for this user's programs alone.
+		if !r.ownFlow(flow) {
+			return
+		}
 		r.count("control")
 		r.serveControl(client, port)
 	case "postgres":
+		if !r.ownFlow(flow) {
+			// The adapter signs in with the Connection's credential.
+			r.relayOut(client, net.JoinHostPort(name, strconv.Itoa(port)))
+			return
+		}
 		r.count("postgres")
 		r.mu.RLock()
 		adapter := r.postgresAddress
@@ -359,16 +371,19 @@ func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
 	reader, _ := r.reading()
 	reads := reader != nil && reader.ReadsHost(name)
 	tool := ""
-	if reads {
-		toProxy := connection
-		if port == 443 {
-			toProxy, tool = r.handOver(flow, name, connection)
-		}
-		if !toProxy {
-			// A model host, and not its own tool's flow: it leaves from here unread.
-			r.relayOut(client, authority)
-			return
-		}
+	var toProxy bool
+	switch {
+	case reads && port == 443:
+		toProxy, tool = r.handOver(flow, name, connection)
+	case reads && !connection:
+	default:
+		toProxy = r.ownFlow(flow)
+	}
+	if !toProxy {
+		// Not its own tool's flow to a model host, or not this user's flow to what
+		// only the proxy serves: it leaves from here unread.
+		r.relayOut(client, authority)
+		return
 	}
 	// A model host's flow is at the proxy only to be read, and works without it.
 	needed := connection || !reads

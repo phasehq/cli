@@ -76,6 +76,9 @@ func TestLookupFindsTheProgramBehindAPort(t *testing.T) {
 			if !reflect.DeepEqual(process.Args, want) {
 				t.Errorf("arguments %q, want %q", process.Args, want)
 			}
+			if process.UID != os.Getuid() {
+				t.Errorf("runs as user %d, and nc was started as %d", process.UID, os.Getuid())
+			}
 			if got := Identify(process); got != "" {
 				t.Errorf("nc was taken for %q", got)
 			}
@@ -83,6 +86,21 @@ func TestLookupFindsTheProgramBehindAPort(t *testing.T) {
 				t.Errorf("took %s, longer than a lookup may", elapsed)
 			}
 		})
+	}
+}
+
+// Which user a process runs as is read from the kernel, for another user's process
+// too, so a flow can be told apart from this user's own.
+func TestUIDOfNamesTheUserAProcessRunsAs(t *testing.T) {
+	if uid, err := uidOf(os.Getpid()); err != nil || uid != os.Getuid() {
+		t.Fatalf("this process runs as %d (%v), want %d", uid, err, os.Getuid())
+	}
+	// launchd is root's.
+	if uid, err := uidOf(1); err != nil || uid != 0 {
+		t.Fatalf("launchd runs as %d (%v)", uid, err)
+	}
+	if _, err := uidOf(1 << 30); err == nil {
+		t.Fatal("a process that doesn't exist was given a user")
 	}
 }
 
