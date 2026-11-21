@@ -186,7 +186,10 @@ func weakMask(value string) []bool {
 		}
 	}
 	if from, to, ok := credentialSpan(value); ok {
-		mark(0, from)
+		// As with a token in the path, the credential's first characters count
+		// as structure, so another URL of the same user and host is not taken
+		// for it because its password begins the same.
+		mark(0, min(from+urlTokenLead, to))
 		mark(to, len(value))
 	} else if parts := urlSecretParts(value); len(parts) > 0 {
 		// A token in the path, the query or the fragment is the URL's secret,
@@ -468,9 +471,9 @@ func shortSecret(value string) bool {
 // runs are names such as AWS4-HMAC-SHA256, the same in every URL.
 const minURLSecret = 20
 
-// urlTokenLead is how much of the start of a URL's token is marked as
-// structure, so that a chunk which counts holds at least six of its
-// characters: 24 bits even of hex digits.
+// urlTokenLead is how much of the start of a URL's token, or of its
+// password, is marked as structure, so that a chunk which counts holds at
+// least six of its characters: 24 bits even of hex digits.
 const urlTokenLead = 5
 
 // urlSecretParts are where an http(s) URL, as it is written, holds what looks

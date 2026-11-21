@@ -1167,6 +1167,38 @@ func TestOnlyLeavesThatMayBeSecretMakeAValuePartlyProtected(t *testing.T) {
 	}
 }
 
+// A URL's password, or the token that is its user, begins as structure does:
+// another URL of the same user and host is taken for it only when its
+// credential begins with the same urlTokenLead+1 characters.
+func TestAnotherURLWhosePasswordBeginsTheSameIsLeftAlone(t *testing.T) {
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "https://ci:" and "https://" put one and four characters of the
+	// credential in the chunk that ends where the URL's scheme and user do.
+	for name, url := range map[string]func(credential string) string{
+		"a password":       func(credential string) string { return "https://ci:" + credential + "@git.internal/acme/orders.git" },
+		"a token for user": func(credential string) string { return "https://" + credential + "@git.internal/acme/orders.git" },
+	} {
+		credential, other := randomString(t, alnum, 32), randomString(t, alnum, 32)
+		other = credential[:urlTokenLead] + other[urlTokenLead:]
+		for kind, registered := range map[string]string{
+			"a value on its own":     url(credential),
+			"a leaf of a JSON value": `{"origin":"` + url(credential) + `","branch":"main"}`,
+		} {
+			ix := build(t, secret{ID: "git", Value: registered})
+			if out, _ := ix.RedactWith([]byte("origin	"+url(credential)+" (fetch)"), ScanOptions{Rules: only}); strings.Contains(string(out), credential) {
+				t.Errorf("%s, %s: the URL was left: %s", name, kind, out)
+			}
+			text := "origin	" + url(other) + " (fetch)"
+			if out, report := ix.RedactWith([]byte(text), ScanOptions{Rules: only}); string(out) != text || report.Inventory != 0 {
+				t.Errorf("%s, %s: another URL was changed: %s", name, kind, out)
+			}
+		}
+	}
+}
+
 // Next to strings, the numbers of a JSON value are not indexed. Those that
 // look like key material, an array of 16 integers or more and an integer of 12
 // digits or more, are listed as unprotected, so that it is not silent.
