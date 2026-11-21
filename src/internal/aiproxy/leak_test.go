@@ -79,7 +79,7 @@ func registerLeakValues(t *testing.T, guard *leakGuard, values map[string]string
 		entries = append(entries, entry)
 	}
 	// The ids are the Console's own, so events name them.
-	if _, _, err := guard.add(entries, nil); err != nil {
+	if _, _, _, err := guard.add(entries, nil); err != nil {
 		t.Fatal(err)
 	}
 }

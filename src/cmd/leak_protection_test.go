@@ -115,25 +115,28 @@ func TestOtherLoginsWarnOnceAndCarryOn(t *testing.T) {
 }
 
 // A value too short to protect is still handed out, to an Agent login too,
-// and the command says how many such values there were and nothing else of
-// them.
+// and the command says how many such values there were, and how many were
+// protected in part, and nothing else of them.
 func TestValuesThatCouldNotBeProtectedAreCountedInAWarning(t *testing.T) {
 	const short = "Pa55w0rd!x"
 	previous := leakRegister
 	t.Cleanup(func() { leakRegister = previous })
 	session := leakguard.Proxy{URL: "http://phase:capability@127.0.0.1:1", Source: leakguard.SourceSession}
 	for _, c := range []struct {
-		unprotected int
-		want        string
+		unprotected, partial int
+		want                 string
 	}{
-		{0, ""},
-		{1, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic.\n"},
-		{3, "Phase: 3 values from this command are too short or plain to protect, so they are not removed from model traffic.\n"},
+		{0, 0, ""},
+		{1, 0, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic.\n"},
+		{3, 0, "Phase: 3 values from this command are too short or plain to protect, so they are not removed from model traffic.\n"},
+		{0, 1, "Phase: 1 value from this command is protected in part: the parts of it that are too short or look public are not removed from model traffic.\n"},
+		{1, 2, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic. " +
+			"2 values from this command are protected in part: the parts of them that are too short or look public are not removed from model traffic.\n"},
 	} {
 		for _, agent := range []bool{true, false} {
 			warnings := captureLeakWarnings(t)
 			leakRegister = func(_ context.Context, _ leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
-				return leakguard.Result{Added: len(values) - c.unprotected, Unprotected: c.unprotected}, nil
+				return leakguard.Result{Added: len(values) - c.unprotected, Unprotected: c.unprotected, Partial: c.partial}, nil
 			}
 			values := []leakguard.Value{
 				{Type: "secret", ID: "DB_PASSWORD", Value: short}, {Type: "secret", ID: "ADMIN_PIN", Value: "4821"},
@@ -218,6 +221,11 @@ func TestStatusLineSummarisesLeakProtection(t *testing.T) {
 	}
 	if line := leakProtectionSummary(remoteapi.LeakProtectionStatus{Mode: "off", SecretsKnown: 1}); line != "off (model traffic is not inspected); 1 secret known" {
 		t.Fatalf("off: %s", line)
+	}
+	// Values protected in part are counted next to those not protected.
+	line = leakProtectionSummary(remoteapi.LeakProtectionStatus{Mode: "censor", SecretsKnown: 4, Unprotected: 1, Partial: 2})
+	if want := "censor (secrets in model traffic are replaced with placeholders); 4 secrets known, 1 too short or plain to protect, 2 protected in part"; line != want {
+		t.Fatalf("status line:\n%s\n%s", line, want)
 	}
 	// A host that would be read, and is not being read now, is listed with
 	// why; a host the table never reads has no reason to give.

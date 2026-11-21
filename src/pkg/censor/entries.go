@@ -94,6 +94,10 @@ type Unprotected struct {
 // Protected reports whether anything of the value was indexed.
 func (e *Entries) Protected() bool { return e != nil && len(e.Forms) > 0 }
 
+// Partial reports whether some of the value was indexed and some of it, such
+// as a leaf too short or one that looks public, was not.
+func (e *Entries) Partial() bool { return e.Protected() && len(e.Unprotected) > 0 }
+
 // Placeholder is what replaces the value in a request.
 func (e *Entries) Placeholder() string { return "ph:" + e.Type + ":" + e.ID }
 

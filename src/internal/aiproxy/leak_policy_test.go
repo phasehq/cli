@@ -744,7 +744,7 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 		return []*censor.Entries{entry}
 	}
 	for i := 0; i < 200; i++ {
-		if _, unprotected, err := guard.add(short("LOG_LEVEL"), nil); err != nil || unprotected != 1 {
+		if _, unprotected, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || unprotected != 1 {
 			t.Fatalf("registration %d: %d %v", i, unprotected, err)
 		}
 	}
@@ -754,7 +754,7 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 	// The index's own caps do not see a value with nothing to index, so the
 	// names are bounded here.
 	for i := 0; i < maxUnprotectedNames+500; i++ {
-		if _, _, err := guard.add(short(fmt.Sprintf("lease-%d", i)), nil); err != nil {
+		if _, _, _, err := guard.add(short(fmt.Sprintf("lease-%d", i)), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -766,15 +766,40 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 	}
 	// One that is kept is still counted once, and stops counting when the
 	// same id is registered with a value that can be protected.
-	if _, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || guard.status().Unprotected != maxUnprotectedNames {
+	if _, _, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || guard.status().Unprotected != maxUnprotectedNames {
 		t.Fatal("a value already counted was counted again")
 	}
 	long, err := censor.IndexValue(guard.key, "secret", "LOG_LEVEL", leakSecretOne)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added, _, err := guard.add([]*censor.Entries{long}, nil); err != nil || added != 1 || guard.status().Unprotected != maxUnprotectedNames-1 {
+	if added, _, _, err := guard.add([]*censor.Entries{long}, nil); err != nil || added != 1 || guard.status().Unprotected != maxUnprotectedNames-1 {
 		t.Fatalf("a value that became protectable is still counted: %d", guard.status().Unprotected)
+	}
+}
+
+// A document indexed with some of its leaves left out, such as one too short
+// for a leaf under a neutral name, is protected in part: the registration's
+// answer and status count it, once however often it is registered, and stop
+// when the same id is registered whole.
+func TestValuesProtectedInPartAreCounted(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	document := `{"api_token":"` + leakSecretOne + `","ref_code":"Q7xL2mR9vT4kP8wZ"}`
+	values := []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: document}, {Type: "secret", ID: "STRIPE_KEY", Value: leakSecretTwo}}
+	for i := 0; i < 3; i++ {
+		if answer := registerThroughControl(t, rig.proxy, values, nil); answer == nil || answer.Added != 2 || answer.Unprotected != 0 || answer.Partial != 1 {
+			t.Fatalf("registration %d: %+v", i, answer)
+		}
+	}
+	status := rig.guard.status()
+	if status.Partial != 1 || status.Unprotected != 0 {
+		t.Fatalf("status counts %d values protected in part and %d unprotected", status.Partial, status.Unprotected)
+	}
+	if answer := registerThroughControl(t, rig.proxy, []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: leakSecretThree}}, nil); answer == nil || answer.Partial != 0 {
+		t.Fatalf("a whole registration: %+v", answer)
+	}
+	if status := rig.guard.status(); status.Partial != 0 {
+		t.Fatalf("a value registered whole is still counted as protected in part: %d", status.Partial)
 	}
 }
 
@@ -1250,7 +1275,7 @@ func TestAKeyNameIsKnownBeforeItsValueCanBeFound(t *testing.T) {
 	guard.mu.Lock()
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := guard.add([]*censor.Entries{entry}, []bool{true})
+		_, _, _, err := guard.add([]*censor.Entries{entry}, []bool{true})
 		done <- err
 	}()
 	findable := false
@@ -1291,7 +1316,7 @@ func TestAKeyNameIsKnownBeforeItsValueCanBeFound(t *testing.T) {
 			named <- strings.Join(guard.eventPlaceholders([]string{placeholder}), ",")
 		}()
 		close(start)
-		if _, _, err := guard.add([]*censor.Entries{entry}, []bool{true}); err != nil {
+		if _, _, _, err := guard.add([]*censor.Entries{entry}, []bool{true}); err != nil {
 			t.Fatal(err)
 		}
 		if got := <-named; got != "ph:secret" {

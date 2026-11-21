@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/phasehq/cli/internal/leakguard"
@@ -31,13 +32,23 @@ const (
 )
 
 // unprotectedWarning says how many of a command's values leak protection
-// could not take, and never which: a value too short or plain to tell from
-// ordinary text is handed out all the same.
-func unprotectedWarning(count int) string {
-	if count == 1 {
-		return "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic."
+// could not take, and how many it took only in part, and never which: a value
+// too short or plain to tell from ordinary text is handed out all the same.
+func unprotectedWarning(count, partial int) string {
+	var sentences []string
+	switch {
+	case count == 1:
+		sentences = append(sentences, "1 value from this command is too short or plain to protect, so it is not removed from model traffic.")
+	case count > 1:
+		sentences = append(sentences, fmt.Sprintf("%d values from this command are too short or plain to protect, so they are not removed from model traffic.", count))
 	}
-	return fmt.Sprintf("Phase: %d values from this command are too short or plain to protect, so they are not removed from model traffic.", count)
+	switch {
+	case partial == 1:
+		sentences = append(sentences, "1 value from this command is protected in part: the parts of it that are too short or look public are not removed from model traffic.")
+	case partial > 1:
+		sentences = append(sentences, fmt.Sprintf("%d values from this command are protected in part: the parts of them that are too short or look public are not removed from model traffic.", partial))
+	}
+	return "Phase: " + strings.Join(sentences, " ")
 }
 
 // leakRuntimeSource names the source that finds the hook-managed proxy from
@@ -181,8 +192,8 @@ func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent 
 	}
 	result, err := leakRegister(ctx, proxy, values)
 	if err == nil {
-		if result.Unprotected > 0 {
-			fmt.Fprintln(leakWarnings, unprotectedWarning(result.Unprotected))
+		if result.Unprotected > 0 || result.Partial > 0 {
+			fmt.Fprintln(leakWarnings, unprotectedWarning(result.Unprotected, result.Partial))
 		}
 		return nil
 	}

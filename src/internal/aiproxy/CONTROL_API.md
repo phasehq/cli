@@ -222,7 +222,7 @@ Content-Type: application/json
 
 {"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"<secret id>","forms":[...]}],"idKinds":["phase_id"]}
 
-200 {"schemaVersion":1,"added":1,"unprotected":0}
+200 {"schemaVersion":1,"added":1,"unprotected":0,"partial":0}
 ```
 
 - Body ≤ 4 MiB (413 `inventory_too_large`), at most 4096 entries; unknown
@@ -240,9 +240,12 @@ Content-Type: application/json
 - A value too short or plain to protect is counted once for its type and id,
   however often it is registered, and at most 4096 such are remembered; past
   that the count stays where it is.
+- `partial` counts the added values indexed only in part: a document with a
+  leaf too short or one that looks public, or numbers that look like key
+  material. Status counts them the same way, as `partial`.
 - No route returns entries, hashes or the id of a secret. `GET /v1/status`
   adds `leakProtection` with counts, host names, reasons and rule ids only:
-  `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...]}`.
+  `{"mode":"censor","secretsKnown":12,"unprotected":1,"partial":2,"inspectedHosts":[...],"unreadHosts":[...]}`.
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
 - A host the table reads is listed under `unreadHosts`, and not under

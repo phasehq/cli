@@ -77,10 +77,12 @@ type Value struct {
 	Value   string
 }
 
-// Result counts what the proxy protected and what it could not.
+// Result counts what the proxy protected and what it could not. Partial
+// counts the added values protected only in part.
 type Result struct {
 	Added       int
 	Unprotected int
+	Partial     int
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
@@ -411,6 +413,7 @@ func register(ctx context.Context, address string, values []Value, dial time.Dur
 		added, err := post(postContext, client, batch)
 		result.Added += added.Added
 		result.Unprotected += added.Unprotected
+		result.Partial += added.Partial
 		if err != nil {
 			return result, err
 		}
@@ -505,5 +508,5 @@ func post(ctx context.Context, client *http.Client, batch registration) (Result,
 	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&answer) != nil || answer.SchemaVersion != agentapi.SchemaVersion {
 		return Result{}, errors.New("the Phase AI proxy sent an answer this version of Phase does not read")
 	}
-	return Result{Added: answer.Added, Unprotected: answer.Unprotected}, nil
+	return Result{Added: answer.Added, Unprotected: answer.Unprotected, Partial: answer.Partial}, nil
 }

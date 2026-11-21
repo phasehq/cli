@@ -112,7 +112,7 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 		}
 		entries = append(entries, entry)
 	}
-	added, unprotected, err := h.leak.add(entries, keyNamed)
+	added, unprotected, partial, err := h.leak.add(entries, keyNamed)
 	switch {
 	case errors.Is(err, errLeakInventoryFull):
 		writeControlError(w, http.StatusInsufficientStorage, "leak_inventory_full", "The leak protection inventory is full: this proxy cannot protect more values. Restart the Phase AI session to start a new inventory.", false)
@@ -121,5 +121,5 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 		writeControlError(w, http.StatusBadRequest, "invalid_inventory", "An inventory entry is not valid.", false)
 		return
 	}
-	h.writeForward(w, remoteapi.InventoryResponse{SchemaVersion: agentapi.SchemaVersion, Added: added, Unprotected: unprotected}, nil)
+	h.writeForward(w, remoteapi.InventoryResponse{SchemaVersion: agentapi.SchemaVersion, Added: added, Unprotected: unprotected, Partial: partial}, nil)
 }

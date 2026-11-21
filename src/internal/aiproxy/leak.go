@@ -63,9 +63,11 @@ type leakGuard struct {
 	matches map[leakMatchKey]*leakHostMatch
 
 	mu sync.Mutex
-	// unprotected names the type and id of values that could not be indexed.
-	// They are counted for status and never returned.
+	// unprotected names the type and id of values that could not be indexed,
+	// and partial those of values indexed only in part. They are counted for
+	// status and never returned.
 	unprotected map[string]struct{}
+	partial     map[string]struct{}
 	// keyNamed holds the placeholders whose id is a secret's key name, as the
 	// client that registered them said. An event never carries such an id.
 	keyNamed map[string]struct{}
@@ -114,7 +116,7 @@ func newLeakGuardWithRules(mode string, rules *censor.Rules) (*leakGuard, error)
 	return &leakGuard{
 		mode: leakModeFrom(mode), hosts: defaultLeakHosts, key: key, index: index, limitedRules: limited,
 		skipped:  append(rules.Skipped(), absent...),
-		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, keyNamed: map[string]struct{}{},
+		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, partial: map[string]struct{}{}, keyNamed: map[string]struct{}{},
 		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(), connections: newConnectionLog(),
 	}, nil
 }
@@ -310,29 +312,34 @@ func newLeakGuardFromEnvironment() (*leakGuard, error) {
 var errLeakInventoryFull = errors.New("the leak protection inventory is full")
 
 // maxUnprotectedNames bounds the values remembered as too short or plain to
-// protect. Such a value adds nothing to the index, so the index's own caps do
-// not bound them; past this the count stays where it is.
+// protect, and those remembered as protected in part. Such a value adds
+// nothing to the index, so the index's own caps do not bound them; past this
+// the count stays where it is.
 const maxUnprotectedNames = 4096
 
 // add indexes validated entries. Nothing of a batch is added once the index is
 // full, and the entries added before it stay. keyNamed says, entry by entry,
 // that the entry's id is a secret's key name; an entry it does not cover has
-// an id the Console issued.
-func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unprotected int, err error) {
+// an id the Console issued. partial counts the added entries that were
+// indexed only in part.
+func (g *leakGuard) add(entries []*censor.Entries, keyNamed []bool) (added, unprotected, partial int, err error) {
 	for i, entry := range entries {
 		protected, err := g.addOne(entry, i < len(keyNamed) && keyNamed[i])
 		switch {
 		case errors.Is(err, censor.ErrIndexFull):
-			return added, unprotected, errLeakInventoryFull
+			return added, unprotected, partial, errLeakInventoryFull
 		case err != nil:
-			return added, unprotected, err
+			return added, unprotected, partial, err
 		case protected:
 			added++
+			if entry.Partial() {
+				partial++
+			}
 		default:
 			unprotected++
 		}
 	}
-	return added, unprotected, nil
+	return added, unprotected, partial, nil
 }
 
 // addOne indexes one entry and records what is known of its id. The guard's
@@ -355,6 +362,11 @@ func (g *leakGuard) addOne(entry *censor.Entries, keyNamed bool) (protected bool
 		return false, nil
 	}
 	delete(g.unprotected, name)
+	if !entry.Partial() {
+		delete(g.partial, name)
+	} else if _, counted := g.partial[name]; !counted && len(g.partial) < maxUnprotectedNames {
+		g.partial[name] = struct{}{}
+	}
 	// Once a placeholder is known to hold a key name it stays so, whatever a
 	// later registration says of the same id.
 	if keyNamed {
@@ -363,10 +375,10 @@ func (g *leakGuard) addOne(entry *censor.Entries, keyNamed bool) (protected bool
 	return true, nil
 }
 
-func (g *leakGuard) unprotectedCount() int {
+func (g *leakGuard) unprotectedCount() (unprotected, partial int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return len(g.unprotected)
+	return len(g.unprotected), len(g.partial)
 }
 
 // eventPlaceholders is how placeholders are written in an event. One whose id
@@ -403,8 +415,9 @@ func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
 	// A host one tool lists as not read is read when another tool's list
 	// reads it.
 	unread := slices.DeleteFunc(g.hosts.hostNames(leakTreatmentUnread), func(name string) bool { return slices.Contains(inspected, name) })
+	unprotected, partial := g.unprotectedCount()
 	status := &remoteapi.LeakProtectionStatus{
-		Mode: g.mode, SecretsKnown: g.index.Stats().Secrets, Unprotected: g.unprotectedCount(),
+		Mode: g.mode, SecretsKnown: g.index.Stats().Secrets, Unprotected: unprotected, Partial: partial,
 		RulesSkipped: len(g.skipped), SkippedRules: g.skippedRuleIDs(),
 	}
 	if g.mode == leakModeOff {
