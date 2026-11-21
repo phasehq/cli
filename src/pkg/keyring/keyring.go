@@ -97,9 +97,12 @@ func ActiveLogin() (Login, error) {
 	if err != nil {
 		return Login{}, err
 	}
-	if host == "" {
-		host = user.Host
+	// A saved login's token is only ever sent to the host it was saved with,
+	// as config.GetDefaultUserHost decides for a command.
+	if host != "" && !config.SameHost(host, user.Host) {
+		return Login{}, config.SavedLoginHostError(host, user.Host)
 	}
+	host = user.Host
 	token, err := gokeyring.Get(fmt.Sprintf("phase-cli-user-%s", user.ID), "pss")
 	if err != nil || token == "" {
 		token = user.Token

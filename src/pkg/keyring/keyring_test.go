@@ -69,8 +69,14 @@ func TestActiveLoginIsOneAccounts(t *testing.T) {
 	if err := SetCredentials("account-a", "token-of-a-in-the-keystore"); err != nil {
 		t.Fatal(err)
 	}
+	// A PHASE_HOST that names another host never gets the saved login's token.
 	t.Setenv("PHASE_HOST", "https://override.test")
-	if login, err = ActiveLogin(); err != nil || login.Token != "token-of-a-in-the-keystore" || login.Host != "https://override.test" || login.User.ID != "account-a" {
+	if login, err = ActiveLogin(); err == nil || login.Token != "" || login.Host != "" || login.User != nil {
+		t.Fatalf("another host was given the saved login: %+v %v", login, err)
+	}
+	// The same host, written another way, is the saved login's.
+	t.Setenv("PHASE_HOST", "https://A.test/")
+	if login, err = ActiveLogin(); err != nil || login.Token != "token-of-a-in-the-keystore" || login.Host != "https://a.test" || login.User.ID != "account-a" {
 		t.Fatalf("%+v %v", login, err)
 	}
 	t.Setenv("PHASE_HOST", "")
@@ -78,6 +84,12 @@ func TestActiveLoginIsOneAccounts(t *testing.T) {
 	if login, err = ActiveLogin(); err != nil || login.Token != "token-from-the-environment" || login.Host != config.PhaseCloudAPIHost || login.User != nil {
 		t.Fatalf("a token from the environment: %+v %v", login, err)
 	}
+	// A token from the environment follows PHASE_HOST wherever it points.
+	t.Setenv("PHASE_HOST", "https://override.test")
+	if login, err = ActiveLogin(); err != nil || login.Token != "token-from-the-environment" || login.Host != "https://override.test" || login.User != nil {
+		t.Fatalf("a token from the environment with PHASE_HOST: %+v %v", login, err)
+	}
+	t.Setenv("PHASE_HOST", "")
 	t.Setenv("PHASE_SERVICE_TOKEN", "")
 	if err := config.SetDefaultUser("account-b"); err != nil {
 		t.Fatal(err)

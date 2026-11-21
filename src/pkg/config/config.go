@@ -135,7 +135,7 @@ func GetDefaultUserHost() (string, error) {
 			// A saved login's token is only ever sent to the host it was saved
 			// with, so an override that names another host cannot redirect it.
 			if override != "" && !SameHost(override, user.Host) {
-				return "", fmt.Errorf("PHASE_HOST is set to %s, but the saved login belongs to %s. Unset PHASE_HOST, or log in to %s with phase auth", override, user.Host, override)
+				return "", SavedLoginHostError(override, user.Host)
 			}
 			return user.Host, nil
 		}
@@ -156,6 +156,12 @@ func ValidAccountID(id string) bool {
 		}
 	}
 	return true
+}
+
+// SavedLoginHostError refuses a PHASE_HOST that names another host than the
+// one the saved login belongs to.
+func SavedLoginHostError(override, saved string) error {
+	return fmt.Errorf("PHASE_HOST is set to %s, but the saved login belongs to %s. Unset PHASE_HOST, or log in to %s with phase auth", override, saved, override)
 }
 
 // SameHost reports whether two Phase host URLs name the same Console.
