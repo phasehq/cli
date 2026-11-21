@@ -1060,6 +1060,78 @@ func TestAURLWithATokenForItsUserIsProtected(t *testing.T) {
 	}
 }
 
+// A URL that carries its credential in a path segment, the query or the
+// fragment, as a webhook or a signed download does, is not public: as a leaf
+// of a document, or a value of an env file, it is indexed, and only its token
+// counts, so another URL of the same service is left alone. A URL with none of
+// that stays public.
+func TestAURLWithATokenInItsPathOrQueryIsProtected(t *testing.T) {
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redact := func(ix *Index, text string) (string, *Report) {
+		out, report := ix.RedactWith([]byte(text), ScanOptions{Rules: only})
+		return string(out), report
+	}
+	escape := strings.NewReplacer("+", "%2B", "/", "%2F", "=", "%3D").Replace
+	webhook := func() (string, string) {
+		token := randomString(t, alnum, 24)
+		return "https://hooks.chat.example.test/services/T0FAKE0001/B0FAKE0001/" + token, token
+	}
+	discord := func() (string, string) {
+		token := randomString(t, alnum+"-_", 68)
+		return "https://chat.example.test/api/webhooks/123456789012345678/" + token, token
+	}
+	sas := func() (string, string) {
+		signature := base64.StdEncoding.EncodeToString(randomBytes(t, 32))
+		return "https://acct.blob.storage.example.test/backups/db.tar?sv=2022-11-02&ss=b&srt=o&sp=r&se=2030-01-01T00%3A00%3A00Z&sig=" + escape(signature), escape(signature)
+	}
+	presigned := func() (string, string) {
+		signature := randomHex(t, 32)
+		return "https://bucket.s3.example.test/report.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAFAKEFAKEFAKE%2F20300101%2Fus-east-1%2Fs3%2Faws4_request" +
+			"&X-Amz-Date=20300101T000000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=" + signature, signature
+	}
+	fragment := func() (string, string) {
+		token := randomString(t, alnum, 32)
+		return "https://app.example.test/callback#access_token=" + token + "&token_type=bearer", token
+	}
+	const api = "https://api.example.com/v1"
+	if !looksPublic(api) || !looksPublic(api+"/") || !looksPublic("https://www.example.com/robot/v1/metadata/x509/deploy%40project.iam.example.com") {
+		t.Fatal("a plain URL is not public")
+	}
+	for name, newURL := range map[string]func() (string, string){
+		"a webhook token": webhook, "a long webhook token": discord, "a SAS signature": sas,
+		"a presigned signature": presigned, "a token in the fragment": fragment,
+	} {
+		value, token := newURL()
+		other, _ := newURL()
+		for kind, registered := range map[string]string{
+			"a leaf of a JSON value": `{"base_url":"` + api + `","target":"` + value + `","name":"deploy-notifications"}`,
+			"a value of an env file": "BASE_URL=" + api + "\nTARGET=" + value + "\n",
+		} {
+			ix, entries := buildWithEntries(t, newKey(t), secret{ID: "doc", Value: registered})
+			public := 0
+			for _, u := range entries["doc"].Unprotected {
+				if u.Reason == ReasonPublicLeaf {
+					public++
+				}
+			}
+			if public != 1 || !entries["doc"].Protected() {
+				t.Errorf("%s, %s: unprotected %+v", name, kind, entries["doc"].Unprotected)
+			}
+			if out, report := redact(ix, "$ cat config\ntarget: "+value+"\n"); strings.Contains(out, token) || report.Inventory == 0 {
+				t.Errorf("%s, %s: the URL was left:\n%s", name, kind, out)
+			}
+			for _, text := range []string{"curl -s " + other + "\n", "see " + api + " for the API\n"} {
+				if out, report := redact(ix, text); out != text || report.Inventory != 0 {
+					t.Errorf("%s, %s: another URL was changed:\n%s", name, kind, out)
+				}
+			}
+		}
+	}
+}
+
 // Next to strings, the numbers of a JSON value are not indexed. Those that
 // look like key material, an array of 16 integers or more and an integer of 12
 // digits or more, are listed as unprotected, so that it is not silent.
