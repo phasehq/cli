@@ -918,19 +918,28 @@ func TestEngineCapturesModelHostsByNameWhenItCapturesLess(t *testing.T) {
 		}
 	})
 
-	// With less captured, hosts are caught by their names, and UDP is left as it was.
-	t.Run("UDP to port 443 still passes through", func(t *testing.T) {
-		conn, err := e.program.DialContext(e.ctx, "udp", realQUIC)
-		if err != nil {
-			t.Fatal(err)
+	// With less captured, HTTP/3 into the captured networks is refused all the same:
+	// a tool doing its own DNS may reach a model host there. Other UDP passes.
+	t.Run("UDP to port 443 is refused, and other UDP passes", func(t *testing.T) {
+		echo := func(address string) (string, error) {
+			conn, err := e.program.DialContext(e.ctx, "udp", address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			_, _ = conn.Write([]byte("datagram"))
+			buf := make([]byte, 64)
+			n, err := conn.Read(buf)
+			return string(buf[:n]), err
 		}
-		defer conn.Close()
-		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-		_, _ = conn.Write([]byte("datagram"))
-		buf := make([]byte, 64)
-		if n, err := conn.Read(buf); err != nil || string(buf[:n]) != "datagram" {
-			t.Fatalf("%q, %v", buf[:n], err)
+		if got, err := echo(realQUIC); err == nil {
+			t.Fatalf("the datagram was relayed, and %q came back", got)
 		}
+		if got, err := echo(realEchoUDP); err != nil || got != "datagram" {
+			t.Fatalf("%q, %v", got, err)
+		}
+		e.status(t, func(status Status) bool { return status.Counts["udp_443_refused"] > 0 })
 	})
 
 	t.Run("status says which routes are captured", func(t *testing.T) {
