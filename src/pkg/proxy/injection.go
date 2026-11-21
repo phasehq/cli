@@ -527,6 +527,9 @@ func SanitizeInjectedResponse(response *http.Response, connection agentapi.Conne
 	if response == nil {
 		return unsafeResponse
 	}
+	if len(redactions) == 0 {
+		return nil
+	}
 	// A small body of known length is read whole, so its framing is kept and
 	// one that carries no live value is passed on exactly as it came.
 	body := response.Body
