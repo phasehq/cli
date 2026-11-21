@@ -30,6 +30,7 @@ type Upstream struct {
 	// Fallback are asked only when the network has no server of its own, or none of
 	// them answers. A name the network's servers say doesn't exist is never taken
 	// to them: they know nothing of a private name, or know another address for it.
+	// Nor is a name under a Scoped domain.
 	Fallback []string
 	// Override sends an address somewhere else. Tests use it to reach stand-ins.
 	Override map[string]string
@@ -98,7 +99,8 @@ func (u *Upstream) refresh() {
 }
 
 // serversFor lists the servers to ask about a name, in order: those the system keeps
-// for the name's domain, then the network's own, then the fallback.
+// for the name's domain, then the network's own, then the fallback. A name under such
+// a domain is a private one, and never goes to the fallback.
 func (u *Upstream) serversFor(name string) []string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -110,9 +112,13 @@ func (u *Upstream) serversFor(name string) []string {
 			domain = scoped
 		}
 	}
+	groups := [][]string{u.Scoped[domain], u.Servers}
+	if domain == "" {
+		groups = append(groups, u.Fallback)
+	}
 	var ordered []string
 	seen := map[string]bool{}
-	for _, servers := range [][]string{u.Scoped[domain], u.Servers, u.Fallback} {
+	for _, servers := range groups {
 		for _, server := range servers {
 			if !seen[server] {
 				seen[server] = true

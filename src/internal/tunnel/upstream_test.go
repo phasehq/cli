@@ -190,6 +190,17 @@ func TestLookupAsksADomainsOwnServersForItsNames(t *testing.T) {
 	if got := lookupOne(t, upstream, "db.corp.example.test"); got != "10.0.0.1" {
 		t.Fatalf("with its domain's server gone, the name resolved to %s", got)
 	}
+	// The fallback isn't: a private name stays off the public resolvers.
+	public := answering(t, "203.0.113.9")
+	upstream.Servers, upstream.Fallback = []string{notThere(t)}, []string{public.address}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if addresses, err := upstream.lookup(ctx, "db.corp.example.test"); err == nil || public.asked.Load() != 0 {
+		t.Fatalf("with no private server answering, the name resolved to %v, and the public server was asked %d times", addresses, public.asked.Load())
+	}
+	if got := lookupOne(t, upstream, "www.example.com"); got != "203.0.113.9" {
+		t.Fatalf("a public name resolved to %s", got)
+	}
 }
 
 // The servers belong to the network the machine is on. When its way out changes they
@@ -324,7 +335,7 @@ func TestServersForListsEachServerOnce(t *testing.T) {
 		Servers: []string{"192.168.1.1", "100.100.100.100"}, Fallback: []string{"1.1.1.1", "192.168.1.1"},
 		Scoped: map[string][]string{"ts.example.test": {"100.100.100.100"}},
 	}
-	if got, want := upstream.serversFor("host.ts.example.test."), []string{"100.100.100.100", "192.168.1.1", "1.1.1.1"}; !reflect.DeepEqual(got, want) {
+	if got, want := upstream.serversFor("host.ts.example.test."), []string{"100.100.100.100", "192.168.1.1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 	if got, want := upstream.serversFor("www.example.test"), []string{"192.168.1.1", "100.100.100.100", "1.1.1.1"}; !reflect.DeepEqual(got, want) {
