@@ -190,10 +190,13 @@ func weakMask(value string) []bool {
 		mark(to, len(value))
 	} else if parts := urlSecretParts(value); len(parts) > 0 {
 		// A token in the path, the query or the fragment is the URL's secret,
-		// and the rest is what every URL of that service has.
+		// and the rest is what every URL of that service has. The token's
+		// first bytes count as structure too: a chunk that is the URL but for
+		// one or two of them is in another URL of the service as often as its
+		// token begins the same, a time in 16 for one hex digit.
 		last := 0
 		for _, part := range parts {
-			mark(last, part[0])
+			mark(last, part[0]+urlTokenLead)
 			last = part[1]
 		}
 		mark(last, len(value))
@@ -464,6 +467,11 @@ func shortSecret(value string) bool {
 // taken for a credential, as a webhook's token or a signature is. Shorter
 // runs are names such as AWS4-HMAC-SHA256, the same in every URL.
 const minURLSecret = 20
+
+// urlTokenLead is how much of the start of a URL's token is marked as
+// structure, so that a chunk which counts holds at least six of its
+// characters: 24 bits even of hex digits.
+const urlTokenLead = 5
 
 // urlSecretParts are where an http(s) URL, as it is written, holds what looks
 // like a credential: a path segment, a query value or a fragment that is one

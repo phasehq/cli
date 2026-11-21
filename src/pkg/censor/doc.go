@@ -42,7 +42,8 @@
 // password does, or when it has a query or a fragment, or a path segment of 20
 // characters or more that is one run of base64 or hex, as a webhook's token
 // is; in one whose token is in its path, query or fragment, all but the token
-// is structure. Numbers next to strings in a JSON value
+// is structure, and so are the token's first five characters, so another URL
+// of the service is taken for it only when its token begins with the same six. Numbers next to strings in a JSON value
 // are not indexed, and those that look like key material are listed: an array
 // of 16 integers or more, and an integer of 12 digits or more.
 //

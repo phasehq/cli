@@ -1105,7 +1105,11 @@ func TestAURLWithATokenInItsPathOrQueryIsProtected(t *testing.T) {
 		"a presigned signature": presigned, "a token in the fragment": fragment,
 	} {
 		value, token := newURL()
-		other, _ := newURL()
+		// Another URL of the service whose token begins as this one's does,
+		// for as many characters as are marked as structure: a chunk that holds
+		// no more of the token than that is no match.
+		other, otherToken := newURL()
+		other = strings.Replace(other, otherToken, token[:urlTokenLead]+otherToken[urlTokenLead:], 1)
 		for kind, registered := range map[string]string{
 			"a leaf of a JSON value": `{"base_url":"` + api + `","target":"` + value + `","name":"deploy-notifications"}`,
 			"a value of an env file": "BASE_URL=" + api + "\nTARGET=" + value + "\n",
