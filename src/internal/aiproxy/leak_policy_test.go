@@ -1480,6 +1480,26 @@ func TestAMessageInTooManyFramesPassesUnread(t *testing.T) {
 	}
 }
 
+// A body over 16 MiB and under the size limit, as a long session's images can
+// make one, is read whole: a value at its end is replaced.
+func TestBodiesUpToTheProvidersLimitsAreRead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sends a payload of twenty megabytes")
+	}
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	body := anthropicBody(strings.Repeat("a line of ordinary tool output\n", (20<<20)/32) + "key " + leakSecretOne)
+	if len(body) <= 16<<20 || len(body) > maxLeakBody {
+		t.Fatalf("the body is %d bytes", len(body))
+	}
+	client := rig.client(rig.phaseRoots)
+	client.Timeout = 120 * time.Second
+	postMessages(t, client, "https://api.anthropic.com/v1/messages", body, "")
+	if got := rig.lastReceived().body; bytes.Contains(got, []byte(leakSecretOne)) || !bytes.Contains(got, []byte("ph:secret:stripe")) {
+		t.Fatalf("a body of %d bytes was not read", len(body))
+	}
+}
+
 // A body and a message over the size limit are not read: they reach the
 // service byte for byte, and one unread event says so. What follows on the
 // same connection is read again.

@@ -395,7 +395,7 @@ in a body or a message stops a request.
 | a protobuf message, or any bytes that are not text, on a host that speaks Connect (a body, a message of a stream) | overwritten where it sits, by the placeholder padded or cut to its length; never blocks | overwritten or reported, as the rule says |
 | a body or message that cannot be decoded (an encoding the proxy does not undo, a message compressed against the handshake) | blocks, and it is reported as unread | reported as unread |
 | a body that cannot be decoded, on a host that speaks Connect | reported, and it is reported as unread; never blocks | reported as unread |
-| a body or message over 16 MiB, or a message in more than 4096 frames | not read: passes, reported as unread | |
+| a body or message over 40 MiB, or a message in more than 4096 frames | not read: passes, reported as unread | |
 
 `observe` reads the same way and never replaces or blocks. A blocked request
 is refused:
@@ -411,7 +411,7 @@ On a WebSocket the compression offer is removed from the handshake, each
 client message is held until its last frame has arrived, and a message that is
 replaced goes out as one new frame of the opcode the client framed it with:
 JSON sent in a binary frame is replaced like JSON anywhere else, and stays a
-binary message. At most 16 MiB and 4096 frames of one message are held; a
+binary message. At most 40 MiB and 4096 frames of one message are held; a
 message past either is not read, and what was held and the rest of it go out
 as the client framed them. A blocked message is never sent: the client gets a
 close frame with code 1008 (policy violation) and the reason, the service a
@@ -528,13 +528,13 @@ a body is (the type alone: `application/connect+proto; charset=utf-8` is
 
 | `Content-Type` | Read as |
 |---|---|
-| `application/proto` | one protobuf message. Read whole (16 MiB), any `Content-Encoding` undone as for other bodies, overwritten in place, encoded again the same way |
+| `application/proto` | one protobuf message. Read whole (40 MiB), any `Content-Encoding` undone as for other bodies, overwritten in place, encoded again the same way |
 | `application/connect+proto` | a stream of protobuf messages, read as it is sent (below) |
 | `application/connect+json` | a stream of JSON messages: each is read as JSON is anywhere, so a placeholder there is not padded and the envelope states the new length. One that is not text is overwritten in place |
 | `application/grpc`, `application/grpc-web`, either with `+proto` or another name | a stream of protobuf messages in the same envelopes; the encoding of a compressed one is what `Grpc-Encoding` names |
 | `application/grpc+json`, `application/grpc-web+json` | the same with JSON messages |
 | `application/json`, `+json`, `text/*`, `application/x-ndjson`, `application/x-www-form-urlencoded` | what its bytes say; bytes that are not text are overwritten in place |
-| `application/x-protobuf`, `application/protobuf` | one protobuf message with the rules of its path: read whole (16 MiB), overwritten in place |
+| `application/x-protobuf`, `application/protobuf` | one protobuf message with the rules of its path: read whole (40 MiB), overwritten in place |
 | `application/grpc-web-text`, with or without a name | gRPC-Web envelopes in base64, which an overwrite would break: looked at for the report and sent on unread, `body_undecodable`, `scope` `request`; with no stated length, sent on at once as `body_streamed` |
 | anything else (`application/octet-stream`, none) | bytes whose length must not change: overwritten in place when their length is stated, sent on unread over HTTP/2 when it is not |
 
@@ -560,7 +560,7 @@ hands on one envelope at a time and holds no more than that one. For each:
   `message_encoding_unsupported`; a payload that does not inflate, or
   inflates past 64 MiB, is `message_undecodable`. Both go on as they came and
   are reported as `unread` with `scope` `message`;
-- a payload over 16 MiB goes on as it comes: `body_over_limit`, `scope`
+- a payload over 40 MiB goes on as it comes: `body_over_limit`, `scope`
   `message`;
 - otherwise the message is read. When something in it was replaced the new
   message goes on, compressed again if it came compressed, under a prefix
@@ -570,9 +570,9 @@ hands on one envelope at a time and holds no more than that one. For each:
 
 A stream compressed as a whole (a `Content-Encoding` on the request) shows no
 envelopes and is forwarded unread: `body_undecodable`, `scope` `request`. A
-stream whose length the client stated, up to 16 MiB, is whole before any
+stream whose length the client stated, up to 40 MiB, is whole before any
 answer and is read whole, so what is sent states the length it then has; any
-other is forwarded as it comes, and a stated length over 16 MiB is dropped in
+other is forwarded as it comes, and a stated length over 40 MiB is dropped in
 `censor` mode, since a compressed message may come out another length. An
 envelope the client never finished goes on as far as it came, and the stream
 ends as the client's did: `message_truncated`, `scope` `message`.
