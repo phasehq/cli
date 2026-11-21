@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/phasehq/cli/pkg/config"
+	"github.com/spf13/cobra"
 	gokeyring "github.com/zalando/go-keyring"
 )
 
@@ -157,5 +159,41 @@ func TestOfflineCacheDirAcceptsOnlyPlainIDs(t *testing.T) {
 	dir, ok := offlineCacheDir("0b5c0a6e-2f6b-4e3a-9a52-1c2d3e4f5a6b")
 	if !ok || filepath.Dir(dir) != filepath.Join(config.PhaseSecretsDir, "offline") {
 		t.Fatalf("a UUID id gave %q, %v", dir, ok)
+	}
+}
+
+// The Phase AI proxy keeps the login it started with, so an ordinary logout
+// and a switch to another user stop it, as a purge does.
+func TestLogoutAndSwitchStopThePhaseAIProxy(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	gokeyring.MockInit()
+	stops := 0
+	original := stopHookRuntimeForLogin
+	stopHookRuntimeForLogin = func(context.Context) error { stops++; return nil }
+	t.Cleanup(func() { stopHookRuntimeForLogin = original })
+
+	for _, id := range []string{"user-1", "user-2"} {
+		if err := config.AddUser(config.UserConfig{Host: console.server.URL, ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := switchDefaultUser(&cobra.Command{}, config.UserConfig{Host: console.server.URL, ID: "user-1"}, "user-2"); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 1 {
+		t.Fatalf("switching user stopped the proxy %d times, want 1", stops)
+	}
+	if err := switchDefaultUser(&cobra.Command{}, config.UserConfig{Host: console.server.URL, ID: "user-1"}, "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 1 {
+		t.Fatalf("choosing the current user stopped the proxy")
+	}
+	if _, stderr, err := runPhaseCommand(t, "", "users", "logout"); err != nil {
+		t.Fatalf("logout: %v %s", err, stderr)
+	}
+	if stops != 2 {
+		t.Fatalf("logout stopped the proxy %d times in all, want 2", stops)
 	}
 }

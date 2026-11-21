@@ -43,9 +43,15 @@ func runUsersSwitch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prompt cancelled")
 	}
 
-	selectedUser := cfg.PhaseUsers[idx]
+	return switchDefaultUser(cmd, cfg.PhaseUsers[idx], cfg.DefaultUser)
+}
+
+func switchDefaultUser(cmd *cobra.Command, selectedUser config.UserConfig, previousID string) error {
 	if err := config.SetDefaultUser(selectedUser.ID); err != nil {
 		return fmt.Errorf("failed to switch user: %w", err)
+	}
+	if selectedUser.ID != previousID {
+		stopRuntimeForLoginChange(cmd)
 	}
 
 	fmt.Println(switchedUserMessage(selectedUser))

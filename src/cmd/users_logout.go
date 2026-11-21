@@ -45,11 +45,7 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		// ~/.phase also holds the Phase AI directory: its logs, spooled audit
 		// events and trust files. Stop the proxy first so it writes nothing
 		// back, and drop the CA key from the system keystore with them.
-		stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
-		if err := stopHookRuntime(stopContext); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
-		}
-		cancel()
+		stopRuntimeForLoginChange(cmd)
 		if err := phaseproxy.DeleteStoredCAKey(); errors.Is(err, phaseproxy.ErrKeystoreUnreachable) {
 			// Only a machine that made a Phase AI CA can have stored its key.
 			if directory, dirErr := hookRuntimeDir(); dirErr == nil {
@@ -84,6 +80,7 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		}
 
 		accountID := ids[0]
+		stopRuntimeForLoginChange(cmd)
 		keyring.DeleteCredentials(accountID)
 
 		// Clean up offline cache for this user
@@ -98,6 +95,24 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// stopHookRuntimeForLogin is stopHookRuntime; tests replace it.
+var stopHookRuntimeForLogin = stopHookRuntime
+
+// stopRuntimeForLoginChange stops a running Phase AI proxy. It holds the login
+// it started with, and would keep using one that was logged out or switched
+// away from; the next harness session starts it on the current login.
+func stopRuntimeForLoginChange(cmd *cobra.Command) {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stopContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := stopHookRuntimeForLogin(stopContext); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
+	}
 }
 
 // offlineCacheDir returns the account's offline cache directory, and false
