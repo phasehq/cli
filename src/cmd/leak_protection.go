@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,11 +126,46 @@ func hookRuntimeRestarting() bool {
 // leakLocate finds the proxy to register with, and leakRegister registers
 // with it; tests replace them.
 var (
-	leakLocate   = leakguard.Locate
+	leakLocate   = locateLeakProxy
 	leakRegister = func(ctx context.Context, proxy leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
 		return proxy.Register(ctx, values)
 	}
 )
+
+// locateLeakProxy is leakguard.Locate, except that a session's proxy at the
+// address of a hook daemon that is gone is not trusted. On Windows the shell
+// guard only probes the port, which a listener that took it over passes too.
+func locateLeakProxy() (leakguard.Proxy, bool) {
+	proxy, found := leakguard.Locate()
+	if found && proxy.InSession() && proxy.URL != "" && sessionProxyOfDeadRuntime(proxy.URL) {
+		return leakguard.Proxy{Source: leakguard.SourceSession}, true
+	}
+	return proxy, found
+}
+
+// sessionProxyOfDeadRuntime reports a proxy address the hook daemon's state
+// names while the process its runtime lock names is not alive.
+func sessionProxyOfDeadRuntime(sessionURL string) bool {
+	directory, err := hookRuntimeDir()
+	if err != nil {
+		return false
+	}
+	state, err := readHookRuntimeState(filepath.Join(directory, hookRuntimeStateFile))
+	if err != nil || !sameProxyAddress(state.ProxyURL, sessionURL) {
+		return false
+	}
+	lock, err := readHookRuntimeLock(filepath.Join(directory, hookRuntimeLockFile))
+	return err != nil || lock.PID <= 0 || lock.PID != state.PID || !processIsAlive(lock.PID)
+}
+
+func sameProxyAddress(a, b string) bool {
+	first, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	second, err := url.Parse(b)
+	return err == nil && first.Host != "" && strings.EqualFold(first.Host, second.Host)
+}
 
 // leakWarnings is where warnings go; tests replace it. Never stdout, which
 // may be what the command's output is piped into.
