@@ -263,9 +263,14 @@ func (r *Router) AnswerDNS(query []byte) []byte {
 	// Other record types get an empty answer, which keeps a program from learning a
 	// real address through AAAA or HTTPS records.
 	if question.Type == dnsmessage.TypeA && question.Class == dnsmessage.ClassINET {
+		address, ok := r.names.address(name)
+		if !ok {
+			r.count("dns_no_address")
+			return refused(query)
+		}
 		reply.Answers = []dnsmessage.Resource{{
 			Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 10},
-			Body:   &dnsmessage.AResource{A: r.names.address(name).As4()},
+			Body:   &dnsmessage.AResource{A: address.As4()},
 		}}
 	}
 	packed, err := reply.Pack()
@@ -760,36 +765,59 @@ func (l *singleConnListener) Close() error {
 func (l *singleConnListener) Addr() net.Addr { return l.addr }
 
 // nameTable hands out tunnel addresses to Connection hosts, reusing the oldest once
-// the pool runs out.
+// the pool runs out, but never one handed out within addressHold.
 type nameTable struct {
 	mu     sync.Mutex
 	pool   netip.Prefix
 	byName map[string]netip.Addr
 	byAddr map[netip.Addr]string
+	// handed is when each address was last given out, by clock.
+	handed map[netip.Addr]time.Time
+	clock  func() time.Time
 	next   netip.Addr
 }
 
+// addressHold is how long an address is kept for its name after it was last given
+// out: well past the 10 seconds a program may keep the answer.
+const addressHold = 30 * time.Second
+
 func newNameTable(pool netip.Prefix) nameTable {
-	return nameTable{pool: pool, byName: map[string]netip.Addr{}, byAddr: map[netip.Addr]string{}, next: pool.Addr().Next()}
+	return nameTable{
+		pool: pool, byName: map[string]netip.Addr{}, byAddr: map[netip.Addr]string{},
+		handed: map[netip.Addr]time.Time{}, clock: time.Now, next: pool.Addr().Next(),
+	}
 }
 
-func (t *nameTable) address(name string) netip.Addr {
+// address gives name its tunnel address. ok is false when every address was given
+// out too recently to take back: a program may still be using it for its old name.
+func (t *nameTable) address(name string) (addr netip.Addr, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.clock()
 	if addr, ok := t.byName[name]; ok {
-		return addr
+		t.handed[addr] = now
+		return addr, true
 	}
-	addr := t.next
-	t.next = addr.Next()
-	if !t.pool.Contains(t.next) || t.next == lastAddress(t.pool) {
-		t.next = t.pool.Addr().Next()
+	// Of any one more addresses than are in use, one is free.
+	for tries := len(t.byAddr) + 1; tries > 0; tries-- {
+		addr = t.next
+		t.next = addr.Next()
+		if !t.pool.Contains(t.next) || t.next == lastAddress(t.pool) {
+			t.next = t.pool.Addr().Next()
+		}
+		old, used := t.byAddr[addr]
+		if used && now.Sub(t.handed[addr]) < addressHold {
+			continue
+		}
+		if used {
+			delete(t.byName, old)
+		}
+		t.byName[name] = addr
+		t.byAddr[addr] = name
+		t.handed[addr] = now
+		return addr, true
 	}
-	if old, ok := t.byAddr[addr]; ok {
-		delete(t.byName, old)
-	}
-	t.byName[name] = addr
-	t.byAddr[addr] = name
-	return addr
+	return netip.Addr{}, false
 }
 
 func (t *nameTable) name(addr netip.Addr) (string, bool) {

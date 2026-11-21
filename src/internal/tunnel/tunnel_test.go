@@ -3,6 +3,7 @@ package tunnel
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"reflect"
@@ -312,21 +313,64 @@ func TestDNSAnswersForConnectionHostsOnly(t *testing.T) {
 func TestNameTableReusesTheOldestAddress(t *testing.T) {
 	pool := netip.MustParsePrefix("198.19.249.0/29")
 	table := newNameTable(pool)
-	seen := map[netip.Addr]bool{}
-	first := table.address("a.example")
+	now := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	table.clock = func() time.Time { return now }
+	first, ok := table.address("a.example")
+	if !ok {
+		t.Fatal("the first name got no address")
+	}
 	for i := 0; i < 5; i++ {
-		addr := table.address(string(rune('b'+i)) + ".example")
-		if !pool.Contains(addr) || addr == pool.Addr() || addr == lastAddress(pool) {
+		addr, ok := table.address(string(rune('b'+i)) + ".example")
+		if !ok || !pool.Contains(addr) || addr == pool.Addr() || addr == lastAddress(pool) {
 			t.Fatalf("%s is outside the usable pool", addr)
 		}
-		seen[addr] = true
 	}
-	if _, ok := table.name(first); ok {
-		if reused := table.address("z.example"); reused != first {
-			t.Fatalf("expected the oldest address back, got %s", reused)
+	// Every address was given out just now: a program may still use any of them.
+	if addr, ok := table.address("y.example"); ok {
+		t.Fatalf("an address given out moments ago went to another name: %s", addr)
+	}
+	now = now.Add(addressHold / 2)
+	// Asked again, a name keeps its address, and the hold starts over.
+	if again, ok := table.address("a.example"); !ok || again != first {
+		t.Fatalf("a.example moved to %s", again)
+	}
+	now = now.Add(addressHold/2 + time.Second)
+	reused, ok := table.address("z.example")
+	if !ok || reused == first {
+		t.Fatalf("expected the oldest address not asked about since, got %s (%v)", reused, ok)
+	}
+	if name, ok := table.name(reused); !ok || name != "z.example" {
+		t.Fatal("the reused address lost its new name")
+	}
+	if name, ok := table.name(first); !ok || name != "a.example" {
+		t.Fatalf("a.example lost its address to %q", name)
+	}
+}
+
+// When the pool holds nothing old enough to take back, a new name gets an answer
+// that says so, never an address a program may still use for another name.
+func TestANameIsRefusedWhenNoAddressIsFree(t *testing.T) {
+	router := NewRouter(&Upstream{OnlyOverrides: true}, nil)
+	router.names = newNameTable(netip.MustParsePrefix("198.19.249.0/29"))
+	var rules []Rule
+	for i := 0; i < 7; i++ {
+		rules = append(rules, Rule{ConnectionID: "api", Protocol: "http", Host: agentapi.HostRule{Match: "exact", Value: fmt.Sprintf("host-%d.example.test", i), Port: 443}})
+	}
+	router.SetRules(rules)
+	for i := 0; i < 6; i++ {
+		if got := answers(t, router.AnswerDNS(query(t, fmt.Sprintf("host-%d.example.test.", i), dnsmessage.TypeA))); len(got) != 1 {
+			t.Fatalf("host-%d got no address", i)
 		}
-		if _, ok := table.name(first); !ok {
-			t.Fatal("reused address lost its new name")
-		}
+	}
+	reply := router.AnswerDNS(query(t, "host-6.example.test.", dnsmessage.TypeA))
+	var message dnsmessage.Message
+	if err := message.Unpack(reply); err != nil {
+		t.Fatal(err)
+	}
+	if message.Header.RCode != dnsmessage.RCodeServerFailure || len(message.Answers) != 0 {
+		t.Fatalf("answered %v with %v", message.Header.RCode, message.Answers)
+	}
+	if router.Counts()["dns_no_address"] != 1 {
+		t.Fatalf("counts %v", router.Counts())
 	}
 }
