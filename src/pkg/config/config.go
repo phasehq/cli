@@ -143,6 +143,21 @@ func GetDefaultUserHost() (string, error) {
 	return "", fmt.Errorf("no user found in config.json with id: %s", config.DefaultUser)
 }
 
+// ValidAccountID reports whether id is safe to use as one component of a
+// local path and a keystore name: the Console's ids are UUIDs, and an Agent
+// login's is "agent-" and hex.
+func ValidAccountID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // SameHost reports whether two Phase host URLs name the same Console.
 func SameHost(a, b string) bool {
 	normalize := func(host string) string {

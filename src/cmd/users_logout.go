@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/phasehq/cli/pkg/config"
@@ -86,8 +87,9 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		keyring.DeleteCredentials(accountID)
 
 		// Clean up offline cache for this user
-		cacheDir := offline.CacheDir(config.PhaseSecretsDir, accountID)
-		os.RemoveAll(cacheDir)
+		if cacheDir, ok := offlineCacheDir(accountID); ok {
+			os.RemoveAll(cacheDir)
+		}
 
 		if err := config.RemoveUser(accountID); err != nil {
 			return fmt.Errorf("failed to update config: %w", err)
@@ -96,4 +98,19 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// offlineCacheDir returns the account's offline cache directory, and false
+// when the id would name a path outside the Phase offline directory.
+func offlineCacheDir(accountID string) (string, bool) {
+	if !config.ValidAccountID(accountID) {
+		return "", false
+	}
+	base := filepath.Join(config.PhaseSecretsDir, "offline")
+	cacheDir := offline.CacheDir(config.PhaseSecretsDir, accountID)
+	relative, err := filepath.Rel(base, cacheDir)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return cacheDir, true
 }
