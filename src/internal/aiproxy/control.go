@@ -311,8 +311,18 @@ func (h *controlHandler) screenResolutionNote(response *agentapi.RequestResponse
 	}
 	if containsAny(response.ResolutionNote, append(h.state.manifestForbiddenSecrets(), h.state.currentBackendCredential().Reveal())) {
 		response.ResolutionNote = withheldResolutionNote
+		return
+	}
+	// An approval that needs a new session leaves what it added out of this
+	// one, so the note cannot be checked for that credential.
+	if response.RuntimeAction == agentapi.RequestRuntimeActionRestartRequired {
+		response.ResolutionNote = uncheckedResolutionNote
 	}
 }
+
+// uncheckedResolutionNote stands in for a note on an approval whose new
+// credential the running session does not hold.
+const uncheckedResolutionNote = "Phase withheld this note because the credential this approval added is not loaded in this session, so the note could not be checked for it."
 
 func validCreateRequest(request agentapi.CreateRequestRequest) bool {
 	if request.RelatedRequestID != "" && !controlIdentifier.MatchString(request.RelatedRequestID) {

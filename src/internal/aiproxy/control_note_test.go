@@ -77,3 +77,41 @@ func TestResolutionNoteIsScreenedForLiveValues(t *testing.T) {
 		})
 	}
 }
+
+// An approved setup whose new credential the running session does not hold
+// cannot be screened for that value, so its note is withheld.
+func TestResolutionNoteOfAnApprovalNeedingANewSessionIsWithheld(t *testing.T) {
+	const newValue = "brand-new-live-value-0123"
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/requests/request-1/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "request-1", "status": "approved", "kind": "setup", "serviceType": "github",
+				"credentialProvider": "github", "credentialName": "GitHub production",
+				"credentialId": "credential-new", "connectionId": "connection-new", "grantId": "grant-new",
+				"resolutionNote": "Done, the token is " + newValue,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer console.Close()
+	client, err := agentapi.NewClient(console.URL, durableTestToken(), console.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := controlRuntimeState(t, client, controlAccessSessionPayload("backend-note-approval", 1), "runtime-note-approval")
+	defer state.destroy()
+	proxy := &httpProxy{state: state, control: &controlHandler{state: state}}
+	request := httptest.NewRequest(http.MethodGet, phaseproxy.ControlURL+"/v1/requests/request-1", nil)
+	setProxyCapability(request, "runtime-note-approval")
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, request)
+	var answer agentapi.RequestResponse
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil || answer.Status != "approved" ||
+		answer.RuntimeAction != agentapi.RequestRuntimeActionRestartRequired {
+		t.Fatalf("the approval did not arrive: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if answer.ResolutionNote != uncheckedResolutionNote || strings.Contains(recorder.Body.String(), newValue) {
+		t.Fatalf("the note arrived as %q", answer.ResolutionNote)
+	}
+}
