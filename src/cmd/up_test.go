@@ -189,7 +189,7 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 		got := print(capturing(nil), &others)
 		if !strings.Contains(got, "   Flows: 0 to Connection hosts, 5 passed through unread.\n"+
 			"   3 were opened by another user's programs, so they went on unread and got no credential.\n"+
-			"   2 to Connection hosts went on without their credential because the program wasn't found in time.\n") {
+			"   2 to Connection hosts went on without their credential because no program of yours was found behind them, as with a virtual machine on macOS's shared network.\n") {
 			t.Fatalf("got:\n%s", got)
 		}
 		if got := print(capturing(nil), running); strings.Contains(got, "another user") || strings.Contains(got, "without their credential") {
@@ -387,6 +387,12 @@ func TestOtherProxySet(t *testing.T) {
 
 func TestUpHelpSaysAnotherProxyIsNotRead(t *testing.T) {
 	if !strings.Contains(upCmd.Long, otherProxyNote) {
+		t.Fatalf("help: %s", upCmd.Long)
+	}
+}
+
+func TestUpHelpSaysAVirtualMachinesTrafficGetsNoCredentials(t *testing.T) {
+	if !strings.Contains(upCmd.Long, "traffic whose program can't be found on this Mac, such as a virtual machine's on macOS's shared network, goes through without them") {
 		t.Fatalf("help: %s", upCmd.Long)
 	}
 }

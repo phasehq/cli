@@ -37,6 +37,8 @@ var upCmd = &cobra.Command{
 		"The model traffic of the AI coding tools Phase knows is read for those tools' own processes, " +
 		"so that a secret value Phase handed out is replaced before it reaches a model. " +
 		"Everything else passes through unread. " + otherProxyNote + " " +
+		"Only your own programs get your Connections' credentials: traffic whose program can't be found on this Mac, " +
+		"such as a virtual machine's on macOS's shared network, goes through without them. " +
 		"Your local network and other VPNs, such as Tailscale, keep their own routes. " +
 		"The first run installs a small helper, which asks for your password once.",
 	Args: cobra.NoArgs,
@@ -757,7 +759,7 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 		fmt.Fprintf(out, "   %d were opened by another user's programs, so they went on unread and got no credential.\n", others)
 	}
 	if unknown := status.Counts["connection_owner_unknown"]; unknown > 0 {
-		fmt.Fprintf(out, "   %d to Connection hosts went on without their credential because the program wasn't found in time.\n", unknown)
+		fmt.Fprintf(out, "   %d to Connection hosts went on without their credential because no program of yours was found behind them, as with a virtual machine on macOS's shared network.\n", unknown)
 	}
 	if refused := status.Counts["control_refused"]; refused > 0 {
 		fmt.Fprintf(out, "   %d requests to %s were refused because they named another host.\n", refused, tunnel.ControlHost)
