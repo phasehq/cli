@@ -23,9 +23,8 @@ type KeyValue struct {
 func EscapeForFormat(format, value string) string {
 	switch format {
 	case "dotenv":
-		// Single quotes keep a shell that sources or evals the export from
-		// expanding $(...), backticks or variables in a value.
-		return strings.ReplaceAll(value, "'", `'\''`)
+		_, written := dotenvQuote(value)
+		return written
 	case "csv":
 		return strings.ReplaceAll(value, `"`, `""`)
 	case "xml":
@@ -41,9 +40,30 @@ func EscapeForFormat(format, value string) string {
 	}
 }
 
+var dotenvEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
+
+// dotenvQuote returns the quote a dotenv export puts around value and the
+// value as written inside it. Either way a shell that sources or evals the
+// export never expands $(...), backticks or variables in a value.
+//
+// Single quotes need no escaping and every dotenv parser reads them as they
+// are, so they are used unless the value holds a single quote. No parser
+// agrees on how to write one inside them: Docker Compose refuses the whole
+// file at the shell's close, escape and reopen form, and python-dotenv drops
+// the line. Such a value goes in double quotes with the four characters a
+// shell reads there escaped. Compose and python-dotenv read \" and \\ back;
+// python-dotenv keeps the backslash of \$, and both keep it before a backtick.
+func dotenvQuote(value string) (quote, written string) {
+	if !strings.Contains(value, "'") {
+		return "'", value
+	}
+	return `"`, dotenvEscaper.Replace(value)
+}
+
 func ExportDotenv(secrets []KeyValue) {
 	for _, kv := range secrets {
-		fmt.Printf("%s='%s'\n", kv.Key, EscapeForFormat("dotenv", kv.Value))
+		quote, written := dotenvQuote(kv.Value)
+		fmt.Printf("%s=%s%s%s\n", kv.Key, quote, written, quote)
 	}
 }
 

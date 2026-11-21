@@ -195,7 +195,16 @@ func TestExportDotenvIsSafeToEval(t *testing.T) {
 		t.Skip("no POSIX shell")
 	}
 	marker := filepath.Join(t.TempDir(), "ran")
-	value := "a$(touch " + marker + ")`touch " + marker + "`$HOME\\'q'\"d\"\nline two"
+	for _, value := range []string{
+		"a$(touch " + marker + ")`touch " + marker + "`$HOME\\'q'\"d\"\nline two",
+		"a$(touch " + marker + ")`touch " + marker + "`$HOME\\\"d\"\nline two",
+	} {
+		checkDotenvEval(t, shell, marker, value)
+	}
+}
+
+func checkDotenvEval(t *testing.T, shell, marker, value string) {
+	t.Helper()
 	out := captureStdout(t, func() { ExportDotenv([]KeyValue{{Key: "VALUE", Value: value}}) })
 	script := filepath.Join(t.TempDir(), "export.env")
 	if err := os.WriteFile(script, []byte(out), 0o600); err != nil {
@@ -210,5 +219,22 @@ func TestExportDotenvIsSafeToEval(t *testing.T) {
 	}
 	if string(got) != value {
 		t.Fatalf("value read back as %q, want %q", got, value)
+	}
+}
+
+// A dotenv value goes in single quotes as it is, unless it holds a single
+// quote: then it goes in double quotes with only the characters a shell reads
+// there escaped.
+func TestExportDotenvQuotesEachValueSoParsersReadIt(t *testing.T) {
+	out := captureStdout(t, func() {
+		ExportDotenv([]KeyValue{
+			{Key: "A", Value: "q\"d$v`b\\s 'x' %&#"},
+			{Key: "B", Value: "plain/value=="},
+			{Key: "C", Value: "p$(w)`d`\\\"q"},
+		})
+	})
+	want := "A=\"q\\\"d\\$v\\`b\\\\s 'x' %&#\"\nB='plain/value=='\nC='p$(w)`d`\\\"q'\n"
+	if out != want {
+		t.Fatalf("got %q, want %q", out, want)
 	}
 }
