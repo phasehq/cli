@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/phasehq/cli/pkg/config"
-	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
 	"github.com/phasehq/golang-sdk/v2/phase/crypto"
@@ -165,13 +164,6 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 		wrappedKeyShare = &userData.WrappedKeyShare
 	}
 
-	// Save credentials to keyring
-	tokenSavedInKeyring := true
-	if err := keyring.SetCredentials(accountID, authToken); err != nil {
-		tokenSavedInKeyring = false
-	}
-
-	// Build user config
 	userConfig := config.UserConfig{
 		Host:             host,
 		ID:               accountID,
@@ -180,13 +172,8 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 		OrganizationName: orgName,
 		WrappedKeyShare:  wrappedKeyShare,
 	}
-	if !tokenSavedInKeyring {
-		userConfig.Token = authToken
-	}
-
-	// Save to config
-	if err := config.AddUser(userConfig); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	if err := saveUserLogin(cmd, userConfig, authToken); err != nil {
+		return err
 	}
 
 	fmt.Println(util.BoldGreen("✅ Authentication successful."))
