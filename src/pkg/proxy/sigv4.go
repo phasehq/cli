@@ -358,6 +358,30 @@ func RedactAWSSigV4Response(response *http.Response, redactions []CredentialReda
 
 var errEncodedAWSResponse = errors.New("encoded AWS response cannot be safely redacted")
 
+// maximumDecodedGzipBytes bounds what a gzip body the proxy reads whole may
+// inflate to: a few megabytes of zeros would otherwise decode to gigabytes.
+const maximumDecodedGzipBytes = int64(128 << 20)
+
+var errDecodedGzipTooLarge = errors.New("gzip body inflates past the inspection limit")
+
+// decodedLimitReader fails once more than remaining bytes have been read.
+type decodedLimitReader struct {
+	io.ReadCloser
+	remaining int64
+}
+
+func (r *decodedLimitReader) Read(destination []byte) (int, error) {
+	if int64(len(destination)) > r.remaining+1 {
+		destination = destination[:r.remaining+1]
+	}
+	read, err := r.ReadCloser.Read(destination)
+	r.remaining -= int64(read)
+	if r.remaining < 0 {
+		return 0, errDecodedGzipTooLarge
+	}
+	return read, err
+}
+
 // checkGzipAWSResponse handles S3 objects stored with Content-Encoding: gzip,
 // which S3 returns whatever the request accepts. The bounded body is decoded
 // in full and passed on byte for byte only when no live value appears in it.
@@ -375,7 +399,7 @@ func checkGzipAWSResponse(response *http.Response, redactions []CredentialRedact
 	if err != nil {
 		return errEncodedAWSResponse
 	}
-	var body io.ReadCloser = decoded
+	var body io.ReadCloser = &decodedLimitReader{ReadCloser: decoded, remaining: maximumDecodedGzipBytes}
 	stages := make([]*exactReplacingReadCloser, 0, len(redactions))
 	for _, redaction := range redactions {
 		if bytes.Contains(compressed, []byte(redaction.Live)) {

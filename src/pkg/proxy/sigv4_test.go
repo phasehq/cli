@@ -721,3 +721,27 @@ func TestRedactAWSSigV4ResponseReturnsCleanGzipObjectsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A small gzip body that inflates past the limit is refused, not decoded in
+// full, by redaction and by the credential scrubber alike.
+func TestGzipResponseInflatingPastTheLimitIsRefused(t *testing.T) {
+	var compressed bytes.Buffer
+	writer, _ := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	zeros := make([]byte, 1<<20)
+	for written := int64(0); written <= maximumDecodedGzipBytes; written += int64(len(zeros)) {
+		_, _ = writer.Write(zeros)
+	}
+	_ = writer.Close()
+	response := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "Content-Encoding": {"gzip"}},
+			Body: io.NopCloser(bytes.NewReader(compressed.Bytes())), ContentLength: int64(compressed.Len()),
+		}
+	}
+	if err := RedactAWSSigV4Response(response(), []CredentialRedaction{{Live: testLiveSecret, AgentVisible: testDecoySecret}}); err == nil {
+		t.Fatal("redaction returned a gzip body that inflates past the limit")
+	}
+	if err := ScrubAWSCredentialResponse(response(), nil); err == nil {
+		t.Fatal("the scrubber returned a gzip body that inflates past the limit")
+	}
+}
