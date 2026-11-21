@@ -117,6 +117,10 @@ func TestRequestHookRuntimeShutdownUsesAuthenticatedLocalControl(t *testing.T) {
 		if request.Header.Get("Authorization") != "" {
 			t.Error("runtime capability was reused as origin authorization")
 		}
+		// The proxy refuses a revoke without it (a followed redirect would not carry it).
+		if request.Header.Get(phaseproxy.ControlIntentHeader) != "1" {
+			t.Errorf("shutdown request lacks %s", phaseproxy.ControlIntentHeader)
+		}
 		_ = json.NewEncoder(w).Encode(agentapi.RevokeResponse{
 			SchemaVersion: agentapi.SchemaVersion,
 			SessionUID:    "session-one",
