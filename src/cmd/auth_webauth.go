@@ -45,47 +45,18 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 	rawData := fmt.Sprintf("%d-%s-%s", port, pubKeyHex, patName)
 	encoded := base64.StdEncoding.EncodeToString([]byte(rawData))
 
-	// Channel to receive auth data
-	type authData struct {
-		Email string `json:"email"`
-		PSS   string `json:"pss"`
-	}
-	dataCh := make(chan authData, 1)
-
-	// Create listener
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	listener, err := listenWebAuth(port)
 	if err != nil {
 		return fmt.Errorf("failed to start server on port %d: %w", port, err)
 	}
 
-	// Set up HTTP handler
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		origin := host
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		if r.Method == "POST" {
-			var data authData
-			if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
-				http.Error(w, "invalid request", http.StatusBadRequest)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"status": "Success: CLI authentication complete",
-			})
-			dataCh <- data
-		}
-	})
-
-	server := &http.Server{Handler: mux}
+	handler, dataCh := webAuthCallback(host, privKeyHex, pubKeyHex)
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+	}
 	go server.Serve(listener)
 
 	// Print webauth URL
@@ -105,7 +76,7 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 	// Wait for webauth reponse
 	spinner := util.NewSpinner("Waiting for authentication")
 	spinner.Start()
-	var received authData
+	var received webAuthLogin
 	select {
 	case received = <-dataCh:
 	case <-time.After(5 * time.Minute):
@@ -118,19 +89,8 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 	spinner.Stop()
 	server.Close()
 
-	// Decrypt email and PSS
-	decryptedEmail, err := crypto.DecryptAsymmetric(received.Email, privKeyHex, pubKeyHex)
-	if err != nil {
-		return fmt.Errorf("failed to decrypt email: %w", err)
-	}
-
-	decryptedPSS, err := crypto.DecryptAsymmetric(received.PSS, privKeyHex, pubKeyHex)
-	if err != nil {
-		return fmt.Errorf("failed to decrypt token: %w", err)
-	}
-
-	authToken := strings.TrimSpace(decryptedPSS)
-	userEmail := strings.TrimSpace(decryptedEmail)
+	authToken := strings.TrimSpace(received.pss)
+	userEmail := strings.TrimSpace(received.email)
 
 	// Validate token
 	p, err := phase.NewPhase(false, authToken, host)
@@ -178,4 +138,61 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 
 	fmt.Println(util.BoldGreen("✅ Authentication successful."))
 	return nil
+}
+
+// listenWebAuth listens for the callback on loopback only: the Console's page
+// posts to 127.0.0.1, so nothing on the network need reach it.
+func listenWebAuth(port int) (net.Listener, error) {
+	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+}
+
+// webAuthBodyLimit bounds a callback body; the real one is two short
+// ciphertexts.
+const webAuthBodyLimit = 64 << 10
+
+type webAuthLogin struct{ email, pss string }
+
+// webAuthCallback serves the Console's callback. Only a body that decrypts
+// with this login's key ends the wait; anything else is refused and the CLI
+// keeps waiting, so a stray or hostile POST cannot cancel the login.
+func webAuthCallback(host, privKeyHex, pubKeyHex string) (http.Handler, <-chan webAuthLogin) {
+	type authData struct {
+		Email string `json:"email"`
+		PSS   string `json:"pss"`
+	}
+	dataCh := make(chan webAuthLogin, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", host)
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != "POST" {
+			return
+		}
+		var data authData
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, webAuthBodyLimit)).Decode(&data); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		email, emailErr := crypto.DecryptAsymmetric(data.Email, privKeyHex, pubKeyHex)
+		pss, pssErr := crypto.DecryptAsymmetric(data.PSS, privKeyHex, pubKeyHex)
+		if emailErr != nil || pssErr != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "Success: CLI authentication complete",
+		})
+		select {
+		case dataCh <- webAuthLogin{email: email, pss: pss}:
+		default:
+		}
+	})
+	return mux, dataCh
 }
