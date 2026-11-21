@@ -65,7 +65,7 @@ func (p *httpProxy) enforceSecretGuard(req, upstream *http.Request, binding *bin
 // credential is swapped in or attached. It returns nil when the call may go
 // on. The proxy never holds a call open waiting for approval: an ask is
 // answered at once, with the request that asks a member to allow it.
-func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *binding, host string, started, now time.Time) *processedResponse {
+func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *binding, host string, started time.Time) *processedResponse {
 	connection := binding.connection
 	if !phaseproxy.PolicyApplies(connection) {
 		return nil
@@ -82,6 +82,9 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 		event.Detail = policyEventDetail(failure.details, connection)
 		return &processedResponse{event: event, failure: failure}
 	}
+	// Classifying may wait for the body, so a temporary allow is checked
+	// against the time it arrived, not the time the request began.
+	now := p.now()
 	decision := phaseproxy.EvaluateAccessPolicy(connection.Policy, calls, upstream, now)
 	if decision.Effect == agentapi.PolicyAllow {
 		return nil
