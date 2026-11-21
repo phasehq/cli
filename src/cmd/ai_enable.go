@@ -235,10 +235,29 @@ func runAIEnable(cmd *cobra.Command, args []string) error {
 // aiCAStore is the per-installation CA store; tests replace its keystore.
 var aiCAStore = phaseproxy.CAStore{}
 
+// trustCAForCurrentUser is phaseproxy.TrustCAForCurrentUser; tests replace it.
+var trustCAForCurrentUser = phaseproxy.TrustCAForCurrentUser
+
+// trustVerifiedCA trusts the certificate Ensure checked against the key in
+// the keystore, from a private copy: the public file could be replaced while
+// the user answered the trust prompt.
+func trustVerifiedCA(certificatePEM []byte) (phaseproxy.UserCATrustResult, error) {
+	directory, err := os.MkdirTemp("", "phase-ai-ca-")
+	if err != nil {
+		return phaseproxy.UserCATrustResult{}, err
+	}
+	defer os.RemoveAll(directory)
+	path := filepath.Join(directory, "ca.pem")
+	if err := os.WriteFile(path, certificatePEM, 0o600); err != nil {
+		return phaseproxy.UserCATrustResult{}, err
+	}
+	return trustCAForCurrentUser(path)
+}
+
 // prepareAIEnableCA creates or loads the per-installation CA, whose key is in
 // the system keystore, and offers to trust its public certificate.
 func prepareAIEnableCA(cmd *cobra.Command) error {
-	_, caPaths, err := aiCAStore.Ensure()
+	ca, caPaths, err := aiCAStore.Ensure()
 	if err != nil {
 		return fmt.Errorf("prepare Phase AI CA: %w", err)
 	}
@@ -282,7 +301,7 @@ func prepareAIEnableCA(cmd *cobra.Command) error {
 		}
 		return fmt.Errorf("trust Phase AI CA for current user: %s; install it and rerun, or pass --trust-ca=false", phaseproxy.UserCATrustToolHint(trustTool))
 	case trustCA:
-		result, err := phaseproxy.TrustCAForCurrentUser(caPaths.Certificate)
+		result, err := trustVerifiedCA(ca.CertificatePEM())
 		if err != nil {
 			return fmt.Errorf("trust Phase AI CA for current user: %w", err)
 		}
