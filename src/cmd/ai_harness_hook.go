@@ -415,6 +415,10 @@ func harnessExplicitManifestRefresh(err error) bool {
 		failure.Code == aiproxy.ManifestRefreshRequiredCode
 }
 
+// harnessExecAllowed is the guard the hook ran before wrapping the command.
+// The wrapper runs it again, since anything holding a lease can call it.
+var harnessExecAllowed = shellCommandRequiresPhase
+
 func runAIHarnessExec(cmd *cobra.Command, _ []string) error {
 	harness, _ := cmd.Flags().GetString("harness")
 	encodedLease, _ := cmd.Flags().GetString("lease")
@@ -429,6 +433,9 @@ func runAIHarnessExec(cmd *cobra.Command, _ []string) error {
 	commandBytes, err := base64.RawURLEncoding.DecodeString(encodedCommand)
 	if err != nil || len(commandBytes) == 0 || len(commandBytes) > maxHarnessCommandBytes {
 		return errors.New("Phase AI wrapped command is invalid")
+	}
+	if !harnessExecAllowed(string(commandBytes)) {
+		return errors.New("Phase AI wrapped command is not a single plain Phase call")
 	}
 	if disabled, err := automaticHarnessDisabled(harness); disabled || err != nil {
 		return errors.New("Phase AI is not enabled")

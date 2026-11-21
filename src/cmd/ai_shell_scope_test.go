@@ -75,7 +75,12 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "curl unquoted question glob", command: "curl -q -H x? http://phase.invalid/v1/status", want: false},
 		{name: "curl unquoted bracket glob", command: "curl -q -H x[ab] http://phase.invalid/v1/status", want: false},
 		{name: "curl quoted glob characters", command: "curl -q -H 'x*?[' http://phase.invalid/v1/status", want: true},
-		{name: "curl escaped glob character", command: `curl -q -H x\* http://phase.invalid/v1/status`, want: true},
+		// cmd and PowerShell read an unquoted backslash literally, so no
+		// escape outside quotes is managed.
+		{name: "curl escaped glob character", command: `curl -q -H x\* http://phase.invalid/v1/status`, want: false},
+		{name: "windows backslash semicolon", command: `curl.exe http://phase.invalid/v1/status -H x\;.\steal.cmd`, want: false},
+		{name: "windows backslash ampersand", command: `curl.exe http://phase.invalid/v1/status -H x\&set`, want: false},
+		{name: "quoted backslash is literal everywhere", command: `curl -q -H 'x\y' http://phase.invalid/v1/status`, want: true},
 		// Verbose output prints the proxy URL with its credentials.
 		{name: "curl verbose", command: "curl -v http://phase.invalid/v1/status", want: false},
 		{name: "curl verbose in a cluster", command: "curl -sSv http://phase.invalid/v1/status", want: false},

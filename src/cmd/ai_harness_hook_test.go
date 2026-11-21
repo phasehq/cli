@@ -879,6 +879,21 @@ func writeHarnessRuntimeFixture(t *testing.T, directory, leaseID string, state *
 	return harnessRuntimeBinding{directory: directory, leasePath: leasePath, lease: lease, lock: lock}
 }
 
+// allowAnyHarnessExecCommand lets a test that exercises the runtime plan run a
+// plain shell command through the wrapper, whose guard would refuse it.
+func allowAnyHarnessExecCommand(t *testing.T) {
+	t.Helper()
+	original := harnessExecAllowed
+	harnessExecAllowed = func(string) bool { return true }
+	t.Cleanup(func() { harnessExecAllowed = original })
+}
+
+func runHarnessExecTestAnyCommand(t *testing.T, leaseID, shellCommand string) (string, error) {
+	t.Helper()
+	allowAnyHarnessExecCommand(t)
+	return runHarnessExecTest(t, leaseID, shellCommand)
+}
+
 func runHarnessExecTest(t *testing.T, leaseID, shellCommand string) (string, error) {
 	t.Helper()
 	command := &cobra.Command{}
@@ -963,7 +978,7 @@ func TestHarnessExecWaitsForManifestRefreshAndExecutesCommandOnce(t *testing.T) 
 	const leaseID = "codex:session-one"
 	writeHarnessRuntimeFixture(t, directory, leaseID, &oldState)
 
-	output, err := runHarnessExecTest(t, leaseID, "printf x")
+	output, err := runHarnessExecTestAnyCommand(t, leaseID, "printf x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,7 +1028,7 @@ func TestHarnessExecWaitsForRuntimeStateGapAndExecutesCommandOnce(t *testing.T) 
 		publishResult <- writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeStateFile), state)
 	}()
 
-	output, err := runHarnessExecTest(t, leaseID, "printf x")
+	output, err := runHarnessExecTestAnyCommand(t, leaseID, "printf x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1060,7 +1075,7 @@ func TestHarnessExecDoesNotRunCommandWhenRuntimeLockChangesDuringRefresh(t *test
 	const leaseID = "codex:lock-change"
 	writeHarnessRuntimeFixture(t, directory, leaseID, &state)
 
-	output, err := runHarnessExecTest(t, leaseID, "printf x")
+	output, err := runHarnessExecTestAnyCommand(t, leaseID, "printf x")
 	if err == nil {
 		t.Fatal("runtime lock change should fail closed")
 	}
@@ -1121,7 +1136,7 @@ func TestHarnessExecDoesNotRunCommandForUnchangedManifestFailures(t *testing.T) 
 			const leaseID = "codex:unchanged-session"
 			writeHarnessRuntimeFixture(t, directory, leaseID, &state)
 
-			output, err := runHarnessExecTest(t, leaseID, "printf x")
+			output, err := runHarnessExecTestAnyCommand(t, leaseID, "printf x")
 			if err == nil || !strings.Contains(err.Error(), test.wantReason) {
 				t.Fatalf("error = %v, want %q", err, test.wantReason)
 			}
@@ -1330,4 +1345,24 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatal(err)
 	}
 	return string(encoded)
+}
+
+// The wrapper runs only the single plain Phase call the hook approved, so a
+// caller holding a lease cannot hand it any other command.
+func TestHarnessExecRefusesACommandThatIsNotAPhaseCall(t *testing.T) {
+	withHarnessHookConfig(t, ai.HarnessCodex)
+	withHookRuntimeDirectory(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	for _, command := range []string{
+		"touch " + marker,
+		"curl.exe http://phase.invalid/v1/status -H x\\;touch " + marker,
+		"curl http://phase.invalid/v1/status; touch " + marker,
+	} {
+		if _, err := runHarnessExecTest(t, "codex:session", command); err == nil || !strings.Contains(err.Error(), "not a single plain Phase call") {
+			t.Fatalf("%q: err = %v, want it refused", command, err)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("%q ran", command)
+		}
+	}
 }

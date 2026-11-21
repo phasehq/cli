@@ -40,6 +40,11 @@ func shellCommandRequiresPhase(command string) bool {
 	if strings.ContainsAny(command, "‘’‚‛“”„") {
 		return false
 	}
+	// cmd and PowerShell read an unquoted backslash literally, so \; or \&
+	// is a separator there that a POSIX shell would escape.
+	if phaseUnquotedBackslash(command) {
+		return false
+	}
 	words, valid := phaseTokenizeShell(command)
 	if !valid {
 		return false
@@ -54,6 +59,23 @@ func shellCommandRequiresPhase(command string) bool {
 		simple = append(simple, word.value)
 	}
 	return phasePlainNetworkCall(simple)
+}
+
+func phaseUnquotedBackslash(command string) bool {
+	var quote rune
+	for _, character := range command {
+		switch {
+		case quote != 0:
+			if character == quote {
+				quote = 0
+			}
+		case character == '\\':
+			return true
+		case character == '\'' || character == '"':
+			quote = character
+		}
+	}
+	return false
 }
 
 // phasePlainNetworkCall proves that words form a single curl or wget call that
