@@ -311,6 +311,10 @@ func caTrusted(certificate string) bool {
 	return exec.Command("/usr/bin/security", "verify-cert", "-c", certificate, "-p", "ssl").Run() == nil
 }
 
+// psPath is the system's own ps. What it says decides which process phase down stops,
+// so nothing on PATH may answer in its place.
+var psPath = "/bin/ps"
+
 // sudoPath is the system's own sudo, by its full path, so nothing on PATH can stand
 // in for it and take the password. Tests replace it.
 var sudoPath = "/usr/bin/sudo"
@@ -360,7 +364,7 @@ func tunnelEnginePID(directory string) (int, bool) {
 	if err != nil || !processIsAlive(pid) {
 		return 0, false
 	}
-	command, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	command, err := exec.Command(psPath, "-p", strconv.Itoa(pid), "-o", "command=").Output()
 	if err != nil || !strings.Contains(string(command), "tunnel engine") {
 		return 0, false
 	}
@@ -580,7 +584,7 @@ func stopTunnelProcess(pid int) {
 // tunnelEngineProcess says what the process attached to the helper is, and whether
 // it is an engine phase down may stop.
 func tunnelEngineProcess(pid int) (description string, ours bool) {
-	listing, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "command=").Output()
+	listing, err := exec.Command(psPath, "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "command=").Output()
 	if err != nil {
 		return fmt.Sprintf("process %d", pid), false
 	}

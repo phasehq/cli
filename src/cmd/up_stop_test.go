@@ -616,3 +616,31 @@ func TestDownNeedsNoStateDirectory(t *testing.T) {
 		t.Fatalf("phase down made the state directory: %v", err)
 	}
 }
+
+// Which process phase down stops is decided by what ps says, so it is the system's own
+// ps that is asked, never one found on PATH.
+func TestTheEngineIsRecognisedByTheSystemsOwnPS(t *testing.T) {
+	if psPath != "/bin/ps" {
+		t.Fatalf("ps is run as %q", psPath)
+	}
+	if _, err := os.Stat(psPath); err != nil {
+		t.Skipf("no %s here", psPath)
+	}
+	planted := t.TempDir()
+	script := "#!/bin/sh\necho \"" + strconv.Itoa(os.Getuid()) + " /opt/homebrew/bin/phase tunnel engine\"\n"
+	if err := os.WriteFile(filepath.Join(planted, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", planted)
+	// This test process is alive, and is no engine.
+	directory := t.TempDir()
+	if err := os.WriteFile(tunnelEnginePIDPath(directory), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pid, running := tunnelEnginePID(directory); running {
+		t.Fatalf("this test (pid %d) was taken for the engine", pid)
+	}
+	if description, ours := tunnelEngineProcess(os.Getpid()); ours {
+		t.Fatalf("this test was taken for an engine phase down may stop: %s", description)
+	}
+}
