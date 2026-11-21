@@ -76,6 +76,10 @@ func TestShellCommandRequiresPhase(t *testing.T) {
 		{name: "curl unquoted bracket glob", command: "curl -q -H x[ab] http://phase.invalid/v1/status", want: false},
 		{name: "curl quoted glob characters", command: "curl -q -H 'x*?[' http://phase.invalid/v1/status", want: true},
 		{name: "curl escaped glob character", command: `curl -q -H x\* http://phase.invalid/v1/status`, want: true},
+		// Verbose output prints the proxy URL with its credentials.
+		{name: "curl verbose", command: "curl -v http://phase.invalid/v1/status", want: false},
+		{name: "curl verbose in a cluster", command: "curl -sSv http://phase.invalid/v1/status", want: false},
+		{name: "curl long verbose", command: "curl --verbose http://phase.invalid/v1/status", want: false},
 		{name: "second wget URL", command: "wget http://phase.invalid/v1/status https://example.invalid/", want: false},
 		{name: "wget input file", command: "wget --input-file=urls.txt http://phase.invalid/v1/status", want: false},
 		{name: "ordinary compound", command: "git status && aws sts get-caller-identity", want: false},

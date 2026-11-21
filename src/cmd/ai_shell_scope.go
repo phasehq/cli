@@ -873,7 +873,8 @@ func phaseNetworkLongOption(executable, name string) phaseOptionKind {
 		switch name {
 		case "url":
 			return phaseOptionTarget
-		case "fail", "silent", "show-error", "include", "verbose", "location":
+		// verbose is left out: curl prints the proxy URL and its credentials.
+		case "fail", "silent", "show-error", "include", "location":
 			return phaseOptionFlag
 		case "request", "header", "data", "data-raw", "data-binary", "data-ascii", "data-urlencode",
 			"json", "max-time", "proxy", "output", "form", "form-string", "user-agent", "referer",
@@ -898,7 +899,7 @@ func phaseNetworkShortOption(executable string, flag byte) (takesValue, known bo
 	switch executable {
 	case "curl":
 		switch flag {
-		case 'f', 's', 'S', 'i', 'v', 'L', 'O', 'G', 'q', '#':
+		case 'f', 's', 'S', 'i', 'L', 'O', 'G', 'q', '#':
 			return false, true
 		case 'X', 'H', 'd', 'o', 'm', 'x', 'A', 'e', 'u', 'U', 'b', 'w':
 			return true, true
