@@ -1505,7 +1505,7 @@ func TestBodiesUpToTheProvidersLimitsAreRead(t *testing.T) {
 // same connection is read again.
 func TestOversizeBodiesAndMessagesPassUnread(t *testing.T) {
 	if testing.Short() {
-		t.Skip("sends two payloads of seventeen megabytes")
+		t.Skip("sends two payloads of forty-one megabytes")
 	}
 	rig := newLeakRig(t, leakModeCensor)
 	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
