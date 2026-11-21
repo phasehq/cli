@@ -883,9 +883,9 @@ func writeHarnessRuntimeFixture(t *testing.T, directory, leaseID string, state *
 // plain shell command through the wrapper, whose guard would refuse it.
 func allowAnyHarnessExecCommand(t *testing.T) {
 	t.Helper()
-	original := harnessExecAllowed
-	harnessExecAllowed = func(string) bool { return true }
-	t.Cleanup(func() { harnessExecAllowed = original })
+	original := harnessExecCommand
+	harnessExecCommand = func(command string) (string, bool) { return command, true }
+	t.Cleanup(func() { harnessExecCommand = original })
 }
 
 func runHarnessExecTestAnyCommand(t *testing.T, leaseID, shellCommand string) (string, error) {
@@ -1364,5 +1364,25 @@ func TestHarnessExecRefusesACommandThatIsNotAPhaseCall(t *testing.T) {
 		if _, err := os.Stat(marker); err == nil {
 			t.Fatalf("%q ran", command)
 		}
+	}
+}
+
+// A managed call skips curl's and wget's configuration files, which could add
+// a transfer the guard never saw.
+func TestHarnessExecCommandSkipsClientConfiguration(t *testing.T) {
+	for command, want := range map[string]string{
+		"curl -sS http://phase.invalid/v1/status":             "curl -q -sS http://phase.invalid/v1/status",
+		"curl.exe -sS http://phase.invalid/v1/status":         "curl.exe -q -sS http://phase.invalid/v1/status",
+		"  curl http://phase.invalid/v1/status":               "  curl -q http://phase.invalid/v1/status",
+		"wget -qO- http://phase.invalid/v1/status":            "wget --no-config -qO- http://phase.invalid/v1/status",
+		"curl -q --fail http://phase.invalid/v1/capabilities": "curl -q -q --fail http://phase.invalid/v1/capabilities",
+	} {
+		got, ok := harnessExecCommand(command)
+		if !ok || got != want {
+			t.Errorf("%q became %q (%t), want %q", command, got, ok, want)
+		}
+	}
+	if got, ok := harnessExecCommand("printf x"); ok {
+		t.Fatalf("a command that is not a Phase call became %q", got)
 	}
 }
