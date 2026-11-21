@@ -335,6 +335,9 @@ func ensureTunnelHelper(out io.Writer, interactive, reinstall bool) error {
 		fmt.Fprintln(out, "   Installing the Phase helper. It's the one part that needs root: it owns the tunnel")
 		fmt.Fprintln(out, "   device and routes, and never sees a credential.")
 	}
+	if err := helper.CheckInstallSource(self); err != nil {
+		return err
+	}
 	fmt.Fprintln(out, "   macOS will ask for your password now.")
 	install := exec.Command(sudoPath, "-p", "   Password: ", self, "tunnel", "install", "--uid", strconv.Itoa(os.Getuid()))
 	install.Stdin, install.Stdout, install.Stderr = os.Stdin, out, os.Stderr
@@ -458,6 +461,9 @@ func runDown(cmd *cobra.Command, _ []string) error {
 	if uninstall, _ := cmd.Flags().GetBool("uninstall"); uninstall && helper.Installed() {
 		self, err := os.Executable()
 		if err != nil {
+			return err
+		}
+		if err := helper.CheckInstallSource(self); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "Removing the Phase helper. macOS will ask for your password.")

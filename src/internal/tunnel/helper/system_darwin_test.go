@@ -113,3 +113,55 @@ func TestInstallResolversReportsTheEntriesInPlace(t *testing.T) {
 		t.Fatalf("a directory that isn't there holds %v", got)
 	}
 }
+
+// sudo runs the program as root, and the helper is copied in from it, so a program
+// that anyone but root and this user could replace is refused.
+func TestCheckInstallSourceRefusesAProgramOthersCanChange(t *testing.T) {
+	setup := func(t *testing.T, folderMode, fileMode os.FileMode) string {
+		t.Helper()
+		folder := filepath.Join(t.TempDir(), "bin")
+		if err := os.Mkdir(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		program := filepath.Join(folder, "phase")
+		if err := os.WriteFile(program, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(program, fileMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(folder, folderMode); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(folder, 0o755) })
+		return program
+	}
+	if err := CheckInstallSource(setup(t, 0o755, 0o755)); err != nil {
+		t.Fatalf("a program only its owner can change was refused: %v", err)
+	}
+	for name, modes := range map[string][2]os.FileMode{
+		"a program its group can change":       {0o755, 0o775},
+		"a program anyone can change":          {0o755, 0o757},
+		"a folder its group can change":        {0o775, 0o755},
+		"a folder anyone can change":           {0o757, 0o755},
+		"a folder anyone can add to, stickily": {0o755 | os.ModeSticky | 0o002, 0o755},
+	} {
+		t.Run(name, func(t *testing.T) {
+			program := setup(t, modes[0], modes[1])
+			err := CheckInstallSource(program)
+			if err == nil || !strings.Contains(err.Error(), "chmod go-w") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+	t.Run("a link to a program others can change", func(t *testing.T) {
+		target := setup(t, 0o755, 0o777)
+		link := filepath.Join(t.TempDir(), "phase")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckInstallSource(link); err == nil || !strings.Contains(err.Error(), target) {
+			t.Fatalf("got %v", err)
+		}
+	})
+}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -52,6 +53,32 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>
 `
+
+// CheckInstallSource refuses a program that sudo would run as root, and Install
+// would copy in as the helper, when anyone but root and this user could replace it:
+// the program itself, by its real path, and the folder it is in.
+func CheckInstallSource(path string) error {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	for _, target := range []string{resolved, filepath.Dir(resolved)} {
+		info, err := os.Stat(target)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("can't tell who owns %s", target)
+		}
+		owner := int(stat.Uid)
+		if (owner != 0 && owner != os.Getuid()) || info.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("%s can be changed by users other than you and root, and sudo would run it as root. "+
+				"Make it changeable only by you or root (for example: chmod go-w %s), then run this again", target, target)
+		}
+	}
+	return nil
+}
 
 // Install copies the running program into place and starts it at boot. It runs as root.
 func Install(uid int) error {
