@@ -624,6 +624,49 @@ func TestRedactAWSSigV4ResponseKeepsETag(t *testing.T) {
 	}
 }
 
+func TestRedactedStreamIsNotHeldBackByAChunk(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
+	if err := RedactAWSSigV4Response(response, []CredentialRedaction{{Live: testLiveSecret, AgentVisible: testDecoySecret}}); err != nil {
+		t.Fatal(err)
+	}
+	// An event whose tail cannot begin the live value comes out whole while
+	// the stream stays open; one that ends in a prefix of it waits.
+	for _, event := range []string{"data: one\n\n", "data: " + testLiveSecret + "\n\n"} {
+		go func() { _, _ = writer.Write([]byte(event)) }()
+		want := strings.ReplaceAll(event, testLiveSecret, testDecoySecret)
+		got := make([]byte, 0, len(want))
+		done := make(chan error, 1)
+		go func() {
+			buffer := make([]byte, 64)
+			for len(got) < len(want) {
+				read, err := response.Body.Read(buffer)
+				got = append(got, buffer[:read]...)
+				if err != nil {
+					done <- err
+					return
+				}
+			}
+			done <- nil
+		}()
+		select {
+		case err := <-done:
+			if err != nil || string(got) != want {
+				t.Fatalf("read %q, err %v; want %q", got, err, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the event %q was held back", event)
+		}
+	}
+	go func() { _, _ = writer.Write([]byte("tail " + testLiveSecret[:5])) }()
+	buffer := make([]byte, 64)
+	read, _ := response.Body.Read(buffer)
+	if string(buffer[:read]) != "tail " {
+		t.Fatalf("read %q before the rest of a possible match", buffer[:read])
+	}
+}
+
 func TestRedactAWSSigV4ResponseReturnsCleanGzipObjectsUnchanged(t *testing.T) {
 	gzipped := func(content string) []byte {
 		var buffer bytes.Buffer

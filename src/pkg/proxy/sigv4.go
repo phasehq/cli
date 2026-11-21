@@ -455,7 +455,9 @@ func (r *exactReplacingReadCloser) Read(destination []byte) (int, error) {
 			}
 			break
 		}
-		if safeBytes := len(r.input) - len(r.match) + 1; safeBytes > 0 {
+		// Only a tail that could begin a match is held back, so a streamed
+		// response (server-sent events) is not delayed by a chunk.
+		if safeBytes := len(r.input) - partialMatchSuffix(r.input, r.match); safeBytes > 0 {
 			r.output = append(r.output, r.input[:safeBytes]...)
 			remaining := append([]byte(nil), r.input[safeBytes:]...)
 			r.input = remaining
@@ -475,6 +477,27 @@ func (r *exactReplacingReadCloser) Read(destination []byte) (int, error) {
 	read := copy(destination, r.output)
 	r.output = r.output[read:]
 	return read, nil
+}
+
+// partialMatchSuffix is the length of the longest tail of input that is a
+// proper prefix of match.
+func partialMatchSuffix(input, match []byte) int {
+	if len(match) < 2 || len(input) == 0 {
+		return 0
+	}
+	start := max(len(input)-len(match)+1, 0)
+	for start < len(input) {
+		offset := bytes.IndexByte(input[start:], match[0])
+		if offset < 0 {
+			return 0
+		}
+		start += offset
+		if bytes.HasPrefix(match, input[start:]) {
+			return len(input) - start
+		}
+		start++
+	}
+	return 0
 }
 
 func (r *exactReplacingReadCloser) Close() error {

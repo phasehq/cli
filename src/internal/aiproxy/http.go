@@ -323,6 +323,11 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		}
 		return processedResponse{event: event, failure: failure}
 	}
+	if injected && binding.connection.Injection.Action != "aws_sigv4" {
+		// The response is read for the live value on its way back, so it is
+		// asked for in a form the proxy can read.
+		upstream.Header.Set("Accept-Encoding", "identity")
+	}
 	if err := p.state.validateProtocolBinding(snapshot); err != nil {
 		failure := &requestFailure{status: http.StatusServiceUnavailable, code: "agent_binding_changed", message: "The Agent binding changed while the request was evaluated; retry it.", decision: "error", reason: "binding_changed", binding: binding}
 		return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
@@ -349,6 +354,16 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		}
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Header)
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Trailer)
+	} else if injected {
+		// A redirect or an echo must not hand the Agent the live value the
+		// proxy put on the request.
+		if err := phaseproxy.SanitizeInjectedResponse(response, binding.connection); err != nil {
+			if response.Body != nil {
+				_ = response.Body.Close()
+			}
+			failure := &requestFailure{status: http.StatusBadGateway, code: "unsafe_upstream_response", message: "The upstream response could not be safely returned.", decision: "error", reason: "upstream_response_redaction_failed", binding: binding}
+			return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
+		}
 	}
 	// A custom Connection's value can be replaced in the Console at any time.
 	// A refusal is the cue to fetch it now rather than at the next periodic

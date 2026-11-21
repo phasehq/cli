@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/phasehq/cli/internal/agentapi"
@@ -453,6 +456,115 @@ func SanitizeAWSSigV4Response(response *http.Response, connection agentapi.Conne
 	}
 	return nil
 }
+
+// SanitizeInjectedResponse keeps the live values a header, basic or query
+// injection put on the request out of the response returned to the Agent: a
+// redirect or an echo would otherwise hand them back. Each is replaced with
+// its decoy, raw, URL-escaped and, for Basic authentication, base64-encoded.
+func SanitizeInjectedResponse(response *http.Response, connection agentapi.Connection) error {
+	const redacted = "PHASE_REDACTED_CREDENTIAL"
+	byLive := make(map[string]string)
+	add := func(live, replacement string) {
+		if live == "" {
+			return
+		}
+		if existing, found := byLive[live]; found && existing != replacement {
+			replacement = redacted
+		}
+		byLive[live] = replacement
+	}
+	addForms := func(live, replacement string) {
+		add(live, replacement)
+		for _, escape := range []func(string) string{url.QueryEscape, url.PathEscape} {
+			if escaped := escape(live); escaped != live {
+				add(escaped, escape(replacement))
+			}
+		}
+	}
+	unsafe := make(map[string]struct{})
+	for _, value := range agentapi.ProxyOnlyCredentialValues([]agentapi.Connection{connection}) {
+		unsafe[value] = struct{}{}
+	}
+	for field, live := range connection.SecretMaterial.Clone() {
+		if _, proxyOnly := unsafe[live]; !proxyOnly {
+			continue
+		}
+		replacement, status := agentapi.ResolveMaterial(connection.DecoyMaterial, field)
+		if status != agentapi.MaterialFound || replacement == "" {
+			replacement = redacted
+		}
+		addForms(live, replacement)
+	}
+	for _, injection := range connection.EffectiveInjections() {
+		if injection.Action != "basic_auth" {
+			continue
+		}
+		usernameField, _ := agentapi.ResolveMaterial(injection.ValueFrom.Fields, "username")
+		passwordField, _ := agentapi.ResolveMaterial(injection.ValueFrom.Fields, "password")
+		username, _ := agentapi.ResolveMaterial(connection.Identifiers, usernameField)
+		password, found := connection.SecretMaterial.Get(passwordField)
+		if !found || password == "" {
+			continue
+		}
+		decoy, status := agentapi.ResolveMaterial(connection.DecoyMaterial, passwordField)
+		replacement := redacted
+		if status == agentapi.MaterialFound && decoy != "" {
+			replacement = base64.StdEncoding.EncodeToString([]byte(username + ":" + decoy))
+		}
+		addForms(base64.StdEncoding.EncodeToString([]byte(username+":"+password)), replacement)
+	}
+	redactions := make([]CredentialRedaction, 0, len(byLive))
+	for live, replacement := range byLive {
+		for other := range byLive {
+			if strings.Contains(replacement, other) {
+				replacement = redacted
+			}
+		}
+		redactions = append(redactions, CredentialRedaction{Live: live, AgentVisible: replacement})
+	}
+	sort.SliceStable(redactions, func(left, right int) bool { return len(redactions[left].Live) > len(redactions[right].Live) })
+	unsafeResponse := &InjectionError{Code: InjectionUnsafeValue}
+	if response == nil {
+		return unsafeResponse
+	}
+	// A small body of known length is read whole, so its framing is kept and
+	// one that carries no live value is passed on exactly as it came.
+	body := response.Body
+	encoding := strings.TrimSpace(strings.Join(response.Header.Values("Content-Encoding"), ","))
+	if body == nil || body == http.NoBody || response.StatusCode == http.StatusSwitchingProtocols ||
+		response.ContentLength < 0 || response.ContentLength > maximumBufferedInjectedResponseBytes ||
+		(encoding != "" && !strings.EqualFold(encoding, "identity")) {
+		if RedactAWSSigV4Response(response, redactions) != nil {
+			return unsafeResponse
+		}
+		return nil
+	}
+	response.Body = http.NoBody
+	err := RedactAWSSigV4Response(response, redactions)
+	response.Body = body
+	if err != nil {
+		return unsafeResponse
+	}
+	data, err := readBounded(body, maximumBufferedInjectedResponseBytes)
+	_ = body.Close()
+	if err != nil {
+		return unsafeResponse
+	}
+	response.Trailer = replaceAWSResponseHeader(response.Trailer, redactions)
+	replaced := replaceAWSResponseText(string(data), redactions)
+	if replaced != string(data) {
+		response.ContentLength = int64(len(replaced))
+		response.Header.Set("Content-Length", strconv.Itoa(len(replaced)))
+		response.Header.Del("Content-MD5")
+		response.Header.Del("Digest")
+	}
+	response.Body = io.NopCloser(strings.NewReader(replaced))
+	return nil
+}
+
+// maximumBufferedInjectedResponseBytes bounds the response body read whole;
+// a larger one is rewritten as it streams.
+const maximumBufferedInjectedResponseBytes = 1 << 20
 
 func validOptionalAWSSessionToken(value string) bool {
 	if len(value) > maximumInjectionCredentialBytes {
