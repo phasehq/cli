@@ -240,9 +240,10 @@ Content-Type: application/json
 - A value too short or plain to protect is counted once for its type and id,
   however often it is registered, and at most 4096 such are remembered; past
   that the count stays where it is.
-- `partial` counts the added values indexed only in part: a document with a
-  leaf too short or one that looks public, or numbers that look like key
-  material. Status counts them the same way, as `partial`.
+- `partial` counts the added values indexed only in part where what was left
+  out may be secret: a document with a leaf of letters and digits too short
+  to index, or numbers that look like key material. Leaves left out as public
+  or as labels do not count. Status counts them the same way, as `partial`.
 - No route returns entries, hashes or the id of a secret. `GET /v1/status`
   adds `leakProtection` with counts, host names, reasons and rule ids only:
   `{"mode":"censor","secretsKnown":12,"unprotected":1,"partial":2,"inspectedHosts":[...],"unreadHosts":[...]}`.

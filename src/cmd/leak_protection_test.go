@@ -129,9 +129,9 @@ func TestValuesThatCouldNotBeProtectedAreCountedInAWarning(t *testing.T) {
 		{0, 0, ""},
 		{1, 0, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic.\n"},
 		{3, 0, "Phase: 3 values from this command are too short or plain to protect, so they are not removed from model traffic.\n"},
-		{0, 1, "Phase: 1 value from this command is protected in part: the parts of it that are too short or look public are not removed from model traffic.\n"},
+		{0, 1, "Phase: 1 value from this command is protected in part: a part of it that may be secret could not be protected, so it is not removed from model traffic.\n"},
 		{1, 2, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic. " +
-			"2 values from this command are protected in part: the parts of them that are too short or look public are not removed from model traffic.\n"},
+			"2 values from this command are protected in part: parts of them that may be secret could not be protected, so they are not removed from model traffic.\n"},
 	} {
 		for _, agent := range []bool{true, false} {
 			warnings := captureLeakWarnings(t)

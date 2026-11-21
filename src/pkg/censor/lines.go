@@ -198,7 +198,11 @@ func (b *entriesBuilder) addLeaf(part, value string, floor int) {
 		return
 	}
 	if len(value) < floor {
-		b.skip(part, ReasonShortLeaf)
+		reason := ReasonShortLeaf
+		if shortSecret(value) {
+			reason = ReasonShortSecret
+		}
+		b.skip(part, reason)
 		return
 	}
 	b.addValue(part, value)

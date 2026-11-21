@@ -449,6 +449,17 @@ func certificate(value string) bool {
 	return strings.HasPrefix(text, "-----BEGIN CERTIFICATE-----") && !strings.Contains(text, "PRIVATE KEY")
 }
 
+// shortSecret reports a leaf too short to index that may still be a secret:
+// 12 bytes or more of letters and digits alone that mix digits with letters
+// or the two cases. A label such as service_account, a domain or a project id
+// has punctuation in it, and a word has neither.
+func shortSecret(value string) bool {
+	if len(value) < minValueLength || entropy(value) < minValueEntropy || !secretLine(value) {
+		return false
+	}
+	return !strings.ContainsAny(value, "+/=-_")
+}
+
 // minURLSecret is the shortest path segment, query value or fragment of a URL
 // taken for a credential, as a webhook's token or a signature is. Shorter
 // runs are names such as AWS4-HMAC-SHA256, the same in every URL.

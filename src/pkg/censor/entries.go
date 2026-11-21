@@ -40,6 +40,7 @@ const (
 	ReasonLowEntropy  = "too little entropy to protect"
 	ReasonTooLong     = "too long to protect"
 	ReasonShortLeaf   = "too short for a leaf"
+	ReasonShortSecret = "too short for a leaf, and shaped like a secret"
 	ReasonPublicLeaf  = "looks public (a URL, an email address or a certificate)"
 	ReasonNumbers     = "numbers, which are not indexed next to strings"
 	partURLPassword   = "url-password"
@@ -53,7 +54,7 @@ var identifier = regexp.MustCompile(identifierPattern)
 
 var knownReasons = map[string]bool{
 	ReasonTooShort: true, ReasonLowEntropy: true, ReasonTooLong: true, ReasonShortLeaf: true, ReasonPublicLeaf: true,
-	ReasonNumbers: true,
+	ReasonNumbers: true, ReasonShortSecret: true,
 }
 
 // Entries is what indexing one value produces: keyed hashes and their layout,
@@ -94,9 +95,21 @@ type Unprotected struct {
 // Protected reports whether anything of the value was indexed.
 func (e *Entries) Protected() bool { return e != nil && len(e.Forms) > 0 }
 
-// Partial reports whether some of the value was indexed and some of it, such
-// as a leaf too short or one that looks public, was not.
-func (e *Entries) Partial() bool { return e.Protected() && len(e.Unprotected) > 0 }
+// Partial reports whether some of the value was indexed and some of it that
+// may be secret was not: a leaf shaped like a secret but too short for one, or
+// numbers that look like key material. Leaves left out as public or as labels
+// do not count, so an ordinary key file is not reported.
+func (e *Entries) Partial() bool {
+	if !e.Protected() {
+		return false
+	}
+	for _, u := range e.Unprotected {
+		if u.Reason == ReasonShortSecret || u.Reason == ReasonNumbers {
+			return true
+		}
+	}
+	return false
+}
 
 // Placeholder is what replaces the value in a request.
 func (e *Entries) Placeholder() string { return "ph:" + e.Type + ":" + e.ID }

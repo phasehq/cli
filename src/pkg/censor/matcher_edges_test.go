@@ -1132,6 +1132,37 @@ func TestAURLWithATokenInItsPathOrQueryIsProtected(t *testing.T) {
 	}
 }
 
+// A value counts as protected in part only when what was left out may be
+// secret: a leaf shaped like one and too short to index. The labels, public
+// URLs, addresses and ids of an ordinary key file do not count.
+func TestOnlyLeavesThatMayBeSecretMakeAValuePartlyProtected(t *testing.T) {
+	serviceAccount, _ := json.MarshalIndent(map[string]string{
+		"type": "service_account", "project_id": "orders-prod-482913", "private_key_id": randomHex(t, 20), "private_key": fakePEM(t),
+		"client_email": "deployer@orders-prod-482913.iam.gserviceaccount.com", "client_id": protectableDigits(t, 21),
+		"auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
+		"auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+		"client_x509_cert_url":        "https://www.googleapis.com/robot/v1/metadata/x509/deployer%40orders-prod-482913.iam.gserviceaccount.com",
+		"universe_domain":             "googleapis.com",
+	}, "", "  ")
+	awsCredentials := "[default]\naws_access_key_id = AKIA" + randomString(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16) +
+		"\naws_secret_access_key = " + randomString(t, alnum+"+/", 40) + "\nregion = us-east-1\noutput = json\n\n[deploy]\naws_access_key_id = AKIA" +
+		randomString(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16) + "\naws_secret_access_key = " + randomString(t, alnum+"+/", 40) + "\nregion = eu-west-2\n"
+	kubeconfig := "apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    certificate-authority-data: " + base64.StdEncoding.EncodeToString([]byte(fakeCertificate(t))) +
+		"\n    server: https://10.0.0.1:6443\n  name: orders-prod\ncontexts:\n- context:\n    cluster: orders-prod\n    user: deployer\n  name: deployer@orders-prod\n" +
+		"current-context: deployer@orders-prod\nusers:\n- name: deployer\n  user:\n    client-key-data: " + base64.StdEncoding.EncodeToString([]byte(fakePEM(t))) +
+		"\n    token: " + randomString(t, alnum, 40) + "\n"
+	for name, value := range map[string]string{"a service account key": string(serviceAccount), "an AWS credentials file": awsCredentials, "a kubeconfig": kubeconfig} {
+		_, entries := buildWithEntries(t, newKey(t), secret{ID: "doc", Value: value})
+		if e := entries["doc"]; !e.Protected() || e.Partial() {
+			t.Errorf("%s: protected %v, in part %v: %+v", name, e.Protected(), e.Partial(), e.Unprotected)
+		}
+	}
+	_, entries := buildWithEntries(t, newKey(t), secret{ID: "doc", Value: `{"api_token":"` + randomString(t, alnum, 40) + `","ref_code":"Q7xL2mR9vT4kP8"}`})
+	if e := entries["doc"]; !e.Partial() || len(e.Unprotected) != 1 || e.Unprotected[0].Reason != ReasonShortSecret {
+		t.Errorf("a 14-byte value under a neutral name: in part %v, %+v", e.Partial(), e.Unprotected)
+	}
+}
+
 // Next to strings, the numbers of a JSON value are not indexed. Those that
 // look like key material, an array of 16 integers or more and an integer of 12
 // digits or more, are listed as unprotected, so that it is not silent.

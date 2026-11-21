@@ -34,7 +34,11 @@
 // alone. A value under 12 bytes or 2.5 bits per byte is not indexed and is
 // listed as unprotected. So, in a document, are a string of a JSON value under
 // 20 bytes and a value of text under 12, a URL with no credential in it, an
-// email address and a certificate. A URL holds a credential when its user or
+// email address and a certificate. A leaf too short for its floor that is 12
+// bytes or more of letters and digits mixing digits with letters or the two
+// cases may be a secret, and is listed with its own reason; with numbers that
+// look like key material, it makes the value protected in part (Partial),
+// where public leaves and labels do not. A URL holds a credential when its user or
 // password does, or when it has a query or a fragment, or a path segment of 20
 // characters or more that is one run of base64 or hex, as a webhook's token
 // is; in one whose token is in its path, query or fragment, all but the token
