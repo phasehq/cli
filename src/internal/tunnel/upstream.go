@@ -44,9 +44,11 @@ type Upstream struct {
 	read    func() (servers []string, scoped map[string][]string)
 	mu      sync.Mutex
 	// readAt is the count of changes the servers were read at, and known says that
-	// read found some.
-	readAt uint64
-	known  bool
+	// read found some. readTime is when they were read, by clock.
+	readAt   uint64
+	known    bool
+	readTime time.Time
+	clock    func() time.Time
 	// wait replaces serverWait. Tests set it.
 	wait time.Duration
 }
@@ -57,6 +59,10 @@ var publicResolvers = []string{"1.1.1.1", "8.8.8.8"}
 // serverWait is how long one DNS server has to answer before the next is asked.
 const serverWait = 3 * time.Second
 
+// resolverAge is how long the servers that were read are kept. A VPN that sets up
+// its own servers for a domain changes no route out, so nothing else says to look.
+const resolverAge = 30 * time.Second
+
 // NewUpstream reads the network's DNS servers, ignoring the tunnel's own, and reads
 // them again whenever the machine's way out changes: another network has other servers.
 func NewUpstream() *Upstream {
@@ -66,17 +72,28 @@ func NewUpstream() *Upstream {
 }
 
 // refresh reads the system's servers again when the way out has changed since they
-// were read. It reads again as well while there are none: the network they belong
-// to may not have been up yet.
+// were read, or they are older than resolverAge. It reads again as well while there
+// are none: the network they belong to may not have been up yet.
 func (u *Upstream) refresh() {
 	if u.read == nil {
 		return
 	}
-	now := u.changed()
-	if u.known && now == u.readAt {
+	clock := u.clock
+	if clock == nil {
+		clock = time.Now
+	}
+	now, at := u.changed(), clock()
+	if u.known && now == u.readAt && at.Sub(u.readTime) < resolverAge {
 		return
 	}
-	u.Servers, u.Scoped = u.read()
+	servers, scoped := u.read()
+	u.readTime = at
+	if u.known && now == u.readAt && len(servers) == 0 {
+		// Only their age called for this, and the read found nothing: the servers
+		// that worked are kept rather than leave names to the fallback.
+		return
+	}
+	u.Servers, u.Scoped = servers, scoped
 	u.readAt, u.known = now, len(u.Servers) > 0
 }
 

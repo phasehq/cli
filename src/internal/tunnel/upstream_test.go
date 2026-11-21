@@ -243,6 +243,45 @@ func TestTheServersAreReadAgainWhenTheWayOutChanges(t *testing.T) {
 	}
 }
 
+// A VPN that sets up servers for its own domain changes no route out. The servers
+// are read again once they are old, so its names go to its servers; and a read that
+// then finds none keeps the servers that worked.
+func TestTheServersAreReadAgainOnceTheyAreOld(t *testing.T) {
+	general, vpn := answering(t, "192.168.1.9"), answering(t, "10.8.0.9")
+	var reads atomic.Int32
+	scoped := atomic.Pointer[map[string][]string]{}
+	scoped.Store(&map[string][]string{})
+	servers := atomic.Pointer[[]string]{}
+	servers.Store(&[]string{general.address})
+	now := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	upstream := &Upstream{
+		changed: func() uint64 { return 0 },
+		read: func() ([]string, map[string][]string) {
+			reads.Add(1)
+			return *servers.Load(), *scoped.Load()
+		},
+		clock: func() time.Time { return now },
+	}
+	upstream.refresh()
+	if got := lookupOne(t, upstream, "db.vpn.example.test"); got != "192.168.1.9" {
+		t.Fatalf("before the VPN the name resolved to %s", got)
+	}
+	scoped.Store(&map[string][]string{"vpn.example.test": {vpn.address}})
+	now = now.Add(resolverAge / 2)
+	if got := lookupOne(t, upstream, "db.vpn.example.test"); got != "192.168.1.9" || reads.Load() != 1 {
+		t.Fatalf("too soon, the name resolved to %s after %d reads", got, reads.Load())
+	}
+	now = now.Add(resolverAge)
+	if got := lookupOne(t, upstream, "db.vpn.example.test"); got != "10.8.0.9" || reads.Load() != 2 {
+		t.Fatalf("once old, the name resolved to %s after %d reads", got, reads.Load())
+	}
+	servers.Store(&[]string{})
+	now = now.Add(2 * resolverAge)
+	if got := lookupOne(t, upstream, "www.example.test"); got != "192.168.1.9" || reads.Load() != 3 {
+		t.Fatalf("after a read that found nothing, the name resolved to %s after %d reads", got, reads.Load())
+	}
+}
+
 // A raw query is taken to the servers in the same order, and the first answer is the
 // answer, whatever it says.
 func TestForwardAsksTheServersInTheSameOrder(t *testing.T) {
