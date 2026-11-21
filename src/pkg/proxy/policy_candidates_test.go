@@ -221,7 +221,7 @@ func TestTemporaryAllowCoversTheOverriddenMethod(t *testing.T) {
 // Rules that stop a call match a respelled path; rules and temporary allows
 // that let one through match only the path as sent.
 func TestStoppingRulesMatchARespelledPathAndAllowingOnesDoNot(t *testing.T) {
-	respellings := []string{"/v1/admin", "/v1/admin/", "/V1/Admin", "/v1/admin;jsessionid=1", "/v1/ADMIN;x/", "/v1/admin/;x"}
+	respellings := []string{"/v1/admin", "/v1/admin/", "/V1/Admin", "/v1/admin;jsessionid=1", "/v1/ADMIN;x/", "/v1/admin/;x", "/v1;x/admin"}
 	for _, effect := range []string{"block", "ask"} {
 		connection := httpPolicyConnection(t, `{"version":1,"default":"allow","rules":[{"match":{"path":"/v1/admin"},"effect":"`+effect+`"}]}`, "")
 		for _, spelled := range respellings {
@@ -636,7 +636,9 @@ func TestLoosePathComparisons(t *testing.T) {
 		{"/", "/", true},
 		{"/v1/admin", "/v1/admin//", false},
 		{"/v1/admin", "/v1/admin/users", false},
-		{"/v1/admin", "/v1;x/admin", false},
+		{"/v1/admin", "/v1;x/admin", true},
+		{"/v1/admin/secret", "/v1/admin;x/secret", true},
+		{"/v1/admin/secret", "/v1;a/ADMIN;b/secret;c/", true},
 		{"/v1/admin", "/v1/admins", false},
 		{"/v1/admin", "/", false},
 	} {
@@ -645,7 +647,7 @@ func TestLoosePathComparisons(t *testing.T) {
 		}
 	}
 	for path, want := range map[string]string{
-		"/": "/", "/a": "/a", "/a/": "/a", "/a;x": "/a", "/a;x/": "/a", "/a/;x": "/a", "/;x": "/", "/a;x/b": "/a;x/b", "/a//": "/a/",
+		"/": "/", "/a": "/a", "/a/": "/a", "/a;x": "/a", "/a;x/": "/a", "/a/;x": "/a", "/;x": "/", "/a;x/b": "/a/b", "/a;x/b;y/": "/a/b", "/a//": "/a/",
 	} {
 		if got := loosePath(path); got != want {
 			t.Errorf("loosePath(%q) = %q, want %q", path, got, want)

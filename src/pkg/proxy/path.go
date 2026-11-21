@@ -35,9 +35,9 @@ func globMatch(pattern, value string) bool {
 
 // looseGlobMatch is globMatch for the comparisons that must not be dodged by
 // respelling a path: it also matches when the pattern covers the path with
-// letter case, one trailing slash and a ";params" tail on the last segment
-// left out, which is how many servers route a request. Only what stops or
-// reclassifies a call is compared this way (see ruleMatches in policy.go).
+// letter case, one trailing slash and ";params" on any segment left out, which
+// is how many servers route a request. Only what stops or reclassifies a call
+// is compared this way (see ruleMatches in policy.go).
 func looseGlobMatch(pattern, value string) bool {
 	if globMatch(pattern, value) {
 		return true
@@ -48,21 +48,27 @@ func looseGlobMatch(pattern, value string) bool {
 	return globMatchWith(pattern, loosePath(value), true)
 }
 
-// loosePath drops a ";params" tail on the last segment and one trailing slash.
+// loosePath drops ";params" from every segment, then one trailing slash.
+// Tomcat, Jetty and Spring route /a;x/b as /a/b.
 func loosePath(value string) string {
 	value = trimPathParams(value)
 	if len(value) > 1 && strings.HasSuffix(value, "/") {
-		value = trimPathParams(value[:len(value)-1])
+		value = value[:len(value)-1]
 	}
 	return value
 }
 
 func trimPathParams(value string) string {
-	segment := strings.LastIndex(value, "/") + 1
-	if parameters := strings.Index(value[segment:], ";"); parameters >= 0 {
-		return value[:segment+parameters]
+	if !strings.Contains(value, ";") {
+		return value
 	}
-	return value
+	segments := strings.Split(value, "/")
+	for index, segment := range segments {
+		if parameters := strings.IndexByte(segment, ';'); parameters >= 0 {
+			segments[index] = segment[:parameters]
+		}
+	}
+	return strings.Join(segments, "/")
 }
 
 // loosePathMatch compares a path.Match pattern with a request path the way
