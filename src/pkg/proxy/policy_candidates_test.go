@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
@@ -139,6 +140,56 @@ func TestAWSSelectorsDecideAloneOnlyWhereTheServiceActsOnThem(t *testing.T) {
 		if classes := callClasses(t, test.request, connection); !reflect.DeepEqual(classes, test.classes) {
 			t.Errorf("%s: classes = %v, want %v", test.name, classes, test.classes)
 		}
+	}
+}
+
+// Rails (Rack), Laravel and Symfony read the method of a POST from a form
+// body's _method field.
+func TestFormBodyMethodOverrideAddsTheNamedMethodsClass(t *testing.T) {
+	connection := httpPolicyConnection(t, `{"version":1,"default":"allow","rules":[{"class":"delete","effect":"block"}]}`, "")
+	form := func(method, contentType, body string) *http.Request {
+		created, err := http.NewRequest(method, "https://api.example.test/v1/items/1", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contentType != "" {
+			created.Header.Set("Content-Type", contentType)
+		}
+		return created
+	}
+	for _, contentType := range []string{"application/x-www-form-urlencoded", "Application/X-WWW-Form-Urlencoded; charset=utf-8", ""} {
+		request := form("POST", contentType, "name=x&_method=delete")
+		decision := decide(t, request, connection)
+		if decision.Effect != agentapi.PolicyBlock || decision.Method != "DELETE" {
+			t.Errorf("%q form: effect=%s method=%s", contentType, decision.Effect, decision.Method)
+		}
+		if forwarded, _ := io.ReadAll(request.Body); string(forwarded) != "name=x&_method=delete" {
+			t.Errorf("%q form: body forwarded as %q", contentType, forwarded)
+		}
+	}
+	// Only a form body sent with POST is read, and only for _method.
+	for name, request := range map[string]*http.Request{
+		"JSON body":    form("POST", "application/json", `{"_method":"DELETE"}`),
+		"PUT form":     form("PUT", "application/x-www-form-urlencoded", "_method=DELETE"),
+		"plain form":   form("POST", "application/x-www-form-urlencoded", "name=x"),
+		"POST renamed": form("POST", "application/x-www-form-urlencoded", "_method=post"),
+	} {
+		if classes := callClasses(t, request, connection); len(classes) != 1 {
+			t.Errorf("%s: classes = %v", name, classes)
+		}
+	}
+	// A form body that cannot be read in full is not judged by its method.
+	large := form("POST", "application/x-www-form-urlencoded", "_method=DELETE&pad="+strings.Repeat("x", int(maximumMintingInspectionBytes)))
+	if _, err := ClassifyCall(large, connection); !errors.Is(err, ErrCallUninspectable) {
+		t.Errorf("an oversized form body: err=%v", err)
+	}
+	unknownLength := form("POST", "application/x-www-form-urlencoded", "_method=DELETE&pad="+strings.Repeat("x", int(maximumMintingInspectionBytes)))
+	unknownLength.ContentLength = -1
+	if _, err := ClassifyCall(unknownLength, connection); !errors.Is(err, ErrCallUninspectable) {
+		t.Errorf("an oversized form body of unknown length: err=%v", err)
+	}
+	if _, err := ClassifyCall(form("POST", "application/x-www-form-urlencoded", "a=%zz&_method=DELETE"), connection); !errors.Is(err, ErrCallUninspectable) {
+		t.Errorf("an unreadable form naming _method: err=%v", err)
 	}
 }
 
