@@ -31,11 +31,15 @@ type plaintextPostgresObservation struct {
 	startupReceived   bool
 	identityMatched   bool
 	credentialMatched bool
+	credentialSent    bool
 	forwarded         map[string]string
 	error             error
 }
 
-func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword, expectedDatabase string) (net.Listener, <-chan plaintextPostgresObservation) {
+// startPlaintextPostgresUpstream declines TLS and asks for authentication
+// code authCode: 0 lets the client in without a password (trust), 3 asks for
+// it in the clear and 5 for an MD5 hash.
+func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword, expectedDatabase string, authCode uint32) (net.Listener, <-chan plaintextPostgresObservation) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -85,18 +89,25 @@ func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword
 		}
 		observation.identityMatched = params["user"] == expectedUser && params["database"] == expectedDatabase
 		observation.forwarded = params
-		if writeErr := writePGAuth(connection, 3, nil); writeErr != nil {
-			observation.error = writeErr
-			observed <- observation
-			return
+		if authCode != 0 {
+			var salt []byte
+			if authCode == 5 {
+				salt = []byte{1, 2, 3, 4}
+			}
+			if writeErr := writePGAuth(connection, authCode, salt); writeErr != nil {
+				observation.error = writeErr
+				observed <- observation
+				return
+			}
+			kind, payload, readErr := readPGMessage(connection)
+			if readErr != nil {
+				// The client hung up instead of answering.
+				observed <- observation
+				return
+			}
+			observation.credentialSent = kind == 'p'
+			observation.credentialMatched = kind == 'p' && string(payload) == expectedPassword+"\x00"
 		}
-		kind, payload, readErr := readPGMessage(connection)
-		if readErr != nil {
-			observation.error = readErr
-			observed <- observation
-			return
-		}
-		observation.credentialMatched = kind == 'p' && string(payload) == expectedPassword+"\x00"
 		if writeErr := writePGAuth(connection, 0, nil); writeErr != nil {
 			observation.error = writeErr
 			observed <- observation
@@ -124,7 +135,7 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 	}}
 
 	t.Run("established loopback", func(t *testing.T) {
-		listener, observed := startPlaintextPostgresUpstream(t, user, password, database)
+		listener, observed := startPlaintextPostgresUpstream(t, user, password, database, 0)
 		adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
 		}}
@@ -139,7 +150,7 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 		}
 		_ = connection.Close()
 		observation := <-observed
-		if observation.error != nil || !observation.startupReceived || !observation.identityMatched || !observation.credentialMatched {
+		if observation.error != nil || !observation.startupReceived || !observation.identityMatched || observation.credentialSent {
 			t.Fatalf("loopback plaintext handshake failed: %+v", observation)
 		}
 		for key, want := range map[string]string{
@@ -167,7 +178,7 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 	})
 
 	t.Run("non-loopback established peer", func(t *testing.T) {
-		listener, observed := startPlaintextPostgresUpstream(t, user, password, database)
+		listener, observed := startPlaintextPostgresUpstream(t, user, password, database, 3)
 		adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			connection, err := (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
 			if err != nil {
@@ -187,6 +198,27 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 			t.Fatalf("credential material was sent after non-loopback TLS refusal: %+v", observation)
 		}
 	})
+
+	// Whatever holds a loopback port without TLS may not be the database, so
+	// it is given neither the password nor an MD5 hash of it.
+	for name, code := range map[string]uint32{"cleartext": 3, "md5": 5} {
+		t.Run("loopback "+name+" password request", func(t *testing.T) {
+			listener, observed := startPlaintextPostgresUpstream(t, user, password, database, code)
+			adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
+			}}
+			connection, _, err := adapters.connectPostgresUpstream(context.Background(), binding, user, password, map[string]string{"user": user, "database": database})
+			if connection != nil || !errors.Is(err, errPostgresUpstreamPlainAuth) {
+				t.Fatalf("plaintext %s result=(%v,%v), want a refusal", name, connection, err)
+			}
+			if message, _, _ := postgresUpstreamClientFailure(err); !strings.Contains(message, "enable TLS or SCRAM") {
+				t.Fatalf("refusal message %q does not say how to fix it", message)
+			}
+			if observation := <-observed; observation.error != nil || observation.credentialSent {
+				t.Fatalf("a password answer was sent without TLS: %+v", observation)
+			}
+		})
+	}
 }
 
 func TestPostgresUpstreamErrorsAreSafelyClassified(t *testing.T) {

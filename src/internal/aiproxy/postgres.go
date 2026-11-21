@@ -38,6 +38,7 @@ var (
 	errPostgresUpstreamRejected            = errors.New("PostgreSQL upstream rejected the connection")
 	errPostgresUpstreamProtocol            = errors.New("PostgreSQL upstream protocol is unsupported")
 	errPostgresUpstreamStartupSetting      = errors.New("PostgreSQL upstream rejected a client startup setting")
+	errPostgresUpstreamPlainAuth           = errors.New("PostgreSQL upstream asked for a password in the clear")
 )
 
 type pgSessionIdentity struct {
@@ -290,6 +291,7 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 		return fail(errPostgresUpstreamUnavailable)
 	}
 	var response [1]byte
+	plaintext := false
 	if _, err = io.ReadFull(connection, response[:]); err != nil {
 		return fail(errPostgresUpstreamUnavailable)
 	}
@@ -308,11 +310,13 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 	case 'N':
 		// Stock local PostgreSQL containers commonly disable server TLS. The
 		// decoy-facing adapter remains TLS-only, while its upstream leg may use
-		// plaintext only when the established TCP peer itself is loopback. A
-		// configured hostname is never trusted as evidence of locality.
+		// plaintext only when the established TCP peer itself is loopback, and
+		// then answers only SCRAM. A configured hostname is never trusted as
+		// evidence of locality.
 		if !postgresUpstreamIsLoopback(connection) {
 			return fail(errPostgresUpstreamTLSRequired)
 		}
+		plaintext = true
 	default:
 		return fail(errPostgresUpstreamProtocol)
 	}
@@ -339,10 +343,19 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 			switch code {
 			case 0:
 			case 3:
+				// Without TLS nothing shows the peer is the database: whatever
+				// holds the loopback port would get the password, or with MD5 a
+				// hash it can replay. SCRAM proves the password without sending it.
+				if plaintext {
+					return fail(errPostgresUpstreamPlainAuth)
+				}
 				if err = writePGMessage(connection, 'p', []byte(password+"\x00")); err != nil {
 					return fail(errPostgresUpstreamUnavailable)
 				}
 			case 5:
+				if plaintext {
+					return fail(errPostgresUpstreamPlainAuth)
+				}
 				if len(data) != 4 {
 					return fail(errPostgresUpstreamProtocol)
 				}
@@ -499,6 +512,8 @@ func postgresUpstreamClientFailure(err error) (message, sqlState, reason string)
 		return "PostgreSQL upstream database is unavailable", "3D000", "upstream_database_unavailable"
 	case errors.Is(err, errPostgresUpstreamTLSRequired):
 		return "PostgreSQL upstream does not offer TLS; plaintext is allowed only for a loopback endpoint", "08006", "upstream_tls_required"
+	case errors.Is(err, errPostgresUpstreamPlainAuth):
+		return "PostgreSQL upstream asked for a cleartext or MD5 password over a connection without TLS; enable TLS or SCRAM-SHA-256 authentication on the server", "28000", "upstream_plain_auth_refused"
 	case errors.Is(err, errPostgresUpstreamTLSFailed):
 		return "PostgreSQL upstream TLS verification failed", "08006", "upstream_tls_failed"
 	case errors.Is(err, errPostgresUpstreamUnavailable):
