@@ -27,6 +27,11 @@ type PhysicalPath struct {
 	// counts the looks that found another.
 	seen    defaultRoute
 	changes uint64
+
+	// route and addresses replace how a destination's route, and an interface's
+	// addresses, are found. Tests use them.
+	route     RouteFunc
+	addresses func(index int) ([]netip.Addr, error)
 }
 
 // defaultRoute is the default route's interface, and its gateway where that is known.
@@ -141,13 +146,70 @@ func (p *PhysicalPath) Bind(address string, bind func(ipv6 bool, name string, in
 		return nil
 	}
 	name, index, enabled := p.Current()
-	if !enabled {
+	if !enabled || !p.pins(addr, index) {
 		return nil
 	}
 	if index == 0 {
 		return errors.New("no network: there's no default route to leave by")
 	}
 	return bind(addr.Unmap().Is6(), name, index)
+}
+
+// pins reports whether a socket to addr is pinned to the physical interface, the one
+// at index. It is, unless its route is known to go by some other interface, such as a
+// VPN's for its own range or resolver, which pinning would take it away from. A route
+// into the tunnel, one on the physical interface already, and one that can't be told
+// are all pinned: that never loops.
+func (p *PhysicalPath) pins(addr netip.Addr, index int) bool {
+	p.mu.RLock()
+	route, addresses := p.route, p.addresses
+	p.mu.RUnlock()
+	if route == nil {
+		route = unpinnedSource
+	}
+	if addresses == nil {
+		addresses = interfaceAddresses
+	}
+	source, err := route(addr)
+	if err != nil || !source.IsValid() || ownAddress(source) {
+		return true
+	}
+	if index == 0 {
+		// No physical interface to keep it on, and its route doesn't lead back here.
+		return false
+	}
+	physical, err := addresses(index)
+	if err != nil {
+		return true
+	}
+	source = source.Unmap().WithZone("")
+	for _, own := range physical {
+		if own.Unmap().WithZone("") == source {
+			return true
+		}
+	}
+	return false
+}
+
+// interfaceAddresses lists the addresses of the interface at index.
+func interfaceAddresses(index int) ([]netip.Addr, error) {
+	found, err := net.InterfaceByIndex(index)
+	if err != nil {
+		return nil, err
+	}
+	listed, err := found.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	addresses := make([]netip.Addr, 0, len(listed))
+	for _, address := range listed {
+		if network, ok := address.(*net.IPNet); ok {
+			if addr, ok := netip.AddrFromSlice(network.IP); ok {
+				addresses = append(addresses, addr.Unmap())
+			}
+		}
+	}
+	return addresses, nil
 }
 
 // Control is a net.Dialer control function.

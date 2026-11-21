@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/netip"
 	"reflect"
@@ -135,7 +136,8 @@ func TestPinningLeavesOtherInterfacesAlone(t *testing.T) {
 }
 
 func TestPinningRefusesRatherThanLoops(t *testing.T) {
-	path := &PhysicalPath{enabled: true}
+	// Everything is captured, so the route out leads into the tunnel.
+	path := &PhysicalPath{enabled: true, route: func(netip.Addr) (netip.Addr, error) { return LocalAddress, nil }}
 	called := false
 	err := path.Bind("1.1.1.1:443", func(bool, string, int) error {
 		called = true
@@ -143,6 +145,56 @@ func TestPinningRefusesRatherThanLoops(t *testing.T) {
 	})
 	if err == nil || called {
 		t.Fatalf("with no interface to leave by: err = %v, called = %v", err, called)
+	}
+}
+
+// A socket is pinned to the physical interface only where its route would lead into
+// the tunnel, or already leaves by that interface. One whose route goes by another
+// VPN, to its resolver or its hosts, is left on it.
+func TestPinningLeavesAnotherVPNsRoutesAlone(t *testing.T) {
+	wifi := netip.MustParseAddr("192.168.1.20")
+	vpn := netip.MustParseAddr("10.8.0.2")
+	for name, test := range map[string]struct {
+		source netip.Addr
+		err    error
+		index  int
+		pinned bool
+	}{
+		"into the tunnel":                  {LocalAddress, nil, 5, true},
+		"into the tunnel, over IPv6":       {LocalAddress6, nil, 5, true},
+		"by the physical interface":        {wifi, nil, 5, true},
+		"by another VPN":                   {vpn, nil, 5, false},
+		"a route that can't be told":       {netip.Addr{}, errors.New("no route to host"), 5, true},
+		"by another VPN, with no Wi-Fi":    {vpn, nil, 0, false},
+		"into the tunnel, with no network": {LocalAddress, nil, 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := &PhysicalPath{
+				enabled: true, name: "en0", index: test.index,
+				route: func(netip.Addr) (netip.Addr, error) { return test.source, test.err },
+				addresses: func(index int) ([]netip.Addr, error) {
+					if index != 5 {
+						return nil, errors.New("no such interface")
+					}
+					return []netip.Addr{netip.MustParseAddr("fe80::1"), wifi}, nil
+				},
+			}
+			called := false
+			err := path.Bind("10.8.0.53:53", func(bool, string, int) error {
+				called = true
+				return nil
+			})
+			if test.index == 0 && test.source == LocalAddress {
+				// It would loop, and there is nowhere to pin it: refused.
+				if err == nil || called {
+					t.Fatalf("err = %v, pinned = %v", err, called)
+				}
+				return
+			}
+			if err != nil || called != test.pinned {
+				t.Fatalf("err = %v, pinned = %v, want %v", err, called, test.pinned)
+			}
+		})
 	}
 }
 
