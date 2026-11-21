@@ -761,6 +761,9 @@ func printTunnelStatus(out io.Writer, helperStatus *control.Status, pid int, sta
 	if unknown := status.Counts["connection_owner_unknown"]; unknown > 0 {
 		fmt.Fprintf(out, "   %d to Connection hosts went on without their credential because no program of yours was found behind them, as with a virtual machine on macOS's shared network.\n", unknown)
 	}
+	if refused := status.Counts["dns_no_address"]; refused > 0 {
+		fmt.Fprintf(out, "   %d DNS lookups of names sent to Phase failed because every tunnel address was still in use for another name.\n", refused)
+	}
 	if refused := status.Counts["control_refused"]; refused > 0 {
 		fmt.Fprintf(out, "   %d requests to %s were refused because they named another host.\n", refused, tunnel.ControlHost)
 	}

@@ -169,10 +169,11 @@ func TestStatusSaysWhatGoesThroughPhaseAndWhatIsRead(t *testing.T) {
 
 	t.Run("what was refused", func(t *testing.T) {
 		refused := *running
-		refused.Counts = map[string]int{"tcp": 4, "loop_refused": 9, "control_refused": 2}
+		refused.Counts = map[string]int{"tcp": 4, "loop_refused": 9, "control_refused": 2, "dns_no_address": 3}
 		got := print(capturing(nil), &refused)
 		if !strings.Contains(got, "   Flows: 0 to Connection hosts, 4 passed through unread.\n"+
 			"   9 were refused because their route led back into Phase: another VPN's range, while that VPN is down.\n"+
+			"   3 DNS lookups of names sent to Phase failed because every tunnel address was still in use for another name.\n"+
 			"   2 requests to phase.invalid were refused because they named another host.\n") {
 			t.Fatalf("got:\n%s", got)
 		}
