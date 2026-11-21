@@ -69,7 +69,7 @@ Flags:
 - **AI Agent proxy** — workflow-scoped third-party Integration credentials for HTTP, PostgreSQL, and AWS without exposing live material
 - **Multiple auth methods** — browser login, personal access tokens, service account tokens, Agent tokens, and AWS IAM identity auth
 - **Multi-user & multi-org** — switch between Phase accounts, orgs and self-hosted instances
-- **OS keyring integration** — credentials stored in macOS Keychain, GNOME Keyring, or Windows Credential Manager
+- **OS keyring integration** — credentials stored in macOS Keychain, GNOME Keyring, or Windows Credential Manager. Any program running as your OS user can read the saved login from there (on macOS through `/usr/bin/security`), so an agent with a shell under your user can read it too; to keep the login out of an agent's reach, run the agent as a different OS user
 - **Multiple environments** — dev, staging, production, and custom environments with per-project defaults via `phase init`
 
 ## Installation
