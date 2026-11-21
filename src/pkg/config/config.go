@@ -111,25 +111,44 @@ func GetDefaultAccountID(allIDs bool) ([]string, error) {
 }
 
 func GetDefaultUserHost() (string, error) {
-	if host := os.Getenv("PHASE_HOST"); host != "" {
-		return host, nil
-	}
-
+	override := os.Getenv("PHASE_HOST")
 	if os.Getenv("PHASE_SERVICE_TOKEN") != "" {
+		if override != "" {
+			return override, nil
+		}
 		return PhaseCloudAPIHost, nil
 	}
 
 	config, err := LoadConfig()
 	if err != nil {
+		if override != "" {
+			return override, nil
+		}
 		return "", fmt.Errorf("config file not found and no PHASE_SERVICE_TOKEN environment variable set")
+	}
+	if config.DefaultUser == "" && override != "" {
+		return override, nil
 	}
 
 	for _, user := range config.PhaseUsers {
 		if user.ID == config.DefaultUser {
+			// A saved login's token is only ever sent to the host it was saved
+			// with, so an override that names another host cannot redirect it.
+			if override != "" && !SameHost(override, user.Host) {
+				return "", fmt.Errorf("PHASE_HOST is set to %s, but the saved login belongs to %s. Unset PHASE_HOST, or log in to %s with phase auth", override, user.Host, override)
+			}
 			return user.Host, nil
 		}
 	}
 	return "", fmt.Errorf("no user found in config.json with id: %s", config.DefaultUser)
+}
+
+// SameHost reports whether two Phase host URLs name the same Console.
+func SameHost(a, b string) bool {
+	normalize := func(host string) string {
+		return strings.TrimRight(strings.TrimSpace(host), "/")
+	}
+	return strings.EqualFold(normalize(a), normalize(b))
 }
 
 func GetDefaultUserToken() (string, error) {

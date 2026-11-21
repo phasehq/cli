@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,7 +31,9 @@ func overrideConfigPath(t *testing.T, path string) {
 }
 
 func TestGetDefaultUserHost_PHASEHOSTTakesPrecedence(t *testing.T) {
+	overrideConfigPath(t, "/nonexistent/path/config.json")
 	t.Setenv("PHASE_HOST", "https://override.example.com")
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
 
 	host, err := GetDefaultUserHost()
 	if err != nil {
@@ -54,20 +57,61 @@ func TestGetDefaultUserHost_PHASEHOSTOverridesServiceToken(t *testing.T) {
 	}
 }
 
-func TestGetDefaultUserHost_PHASEHOSTOverridesConfig(t *testing.T) {
+// A saved login is only sent to the host it was saved with, so an override
+// naming another host is refused rather than followed.
+func TestGetDefaultUserHost_PHASEHOSTCannotRedirectSavedLogin(t *testing.T) {
 	dir := t.TempDir()
 	overrideConfigPath(t, writeConfig(t, dir, Config{
 		DefaultUser: "user-123",
 		PhaseUsers:  []UserConfig{{ID: "user-123", Host: "https://self-hosted.example.com"}},
 	}))
 	t.Setenv("PHASE_HOST", "https://override.example.com")
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
+
+	host, err := GetDefaultUserHost()
+	if err == nil {
+		t.Fatalf("got host %s, want the override refused", host)
+	}
+	if !strings.Contains(err.Error(), "belongs to https://self-hosted.example.com") {
+		t.Fatalf("error %q does not name the saved login's host", err)
+	}
+}
+
+func TestGetDefaultUserHost_PHASEHOSTMatchingSavedLogin(t *testing.T) {
+	dir := t.TempDir()
+	overrideConfigPath(t, writeConfig(t, dir, Config{
+		DefaultUser: "user-123",
+		PhaseUsers:  []UserConfig{{ID: "user-123", Host: "https://self-hosted.example.com"}},
+	}))
+	t.Setenv("PHASE_HOST", "https://Self-Hosted.example.com/")
+	t.Setenv("PHASE_SERVICE_TOKEN", "")
+
+	host, err := GetDefaultUserHost()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "https://self-hosted.example.com" {
+		t.Fatalf("got %s, want the saved login's host", host)
+	}
+}
+
+// A token supplied in the environment goes where the environment says, even
+// with a saved login present.
+func TestGetDefaultUserHost_PHASEHOSTWithEnvironmentToken(t *testing.T) {
+	dir := t.TempDir()
+	overrideConfigPath(t, writeConfig(t, dir, Config{
+		DefaultUser: "user-123",
+		PhaseUsers:  []UserConfig{{ID: "user-123", Host: "https://self-hosted.example.com"}},
+	}))
+	t.Setenv("PHASE_HOST", "https://override.example.com")
+	t.Setenv("PHASE_SERVICE_TOKEN", "pss_agent:v1:sometoken")
 
 	host, err := GetDefaultUserHost()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if host != "https://override.example.com" {
-		t.Fatalf("got %s, want PHASE_HOST to win over config.json", host)
+		t.Fatalf("got %s, want PHASE_HOST for an environment token", host)
 	}
 }
 
