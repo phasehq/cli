@@ -118,10 +118,10 @@ func TestTheStackAnswersARefusedDatagramAtOnce(t *testing.T) {
 	}
 }
 
-// With everything routed in, UDP to port 443 is refused: it is HTTP/3, whose host
-// can't be told here, so nothing could say whether to read it or send it to the proxy.
+// UDP to port 443 that reaches the tunnel is refused: it is HTTP/3, whose host can't
+// be told here, so nothing could say whether to read it or send it to the proxy.
 // Everything else UDP carries is none of the router's business, and is relayed.
-func TestTheRouterRefusesHTTP3OnlyWhileEverythingIsCaptured(t *testing.T) {
+func TestTheRouterRefusesHTTP3ThatReachesIt(t *testing.T) {
 	flow := func(dest string) Flow {
 		return Flow{Source: netip.MustParseAddrPort("198.19.248.1:50000"), Dest: netip.MustParseAddrPort(dest)}
 	}
@@ -146,21 +146,23 @@ func TestTheRouterRefusesHTTP3OnlyWhileEverythingIsCaptured(t *testing.T) {
 		t.Fatalf("the reader was asked about %v", reader.asked)
 	}
 
-	// With less routed in, a host is caught by its name, and other UDP is left alone.
+	// With less routed in, what is routed in is refused all the same: a tool doing its
+	// own DNS may reach a model host at a real address there.
 	part := NewRouter(&Upstream{OnlyOverrides: true}, nil)
 	part.Read(reader, true)
+	if !part.RefuseUDP(flow("203.0.113.7:443")) || part.RefuseUDP(flow("203.0.113.7:53")) {
+		t.Errorf("with less routed in: %v", part.Counts())
+	}
 	// Until a reader is set the router doesn't know what is captured, and refuses nothing.
 	unset := NewRouter(&Upstream{OnlyOverrides: true}, nil)
-	for name, router := range map[string]*Router{"with less routed in": part, "with no reader": unset} {
-		if router.RefuseUDP(flow("203.0.113.7:443")) || len(router.Counts()) != 0 {
-			t.Errorf("%s, UDP to port 443 was refused: %v", name, router.Counts())
-		}
+	if unset.RefuseUDP(flow("203.0.113.7:443")) || len(unset.Counts()) != 0 {
+		t.Errorf("with no reader, UDP to port 443 was refused: %v", unset.Counts())
 	}
 }
 
 // What is refused is never relayed, even when the router is handed the conversation
 // with nobody having asked it first.
-func TestUDPToPort443IsNotRelayedWhileEverythingIsCaptured(t *testing.T) {
+func TestUDPToPort443IsNotRelayed(t *testing.T) {
 	echo, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -213,12 +215,12 @@ func TestUDPToPort443IsNotRelayedWhileEverythingIsCaptured(t *testing.T) {
 		t.Fatalf("the owner rule was asked %d times and the reader about %v", owners, reader.asked)
 	}
 
-	// With less routed in, the same conversation is relayed as it always was.
+	// With less routed in, what reaches the router is refused all the same.
 	router.Read(reader, true)
-	if reply := send(router); string(reply) != "a QUIC initial" {
-		t.Fatalf("with less routed in, %q came back", reply)
+	if reply := send(router); reply != nil || received.Load() != 0 {
+		t.Fatalf("with less routed in, %q came back, and its destination got %d", reply, received.Load())
 	}
-	if counts := router.Counts(); counts["udp"] != 1 || counts["udp_443_refused"] != 1 {
+	if counts := router.Counts(); counts["udp_443_refused"] != 2 || len(counts) != 1 {
 		t.Fatalf("counts %v", counts)
 	}
 }

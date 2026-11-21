@@ -474,15 +474,16 @@ func (r *Router) relayUnread(client, upstream net.Conn, head []byte) {
 	relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
 }
 
-// RefuseUDP refuses UDP to port 443 at a real address while everything is routed into
-// the tunnel. That is HTTP/3, and nothing here can tell which host it is for: relayed,
-// a tool's model traffic would pass with nobody asked whether to read it, and a
-// Connection's without its credential. Refused, the program is told at once and falls
-// back to TCP, where the name in its TLS hello decides. With less routed in, such
-// hosts are caught by their names, and their tunnel addresses give UDP no answer.
+// RefuseUDP refuses UDP to port 443 at a real address that reached the tunnel. That
+// is HTTP/3, and nothing here can tell which host it is for: relayed, a tool's model
+// traffic would pass with nobody asked whether to read it, and a Connection's without
+// its credential. Refused, the program is told at once and falls back to TCP, where
+// the name in its TLS hello decides. With less routed in, only what is routed in is
+// refused, and a host caught by its name has a tunnel address, which gives UDP no
+// answer.
 func (r *Router) RefuseUDP(flow Flow) bool {
-	reader, byName := r.reading()
-	if flow.Dest.Port() != 443 || reader == nil || byName || TunnelPrefix.Contains(flow.Dest.Addr()) {
+	reader, _ := r.reading()
+	if flow.Dest.Port() != 443 || reader == nil || TunnelPrefix.Contains(flow.Dest.Addr()) {
 		return false
 	}
 	r.count("udp_443_refused")
