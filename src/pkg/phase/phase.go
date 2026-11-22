@@ -26,6 +26,7 @@ var errAgentLoginCommand = errors.New("This command is not available to an Agent
 // Create new Phase client. Return host and token. The SDK client serves
 // personal and service tokens only; an Agent login goes through NewBackend.
 func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
+	var account string
 	if init {
 		if ActiveLoginIsAgent() {
 			return nil, errAgentLoginCommand
@@ -34,6 +35,7 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 		if err != nil {
 			return nil, err
 		}
+		account = keyring.LastAccount()
 		warnAIToolBroadToken(creds)
 		pss = creds
 		h, err := config.GetDefaultUserHost()
@@ -57,6 +59,9 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 	p, err := sdk.New(pss, host, false)
 	if err != nil {
 		return nil, err
+	}
+	if init {
+		rememberLogin(p, account)
 	}
 
 	// Configure offline: always cache on success, only serve from cache when PHASE_OFFLINE=1

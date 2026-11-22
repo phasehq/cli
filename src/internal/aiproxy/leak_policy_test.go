@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	mathrand "math/rand/v2"
 	"net"
@@ -28,6 +29,7 @@ import (
 	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/censor"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 // The tests of the one policy for what is replaced, blocked and left unread,
@@ -803,31 +805,102 @@ func TestValuesProtectedInPartAreCounted(t *testing.T) {
 	}
 }
 
-// registerThroughControl registers values the way the CLI does: it fetches
-// the key, indexes, and posts the entries with what each id is.
+// A proxy with an identity counts a value protected in part the same way: its
+// own login's, sent with live and stored entries, in the answer and status,
+// and a guest's in the guest's answer alone.
+func TestValuesProtectedInPartAreCountedByAProxyWithAnIdentity(t *testing.T) {
+	rig := newStoredLeakRig(t, newTestInventoryStore(t))
+	document := `{"api_token":"` + leakSecretOne + `","ref_code":"Q7xL2mR9vT4kP8wZ"}`
+	values := []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: document}, {Type: "secret", ID: "STRIPE_KEY", Value: leakSecretTwo}}
+	if keys := statedKey(t, rig.proxy, rig.guard.identity); keys.LiveKey == "" {
+		t.Fatal("the proxy's own login was handed no live key")
+	}
+	for i := 0; i < 3; i++ {
+		if answer := registerThroughControl(t, rig.proxy, values, nil); answer == nil || answer.Added != 2 || answer.Unprotected != 0 || answer.Partial != 1 {
+			t.Fatalf("registration %d: %+v", i, answer)
+		}
+	}
+	if status := rig.guard.status(); status.Partial != 1 || status.Unprotected != 0 {
+		t.Fatalf("status counts %d values protected in part and %d unprotected", status.Partial, status.Unprotected)
+	}
+	guest := []leakguard.Value{{Type: "secret", ID: "GUEST_CONFIG", Value: document}}
+	if answer := registerThroughControlAs(t, rig.proxy, otherTenantB, guest, nil); answer == nil || answer.Added != 1 || answer.Partial != 1 {
+		t.Fatalf("a guest's registration: %+v", answer)
+	}
+	if status := rig.guard.status(); status.Partial != 1 {
+		t.Fatalf("a guest's value is counted in status: %d", status.Partial)
+	}
+	if answer := registerThroughControl(t, rig.proxy, []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: leakSecretThree}}, nil); answer == nil || answer.Partial != 0 {
+		t.Fatalf("a whole registration: %+v", answer)
+	}
+	if status := rig.guard.status(); status.Partial != 0 {
+		t.Fatalf("a value registered whole is still counted as protected in part: %d", status.Partial)
+	}
+}
+
+// registerThroughControl registers values as the CLI does for a command of
+// the proxy's own login: it says who it is, fetches the key, indexes and posts.
 func registerThroughControl(t *testing.T, proxy *httpProxy, values []leakguard.Value, kinds []string) *remoteapi.InventoryResponse {
 	t.Helper()
-	recorder := controlCall(proxy, http.MethodGet, "/v1/inventory/key", "", nil)
-	var keyAnswer remoteapi.InventoryKeyResponse
-	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &keyAnswer) != nil {
-		t.Fatalf("key: %d", recorder.Code)
+	return registerThroughControlAs(t, proxy, proxy.leak.identity, values, kinds)
+}
+
+// statedKey is the key route's answer to a command that states who it is.
+func statedKey(t *testing.T, proxy *httpProxy, stated phaseproxy.InventoryIdentity) remoteapi.InventoryKeyResponse {
+	t.Helper()
+	asked, _ := json.Marshal(remoteapi.InventoryKeyRequest{SchemaVersion: 1, Tenant: stated.Tenant, Login: stated.Login})
+	recorder := controlCall(proxy, http.MethodPost, "/v1/inventory/key", "application/json", asked)
+	var answer remoteapi.InventoryKeyResponse
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil || answer.KeyID == "" {
+		t.Fatalf("key: %d %s", recorder.Code, recorder.Body.String())
 	}
-	raw, _ := base64.StdEncoding.DecodeString(keyAnswer.Key)
-	key, err := censor.KeyFromBytes(raw)
-	if err != nil {
-		t.Fatal(err)
+	return answer
+}
+
+// storeKeys is a key answer less what is one process's alone: the live key,
+// and the key id that names it with the others.
+func storeKeys(answer remoteapi.InventoryKeyResponse) remoteapi.InventoryKeyResponse {
+	answer.LiveKey, answer.KeyID = "", ""
+	return answer
+}
+
+// registerThroughControlAs is registerThroughControl for a command that
+// states another identity than the proxy's, or none.
+func registerThroughControlAs(t *testing.T, proxy *httpProxy, stated phaseproxy.InventoryIdentity, values []leakguard.Value, kinds []string) *remoteapi.InventoryResponse {
+	t.Helper()
+	keyAnswer := statedKey(t, proxy, stated)
+	key := answeredKey(t, keyAnswer)
+	request := remoteapi.InventoryRequest{SchemaVersion: 1, IDKinds: kinds, Tenant: stated.Tenant, Login: stated.Login, KeyID: keyAnswer.KeyID}
+	// As the CLI does: entries in the scheme the proxy named, and, where it
+	// handed a live key, the same values' entries under that.
+	var live *censor.Key
+	if keyAnswer.LiveKey != "" {
+		raw, err := base64.StdEncoding.DecodeString(keyAnswer.LiveKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if live, err = censor.LookupKeyFromBytes(raw); err != nil {
+			t.Fatal(err)
+		}
 	}
-	request := remoteapi.InventoryRequest{SchemaVersion: 1, IDKinds: kinds}
 	for _, value := range values {
-		entry, err := censor.IndexValue(key, value.Type, value.ID, value.Value)
+		entry, err := censor.IndexValueScheme(key, keyAnswer.Format, value.Type, value.ID, value.Value)
 		if err != nil {
 			t.Fatal(err)
 		}
 		encoded, _ := entry.Marshal()
 		request.Entries = append(request.Entries, encoded)
+		if live != nil {
+			made, err := censor.IndexValueScheme(live, keyAnswer.LiveFormat, value.Type, value.ID, value.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, _ := made.Marshal()
+			request.LiveEntries = append(request.LiveEntries, encoded)
+		}
 	}
 	body, _ := json.Marshal(request)
-	recorder = controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body)
+	recorder := controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body)
 	if recorder.Code != http.StatusOK {
 		return nil
 	}
@@ -836,6 +909,17 @@ func registerThroughControl(t *testing.T, proxy *httpProxy, values []leakguard.V
 		t.Fatal("the registration's answer is not JSON")
 	}
 	return &answer
+}
+
+// registerAsCommand registers through the CLI's own client as a command of
+// the stated login would. The zero identity is a command that cannot tell.
+func registerAsCommand(stated phaseproxy.InventoryIdentity, values []leakguard.Value) (leakguard.Result, error) {
+	proxy, found := leakguard.Locate()
+	if !found {
+		return leakguard.Result{}, errors.New("no proxy was found")
+	}
+	proxy.Identity = stated
+	return proxy.Register(context.Background(), values)
 }
 
 func sortedList(value any) string {
@@ -954,7 +1038,7 @@ func TestRegistrationSaysWhichIDsAreKeyNames(t *testing.T) {
 	previous := leakguard.Environment
 	leakguard.Environment = func(key string) string { return environment[key] }
 	defer func() { leakguard.Environment = previous }()
-	result, err := leakguard.Register(context.Background(), []leakguard.Value{
+	result, err := registerAsCommand(leakTestIdentity, []leakguard.Value{
 		{Type: "secret", ID: "STRIPE_KEY", KeyName: true, Value: leakSecretOne},
 		{Type: "secret", ID: "secret-id-2", Value: leakSecretTwo},
 		// A name that is no id is registered under a digest of it, which is

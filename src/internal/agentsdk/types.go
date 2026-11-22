@@ -513,6 +513,22 @@ type OpenSessionResponse struct {
 	// AppConnections are the app Connections the Workflow can use, listed
 	// for the Agent only: the proxy never routes or injects anything for them.
 	AppConnections []AppConnection `json:"appConnections,omitempty"`
+	// Organisation and Principal say whose session this is: ids only. A
+	// Console that predates them sends neither.
+	Organisation *SessionOrganisation `json:"organisation,omitempty"`
+	Principal    *SessionPrincipal    `json:"principal,omitempty"`
+}
+
+// SessionOrganisation is the organisation a session belongs to.
+type SessionOrganisation struct {
+	ID string `json:"id"`
+}
+
+// SessionPrincipal is who opened a session: Type is "agent" or "user", and ID
+// the Agent's id or the organisation member's.
+type SessionPrincipal struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
 }
 
 // AgentKey carries the server's wrapped share of the Agent's key exchange
@@ -563,9 +579,12 @@ type RefreshConfigResponse struct {
 	ConfigEnv        StringMap           `json:"configEnv"`
 	Connections      []RuntimeConnection `json:"connections"`
 	AgentKey         *AgentKey           `json:"agentKey,omitempty"`
-	// ExpiredConnections and AppConnections: see OpenSessionResponse.
-	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
-	AppConnections     []AppConnection     `json:"appConnections,omitempty"`
+	// ExpiredConnections, AppConnections, Organisation and Principal: see
+	// OpenSessionResponse.
+	ExpiredConnections []ExpiredConnection  `json:"expiredConnections,omitempty"`
+	AppConnections     []AppConnection      `json:"appConnections,omitempty"`
+	Organisation       *SessionOrganisation `json:"organisation,omitempty"`
+	Principal          *SessionPrincipal    `json:"principal,omitempty"`
 }
 
 // RuntimeConnection is one granted Connection of a session. A packaged service
@@ -866,9 +885,12 @@ type DiscoverResponse struct {
 	ConfigGeneration uint64               `json:"configGeneration"`
 	ConfigEnv        StringMap            `json:"configEnv"`
 	Connections      []DiscoverConnection `json:"connections"`
-	// ExpiredConnections and AppConnections: see OpenSessionResponse.
-	ExpiredConnections []ExpiredConnection `json:"expiredConnections,omitempty"`
-	AppConnections     []AppConnection     `json:"appConnections,omitempty"`
+	// ExpiredConnections, AppConnections, Organisation and Principal: see
+	// OpenSessionResponse.
+	ExpiredConnections []ExpiredConnection  `json:"expiredConnections,omitempty"`
+	AppConnections     []AppConnection      `json:"appConnections,omitempty"`
+	Organisation       *SessionOrganisation `json:"organisation,omitempty"`
+	Principal          *SessionPrincipal    `json:"principal,omitempty"`
 }
 
 type DiscoverConnection struct {

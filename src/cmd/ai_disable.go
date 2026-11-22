@@ -140,6 +140,11 @@ func runAIDisable(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("Phase AI integrations were removed, but their local installation state could not be cleared: %w", err)
 		}
 	}
+	// The proxy is stopped, so nothing adds to the leak protection inventory:
+	// its entries and its key are only of use while Phase AI is enabled.
+	if err := aiInventoryStore().Purge(); err != nil {
+		return fmt.Errorf("Phase AI was disabled, but the leak protection inventory could not be removed; rerun `phase ai disable`: %w", err)
+	}
 	// The sweep removes the setup lock file, which it skips while held.
 	releaseSetup()
 	if directory, err := hookRuntimeDir(); err == nil {

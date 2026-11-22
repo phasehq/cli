@@ -71,20 +71,49 @@ type StatusResponse struct {
 	LeakProtection *LeakProtectionStatus `json:"leakProtection,omitempty"`
 }
 
-// InventoryKeyResponse is GET /v1/inventory/key: the key a process of the
-// session indexes values with before it registers them. Format is the version
-// of the entries the proxy reads.
-type InventoryKeyResponse struct {
+// InventoryKeyRequest is POST /v1/inventory/key: who the registering command
+// is, as phaseproxy.NewInventoryIdentity writes it. Empty, it is nobody's.
+type InventoryKeyRequest struct {
 	SchemaVersion int    `json:"schemaVersion"`
-	Key           string `json:"key"`
-	Format        int    `json:"format"`
+	Tenant        string `json:"tenant,omitempty"`
+	Login         string `json:"login,omitempty"`
+}
+
+// InventoryKeyResponse answers /v1/inventory/key: what a command indexes
+// values with. Format is the scheme of the entries made under Key.
+type InventoryKeyResponse struct {
+	SchemaVersion int `json:"schemaVersion"`
+	// Key is the lookup key: the proxy's tenant's for a command that states
+	// the proxy's own login, and one of this proxy process alone for any other.
+	Key string `json:"key"`
+	// ConfirmKey is the proxy's own login's confirming key for such a command,
+	// and a guest's of this process for any other. Scheme 1 uses none.
+	ConfirmKey string `json:"confirmKey,omitempty"`
+	Format     int    `json:"format"`
+	// LiveKey is a key of this proxy process alone, handed to a command of
+	// the proxy's own login beside the stored keys above: entries made under
+	// it, in LiveFormat, are what the running proxy matches the value by,
+	// and are never stored. Absent, the entries under Key are matched.
+	LiveKey    string `json:"liveKey,omitempty"`
+	LiveFormat int    `json:"liveFormat,omitempty"`
+	// KeyID names the keys without giving any: a registration sends it back.
+	KeyID string `json:"keyId,omitempty"`
 }
 
 // InventoryRequest is POST /v1/inventory: entries built by censor.IndexValue
-// with the session's key. They carry keyed hashes, never a value.
+// with the key the proxy handed the command. Keyed hashes, never a value.
 type InventoryRequest struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Entries       []json.RawMessage `json:"entries"`
+	// LiveEntries are the same values' entries under the live key, entry by
+	// entry, from a command that was handed one: Entries then go to the store
+	// and these to the running proxy's index.
+	LiveEntries []json.RawMessage `json:"liveEntries,omitempty"`
+	// Tenant and Login say who the registering command is, as in
+	// InventoryKeyRequest, and KeyID which keys its entries were made under.
+	Tenant string `json:"tenant,omitempty"`
+	Login  string `json:"login,omitempty"`
+	KeyID  string `json:"keyId,omitempty"`
 	// IDKinds says, entry by entry, what each entry's id is: InventoryIDPhase
 	// or InventoryIDKeyName. The client knows which it sent; the proxy never
 	// guesses from the id's shape. Absent, every id is taken for a key name.
@@ -135,6 +164,49 @@ type LeakProtectionStatus struct {
 	// Both are absent when every rule applies, as with the shipped file.
 	RulesSkipped int      `json:"rulesSkipped,omitempty"`
 	SkippedRules []string `json:"skippedRules,omitempty"`
+	// Inventory says whether the values the proxy knows outlive it.
+	Inventory *LeakInventoryStatus `json:"inventory,omitempty"`
+}
+
+// Where the leak protection inventory is kept.
+const (
+	// LeakInventoryStored: the key is in the system keystore and the entries
+	// in a file, so a proxy that starts again knows the same values.
+	LeakInventoryStored = "stored"
+	// LeakInventoryMemory: the inventory goes with the proxy process.
+	LeakInventoryMemory = "memory"
+)
+
+// LeakInventoryStatus describes how the leak protection inventory is kept:
+// counts and a reason, never an entry, a hash or an id, and nothing of what
+// another host or organisation stored.
+type LeakInventoryStatus struct {
+	// Storage is LeakInventoryStored or LeakInventoryMemory.
+	Storage string `json:"storage"`
+	// Reason says why the inventory is in memory only: no_keystore,
+	// key_unreadable, key_replaced, newer_store_format, store_unreadable,
+	// store_busy, store_unusable, no_tenant or not_configured.
+	Reason string `json:"reason,omitempty"`
+	// Loaded counts the values the proxy knew from the store when it started.
+	Loaded int `json:"loaded"`
+	// NotLoaded counts stored entries left out at start to leave the index
+	// room: each login's registered longest ago. They stay in the store.
+	NotLoaded int `json:"notLoaded"`
+	// UnmatchedScheme counts stored entries this version cannot match,
+	// because they were made by a version that matches differently. They are
+	// kept, and matched again once a command reads their value.
+	UnmatchedScheme int `json:"unmatchedScheme"`
+	// UnmatchedKey reports a store under a key since replaced: none of it was
+	// matched, all of it dropped. No count: it does not say whose records.
+	UnmatchedKey bool `json:"unmatchedKey"`
+	// Unstored counts registrations from commands that are not of the proxy's
+	// own login: kept until the proxy exits, counted whatever they held.
+	Unstored int `json:"unstored,omitempty"`
+	// Dropped counts records of the proxy's own login that a bound of the
+	// store dropped when this proxy wrote: they are not stored.
+	Dropped int `json:"dropped,omitempty"`
+	// Damaged counts stored entries that could not be read.
+	Damaged int `json:"damaged,omitempty"`
 }
 
 // MirroredHostStatus counts, since the proxy process started, the client

@@ -3,7 +3,6 @@ package censor
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"hash/crc32"
 	"strings"
@@ -173,7 +172,7 @@ func TestScanCostStaysLinear(t *testing.T) {
 			const n = 8
 			f := Form{Form: formRaw, Length: n * chunkSize, Weak: make([]byte, 1), MACs: make([]byte, n*macSize)}
 			for j := 0; j < n; j++ {
-				f.Rolls = binary.LittleEndian.AppendUint64(f.Rolls, roll)
+				schemes[EntriesVersion].appendLookup(&f, roll)
 			}
 			if _, err := rand.Read(f.MACs); err != nil {
 				t.Fatal(err)

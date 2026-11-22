@@ -22,13 +22,13 @@ import (
 // run only because the proxy removes them from model traffic.
 var errLeakProtectionUnreachable = errors.New("Phase could not reach leak protection, so no secret values were handed out. Run phase ai status to see why.")
 
-// errLeakInventoryFull is the Agent's message when the proxy answered but
-// holds as many values as it can.
-var errLeakInventoryFull = errors.New("Phase's leak protection inventory is full, so no secret values were handed out. Restarting the Phase AI proxy clears it.")
+// errLeakInventoryFull is the Agent's message when the proxy has no room for
+// this login. A restart makes room and clears nothing that is stored.
+var errLeakInventoryFull = errors.New("Phase's leak protection inventory has no room for more values from this login, so no secret values were handed out. Restarting the Phase AI proxy makes room: it starts again with the values registered most recently.")
 
 const (
 	leakProtectionWarning     = "Phase: leak protection could not be reached, so values from this command are not removed from model traffic. Run phase ai status to see why."
-	leakInventoryFullWarning  = "Phase: the leak protection inventory is full, so values from this command are not removed from model traffic. Restarting the Phase AI proxy clears it."
+	leakInventoryFullWarning  = "Phase: the leak protection inventory has no room for more values from this login, so values from this command are not removed from model traffic. Restarting the Phase AI proxy makes room: it starts again with the values registered most recently."
 	leakProtectionInactiveMsg = "Phase: leak protection is not active in this shell, so values from this command are not removed from model traffic."
 )
 
@@ -123,10 +123,11 @@ func hookRuntimeRestarting() bool {
 	return err == nil && lock.PID > 0 && state.PID == lock.PID && state.Generation == lock.Generation && processIsAlive(lock.PID)
 }
 
-// leakLocate finds the proxy to register with, and leakRegister registers
-// with it; tests replace them.
+// leakLocate finds the proxy to register with, leakIdentity says who this
+// command is to it, and leakRegister registers with it; tests replace them.
 var (
 	leakLocate   = locateLeakProxy
+	leakIdentity = phase.LoginIdentity
 	leakRegister = func(ctx context.Context, proxy leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
 		return proxy.Register(ctx, values)
 	}
@@ -226,6 +227,9 @@ func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// The command states its own login, the one its values were read with:
+	// the proxy it found may be running as another, and decides by this.
+	proxy.Identity = leakIdentity(ctx)
 	result, err := leakRegister(ctx, proxy, values)
 	if err == nil {
 		if result.Unprotected > 0 || result.Partial > 0 {

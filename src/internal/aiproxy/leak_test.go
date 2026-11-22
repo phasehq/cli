@@ -5,7 +5,6 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +19,7 @@ import (
 	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/censor"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
 // Values used across the leak protection tests. They are fake, random-looking
@@ -29,9 +29,15 @@ const (
 	leakSecretTwo = "postgres://app:Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3@db.internal:5432/app"
 )
 
+// newTestLeakGuard is the guard of a proxy whose session the Console named:
+// the tests' own login, with an inventory kept in memory.
 func newTestLeakGuard(t *testing.T, mode string) *leakGuard {
 	t.Helper()
-	guard, err := newLeakGuard(mode)
+	inventory, err := phaseproxy.MemoryInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := newLeakGuardWithInventory(mode, censor.DefaultRules(), inventory, leakTestIdentity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,15 +449,29 @@ func TestInventoryControlRoutes(t *testing.T) {
 	guard := newTestLeakGuard(t, leakModeCensor)
 	proxy := inventoryProxy(t, guard)
 
-	recorder := controlCall(proxy, http.MethodGet, "/v1/inventory/key", "", nil)
+	asked, _ := json.Marshal(remoteapi.InventoryKeyRequest{SchemaVersion: 1, Tenant: guard.identity.Tenant, Login: guard.identity.Login})
+	recorder := controlCall(proxy, http.MethodPost, "/v1/inventory/key", "application/json", asked)
 	var keyAnswer remoteapi.InventoryKeyResponse
 	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &keyAnswer) != nil || keyAnswer.SchemaVersion != 1 || keyAnswer.Format != censor.EntriesVersion {
 		t.Fatalf("key route: %d %s", recorder.Code, recorder.Body.String())
 	}
-	raw, _ := base64.StdEncoding.DecodeString(keyAnswer.Key)
-	key, err := censor.KeyFromBytes(raw)
-	if err != nil || recorder.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("the key does not rebuild or is cacheable: %v", err)
+	key := answeredKey(t, keyAnswer)
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("the key is cacheable")
+	}
+	for name, c := range map[string]struct {
+		contentType, body string
+		status            int
+	}{
+		"not json content": {"text/plain", string(asked), http.StatusUnsupportedMediaType},
+		"not json":         {"application/json", "{", http.StatusBadRequest},
+		"unknown field":    {"application/json", `{"schemaVersion":1,"master":true}`, http.StatusBadRequest},
+		"wrong schema":     {"application/json", `{"schemaVersion":2}`, http.StatusBadRequest},
+		"trailing data":    {"application/json", `{"schemaVersion":1} {}`, http.StatusBadRequest},
+	} {
+		if refused := controlCall(proxy, http.MethodPost, "/v1/inventory/key", c.contentType, []byte(c.body)); refused.Code != c.status || strings.Contains(refused.Body.String(), keyAnswer.Key) {
+			t.Errorf("a key request that is %s: %d", name, refused.Code)
+		}
 	}
 
 	entry := func(id, value string) json.RawMessage {
@@ -462,7 +482,10 @@ func TestInventoryControlRoutes(t *testing.T) {
 		data, _ := e.Marshal()
 		return data
 	}
-	body, _ := json.Marshal(remoteapi.InventoryRequest{SchemaVersion: 1, Entries: []json.RawMessage{entry("one", leakSecretOne), entry("short", "abc")}})
+	body, _ := json.Marshal(remoteapi.InventoryRequest{
+		SchemaVersion: 1, Entries: []json.RawMessage{entry("one", leakSecretOne), entry("short", "abc")},
+		Tenant: guard.identity.Tenant, Login: guard.identity.Login, KeyID: keyAnswer.KeyID,
+	})
 	recorder = controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body)
 	var added remoteapi.InventoryResponse
 	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &added) != nil || added.Added != 1 || added.Unprotected != 1 {
@@ -484,7 +507,7 @@ func TestInventoryControlRoutes(t *testing.T) {
 		"wrong schema":       {"application/json", []byte(`{"schemaVersion":2,"entries":[]}`), http.StatusBadRequest, "invalid_inventory"},
 		"trailing data":      {"application/json", []byte(`{"schemaVersion":1,"entries":[]} {}`), http.StatusBadRequest, "invalid_inventory"},
 		"entry not object":   {"application/json", []byte(`{"schemaVersion":1,"entries":["x"]}`), http.StatusBadRequest, "invalid_inventory"},
-		"bad entry version":  {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":2,"type":"secret","id":"x","forms":[]}]}`), http.StatusBadRequest, "invalid_inventory"},
+		"bad entry version":  {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":3,"type":"secret","id":"x","forms":[]}]}`), http.StatusBadRequest, "invalid_inventory"},
 		"bad entry id":       {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"a b","forms":[]}]}`), http.StatusBadRequest, "invalid_inventory"},
 		"entry extra field":  {"application/json", []byte(`{"schemaVersion":1,"entries":[{"v":1,"type":"secret","id":"x","forms":[],"value":"plain"}]}`), http.StatusBadRequest, "invalid_inventory"},
 		"oversized":          {"application/json", append([]byte(`{"schemaVersion":1,"entries":["`), bytes.Repeat([]byte("a"), maxInventoryBodyBytes)...), http.StatusRequestEntityTooLarge, "inventory_too_large"},
@@ -514,14 +537,15 @@ func TestInventoryControlRoutes(t *testing.T) {
 		t.Fatalf("a browser registration was accepted: %d", recorder.Code)
 	}
 	// Without the capability nothing is reachable.
-	request = httptest.NewRequest(http.MethodGet, "http://phase.invalid/v1/inventory/key", nil)
+	request = httptest.NewRequest(http.MethodPost, "http://phase.invalid/v1/inventory/key", strings.NewReader(`{"schemaVersion":1}`))
+	request.Header.Set("Content-Type", "application/json")
 	recorder = httptest.NewRecorder()
 	proxy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusProxyAuthRequired || strings.Contains(recorder.Body.String(), keyAnswer.Key) {
 		t.Fatalf("the key was served without the capability: %d", recorder.Code)
 	}
 	// No route lists what is indexed.
-	for _, path := range []string{"/v1/inventory", "/v1/inventory/entries", "/v1/inventory/ids"} {
+	for _, path := range []string{"/v1/inventory", "/v1/inventory/key", "/v1/inventory/entries", "/v1/inventory/ids"} {
 		if recorder := controlCall(proxy, http.MethodGet, path, "", nil); recorder.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d", path, recorder.Code)
 		}
@@ -533,15 +557,31 @@ func TestInventoryControlRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	guard.index = small
-	body, _ = json.Marshal(remoteapi.InventoryRequest{SchemaVersion: 1, Entries: []json.RawMessage{entry("one", leakSecretOne), entry("two", leakSecretTwo)}})
+	body, _ = json.Marshal(remoteapi.InventoryRequest{
+		SchemaVersion: 1, Entries: []json.RawMessage{entry("one", leakSecretOne), entry("two", leakSecretTwo)},
+		Tenant: guard.identity.Tenant, Login: guard.identity.Login, KeyID: keyAnswer.KeyID,
+	})
 	recorder = controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body)
-	if recorder.Code != http.StatusInsufficientStorage || errorCode(recorder) != "leak_inventory_full" || !strings.Contains(recorder.Body.String(), "full") {
+	if recorder.Code != http.StatusInsufficientStorage || errorCode(recorder) != "leak_inventory_full" || !strings.Contains(recorder.Body.String(), "no room") {
 		t.Fatalf("a full index: %d %s", recorder.Code, recorder.Body.String())
+	}
+	// A restart does not clear a stored inventory, and no message says so.
+	if said := recorder.Body.String(); strings.Contains(said, "clear") || strings.Contains(said, "new inventory") {
+		t.Fatalf("the message promises what a restart does not do: %s", said)
+	}
+	// Entries made under keys this proxy does not hand the command are
+	// refused whole, so the command fetches the key again.
+	body, _ = json.Marshal(remoteapi.InventoryRequest{
+		SchemaVersion: 1, Entries: []json.RawMessage{entry("one", leakSecretOne)},
+		Tenant: guard.identity.Tenant, Login: guard.identity.Login, KeyID: "0000000000000000",
+	})
+	if recorder = controlCall(proxy, http.MethodPost, "/v1/inventory", "application/json", body); recorder.Code != http.StatusConflict || errorCode(recorder) != "inventory_key_changed" {
+		t.Fatalf("entries under another key: %d %s", recorder.Code, recorder.Body.String())
 	}
 
 	// Without leak protection the routes say so.
 	bare := inventoryProxy(t, nil)
-	if recorder := controlCall(bare, http.MethodGet, "/v1/inventory/key", "", nil); recorder.Code != http.StatusServiceUnavailable {
+	if recorder := controlCall(bare, http.MethodPost, "/v1/inventory/key", "application/json", []byte(`{"schemaVersion":1}`)); recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("key without leak protection: %d", recorder.Code)
 	}
 }
