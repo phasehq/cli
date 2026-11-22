@@ -12,10 +12,22 @@ import (
 // the whole: with the key, the whole gives a 12-character chunk in 2^36 steps.
 func TestEntriesCarryNoWholeRollingHash(t *testing.T) {
 	key := newKey(t)
+	// Now and then a random value has too few distinct characters to clear
+	// the entropy floor, and is rightly left unprotected: draw another.
+	protected := func(alphabet string, length int) string {
+		for range 100 {
+			value := randomString(t, alphabet, length)
+			if e, err := IndexValue(key, "secret", "id", value); err == nil && e.Protected() {
+				return value
+			}
+		}
+		t.Fatalf("no random value of %d characters was protected", length)
+		return ""
+	}
 	values := map[string]string{
-		"letters and digits": randomString(t, alnum, 40),
-		"a short hex value":  randomString(t, lowerHex, 20),
-		"a hex key":          randomString(t, lowerHex, 64),
+		"letters and digits": protected(alnum, 40),
+		"a short hex value":  protected(lowerHex, 20),
+		"a hex key":          protected(lowerHex, 64),
 		"a PEM key":          fakePEM(t),
 	}
 	for name, value := range values {
