@@ -26,6 +26,7 @@ var errAgentLoginCommand = errors.New("This command is not available to an Agent
 // Create new Phase client. Return host and token. The SDK client serves
 // personal and service tokens only; an Agent login goes through NewBackend.
 func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
+	var account string
 	if init {
 		if ActiveLoginIsAgent() {
 			return nil, errAgentLoginCommand
@@ -34,6 +35,7 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 		if err != nil {
 			return nil, err
 		}
+		account = keyring.LastAccount()
 		warnAIToolBroadToken(creds)
 		pss = creds
 		h, err := config.GetDefaultUserHost()
@@ -57,6 +59,9 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 	p, err := sdk.New(pss, host, false)
 	if err != nil {
 		return nil, err
+	}
+	if init {
+		rememberLogin(p, account)
 	}
 
 	// Configure offline: always cache on success, only serve from cache when PHASE_OFFLINE=1
@@ -120,14 +125,19 @@ func Init(p *sdk.Phase) (*misc.AppKeyResponse, error) {
 }
 
 // AccountID returns the user_id or account_id from the response.
+// The id names local paths, so one that is not a plain identifier is refused.
 func AccountID(data *misc.AppKeyResponse) (string, error) {
-	if data.UserID != "" {
-		return data.UserID, nil
+	id := data.UserID
+	if id == "" {
+		id = data.AccountID
 	}
-	if data.AccountID != "" {
-		return data.AccountID, nil
+	if id == "" {
+		return "", fmt.Errorf("neither user_id nor account_id found in authentication response")
 	}
-	return "", fmt.Errorf("neither user_id nor account_id found in authentication response")
+	if !config.ValidAccountID(id) {
+		return "", fmt.Errorf("the Phase Console returned an account id that is not a valid identifier")
+	}
+	return id, nil
 }
 
 // PhaseGetContext resolves app/env context from user data, using .phase.json defaults.
@@ -241,7 +251,7 @@ func getCacheDir() string {
 		return ""
 	}
 	user, err := config.GetDefaultUser()
-	if err != nil || user == nil {
+	if err != nil || user == nil || !config.ValidAccountID(user.ID) {
 		return ""
 	}
 	return offline.CacheDir(config.PhaseSecretsDir, user.ID)

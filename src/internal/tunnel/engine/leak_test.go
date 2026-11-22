@@ -166,7 +166,12 @@ func startLeakEngine(t *testing.T, routes []string) (*running, *modelProvider) {
 func (e *running) registerHandedOut(t *testing.T, id, value string) {
 	t.Helper()
 	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{DialContext: e.program.DialContext, DisableKeepAlives: true}}
-	response, err := client.Get(phaseproxy.ControlURL + "/v1/inventory/key")
+	// A program that states no login is who the key request names: nobody.
+	asked, err := json.Marshal(remoteapi.InventoryKeyRequest{SchemaVersion: agentapi.SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Post(phaseproxy.ControlURL+"/v1/inventory/key", "application/json", bytes.NewReader(asked))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,11 +185,18 @@ func (e *running) registerHandedOut(t *testing.T, id, value string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := censor.KeyFromBytes(raw)
+	key, err := censor.LookupKeyFromBytes(raw)
+	if answer.ConfirmKey != "" {
+		confirm, decodeErr := base64.StdEncoding.DecodeString(answer.ConfirmKey)
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		key, err = censor.KeyFromBytes(raw, confirm)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := censor.IndexValue(key, "secret", id, value)
+	entries, err := censor.IndexValueScheme(key, answer.Format, "secret", id, value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,9 +204,30 @@ func (e *running) registerHandedOut(t *testing.T, id, value string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := json.Marshal(remoteapi.InventoryRequest{
-		SchemaVersion: agentapi.SchemaVersion, Entries: []json.RawMessage{encoded}, IDKinds: []string{remoteapi.InventoryIDPhase},
-	})
+	request := remoteapi.InventoryRequest{
+		SchemaVersion: agentapi.SchemaVersion, Entries: []json.RawMessage{encoded}, IDKinds: []string{remoteapi.InventoryIDPhase}, KeyID: answer.KeyID,
+	}
+	if answer.LiveKey != "" {
+		// Handed a live key too: what the running proxy matches the value by.
+		liveRaw, err := base64.StdEncoding.DecodeString(answer.LiveKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live, err := censor.LookupKeyFromBytes(liveRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		liveEntries, err := censor.IndexValueScheme(live, answer.LiveFormat, "secret", id, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		liveEncoded, err := liveEntries.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.LiveEntries = []json.RawMessage{liveEncoded}
+	}
+	body, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}

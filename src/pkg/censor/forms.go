@@ -186,8 +186,32 @@ func weakMask(value string) []bool {
 		}
 	}
 	if from, to, ok := credentialSpan(value); ok {
-		mark(0, from)
+		// As with a token in the path, the credential's first characters count
+		// as structure, so another URL of the same user and host is not taken
+		// for it because its password begins the same.
+		mark(0, min(from+urlTokenLead, to))
 		mark(to, len(value))
+	} else if parts := urlSecretParts(value); len(parts) > 0 {
+		// A token in the path, the query or the fragment is the URL's secret,
+		// and the rest is what every URL of that service has. The token's
+		// first bytes count as structure too: a chunk that is the URL but for
+		// one or two of them is in another URL of the service as often as its
+		// token begins the same, a time in 16 for one hex digit.
+		last := 0
+		for _, part := range parts {
+			mark(last, part[0]+urlTokenLead)
+			last = part[1]
+		}
+		mark(last, len(value))
+	} else if !looksPublic(value) && (strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://")) && !strings.ContainsAny(value, " \n") {
+		// A URL kept for its query or fragment: its scheme and host are
+		// still those of every URL of the service.
+		host := strings.Index(value, "://") + len("://")
+		end := len(value)
+		if i := strings.IndexAny(value[host:], "/?#"); i >= 0 {
+			end = host + i
+		}
+		mark(0, end)
 	}
 	if !marked {
 		return nil
@@ -431,15 +455,95 @@ func certificate(value string) bool {
 	return strings.HasPrefix(text, "-----BEGIN CERTIFICATE-----") && !strings.Contains(text, "PRIVATE KEY")
 }
 
+// shortSecret reports a leaf too short to index that may still be a secret:
+// 12 bytes or more of letters and digits alone that mix digits with letters
+// or the two cases. A label such as service_account, a domain or a project id
+// has punctuation in it, and a word has neither.
+func shortSecret(value string) bool {
+	if len(value) < minValueLength || entropy(value) < minValueEntropy || !secretLine(value) {
+		return false
+	}
+	return !strings.ContainsAny(value, "+/=-_")
+}
+
+// minURLSecret is the shortest path segment, query value or fragment of a URL
+// taken for a credential, as a webhook's token or a signature is. Shorter
+// runs are names such as AWS4-HMAC-SHA256, the same in every URL.
+const minURLSecret = 20
+
+// urlTokenLead is how much of the start of a URL's token, or of its
+// password, is marked as structure, so that a chunk which counts holds at
+// least six of its characters: 24 bits even of hex digits.
+const urlTokenLead = 5
+
+// urlSecretParts are where an http(s) URL, as it is written, holds what looks
+// like a credential: a path segment, a query value or a fragment that is one
+// run of base64 or hex of minURLSecret characters or more once unescaped.
+func urlSecretParts(value string) [][2]int {
+	if !(strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://")) || strings.ContainsAny(value, " \n") {
+		return nil
+	}
+	var parts [][2]int
+	add := func(from, to int) {
+		text := value[from:to]
+		if unescaped, err := url.PathUnescape(text); err == nil {
+			text = unescaped
+		}
+		if len(text) >= minURLSecret && entropy(text) >= minValueEntropy && secretLine(text) {
+			parts = append(parts, [2]int{from, to})
+		}
+	}
+	// Each piece of from:to between separators, and of a query or a fragment
+	// the value after its name.
+	pieces := func(from, to int, separators string, named bool) {
+		for from < to {
+			end := to
+			if i := strings.IndexAny(value[from:to], separators); i >= 0 {
+				end = from + i
+			}
+			start := from
+			if named {
+				if i := strings.IndexByte(value[from:end], '='); i >= 0 {
+					start = from + i + 1
+				}
+			}
+			add(start, end)
+			from = end + 1
+		}
+	}
+	host := strings.Index(value, "://") + len("://")
+	path := len(value)
+	if i := strings.IndexAny(value[host:], "/?#"); i >= 0 {
+		path = host + i
+	}
+	query, fragment := len(value), len(value)
+	if i := strings.IndexByte(value, '#'); i >= 0 {
+		fragment = i
+	}
+	if i := strings.IndexByte(value[:fragment], '?'); i >= 0 {
+		query = i
+	}
+	pieces(path, min(query, fragment), "/", false)
+	if query < fragment {
+		pieces(query+1, fragment, "&;", true)
+	}
+	if fragment < len(value) {
+		pieces(fragment+1, len(value), "&;", true)
+	}
+	return parts
+}
+
 // looksPublic keeps a key file's URLs, identity and certificates out of the
 // index: redacting them would hide ordinary text without protecting anything.
-// A URL with a password in it, or a token for its user, is a credential.
+// A URL with a password in it, or a token for its user, is a credential; so
+// is one with a query, a fragment or a path segment that looks like a token,
+// as a webhook's or a signed download's URL has.
 func looksPublic(value string) bool {
 	if certificate(value) {
 		return true
 	}
 	if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
-		return !strings.ContainsAny(value, " \n") && urlCredential(value) == ""
+		return !strings.ContainsAny(value, " \n?#") && urlCredential(value) == "" && len(urlSecretParts(value)) == 0
 	}
 	if at := strings.IndexByte(value, '@'); at > 0 && !strings.ContainsAny(value, " \n:/") && strings.Contains(value[at:], ".") {
 		return true

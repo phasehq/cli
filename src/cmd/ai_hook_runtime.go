@@ -767,6 +767,7 @@ func requestHookRuntimeShutdown(ctx context.Context, rawProxyURL string) error {
 	if err != nil {
 		return err
 	}
+	request.Header.Set(phaseproxy.ControlIntentHeader, "1")
 	response, err := client.Do(request)
 	if err != nil {
 		return errors.New("Phase runtime shutdown control is not reachable")

@@ -56,7 +56,7 @@ Flags:
 ## Features
 
 - **End-to-end encryption** — App secrets in E2E mode are encrypted client-side before leaving your machine
-- **Secret types** — `config` (non-sensitive), `secret` (sensitive), and `sealed` (write-only) with enforced visibility rules; when an AI tool runs the CLI with Phase AI enabled, `secret` and `sealed` values are hidden
+- **Secret types** — `config` (non-sensitive), `secret` (sensitive), and `sealed` (write-only) with enforced visibility rules; when the CLI detects that an AI tool runs it with Phase AI enabled, `secret` and `sealed` values are hidden (see the limits under [AI Agent proxy](#ai-agent-proxy))
 - **`phase run`** — inject secrets as environment variables into any command without code changes
 - **`phase shell`** — launch a sub-shell (bash, zsh, fish, etc.) with secrets preloaded
 - **Dynamic secrets** — generate short-lived credentials (e.g. AWS IAM) with automatic lease management (generate, renew, revoke)
@@ -69,7 +69,7 @@ Flags:
 - **AI Agent proxy** — workflow-scoped third-party Integration credentials for HTTP, PostgreSQL, and AWS without exposing live material
 - **Multiple auth methods** — browser login, personal access tokens, service account tokens, Agent tokens, and AWS IAM identity auth
 - **Multi-user & multi-org** — switch between Phase accounts, orgs and self-hosted instances
-- **OS keyring integration** — credentials stored in macOS Keychain, GNOME Keyring, or Windows Credential Manager
+- **OS keyring integration** — credentials stored in macOS Keychain, GNOME Keyring, or Windows Credential Manager. Any program running as your OS user can read the saved login from there (on macOS through `/usr/bin/security`), so an agent with a shell under your user can read it too; to keep the login out of an agent's reach, run the agent as a different OS user
 - **Multiple environments** — dev, staging, production, and custom environments with per-project defaults via `phase init`
 
 ## Installation
@@ -139,9 +139,11 @@ phase ai status                          # setup, proxy health, Connections, CA 
 phase ai disable
 ```
 
-- **Claude Code and OpenCode** get the Phase environment automatically: provider CLIs just work while the proxy runs, and fall back to failing on the decoy (never to ambient credentials) when it is down.
+- **Claude Code and OpenCode** get the Phase environment automatically: provider CLIs just work while the proxy runs, and fall back to failing on the decoy (not to ambient credentials) when it is down. On the very first start after `phase ai enable`, Claude Code or OpenCode may begin before Phase is ready; that session's commands then run without the Phase environment, with the machine's ambient credentials. Start a new session once `phase ai status` shows the proxy running.
 - **Cursor and Codex** run Phase-managed commands explicitly with `phase ai exec -- <command>` (`--connection <id>` picks one of several identities for a service); `phase ai run -- <agent>` launches a harness inside the environment.
 - One short skill, `phase-cli`, is installed per harness for both Connections and Phase app secrets; it replaces the application-secrets skill earlier releases installed under the same name. Agents read the detail on demand with `phase ai guide [topic]`, reach the proxy's control API at `http://phase.invalid`, and can request new Connections, which a human approves in the Console.
+
+**What depends on detecting the agent.** Masking of `secret` and `sealed` values, and the refusal to run `phase ai enable` and `phase ai disable`, work only when the CLI detects an AI tool from the environment variables the tool sets. An agent can remove those variables, so these guard against mistakes, not against an agent that sets out to get past them; run `phase ai enable` and `disable` yourself. For an agent you do not trust at all, log that OS user in with an Agent token only, with no personal login saved: an Agent login reaches only what its Workflow is granted, and `phase secrets get` and `list` mask its values whether or not an agent is detected.
 
 **Leak protection.** Inside a Phase AI session, every secret value the CLI hands out (`phase secrets export`, `get`, `list --show`, `phase run`, `phase shell`, dynamic secret leases) is registered with the proxy as keyed hashes, never as plaintext, and the proxy replaces it with a `ph:<type>:<id>` placeholder in the requests AI tools send to their model providers; Phase tokens are replaced too, and other well-known token formats in the requests that carry the conversation. A command in a shell that does not load the Phase environment registers with the proxy the harness hooks keep running, when one runs. A value in a URL or in a binary body or message blocks the request instead; one in a header is only reported, since the harness's own headers may carry a registered value on every request. Cursor's traffic is protobuf, in which no length may change: there a value is overwritten where it sits, by its placeholder padded with `*` to the value's length (`ph:secret:<id>*****`), or cut to it when the value is the shorter. Text the provider signed or encrypted (thinking blocks, `encrypted_content`) is never changed, only reported. `PHASE_AI_LEAK_PROTECTION` in the proxy's environment sets the mode: `censor` (default), `observe` (report only) or `off`; `phase ai status` shows it. The limits, in plain words:
 

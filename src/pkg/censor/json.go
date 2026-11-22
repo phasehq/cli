@@ -15,6 +15,9 @@ const (
 	cacheMinBlock  = 256      // shorter strings are cheaper to rescan than to hash and look up
 	cacheMaxBytes  = 64 << 20 // the cache starts over past this
 	binaryMinBlock = 16 << 10 // a base64-only string this long is an image or a file, not text
+	// binaryMaxMatched is the longest such string still matched as it stands,
+	// so the base64 of a file that holds a value is found without decoding it.
+	binaryMaxMatched = 1 << 20
 )
 
 // ErrNotJSON is returned by RewriteJSON for a body that is not valid JSON.
@@ -42,8 +45,9 @@ type ScanOptions struct {
 	// DefaultConversationFields. Indexed values are found everywhere regardless.
 	ConversationFields []string
 	// BinaryMinLength is the length from which a string made only of base64
-	// characters, or a data: URI of them, is taken for an image or a file and skipped.
-	// Zero means 16 KiB; a negative value never skips.
+	// characters, or a data: URI of them, is taken for an image or a file: it is
+	// not decoded, and is matched as it stands only up to 1 MiB. Zero means
+	// 16 KiB; a negative value never skips.
 	BinaryMinLength int
 	// Rules, when set, are the pattern rules this call applies instead of the
 	// index's own, such as a subset made with Rules.Only. Indexed values are
@@ -364,9 +368,12 @@ func (w *walker) handleString(start, end int, signed bool) {
 		return
 	}
 	w.report.Strings++
-	if w.binaryMin > 0 && isBinaryBlock(text, w.binaryMin) {
+	binary := w.binaryMin > 0 && isBinaryBlock(text, w.binaryMin)
+	if binary {
 		w.report.SkippedBinary++
-		return
+		if len(text) > binaryMaxMatched {
+			return
+		}
 	}
 	// The request body's own keys belong to the harness, not to anything the
 	// model read: a field of its named like a credential is not a keyword hit.
@@ -398,7 +405,11 @@ func (w *walker) handleString(start, end int, signed bool) {
 	}
 	if entry == nil {
 		starved := w.state.starved
-		entry = w.rewriteString(text, keyName)
+		if binary {
+			entry = w.matchBinary(text)
+		} else {
+			entry = w.rewriteString(text, keyName)
+		}
 		// What a scan found once the call's inflate budget was spent is not
 		// what another call would find, so it is not kept.
 		if cacheable && w.state.starved == starved {
@@ -471,6 +482,19 @@ func (w *walker) rewriteString(text []byte, keyName string) *cacheEntry {
 	out, hits, ruleHits, _, changed := w.ix.scanBlock(text, keyName, w.state, false, w.rules)
 	entry.hits = append(hits, ruleHits...)
 	if changed {
+		entry.literal = encodeString(out)
+	}
+	return entry
+}
+
+// matchBinary matches a string skipped as an image or a file against the
+// indexed values as it stands, with nothing decoded: a value's base64 forms
+// are indexed, so a file in base64 that holds the value is found.
+func (w *walker) matchBinary(text []byte) *cacheEntry {
+	entry := &cacheEntry{}
+	out, hits, _ := w.ix.inventoryPass(text, maxDecodeDepth, w.state)
+	entry.hits = hits
+	if len(hits) > 0 {
 		entry.literal = encodeString(out)
 	}
 	return entry

@@ -25,6 +25,10 @@ const (
 	ManifestPath = "/.well-known/agents"
 	ManifestURL  = "http://" + ManifestHost + ManifestPath
 	ControlURL   = "http://" + ManifestHost
+	// ControlIntentHeader, set to "1", marks a control call the CLI itself
+	// makes. The routes that end or change the session require it, so a
+	// client that follows an upstream's redirect to ControlURL cannot reach them.
+	ControlIntentHeader = "X-Phase-Control"
 
 	// TunnelHeader is in the proxy's answer to a CONNECT whose tunnel it serves
 	// itself, with its own certificate, and TunnelTerminated is its value. A

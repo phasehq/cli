@@ -115,6 +115,29 @@ type tunnelAuthentication struct {
 }
 type selectedConnectionContextKey struct{}
 
+// bodyReadDeadlineContextKey carries the SetReadDeadline of the connection a
+// request's body is read from.
+type bodyReadDeadlineContextKey struct{}
+
+// bodyInspectionTimeout bounds how long the checks before a request is sent
+// wait for the body they read.
+var bodyInspectionTimeout = 30 * time.Second
+
+func withBodyReadDeadline(req *http.Request, set func(time.Time) error) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), bodyReadDeadlineContextKey{}, set))
+}
+
+// setBodyReadDeadline sets a read deadline on the connection req's body comes
+// from, when it has one, and returns what clears it.
+func setBodyReadDeadline(req *http.Request, deadline time.Time) func() {
+	set, _ := req.Context().Value(bodyReadDeadlineContextKey{}).(func(time.Time) error)
+	if set == nil {
+		return func() {}
+	}
+	_ = set(deadline)
+	return func() { _ = set(time.Time{}) }
+}
+
 func selectedConnection(req *http.Request) string {
 	value, _ := req.Context().Value(selectedConnectionContextKey{}).(string)
 	return value
@@ -173,7 +196,7 @@ func (p *httpProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		p.handleConnect(w, req, flow)
 		return
 	}
-	result := p.process(req, nil)
+	result := p.process(withBodyReadDeadline(req, http.NewResponseController(w).SetReadDeadline), nil)
 	if result.failure != nil {
 		result.failure.eventID = result.event.EventID
 		p.events.Emit(result.event)
@@ -289,11 +312,16 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		return *stopped
 	}
 	// The secret guard, then the grant's access policy, both before anything
-	// is re-signed, swapped in or attached.
+	// is re-signed, swapped in or attached. Both may read the body, which must
+	// arrive within bodyInspectionTimeout.
+	clearDeadline := setBodyReadDeadline(req, time.Now().Add(bodyInspectionTimeout))
 	if stopped := p.enforceSecretGuard(req, upstream, binding, started); stopped != nil {
+		clearDeadline()
 		return *stopped
 	}
-	if stopped := p.enforceAccessPolicy(req, upstream, binding, host, started, now); stopped != nil {
+	stopped := p.enforceAccessPolicy(req, upstream, binding, host, started)
+	clearDeadline()
+	if stopped != nil {
 		return *stopped
 	}
 	if binding.connection.Injection.Action == "aws_sigv4" {
@@ -323,6 +351,11 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		}
 		return processedResponse{event: event, failure: failure}
 	}
+	if injected && binding.connection.Injection.Action != "aws_sigv4" {
+		// The response is read for the live value on its way back, so it is
+		// asked for in a form the proxy can read.
+		upstream.Header.Set("Accept-Encoding", "identity")
+	}
 	if err := p.state.validateProtocolBinding(snapshot); err != nil {
 		failure := &requestFailure{status: http.StatusServiceUnavailable, code: "agent_binding_changed", message: "The Agent binding changed while the request was evaluated; retry it.", decision: "error", reason: "binding_changed", binding: binding}
 		return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
@@ -349,6 +382,16 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 		}
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Header)
 		phaseproxy.LowercaseAmazonMetadataHeaders(response.Trailer)
+	} else if injected {
+		// A redirect or an echo must not hand the Agent the live value the
+		// proxy put on the request.
+		if err := phaseproxy.SanitizeInjectedResponse(response, binding.connection); err != nil {
+			if response.Body != nil {
+				_ = response.Body.Close()
+			}
+			failure := &requestFailure{status: http.StatusBadGateway, code: "unsafe_upstream_response", message: "The upstream response could not be safely returned.", decision: "error", reason: "upstream_response_redaction_failed", binding: binding}
+			return processedResponse{event: makeEvent(binding, req, "error", "error", failure.reason, failure.status, time.Since(started), injection.Action), failure: failure}
+		}
 	}
 	// A custom Connection's value can be replaced in the Console at any time.
 	// A refusal is the cue to fetch it now rather than at the next periodic
@@ -665,7 +708,7 @@ func (p *httpProxy) mitmConnect(w http.ResponseWriter, req *http.Request, host s
 		if err != nil {
 			return
 		}
-		inner = inner.WithContext(tunnelContext)
+		inner = withBodyReadDeadline(inner.WithContext(tunnelContext), tlsClient.SetReadDeadline)
 		innerHost, innerPort, authorityErr := phaseproxy.ParseAuthority(inner.Host, port)
 		if authorityErr != nil || innerHost != host || innerPort != port {
 			_ = writeFailureResponse(tlsClient, inner, &requestFailure{status: http.StatusForbidden, code: "connect_authority_mismatch", message: "The tunneled request target differs from CONNECT."})

@@ -186,7 +186,7 @@ func liveRegister(t *testing.T, guard *leakGuard, values []liveValue) (entries [
 		}
 		entries = append(entries, censortest.Entry{ID: value.ID, Type: value.Type, Value: value.Value, Expect: expect})
 	}
-	if _, _, err := guard.add(indexed, nil); err != nil {
+	if _, _, _, err := guard.add(indexed, nil); err != nil {
 		t.Fatalf("the values could not be registered: %v", err)
 	}
 	sort.Strings(unprotected)

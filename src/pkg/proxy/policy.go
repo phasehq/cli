@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -59,7 +61,7 @@ func PolicyApplies(connection agentapi.Connection) bool {
 
 // ClassifyCall returns every class req could belong to on the Connection,
 // most often exactly one. It may buffer a bounded form body to read an AWS
-// action and always leaves req forwardable.
+// action or a _method field, and always leaves req forwardable.
 func ClassifyCall(req *http.Request, connection agentapi.Connection) ([]ClassifiedCall, error) {
 	if req == nil || req.URL == nil {
 		return nil, ErrCallUninspectable
@@ -94,7 +96,11 @@ func ClassifyCall(req *http.Request, connection agentapi.Connection) ([]Classifi
 	if upgrade && !explicit {
 		calls = appendCall(calls, ClassifiedCall{Class: agentapi.ClassUpdate})
 	}
-	for _, method := range overriddenMethods(req) {
+	formMethods, err := formOverriddenMethods(req)
+	if err != nil {
+		return nil, err
+	}
+	for _, method := range append(overriddenMethods(req), formMethods...) {
 		further, _ := classifyHTTPCall(req, method, overrides)
 		for _, call := range further {
 			call.Method = method
@@ -190,6 +196,40 @@ func overriddenMethods(req *http.Request) []string {
 		add("UNKNOWN")
 	}
 	return methods
+}
+
+// formOverriddenMethods reads _method from a POST form body, where Rails
+// (Rack), Laravel and Symfony look for it. It buffers a bounded body and
+// leaves req forwardable; a form body it cannot read refuses the call.
+func formOverriddenMethods(req *http.Request) ([]string, error) {
+	if !strings.EqualFold(req.Method, http.MethodPost) || req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
+		return nil, nil
+	}
+	// Rack also takes a POST without a Content-Type as a form.
+	mediaType, _, _ := strings.Cut(req.Header.Get("Content-Type"), ";")
+	if mediaType = strings.ToLower(strings.TrimSpace(mediaType)); mediaType != "" && mediaType != "application/x-www-form-urlencoded" {
+		return nil, nil
+	}
+	if req.ContentLength > maximumMintingInspectionBytes {
+		return nil, ErrCallUninspectable
+	}
+	data, err := io.ReadAll(io.LimitReader(req.Body, maximumMintingInspectionBytes+1))
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(data))
+	if err != nil || int64(len(data)) > maximumMintingInspectionBytes {
+		return nil, ErrCallUninspectable
+	}
+	form, parseErr := url.ParseQuery(string(data))
+	if parseErr != nil && strings.Contains(strings.ToLower(string(data)), methodOverrideParameter) {
+		return nil, ErrCallUninspectable
+	}
+	var methods []string
+	for _, value := range form[methodOverrideParameter] {
+		if name := strings.ToUpper(strings.TrimSpace(value)); name != "" && name != http.MethodPost {
+			methods = append(methods, name)
+		}
+	}
+	return methods, nil
 }
 
 // isUpgradeRequest reports whether the request asks to switch protocols, as a

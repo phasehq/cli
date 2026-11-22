@@ -138,7 +138,7 @@ func scrubGzipResponse(response *http.Response, onScrubbed func(int)) error {
 		if err != nil {
 			return 0, err
 		}
-		scrubber := &scrubbingReadCloser{source: decoded}
+		scrubber := &scrubbingReadCloser{source: &decodedLimitReader{ReadCloser: decoded, remaining: maximumDecodedGzipBytes}}
 		if _, err := io.Copy(destination, scrubber); err != nil {
 			return 0, err
 		}

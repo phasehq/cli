@@ -764,7 +764,10 @@ func fixedText(label, alphabet string, n int) string {
 func TestOneThinChunkIsNoMatch(t *testing.T) {
 	hexValue, other := fixedText("thin value", lowerHex, 64), fixedText("other text", lowerHex, 63)
 	wideValue := fixedText("wide value", alnum, 64)
-	ix := build(t, secret{ID: "hexkey", Value: hexValue}, secret{ID: "wide", Value: wideValue})
+	// Scheme 1 is what this rule was written for, and entries stored under it
+	// are still matched: scheme 2 stores these forms in pairs, and
+	// TestHexFormsAreStoredInPairs says what a piece of one does there.
+	ix := buildScheme(t, 1, secret{ID: "hexkey", Value: hexValue}, secret{ID: "wide", Value: wideValue})
 	encode := base64.StdEncoding.EncodeToString
 	// Each form from its second chunk on, at a chunk that the index does not
 	// mark as too plain to count: twelve characters of hex often are.

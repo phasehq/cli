@@ -182,22 +182,60 @@ func validateExplicitListenPort(address, label string) error {
 	return nil
 }
 
-// leakGuard returns the process-wide leak protection, made on first use with
-// the mode in the process's environment.
-func (e *Engine) leakGuard() (*leakGuard, error) {
+// errLeakIdentityChanged refuses a session that is not the one the process's
+// leak protection was opened for: its inventory is another tenant's or login's.
+var errLeakIdentityChanged = errors.New("this Phase AI proxy was started for another Phase login; stop it and start it again")
+
+// leakGuard returns the process's leak protection, made for the first
+// session's tenant and login. A session of another is refused, never served.
+func (e *Engine) leakGuard(store *phaseproxy.InventoryStore, identity phaseproxy.InventoryIdentity) (*leakGuard, error) {
 	engineRuntimeInitMu.Lock()
 	defer engineRuntimeInitMu.Unlock()
 	if e.runtime == nil {
 		e.runtime = &engineRuntime{}
 	}
+	if !identity.Known() {
+		identity = phaseproxy.InventoryIdentity{}
+	}
 	if e.runtime.leak == nil {
-		guard, err := newLeakGuardFromEnvironment()
+		guard, err := newStoredLeakGuard(os.Getenv(LeakProtectionEnvironmentKey), store, identity)
 		if err != nil {
 			return nil, fmt.Errorf("start leak protection: %w", err)
 		}
 		e.runtime.leak = guard
 	}
+	if e.runtime.leak.identity != identity {
+		return nil, errLeakIdentityChanged
+	}
 	return e.runtime.leak, nil
+}
+
+// finishLeakWrites waits, bounded, for the inventory writes registrations
+// left running.
+func (e *Engine) finishLeakWrites() {
+	engineRuntimeInitMu.Lock()
+	var guard *leakGuard
+	if e.runtime != nil {
+		guard = e.runtime.leak
+	}
+	engineRuntimeInitMu.Unlock()
+	if guard != nil && guard.inventory != nil {
+		guard.inventory.Finish(phaseproxy.InventoryFinishWait)
+	}
+}
+
+// servesIdentity refuses a session that is not the one the process's leak
+// protection was opened for. Before there is a guard, any session may be.
+func (e *Engine) servesIdentity(identity phaseproxy.InventoryIdentity) error {
+	engineRuntimeInitMu.Lock()
+	defer engineRuntimeInitMu.Unlock()
+	if !identity.Known() {
+		identity = phaseproxy.InventoryIdentity{}
+	}
+	if e.runtime != nil && e.runtime.leak != nil && e.runtime.leak.identity != identity {
+		return errLeakIdentityChanged
+	}
+	return nil
 }
 
 func (e *Engine) processRuntimeCapability(backend agentapi.SensitiveString) (agentapi.SensitiveString, error) {
@@ -259,6 +297,10 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	if session == nil || session.Config == nil {
 		return errors.New("Agent proxy session is incomplete")
 	}
+	// Before anything is opened for it: this process serves one identity.
+	if err := e.servesIdentity(session.Identity); err != nil {
+		return err
+	}
 	runtimeCapability, err := e.processRuntimeCapability(session.Config.SessionCredential)
 	if err != nil {
 		return err
@@ -295,7 +337,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	leak, err := e.leakGuard()
+	leak, err := e.leakGuard(session.Inventory, session.Identity)
 	if err != nil {
 		return err
 	}
@@ -464,6 +506,9 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	<-serverDone
 	<-monitorDone
 	<-watchDone
+	// Nothing registers any more: what was acknowledged reaches the store
+	// before the process can exit.
+	e.finishLeakWrites()
 	if err := events.Stop(); err != nil {
 		// The flush failure is reported, but a session lifecycle error stays
 		// visible so callers still recognise it and recycle the session.

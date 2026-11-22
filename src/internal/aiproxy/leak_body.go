@@ -16,8 +16,9 @@ import (
 
 const (
 	// maxLeakBody is the most of a request body the proxy holds to inspect. A
-	// longer body is forwarded as it was.
-	maxLeakBody = 16 << 20
+	// longer body is forwarded as it was. It is above the 32 MB Anthropic
+	// accepts in one request, so a body a provider would take is read.
+	maxLeakBody = 40 << 20
 	// maxLeakDecoded bounds what a compressed body may inflate to, so a small
 	// bomb costs little.
 	maxLeakDecoded = 64 << 20

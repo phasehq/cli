@@ -415,6 +415,35 @@ func harnessExplicitManifestRefresh(err error) bool {
 		failure.Code == aiproxy.ManifestRefreshRequiredCode
 }
 
+// harnessExecCommand runs again the guard the hook ran before wrapping the
+// command, since anything holding a lease can call the wrapper, and returns
+// the command to run.
+var harnessExecCommand = func(command string) (string, bool) {
+	if !shellCommandRequiresPhase(command) {
+		return "", false
+	}
+	return phaseIgnoreClientConfig(command)
+}
+
+// phaseIgnoreClientConfig makes a managed curl or wget call skip the user's
+// configuration file, which could add a transfer the guard never saw. curl
+// honours -q only as its first argument.
+func phaseIgnoreClientConfig(command string) (string, bool) {
+	trimmed := strings.TrimLeft(command, " \t")
+	end := strings.IndexAny(trimmed, " \t")
+	if end < 0 {
+		return "", false
+	}
+	prefix, client := command[:len(command)-len(trimmed)], trimmed[:end]
+	switch strings.ToLower(client) {
+	case "curl", "curl.exe":
+		return prefix + client + " -q" + trimmed[end:], true
+	case "wget", "wget.exe":
+		return prefix + client + " --no-config" + trimmed[end:], true
+	}
+	return "", false
+}
+
 func runAIHarnessExec(cmd *cobra.Command, _ []string) error {
 	harness, _ := cmd.Flags().GetString("harness")
 	encodedLease, _ := cmd.Flags().GetString("lease")
@@ -429,6 +458,10 @@ func runAIHarnessExec(cmd *cobra.Command, _ []string) error {
 	commandBytes, err := base64.RawURLEncoding.DecodeString(encodedCommand)
 	if err != nil || len(commandBytes) == 0 || len(commandBytes) > maxHarnessCommandBytes {
 		return errors.New("Phase AI wrapped command is invalid")
+	}
+	shellCommand, allowed := harnessExecCommand(string(commandBytes))
+	if !allowed {
+		return errors.New("Phase AI wrapped command is not a single plain Phase call")
 	}
 	if disabled, err := automaticHarnessDisabled(harness); disabled || err != nil {
 		return errors.New("Phase AI is not enabled")
@@ -464,7 +497,7 @@ func runAIHarnessExec(cmd *cobra.Command, _ []string) error {
 			return errors.New("Phase AI could not retain the proxy for this command")
 		}
 	}
-	err = executeHarnessShell(cmd.Context(), string(commandBytes), environment, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+	err = executeHarnessShell(cmd.Context(), shellCommand, environment, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	releaseCommandLease()
 	var exitError *exec.ExitError
 	if errors.As(err, &exitError) {

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 
 	"github.com/phasehq/cli/pkg/config"
@@ -31,26 +32,27 @@ func runConsole(cmd *cobra.Command, args []string) error {
 		orgName = *user.OrganizationName
 	}
 
-	phaseConfig := config.FindPhaseConfig(8)
-	if phaseConfig != nil && orgName != "" {
-		version := 1
-		if phaseConfig.Version != "" {
-			if v, err := strconv.Atoi(phaseConfig.Version); err == nil {
-				version = v
-			}
-		}
+	target := consoleURL(host, orgName, config.FindPhaseConfig(8))
+	fmt.Printf("Opening %s\n", target)
+	return util.OpenBrowser(target)
+}
 
-		if version >= 2 && phaseConfig.EnvID != "" {
-			url := fmt.Sprintf("%s/%s/apps/%s/environments/%s", host, orgName, phaseConfig.AppID, phaseConfig.EnvID)
-			fmt.Printf("Opening %s\n", url)
-			return util.OpenBrowser(url)
-		}
-
-		url := fmt.Sprintf("%s/%s/apps/%s", host, orgName, phaseConfig.AppID)
-		fmt.Printf("Opening %s\n", url)
-		return util.OpenBrowser(url)
+// consoleURL builds the Console page for the checkout's app and environment.
+// The ids come from the checkout's .phase.json, so each is escaped as one
+// path segment.
+func consoleURL(host, orgName string, phaseConfig *config.PhaseJSONConfig) string {
+	if phaseConfig == nil || orgName == "" {
+		return host
 	}
-
-	fmt.Printf("Opening %s\n", host)
-	return util.OpenBrowser(host)
+	version := 1
+	if phaseConfig.Version != "" {
+		if v, err := strconv.Atoi(phaseConfig.Version); err == nil {
+			version = v
+		}
+	}
+	appURL := fmt.Sprintf("%s/%s/apps/%s", host, url.PathEscape(orgName), url.PathEscape(phaseConfig.AppID))
+	if version >= 2 && phaseConfig.EnvID != "" {
+		return fmt.Sprintf("%s/environments/%s", appURL, url.PathEscape(phaseConfig.EnvID))
+	}
+	return appURL
 }

@@ -129,6 +129,14 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 			exportSecret(secret.Key, secret)
 		}
 	}
+	// A format that escapes a value writes it in a form the raw value does not
+	// match, so that form is registered too, under the same id.
+	for _, secret := range handedOut {
+		if escaped := util.EscapeForFormat(exportFormat(format), secret.Value); escaped != secret.Value {
+			secret.Value = escaped
+			handedOut = append(handedOut, secret)
+		}
+	}
 	if err := protectSecrets(cmd.Context(), p, handedOut); err != nil {
 		return err
 	}
@@ -167,4 +175,14 @@ func runSecretsExport(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// exportFormat is the format an export writes: an unknown one is dotenv.
+func exportFormat(format string) string {
+	switch format {
+	case "json", "csv", "yaml", "xml", "toml", "hcl", "ini", "java_properties", "kv", "dotenv":
+		return format
+	default:
+		return "dotenv"
+	}
 }

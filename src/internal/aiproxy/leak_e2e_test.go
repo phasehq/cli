@@ -924,7 +924,7 @@ func TestLeakProtectionFixtureEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := rig.guard.add(entry, nil); err != nil {
+		if _, _, _, err := rig.guard.add(entry, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -971,7 +971,7 @@ func TestLeakProtectionRegistrationRoundTrip(t *testing.T) {
 	leakguard.Environment = func(key string) string { return environment[key] }
 	defer func() { leakguard.Environment = previous }()
 
-	result, err := leakguard.Register(context.Background(), []leakguard.Value{
+	result, err := registerAsCommand(leakTestIdentity, []leakguard.Value{
 		{Type: "secret", ID: "secret-id-1", Value: leakSecretOne},
 		{Type: "sealed", ID: "secret-id-2", Value: leakSecretTwo},
 		{Type: "config", ID: "secret-id-3", Value: "a-config-value-that-is-public-0001"},

@@ -118,6 +118,12 @@ func (c *fakeAgentConsole) serve(w http.ResponseWriter, r *http.Request) {
 			`"access":{"read":{"effect":"allow"},"create":{"effect":"allow"},"update":{"effect":"allow"},"delete":{"effect":"allow"}},"grantExpiresAt":null}],"expired":[]}`))
 		return
 	}
+	// Who the token is: asked by a command that found a proxy to register with.
+	if r.URL.Path == "/service/public/v1/agents/identity/" {
+		_, _ = w.Write([]byte(`{"schemaVersion":1,"principalType":"agent","agent":{"id":"agent-orders","name":"orders Agent"},` +
+			`"workflow":{"id":"workflow-orders","name":"orders"},"organization":{"id":"org-orders","name":"an organisation"}}`))
+		return
+	}
 	if r.URL.Path != "/service/public/v1/secrets/" {
 		c.t.Errorf("unexpected Console route %s", r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
@@ -387,7 +393,7 @@ func TestAgentSecretsListGetAndExport(t *testing.T) {
 		t.Fatalf("export calls = %+v", exportCalls)
 	}
 	for format, want := range map[string]string{
-		"dotenv": "CONFIG_KEY=\"" + agentConfigValue + "\"",
+		"dotenv": "CONFIG_KEY='" + agentConfigValue + "'",
 		"yaml":   "CONFIG_KEY: " + agentConfigValue,
 		"kv":     "CONFIG_KEY=" + agentConfigValue,
 	} {

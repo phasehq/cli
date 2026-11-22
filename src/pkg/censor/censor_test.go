@@ -501,6 +501,35 @@ func TestBinaryBlocksAreSkipped(t *testing.T) {
 	}
 }
 
+// A string skipped as an image or a file is not decoded, and still matched as
+// it stands up to binaryMaxMatched: a file printed as one line of base64, and
+// a value written into such a string, are found there. Longer strings are not
+// looked at.
+func TestBinaryBlocksAreMatchedAsTheyStand(t *testing.T) {
+	value := randomString(t, alnum, 32)
+	ix := build(t, secret{ID: "k", Value: value})
+	file := strings.Repeat("# a line of a config file that is plain text\n", 300) + "token: " + value + "\n"
+	for name, text := range map[string]string{
+		"a file in base64":             base64.StdEncoding.EncodeToString([]byte(file)),
+		"a value after base64 padding": strings.Repeat("A", 16<<10) + value,
+	} {
+		r := apply(ix, modelRequest(text))
+		if r.Report.SkippedBinary != 1 || len(r.Hits) != 1 || bytes.Contains(r.Out, []byte(text)) || bytes.Contains(r.Out, []byte(value)) {
+			t.Errorf("%s: %d hits, %d skipped", name, len(r.Hits), r.Report.SkippedBinary)
+		}
+	}
+	image := make([]byte, 48<<10)
+	_, _ = rand.Read(image)
+	for name, text := range map[string]string{
+		"another file":       base64.StdEncoding.EncodeToString(image),
+		"one over the limit": strings.Repeat("A", binaryMaxMatched) + value,
+	} {
+		if r := apply(ix, modelRequest(text)); r.Changed || r.Report.SkippedBinary != 1 {
+			t.Errorf("%s: changed %v, %d skipped", name, r.Changed, r.Report.SkippedBinary)
+		}
+	}
+}
+
 func TestConversationFieldsOption(t *testing.T) {
 	ix := build(t)
 	value := randomString(t, alnum, 14) + "9" + randomString(t, alnum, 14)
@@ -688,7 +717,11 @@ func TestEveryInventorySecretIsFoundInARequest(t *testing.T) {
 
 func benchmarkApply(b *testing.B, size int, warm bool) {
 	secrets := manySecrets(b, 300)
-	ix := build(b, secrets...)
+	benchmarkApplyWith(b, build(b, secrets...), secrets, size, warm)
+}
+
+// benchmarkApplyWith scans a request of size bytes with an index of secrets.
+func benchmarkApplyWith(b *testing.B, ix *Index, secrets []secret, size int, warm bool) {
 	text := corpus(b, size)
 	// A request: the corpus as tool results of about 32 KB each, with a few secrets.
 	var results []string

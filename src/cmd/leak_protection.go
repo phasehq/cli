@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/internal/tunnel/engine"
 	"github.com/phasehq/cli/pkg/phase"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
 )
 
@@ -21,35 +24,45 @@ import (
 // run only because the proxy removes them from model traffic.
 var errLeakProtectionUnreachable = errors.New("Phase could not reach leak protection, so no secret values were handed out. Run phase ai status to see why.")
 
-// errLeakInventoryFull is the Agent's message when the proxy answered but
-// holds as many values as it can.
-var errLeakInventoryFull = errors.New("Phase's leak protection inventory is full, so no secret values were handed out. Restarting the Phase AI proxy clears it.")
+// errLeakInventoryFull is the Agent's message when the proxy has no room for
+// this login. A restart makes room and clears nothing that is stored.
+var errLeakInventoryFull = errors.New("Phase's leak protection inventory has no room for more values from this login, so no secret values were handed out. Restarting the Phase AI proxy makes room: it starts again with the values registered most recently.")
 
 const (
 	leakProtectionWarning     = "Phase: leak protection could not be reached, so values from this command are not removed from model traffic. Run phase ai status to see why."
-	leakInventoryFullWarning  = "Phase: the leak protection inventory is full, so values from this command are not removed from model traffic. Restarting the Phase AI proxy clears it."
+	leakInventoryFullWarning  = "Phase: the leak protection inventory has no room for more values from this login, so values from this command are not removed from model traffic. Restarting the Phase AI proxy makes room: it starts again with the values registered most recently."
 	leakProtectionInactiveMsg = "Phase: leak protection is not active in this shell, so values from this command are not removed from model traffic."
 	// The first two for the hook-managed proxy when it is one of several
 	// proxies the command found. Another proxy may have taken the values, so
 	// the line names this one and speaks of the model traffic it reads only.
 	leakHookProxyWarning     = "Phase: the hook-managed Phase AI proxy could not be reached, so values from this command are not removed from the model traffic it reads. Run phase ai status to see why."
-	leakHookProxyFullWarning = "Phase: the leak protection inventory of the hook-managed Phase AI proxy is full, so values from this command are not removed from the model traffic it reads. Restarting the Phase AI proxy clears it."
+	leakHookProxyFullWarning = "Phase: the leak protection inventory of the hook-managed Phase AI proxy has no room for more values from this login, so values from this command are not removed from the model traffic it reads. Restarting the Phase AI proxy makes room: it starts again with the values registered most recently."
 	// The same four for the proxy of a phase up engine, which phase ai status
 	// does not show and phase ai does not restart.
 	leakTunnelWarning          = "Phase: leak protection could not be reached, so values from this command are not removed from model traffic. Run phase status to see why."
-	leakTunnelFullWarning      = "Phase: the leak protection inventory is full, so values from this command are not removed from model traffic. Running phase down and then phase up clears it."
+	leakTunnelFullWarning      = "Phase: the leak protection inventory has no room for more values from this login, so values from this command are not removed from model traffic. Running phase down and then phase up makes room: it starts again with the values registered most recently."
 	leakTunnelProxyWarning     = "Phase: the phase up engine could not be reached, so values from this command are not removed from the model traffic it reads. Run phase status to see why."
-	leakTunnelProxyFullWarning = "Phase: the leak protection inventory of the phase up engine is full, so values from this command are not removed from the model traffic it reads. Running phase down and then phase up clears it."
+	leakTunnelProxyFullWarning = "Phase: the leak protection inventory of the phase up engine has no room for more values from this login, so values from this command are not removed from the model traffic it reads. Running phase down and then phase up makes room: it starts again with the values registered most recently."
 )
 
 // unprotectedWarning says how many of a command's values leak protection
-// could not take, and never which: a value too short or plain to tell from
-// ordinary text is handed out all the same.
-func unprotectedWarning(count int) string {
-	if count == 1 {
-		return "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic."
+// could not take, and how many it took only in part, and never which: a value
+// too short or plain to tell from ordinary text is handed out all the same.
+func unprotectedWarning(count, partial int) string {
+	var sentences []string
+	switch {
+	case count == 1:
+		sentences = append(sentences, "1 value from this command is too short or plain to protect, so it is not removed from model traffic.")
+	case count > 1:
+		sentences = append(sentences, fmt.Sprintf("%d values from this command are too short or plain to protect, so they are not removed from model traffic.", count))
 	}
-	return fmt.Sprintf("Phase: %d values from this command are too short or plain to protect, so they are not removed from model traffic.", count)
+	switch {
+	case partial == 1:
+		sentences = append(sentences, "1 value from this command is protected in part: a part of it that may be secret could not be protected, so it is not removed from model traffic.")
+	case partial > 1:
+		sentences = append(sentences, fmt.Sprintf("%d values from this command are protected in part: parts of them that may be secret could not be protected, so they are not removed from model traffic.", partial))
+	}
+	return "Phase: " + strings.Join(sentences, " ")
 }
 
 // leakRuntimeSource names the source that finds the hook-managed proxy from
@@ -170,14 +183,53 @@ func tunnelEngineProxy() (string, bool) {
 	return state.ProxyURL, true
 }
 
-// leakLocate finds the proxies to register with, and leakRegister registers
-// with one of them; tests replace them.
+// leakLocate finds the proxies to register with, leakIdentity says who this
+// command is to them, and leakRegister registers with one of them; tests
+// replace them.
 var (
-	leakLocate   = leakguard.Locate
+	leakLocate   = locateLeakProxy
+	leakIdentity = phase.LoginIdentity
 	leakRegister = func(ctx context.Context, proxy leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
 		return proxy.Register(ctx, values)
 	}
 )
+
+// locateLeakProxy is leakguard.Locate, except that a session's proxy at the
+// address of a hook daemon that is gone is not trusted. On Windows the shell
+// guard only probes the port, which a listener that took it over passes too.
+func locateLeakProxy() []leakguard.Proxy {
+	proxies := leakguard.Locate()
+	for i, proxy := range proxies {
+		if proxy.InSession() && proxy.URL != "" && sessionProxyOfDeadRuntime(proxy.URL) {
+			proxies[i] = leakguard.Proxy{Source: leakguard.SourceSession}
+		}
+	}
+	return proxies
+}
+
+// sessionProxyOfDeadRuntime reports a proxy address the hook daemon's state
+// names while the process its runtime lock names is not alive.
+func sessionProxyOfDeadRuntime(sessionURL string) bool {
+	directory, err := hookRuntimeDir()
+	if err != nil {
+		return false
+	}
+	state, err := readHookRuntimeState(filepath.Join(directory, hookRuntimeStateFile))
+	if err != nil || !sameProxyAddress(state.ProxyURL, sessionURL) {
+		return false
+	}
+	lock, err := readHookRuntimeLock(filepath.Join(directory, hookRuntimeLockFile))
+	return err != nil || lock.PID <= 0 || lock.PID != state.PID || !processIsAlive(lock.PID)
+}
+
+func sameProxyAddress(a, b string) bool {
+	first, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	second, err := url.Parse(b)
+	return err == nil && first.Host != "" && strings.EqualFold(first.Host, second.Host)
+}
 
 // leakWarnings is where warnings go; tests replace it. Never stdout, which
 // may be what the command's output is piped into.
@@ -258,9 +310,10 @@ func inSession(proxies []leakguard.Proxy) bool {
 //     reached, not one that is not running;
 //   - with no proxy at all, or none that runs, see noProxyRunning.
 //
-// Values a proxy took the registration of and could not protect are counted
-// in a warning and handed out all the same. Every proxy is sent the same
-// values, so the warning is given once, with the most any of them counted.
+// Values a proxy took the registration of and could not protect, or protected
+// only in part, are counted in a warning and handed out all the same. Every
+// proxy is sent the same values, so the warning is given once, with the most
+// any of them counted.
 //
 // What the registrations may take in all is leakguard's to bound: the first
 // has a registration's usual time and each one after it what is left of that
@@ -272,16 +325,25 @@ func protectValuesWith(ctx context.Context, proxies []leakguard.Proxy, agent boo
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// The command states its own login, the one its values were read with,
+	// to every proxy: each may be running as another, and decides by this.
+	var identity phaseproxy.InventoryIdentity
+	if len(proxies) > 0 {
+		identity = leakIdentity(ctx)
+	}
 	// running says some proxy runs: it took the values, or was there and
-	// did not. unprotected is the most values any of them could not protect.
-	running, unprotected := false, 0
+	// did not. unprotected and partial are the most values any of them could
+	// not protect, or protected only in part.
+	running, unprotected, partial := false, 0, 0
 	for _, proxy := range proxies {
+		proxy.Identity = identity
 		result, err := leakRegister(ctx, proxy, values)
 		full := errors.Is(err, leakguard.ErrInventoryFull)
 		switch {
 		case err == nil:
 			running = true
 			unprotected = max(unprotected, result.Unprotected)
+			partial = max(partial, result.Partial)
 		case proxy.InSession() && agent && full:
 			return errLeakInventoryFull
 		case proxy.InSession() && agent:
@@ -301,8 +363,8 @@ func protectValuesWith(ctx context.Context, proxies []leakguard.Proxy, agent boo
 			proxyWarning.Do(proxy.Source, func() { fmt.Fprintln(leakWarnings, warning) })
 		}
 	}
-	if unprotected > 0 {
-		fmt.Fprintln(leakWarnings, unprotectedWarning(unprotected))
+	if unprotected > 0 || partial > 0 {
+		fmt.Fprintln(leakWarnings, unprotectedWarning(unprotected, partial))
 	}
 	if !running {
 		noProxyRunning(agent)

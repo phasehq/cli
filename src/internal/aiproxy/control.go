@@ -87,8 +87,8 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request) {
 		h.connection(w, id)
 	case req.Method == http.MethodGet && path == "/v1/status":
 		h.status(w)
-	case req.Method == http.MethodGet && path == "/v1/inventory/key":
-		h.inventoryKey(w)
+	case req.Method == http.MethodPost && path == "/v1/inventory/key":
+		h.inventoryKey(w, req)
 	case req.Method == http.MethodPost && path == "/v1/inventory":
 		h.addInventory(w, req)
 	case req.Method == http.MethodGet && path == "/v1/presets":
@@ -119,10 +119,18 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		h.pollRequest(w, req, requestID)
-	case req.Method == http.MethodPost && path == "/v1/revoke":
-		h.revoke(w, req)
-	case req.Method == http.MethodPost && path == "/v1/rotate":
-		h.rotate(w, req)
+	case req.Method == http.MethodPost && (path == "/v1/revoke" || path == "/v1/rotate"):
+		// These take no body, so a client that follows an upstream's redirect
+		// could send one; the CLI's own callers mark theirs.
+		if req.Header.Get(phaseproxy.ControlIntentHeader) != "1" {
+			writeControlError(w, http.StatusForbidden, "control_intent_required", "This Phase AI control route accepts only the Phase CLI's own calls.", false)
+			return
+		}
+		if path == "/v1/revoke" {
+			h.revoke(w, req)
+		} else {
+			h.rotate(w, req)
+		}
 	case req.Method == http.MethodPost && path == "/v1/refresh":
 		h.refresh(w, req)
 	default:
@@ -303,8 +311,18 @@ func (h *controlHandler) screenResolutionNote(response *agentapi.RequestResponse
 	}
 	if containsAny(response.ResolutionNote, append(h.state.manifestForbiddenSecrets(), h.state.currentBackendCredential().Reveal())) {
 		response.ResolutionNote = withheldResolutionNote
+		return
+	}
+	// An approval that needs a new session leaves what it added out of this
+	// one, so the note cannot be checked for that credential.
+	if response.RuntimeAction == agentapi.RequestRuntimeActionRestartRequired {
+		response.ResolutionNote = uncheckedResolutionNote
 	}
 }
+
+// uncheckedResolutionNote stands in for a note on an approval whose new
+// credential the running session does not hold.
+const uncheckedResolutionNote = "Phase withheld this note because the credential this approval added is not loaded in this session, so the note could not be checked for it."
 
 func validCreateRequest(request agentapi.CreateRequestRequest) bool {
 	if request.RelatedRequestID != "" && !controlIdentifier.MatchString(request.RelatedRequestID) {

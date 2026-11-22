@@ -179,7 +179,7 @@ func (b *entriesBuilder) addStructured(value string) bool {
 				continue
 			}
 			seen[line.value] = true
-			b.addForm("", rawForm{name: formLine, bytes: []byte(line.value)}, nil)
+			b.addForm("", line.value, rawForm{name: formLine, bytes: []byte(line.value)}, nil)
 		}
 	}
 	// More parts than one entry holds: as plain text the value has few.
@@ -198,7 +198,11 @@ func (b *entriesBuilder) addLeaf(part, value string, floor int) {
 		return
 	}
 	if len(value) < floor {
-		b.skip(part, ReasonShortLeaf)
+		reason := ReasonShortLeaf
+		if shortSecret(value) {
+			reason = ReasonShortSecret
+		}
+		b.skip(part, reason)
 		return
 	}
 	b.addValue(part, value)

@@ -121,8 +121,8 @@ type leakScan struct {
 	redacted  int
 	alerts    int
 	left      int
-	// placeholders are the distinct placeholders found, in the order found
-	// and up to maxScanPlaceholders. A placeholder found many times is one.
+	// placeholders are the distinct ones found, in order, as leakFound
+	// remembers them and up to maxScanPlaceholders. One found many times is one.
 	placeholders []string
 	// replaceable are those of them found where the request can be rewritten.
 	// They were replaced when changed is set.
@@ -177,8 +177,15 @@ func (s *leakScan) addFinding(f censor.Finding, where string) {
 		s.labels = append(s.labels, f.Label)
 	}
 	if f.Placeholder != "" {
-		s.keep(&s.placeholders, &s.seen, f.Placeholder)
+		s.keep(&s.placeholders, &s.seen, leakFound(f))
 	}
+}
+
+// leakFound is what a finding is remembered and counted by: its placeholder.
+// Values held without an id are one of their type, however many were found:
+// how many there are is how their owner filed them, which the reader is not told.
+func leakFound(f censor.Finding) string {
+	return f.Placeholder
 }
 
 // keep adds a placeholder to one of the scan's lists unless the list holds it
@@ -211,7 +218,7 @@ func (s *leakScan) addReport(report *censor.Report, where string) {
 	for _, finding := range report.Findings {
 		s.addFinding(finding, where)
 		if finding.Action != "left" && finding.Placeholder != "" {
-			s.keep(&s.replaceable, &s.seenReplaceable, finding.Placeholder)
+			s.keep(&s.replaceable, &s.seenReplaceable, leakFound(finding))
 		}
 	}
 }
@@ -224,7 +231,9 @@ func (s *leakScan) addReport(report *censor.Report, where string) {
 func (s *leakScan) addFixed(matches []censor.Match, where string, canBlock bool) {
 	for _, match := range matches {
 		s.addFinding(match.Finding, where)
-		if canBlock && (match.Kind == "inventory" || phaseTokenLabels[match.Label]) {
+		// A value known only from the store is reported and never blocks: one
+		// that sits in every URL would otherwise stop every request for 30 days.
+		if canBlock && ((match.Kind == "inventory" && !match.Loaded) || phaseTokenLabels[match.Label]) {
 			s.block = true
 		}
 	}
