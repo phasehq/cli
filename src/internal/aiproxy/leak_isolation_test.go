@@ -491,7 +491,7 @@ func TestWhatARunningProxyMatchesByGivesAnotherLoginOrTenantNothing(t *testing.T
 			t.Fatalf("the store holds entries of scheme %d that the process's key confirms", stored.Entries.Version)
 		}
 	}
-	file, err := os.ReadFile(filepath.Join(store.Directory, "leak-inventory.bin"))
+	file, err := os.ReadFile(filepath.Join(store.Directory, "secret-inventory.bin"))
 	if err != nil || opensARecord(file, asA.guard.live.LookupBytes()) {
 		t.Fatalf("the process's key opens a record of the store: %v", err)
 	}

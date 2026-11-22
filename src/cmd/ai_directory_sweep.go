@@ -26,8 +26,8 @@ import (
 //	ai/ca.lock                                   CA store                          serializes CA load and publication              kept
 //	ai/runtime-ca-bundle-<hash>.pem              every proxy start                 trust bundle child processes are pointed at,    kept while in use; the CA store removes one
 //	                                                                               one per set of trusted roots                    untouched for 30 days
-//	ai/leak-inventory.bin                        every proxy (inventory store)     leak protection entries: keyed hashes, sealed   phase ai disable; entries after 30 days unregistered
-//	ai/leak-inventory.lock, .queue               inventory store                   serialize the proxies' reads and writes, the    kept
+//	ai/secret-inventory.bin                      every proxy (inventory store)     leak protection entries: keyed hashes, sealed   phase ai disable; entries after 30 days unregistered
+//	ai/secret-inventory.lock, .queue             inventory store                   serialize the proxies' reads and writes, the    kept
 //	                                                                               second for whoever waits for the first
 //	ai/env.sh, env.json, env-status.json         hook daemon                       environment harness shells and plugins load     phase ai disable
 //	ai/runtime.json                              hook daemon                       running daemon's PID, generation, proxy URL     daemon exit

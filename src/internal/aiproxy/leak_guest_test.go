@@ -2,8 +2,6 @@ package aiproxy
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -21,6 +19,7 @@ import (
 	"github.com/phasehq/cli/internal/remoteapi"
 	"github.com/phasehq/cli/pkg/censor"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // keyAnswerHolds reports a key answer that holds a secret or half of one, raw
@@ -78,15 +77,11 @@ func confirmedBy(held, guess *censor.Entries) int {
 // opensARecord tries a key on every seal of the store's file, as the file
 // lays them out: a head and a body per record, after a header of 20 bytes.
 func opensARecord(file, key []byte) bool {
-	block, err := aes.NewCipher(key)
+	seal, err := chacha20poly1305.NewX(key)
 	if err != nil {
 		return false
 	}
-	seal, err := cipher.NewGCM(block)
-	if err != nil {
-		return false
-	}
-	const nonce, head = 12, 60 + 16
+	const nonce, head = chacha20poly1305.NonceSizeX, 60 + chacha20poly1305.Overhead
 	header := file[:20]
 	for rest := file[20:]; len(rest) >= 4; {
 		length := int(binary.BigEndian.Uint32(rest))
@@ -124,7 +119,7 @@ func TestACommandStatingAnotherLoginConfirmsNothingOfItsStore(t *testing.T) {
 
 	// What the command is handed for saying it is B.
 	handed := statedKey(t, asA.proxy, leakLoginB)
-	stored, err := store.Keyring.Get("phase-cli-ai-leak-inventory", "key-v1")
+	stored, err := store.Keyring.Get("phase-cli-ai-secret-inventory", "key-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +170,7 @@ func TestACommandStatingAnotherLoginConfirmsNothingOfItsStore(t *testing.T) {
 		t.Fatal("B's own key does not confirm B's value: the check above shows nothing")
 	}
 	// The file adds nothing: no hash stands in it, and no handed key opens it.
-	path := filepath.Join(store.Directory, "leak-inventory.bin")
+	path := filepath.Join(store.Directory, "secret-inventory.bin")
 	file, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -301,13 +296,13 @@ func TestCommandsThatStateNothingAreOneGuest(t *testing.T) {
 	}
 }
 
-// A client older than key ids fetches the key with a GET, indexes under
-// scheme 1 with the one key it reads, and names no key: taken, in memory only.
-func TestAClientOlderThanKeyIDsStillRegisters(t *testing.T) {
+// A command that states no identity, indexes under scheme 1 with the one key
+// it reads, and names no key id and no kinds: taken, in memory only.
+func TestARegistrationThatNamesNoKeyStillRegisters(t *testing.T) {
 	for name, identity := range map[string]phaseproxy.InventoryIdentity{"a proxy the Console named": leakLoginA, "a proxy it named nobody for": {}} {
 		store := newTestInventoryStore(t)
 		rig := newStoredLeakRigAs(t, store, identity)
-		recorder := controlCall(rig.proxy, http.MethodGet, "/v1/inventory/key", "", nil)
+		recorder := controlCall(rig.proxy, http.MethodPost, "/v1/inventory/key", "application/json", []byte(`{"schemaVersion":1}`))
 		var answer struct {
 			Key    string `json:"key"`
 			Format int    `json:"format"`
@@ -330,7 +325,7 @@ func TestAClientOlderThanKeyIDsStillRegisters(t *testing.T) {
 		recorder = controlCall(rig.proxy, http.MethodPost, "/v1/inventory", "application/json", body)
 		var added remoteapi.InventoryResponse
 		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &added) != nil || added.Added != 1 {
-			t.Fatalf("%s: the registration of a client older than key ids: HTTP %d %s", name, recorder.Code, recorder.Body.String())
+			t.Fatalf("%s: a registration that names no key: HTTP %d %s", name, recorder.Code, recorder.Body.String())
 		}
 		want := "a ph:secret b"
 		if !identity.Known() {

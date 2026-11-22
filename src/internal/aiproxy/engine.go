@@ -206,6 +206,20 @@ func (e *Engine) leakGuard(store *phaseproxy.InventoryStore, identity phaseproxy
 	return e.runtime.leak, nil
 }
 
+// finishLeakWrites waits, bounded, for the inventory writes registrations
+// left running.
+func (e *Engine) finishLeakWrites() {
+	engineRuntimeInitMu.Lock()
+	var guard *leakGuard
+	if e.runtime != nil {
+		guard = e.runtime.leak
+	}
+	engineRuntimeInitMu.Unlock()
+	if guard != nil && guard.inventory != nil {
+		guard.inventory.Finish(phaseproxy.InventoryFinishWait)
+	}
+}
+
 // servesIdentity refuses a session that is not the one the process's leak
 // protection was opened for. Before there is a guard, any session may be.
 func (e *Engine) servesIdentity(identity phaseproxy.InventoryIdentity) error {
@@ -479,6 +493,9 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	adapters.Close()
 	<-serverDone
 	<-monitorDone
+	// Nothing registers any more: what was acknowledged reaches the store
+	// before the process can exit.
+	e.finishLeakWrites()
 	if err := events.Stop(); err != nil {
 		// The flush failure is reported, but a session lifecycle error stays
 		// visible so callers still recognise it and recycle the session.

@@ -87,7 +87,7 @@ func (h *controlHandler) serveRoutes(w http.ResponseWriter, req *http.Request) {
 		h.connection(w, id)
 	case req.Method == http.MethodGet && path == "/v1/status":
 		h.status(w)
-	case (req.Method == http.MethodGet || req.Method == http.MethodPost) && path == "/v1/inventory/key":
+	case req.Method == http.MethodPost && path == "/v1/inventory/key":
 		h.inventoryKey(w, req)
 	case req.Method == http.MethodPost && path == "/v1/inventory":
 		h.addInventory(w, req)

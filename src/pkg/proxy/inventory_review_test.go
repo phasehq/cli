@@ -771,3 +771,66 @@ func TestInventoryFirstStartsTogether(t *testing.T) {
 		}
 	}
 }
+
+// A keystore that stops answering (locked, or waiting for approval) never
+// makes Status late: it says what it last knew, and the answer lands later.
+func TestInventoryStatusDoesNotWaitForAStalledKeystore(t *testing.T) {
+	store, keyring := newHookedInventoryStore(t)
+	running, _ := openInventory(t, store)
+	running.Add(oneEntry(t, running, "one"))
+	if err := store.ReplaceKey(); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	keyring.before = func(operation string) {
+		if operation == "get" {
+			<-release
+		}
+	}
+	started := time.Now()
+	status := running.Status()
+	if waited := time.Since(started); waited > inventoryKeyCheckWait+time.Second || !status.Durable {
+		t.Fatalf("a stalled keystore: Status took %v and said %+v", waited, status)
+	}
+	// Asked again while the question is still out: no wait at all.
+	started = time.Now()
+	if running.Status(); time.Since(started) > inventoryKeyCheckWait/2 {
+		t.Fatalf("a second Status waited %v for the same question", time.Since(started))
+	}
+	close(release)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if status := running.Status(); !status.Durable && status.Reason == InventoryReasonKeyReplaced {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the keystore's late answer was never reported")
+		}
+	}
+}
+
+// A registration acknowledged while another process held the store is still
+// written when the proxy stops, as long as Finish is given the time.
+func TestInventoryFinishWaitsForWritesLeftRunning(t *testing.T) {
+	store := newInventoryTestStore(t)
+	inv, _ := openInventory(t, store)
+	unlock, err := lockInventory(inv.directory, inventoryLockWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.AddWithin(oneEntry(t, inv, "acknowledged"), 20*time.Millisecond)
+	if inv.Finish(20 * time.Millisecond) {
+		unlock()
+		t.Fatal("Finish said a write blocked on the store's lock had ended")
+	}
+	time.AfterFunc(200*time.Millisecond, unlock)
+	if !inv.Finish(InventoryFinishWait) {
+		t.Fatal("Finish gave up on a write that could end")
+	}
+	if _, loaded := openInventory(t, store); len(loaded) != 1 {
+		t.Fatalf("the next proxy found %d of the 1 acknowledged entries", len(loaded))
+	}
+	// Finish gives back every place it took: writes go on queuing after it.
+	if len(inv.behind) != 0 {
+		t.Fatalf("Finish left %d places taken", len(inv.behind))
+	}
+}

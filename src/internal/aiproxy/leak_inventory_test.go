@@ -363,7 +363,7 @@ func TestLeakInventoryStatusCountsWhatIsNotMatched(t *testing.T) {
 
 	// A file from a newer version of Phase.
 	registerLeakValues(t, second.guard, map[string]string{"one": leakSecretOne})
-	path := filepath.Join(store.Directory, "leak-inventory.bin")
+	path := filepath.Join(store.Directory, "secret-inventory.bin")
 	file, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -548,7 +548,7 @@ var (
 // storedRecords is how many records the store's file holds, whosever they are.
 func storedRecords(t *testing.T, store *phaseproxy.InventoryStore) int {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(store.Directory, "leak-inventory.bin"))
+	data, err := os.ReadFile(filepath.Join(store.Directory, "secret-inventory.bin"))
 	if os.IsNotExist(err) {
 		return 0
 	}
@@ -833,7 +833,7 @@ func TestKeyAnswerFollowsTheStatedIdentity(t *testing.T) {
 	if asked := statedKey(t, asA.proxy, leakLoginB); asked.Key == ownB.Key || asked.ConfirmKey == ownB.ConfirmKey || asked.KeyID == ownB.KeyID || asked.Key == own.Key {
 		t.Fatal("a command that states another login of the tenant was handed a key of the tenant's")
 	}
-	stored, err := store.Keyring.Get("phase-cli-ai-leak-inventory", "key-v1")
+	stored, err := store.Keyring.Get("phase-cli-ai-secret-inventory", "key-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,9 +878,9 @@ func TestKeyAnswerFollowsTheStatedIdentity(t *testing.T) {
 		}
 		guests[name] = answer
 	}
-	// A GET states nothing, and is nobody's: the keys of every command that
-	// states nothing, or nothing that is an identity.
-	recorder := controlCall(asA.proxy, http.MethodGet, "/v1/inventory/key", "", nil)
+	// A request that states nothing is nobody's: the keys of every command
+	// that states nothing, or nothing that is an identity.
+	recorder := controlCall(asA.proxy, http.MethodPost, "/v1/inventory/key", "application/json", []byte(`{"schemaVersion":1}`))
 	var plain remoteapi.InventoryKeyResponse
 	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &plain) != nil || holds(plain, every...) != "" {
 		t.Fatalf("a key request that states nothing: %d", recorder.Code)
@@ -890,7 +890,7 @@ func TestKeyAnswerFollowsTheStatedIdentity(t *testing.T) {
 	}
 	// Guests share this process's lookup key and nothing else, and none of
 	// it outlives the process: the next proxy hands out other keys.
-	confirming := map[string]string{plain.ConfirmKey: "a GET"}
+	confirming := map[string]string{plain.ConfirmKey: "a command that states nothing"}
 	for _, name := range []string{"another organisation", "another host", "another login of the tenant"} {
 		guest := guests[name]
 		if other, twice := confirming[guest.ConfirmKey]; twice || guest.Key != plain.Key || guest.KeyID == plain.KeyID {

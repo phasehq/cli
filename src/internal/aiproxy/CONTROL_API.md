@@ -264,7 +264,7 @@ conversation resumed after the hook-managed proxy's idle exit, an upgrade or
 a reboot still has its values replaced before anything registers them again:
 
 - One master key is kept in the system keystore, beside the CA key (service
-  `phase-cli-ai-leak-inventory`), one per user, made on first use, never
+  `phase-cli-ai-secret-inventory`), one per user, made on first use, never
   written to disk and never handed out by any route. It carries an id. A
   master is made only when the keystore says it holds none. If the keystore
   cannot be read for any other reason (a locked keychain, a refused prompt, a
@@ -350,12 +350,12 @@ a reboot still has its values replaced before anything registers them again:
     login. No statement gets a command the key of another login or of
     another tenant;
   - the keys the file is sealed and tagged with.
-- The entries are kept in `leak-inventory.bin` in the Phase AI directory,
+- The entries are kept in `secret-inventory.bin` in the Phase AI directory,
   owner-only, replaced whole through a temporary file, sync and rename, and
   read only as a regular owner-only file of this user that is not a symlink.
   Each record is one registered value: its entries as they came over this
   API, whether its id is a key name and the id of the principal that
-  registered it, sealed (AES-256-GCM) under its tenant's sealing key. Before
+  registered it, sealed (XChaCha20-Poly1305) under its tenant's sealing key. Before
   it comes the record's head: the matching scheme, the time it was last
   registered, and keyed tags of its tenant, its login and its content,
   sealed under a file key derived from the master, which every proxy of
@@ -395,10 +395,10 @@ a reboot still has its values replaced before anything registers them again:
   login of the tenant that registered it, so no count says whether another
   login holds an id, and it counts nothing a guest registered.
 - Every proxy of the user loads the file when it starts and writes what its
-  own login registers with it, under `leak-inventory.lock`: the file is read
+  own login registers with it, under `secret-inventory.lock`: the file is read
   again under the lock and written whole, so nothing another proxy stored is
   lost. A proxy does not pick up what another registers while both run. A
-  process that waits for the lock holds `leak-inventory.queue` meanwhile, so
+  process that waits for the lock holds `secret-inventory.queue` meanwhile, so
   the next to write is one that waited: a proxy that writes again and again
   keeps no other out. Neither file is ever removed, and the keystore is never
   asked while one is held. A proxy waits at most two seconds. A registration
@@ -604,7 +604,7 @@ Content-Type: application/json
 
 `tenant` and `login` say who the command is, as
 `phaseproxy.NewInventoryIdentity` writes them; both are left out by a command
-that cannot tell, and `GET /v1/inventory/key` states nothing either. Unknown
+that cannot tell. Unknown
 fields, another `schemaVersion` and a body over 4 KiB are 400
 `invalid_inventory`. For a command that states the proxy's own tenant and
 login, `key` is that tenant's lookup key and `confirmKey` that login's
@@ -632,10 +632,9 @@ command (409 `inventory_key_changed`, nothing added): entries under other
 keys would be held and never matched. A proxy that starts again has another
 live key, so the `keyId` of its own login's keys is another too. The client
 fetches the key again and registers again, once. A registration that sends
-no `keyId`, as a client older than key ids does, is taken as made under the
-keys the proxy hands that command. Such a client fetches the key with `GET`,
-reads `key` alone and indexes under scheme 1: its entries are held in
-memory, as a guest's at a proxy with an identity, and are never stored.
+no `keyId` is taken as made under the keys the proxy hands that command.
+Entries of scheme 1 are held in memory, as a guest's at a proxy with an
+identity, and are never stored.
 
 `format` is the matching scheme of the entries a command makes under `key`:
 the one a store keeps (`censor.EntriesVersion`, 2) from a proxy with an

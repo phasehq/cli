@@ -537,14 +537,15 @@ func TestInventoryControlRoutes(t *testing.T) {
 		t.Fatalf("a browser registration was accepted: %d", recorder.Code)
 	}
 	// Without the capability nothing is reachable.
-	request = httptest.NewRequest(http.MethodGet, "http://phase.invalid/v1/inventory/key", nil)
+	request = httptest.NewRequest(http.MethodPost, "http://phase.invalid/v1/inventory/key", strings.NewReader(`{"schemaVersion":1}`))
+	request.Header.Set("Content-Type", "application/json")
 	recorder = httptest.NewRecorder()
 	proxy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusProxyAuthRequired || strings.Contains(recorder.Body.String(), keyAnswer.Key) {
 		t.Fatalf("the key was served without the capability: %d", recorder.Code)
 	}
 	// No route lists what is indexed.
-	for _, path := range []string{"/v1/inventory", "/v1/inventory/entries", "/v1/inventory/ids"} {
+	for _, path := range []string{"/v1/inventory", "/v1/inventory/key", "/v1/inventory/entries", "/v1/inventory/ids"} {
 		if recorder := controlCall(proxy, http.MethodGet, path, "", nil); recorder.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d", path, recorder.Code)
 		}
@@ -580,7 +581,7 @@ func TestInventoryControlRoutes(t *testing.T) {
 
 	// Without leak protection the routes say so.
 	bare := inventoryProxy(t, nil)
-	if recorder := controlCall(bare, http.MethodGet, "/v1/inventory/key", "", nil); recorder.Code != http.StatusServiceUnavailable {
+	if recorder := controlCall(bare, http.MethodPost, "/v1/inventory/key", "application/json", []byte(`{"schemaVersion":1}`)); recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("key without leak protection: %d", recorder.Code)
 	}
 }

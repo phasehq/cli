@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	inventoryTestKeyService = "phase-cli-ai-leak-inventory"
+	inventoryTestKeyService = "phase-cli-ai-secret-inventory"
 	inventoryTestKeyUser    = "key-v1"
-	inventoryTestFile       = "leak-inventory.bin"
+	inventoryTestFile       = "secret-inventory.bin"
 )
 
 // memoryKeystore is a keystore that holds what it is given.
@@ -225,7 +225,7 @@ func TestAIDisableRemovesTheLeakInventory(t *testing.T) {
 			if _, err := os.Lstat(filepath.Join(directory, inventoryTestFile)); !os.IsNotExist(err) {
 				t.Fatalf("%s is still there after disable: %v", inventoryTestFile, err)
 			}
-			for _, lock := range []string{"leak-inventory.lock", "leak-inventory.queue"} {
+			for _, lock := range []string{"secret-inventory.lock", "secret-inventory.queue"} {
 				if _, err := os.Lstat(filepath.Join(directory, lock)); err != nil {
 					t.Fatalf("%s was removed by disable: %v", lock, err)
 				}

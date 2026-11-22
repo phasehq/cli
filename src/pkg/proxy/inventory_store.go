@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
 	"crypto/hmac"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	gokeyring "github.com/zalando/go-keyring"
+	"golang.org/x/crypto/chacha20poly1305"
 
 	"github.com/phasehq/cli/pkg/censor"
 )
@@ -32,8 +32,8 @@ import (
 // Store format 1, integers big-endian. A head is sealed under the file key and
 // a body under its tenant's key, each bound to what precedes it:
 //
-//	magic "PHLKINV1" | format uint32 | key id [8], then for each record
-//	length uint32 | nonce [12] | sealed head | nonce [12] | sealed body
+//	magic "PHSECINV" | format uint32 | key id [8], then for each record
+//	length uint32 | nonce [24] | sealed head | nonce [24] | sealed body
 //	head: scheme uint32 | registered int64 | tenant, login, content tag [16] each
 //	body: flag byte (1: the id is a key name) | principal id [16] | entries
 const (
@@ -43,33 +43,33 @@ const (
 	// registered. Every command that decrypts a value registers it again.
 	InventoryEntryLifetime = 30 * 24 * time.Hour
 
-	inventoryKeyringService = "phase-cli-ai-leak-inventory"
+	inventoryKeyringService = "phase-cli-ai-secret-inventory"
 	inventoryKeyringUser    = "key-v1"
-	inventoryFileName       = "leak-inventory.bin"
-	inventoryLockName       = "leak-inventory.lock"
+	inventoryFileName       = "secret-inventory.bin"
+	inventoryLockName       = "secret-inventory.lock"
 	// inventoryQueueName is the lock a process holds while it waits for the
 	// store's: the one that waits is next, whoever comes back for more.
-	inventoryQueueName  = "leak-inventory.queue"
+	inventoryQueueName  = "secret-inventory.queue"
 	inventoryTempPrefix = ".phase-inventory-"
-	inventoryMagic      = "PHLKINV1"
+	inventoryMagic      = "PHSECINV"
 	inventoryKeyIDSize  = 8
 	inventoryHeaderSize = len(inventoryMagic) + 4 + inventoryKeyIDSize
 	inventoryTagSize    = 16
-	inventoryNonceSize  = 12
+	inventoryNonceSize  = chacha20poly1305.NonceSizeX
 	// inventoryBodyFixed is a sealed body before its entries: the flag byte
 	// and the principal's id.
 	inventoryBodyFixed = 1 + inventoryTagSize
 
-	inventoryTenantLabel  = "phase-leak-inventory-tenant-v1"
-	inventoryLookupLabel  = "phase-leak-inventory-lookup-v1"
-	inventoryConfirmLabel = "phase-leak-inventory-confirm-v1"
-	inventorySealLabel    = "phase-leak-inventory-seal-v1"
-	inventoryTagLabel     = "phase-leak-inventory-tag-v1"
-	inventoryFileLabel    = "phase-leak-inventory-file-v1"
+	inventoryTenantLabel  = "phase-secret-inventory-tenant-v1"
+	inventoryLookupLabel  = "phase-secret-inventory-lookup-v1"
+	inventoryConfirmLabel = "phase-secret-inventory-confirm-v1"
+	inventorySealLabel    = "phase-secret-inventory-seal-v1"
+	inventoryTagLabel     = "phase-secret-inventory-tag-v1"
+	inventoryFileLabel    = "phase-secret-inventory-file-v1"
 	// inventoryHeadSize is a record's head before it is sealed, and
-	// inventorySealOverhead what AES-GCM adds to what it seals.
+	// inventorySealOverhead what XChaCha20-Poly1305 adds to what it seals.
 	inventoryHeadSize     = 4 + 8 + 3*inventoryTagSize
-	inventorySealOverhead = 16
+	inventorySealOverhead = chacha20poly1305.Overhead
 	// inventoryRecordFixed is a record after its length and before its body.
 	inventoryRecordFixed = inventoryNonceSize + inventoryHeadSize + inventorySealOverhead + inventoryNonceSize
 
@@ -124,6 +124,12 @@ var (
 	// inventoryKeyCheckEvery is how often, at most, Status asks the keystore
 	// whether the key is still this process's.
 	inventoryKeyCheckEvery = time.Second
+	// inventoryKeyCheckWait is how long Status waits for the keystore's
+	// answer, well inside the hooks' three seconds for a status request.
+	inventoryKeyCheckWait = 250 * time.Millisecond
+	// InventoryFinishWait is how long a proxy that is stopping waits for the
+	// writes registrations left running.
+	InventoryFinishWait = 5 * time.Second
 )
 
 // Why an inventory is kept in memory only.
@@ -254,6 +260,8 @@ type Inventory struct {
 	// busy says the store's lock was not had the last time it was wanted.
 	busy       bool
 	keyChecked time.Time
+	// keyCheck is closed when the keystore question in flight is answered.
+	keyCheck chan struct{}
 	// known is when each entry this process has seen stored was registered,
 	// by content tag, so a repeated registration costs no file access.
 	known map[[inventoryTagSize]byte]int64
@@ -362,27 +370,48 @@ func (inv *Inventory) principal(id [inventoryTagSize]byte) (InventoryPrincipal, 
 }
 
 // Status reports how the inventory is kept and what opening it found. It asks
-// the keystore, at most once a second, whether the key is still this one.
+// the keystore, at most once a second, whether the key is still this one, and
+// waits for that answer at most inventoryKeyCheckWait: a keystore that is
+// locked or waiting for approval must not make a health check late. A slower
+// answer still lands, and the next Status reports it.
 func (inv *Inventory) Status() InventoryStatus {
 	inv.mu.Lock()
-	status := inv.status
-	due := status.Durable && time.Since(inv.keyChecked) >= inventoryKeyCheckEvery
-	if due {
+	var checked chan struct{}
+	if inv.status.Durable && inv.keyCheck == nil && time.Since(inv.keyChecked) >= inventoryKeyCheckEvery {
 		inv.keyChecked = time.Now()
+		checked = make(chan struct{})
+		inv.keyCheck = checked
+		go inv.checkKey(checked)
 	}
-	busy := inv.busy
 	inv.mu.Unlock()
-	if due {
-		if current, err := inv.keyCurrent(); err == nil && !current {
-			inv.demote(InventoryReasonKeyReplaced)
-			status.Durable, status.Reason = false, InventoryReasonKeyReplaced
+	if checked != nil {
+		timer := time.NewTimer(inventoryKeyCheckWait)
+		select {
+		case <-checked:
+		case <-timer.C:
 		}
+		timer.Stop()
 	}
+	inv.mu.Lock()
+	status, busy := inv.status, inv.busy
+	inv.mu.Unlock()
 	// A store in use is not written now, and is tried again.
 	if status.Durable && busy {
 		status.Durable, status.Reason = false, InventoryReasonBusy
 	}
 	return status
+}
+
+// checkKey asks the keystore whether the key is still this one, and stops
+// storing if it is not. One runs at a time.
+func (inv *Inventory) checkKey(done chan struct{}) {
+	defer close(done)
+	if current, err := inv.keyCurrent(); err == nil && !current {
+		inv.demote(InventoryReasonKeyReplaced)
+	}
+	inv.mu.Lock()
+	inv.keyCheck = nil
+	inv.mu.Unlock()
 }
 
 // demote stops the inventory writing to the store, for the life of the
@@ -665,11 +694,7 @@ func newInventory(s InventoryStore, directory string, id [inventoryKeyIDSize]byt
 }
 
 func newInventorySeal(key []byte) (cipher.AEAD, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
+	return chacha20poly1305.NewX(key)
 }
 
 // errNoInventoryKey is the keystore saying it holds no inventory key: the
@@ -1199,6 +1224,30 @@ func (inv *Inventory) AddWithin(batch []StoredEntries, wait time.Duration) {
 	case <-done:
 	case <-timer.C:
 	}
+}
+
+// Finish waits, at most wait, for the writes AddWithin left running, and
+// reports whether they all ended. A proxy calls it once nothing registers any
+// more and before it exits, so that a registration it acknowledged is not lost
+// with it. A registration made meanwhile stays in memory.
+func (inv *Inventory) Finish(wait time.Duration) bool {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	held := 0
+	defer func() {
+		for ; held > 0; held-- {
+			<-inv.behind
+		}
+	}()
+	for held < cap(inv.behind) {
+		select {
+		case inv.behind <- struct{}{}:
+			held++
+		case <-timer.C:
+			return false
+		}
+	}
+	return true
 }
 
 type pendingEntries struct {
