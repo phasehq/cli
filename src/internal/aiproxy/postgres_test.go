@@ -31,11 +31,15 @@ type plaintextPostgresObservation struct {
 	startupReceived   bool
 	identityMatched   bool
 	credentialMatched bool
+	credentialSent    bool
 	forwarded         map[string]string
 	error             error
 }
 
-func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword, expectedDatabase string) (net.Listener, <-chan plaintextPostgresObservation) {
+// startPlaintextPostgresUpstream declines TLS and asks for authentication
+// code authCode: 0 lets the client in without a password (trust), 3 asks for
+// it in the clear and 5 for an MD5 hash.
+func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword, expectedDatabase string, authCode uint32) (net.Listener, <-chan plaintextPostgresObservation) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -85,18 +89,25 @@ func startPlaintextPostgresUpstream(t *testing.T, expectedUser, expectedPassword
 		}
 		observation.identityMatched = params["user"] == expectedUser && params["database"] == expectedDatabase
 		observation.forwarded = params
-		if writeErr := writePGAuth(connection, 3, nil); writeErr != nil {
-			observation.error = writeErr
-			observed <- observation
-			return
+		if authCode != 0 {
+			var salt []byte
+			if authCode == 5 {
+				salt = []byte{1, 2, 3, 4}
+			}
+			if writeErr := writePGAuth(connection, authCode, salt); writeErr != nil {
+				observation.error = writeErr
+				observed <- observation
+				return
+			}
+			kind, payload, readErr := readPGMessage(connection)
+			if readErr != nil {
+				// The client hung up instead of answering.
+				observed <- observation
+				return
+			}
+			observation.credentialSent = kind == 'p'
+			observation.credentialMatched = kind == 'p' && string(payload) == expectedPassword+"\x00"
 		}
-		kind, payload, readErr := readPGMessage(connection)
-		if readErr != nil {
-			observation.error = readErr
-			observed <- observation
-			return
-		}
-		observation.credentialMatched = kind == 'p' && string(payload) == expectedPassword+"\x00"
 		if writeErr := writePGAuth(connection, 0, nil); writeErr != nil {
 			observation.error = writeErr
 			observed <- observation
@@ -124,7 +135,7 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 	}}
 
 	t.Run("established loopback", func(t *testing.T) {
-		listener, observed := startPlaintextPostgresUpstream(t, user, password, database)
+		listener, observed := startPlaintextPostgresUpstream(t, user, password, database, 0)
 		adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
 		}}
@@ -139,7 +150,7 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 		}
 		_ = connection.Close()
 		observation := <-observed
-		if observation.error != nil || !observation.startupReceived || !observation.identityMatched || !observation.credentialMatched {
+		if observation.error != nil || !observation.startupReceived || !observation.identityMatched || observation.credentialSent {
 			t.Fatalf("loopback plaintext handshake failed: %+v", observation)
 		}
 		for key, want := range map[string]string{
@@ -167,7 +178,7 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 	})
 
 	t.Run("non-loopback established peer", func(t *testing.T) {
-		listener, observed := startPlaintextPostgresUpstream(t, user, password, database)
+		listener, observed := startPlaintextPostgresUpstream(t, user, password, database, 3)
 		adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			connection, err := (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
 			if err != nil {
@@ -187,6 +198,27 @@ func TestPostgresPlaintextUpstreamIsRestrictedToEstablishedLoopback(t *testing.T
 			t.Fatalf("credential material was sent after non-loopback TLS refusal: %+v", observation)
 		}
 	})
+
+	// Whatever holds a loopback port without TLS may not be the database, so
+	// it is given neither the password nor an MD5 hash of it.
+	for name, code := range map[string]uint32{"cleartext": 3, "md5": 5} {
+		t.Run("loopback "+name+" password request", func(t *testing.T) {
+			listener, observed := startPlaintextPostgresUpstream(t, user, password, database, code)
+			adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
+			}}
+			connection, _, err := adapters.connectPostgresUpstream(context.Background(), binding, user, password, map[string]string{"user": user, "database": database})
+			if connection != nil || !errors.Is(err, errPostgresUpstreamPlainAuth) {
+				t.Fatalf("plaintext %s result=(%v,%v), want a refusal", name, connection, err)
+			}
+			if message, _, _ := postgresUpstreamClientFailure(err); !strings.Contains(message, "enable TLS or SCRAM") {
+				t.Fatalf("refusal message %q does not say how to fix it", message)
+			}
+			if observation := <-observed; observation.error != nil || observation.credentialSent {
+				t.Fatalf("a password answer was sent without TLS: %+v", observation)
+			}
+		})
+	}
 }
 
 func TestPostgresUpstreamErrorsAreSafelyClassified(t *testing.T) {
@@ -409,6 +441,17 @@ func TestPostgresCredentialChangeStatements(t *testing.T) {
 		"DO U&'BEGIN !0041LTER ROLE app PASSWORD ''x''; END' UESCAPE '!'":        "ALTER ROLE ... PASSWORD",
 		"CREATE FUNCTION f() AS 'BEGIN CREATE ROLE agent; END' LANGUAGE plpgsql": "CREATE ROLE",
 		"SELECT 'DO', 'CREATE ROLE example'":                                     "",
+		// SQL that a DO block or function body builds at run time is refused.
+		"DO $$ BEGIN EXECUTE 'ALTER ROLE CURRENT_USER PASSWORD ''chosen'''; END $$;":                 pgDynamicSQL,
+		"DO $$ BEGIN EXECUTE 'ALTER ROLE CURRENT_USER ' || 'PASSWORD ''chosen'''; END $$;":           pgDynamicSQL,
+		"DO $$ BEGIN EXECUTE format('ALTER %s CURRENT_USER PASSWORD %L', 'ROLE', 'chosen'); END $$;": pgDynamicSQL,
+		"DO 'BEGIN EXECUTE ''SELECT 1''; END'":                                                       pgDynamicSQL,
+		"CREATE FUNCTION f(q text) RETURNS void AS $f$ BEGIN EXECUTE q; END $f$ LANGUAGE plpgsql":    pgDynamicSQL,
+		"DO $$ BEGIN GRANT EXECUTE ON FUNCTION f() TO app; END $$":                                   "",
+		"PREPARE q AS SELECT 1; EXECUTE q":                                                           "",
+		"GRANT EXECUTE ON FUNCTION f() TO app":                                                       "",
+		"DO $$ BEGIN PERFORM execute_count FROM jobs; END $$":                                        "",
+		"CREATE FUNCTION g() RETURNS int AS $g$ SELECT count(*) FROM jobs $g$ LANGUAGE sql":          "",
 	} {
 		if got := pgCredentialChange(sql); got != want {
 			t.Errorf("pgCredentialChange(%q) = %q, want %q", sql, got, want)
@@ -479,6 +522,7 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 		{'B', []byte("\x00s1\x00\x00\x00\x00\x01\x00\x00\x00\x017\x00\x00"), false},
 		{'P', parse("SELECT $1::int"), false},
 		{'Q', []byte("DO $a$DO $b$DO $c$DO $d$DO $e$SELECT 1$e$$d$$c$$b$$a$\x00"), true},
+		{'Q', []byte("DO $$BEGIN EXECUTE 'ALTER ROLE CURRENT_USER ' || 'PASSWORD ''agent-chosen-password'''; END$$\x00"), true},
 	} {
 		go func() { _ = writePGMessage(clientPeer, step.kind, step.payload) }()
 		kind, payload, err := readPGMessage(upstreamPeer)
@@ -495,13 +539,16 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 			!bytes.Contains(payload, []byte("Phase blocked PostgreSQL")) {
 			t.Fatalf("credential change reached the upstream: %q", payload)
 		}
+		if bytes.Contains(step.payload, []byte("EXECUTE")) && !bytes.Contains(payload, []byte("could not be checked")) {
+			t.Fatalf("dynamic SQL was refused without saying it could not be checked: %q", payload)
+		}
 		if kind == 'P' && (!bytes.HasPrefix(payload, []byte("s1\x00DO ")) || !bytes.HasSuffix(payload, []byte("\x00\x00\x01\x00\x00\x00\x17"))) {
 			t.Fatalf("refused Parse lost its statement name or parameter types: %q", payload)
 		}
 	}
 	files := spoolJSONFiles(t, spoolDirectory)
-	if len(files) != 3 {
-		t.Fatalf("blocked statements recorded %d events, want 3", len(files))
+	if len(files) != 4 {
+		t.Fatalf("blocked statements recorded %d events, want 4", len(files))
 	}
 	for _, file := range files {
 		recorded, err := os.ReadFile(file)
@@ -516,4 +563,63 @@ func TestPostgresProxyRefusesCredentialChanges(t *testing.T) {
 
 func writePGParameter(writer io.Writer, key, value string) error {
 	return writePGMessage(writer, 'S', []byte(key+"\x00"+value+"\x00"))
+}
+
+// What an upstream announces during login is held until login ends, so how
+// many settings and how many bytes of them are bounded.
+func TestPostgresUpstreamLoginSettingsAreBounded(t *testing.T) {
+	binding := &binding{connection: agentapi.Connection{
+		Protocol: "postgres",
+		Hosts:    []agentapi.HostRule{{Match: "exact", Value: "database.internal", Port: 5432}},
+	}}
+	for name, announce := range map[string]func(net.Conn){
+		"many settings": func(c net.Conn) {
+			for index := 0; index <= maxPGParameterStatuses; index++ {
+				if writePGParameter(c, fmt.Sprintf("setting_%d", index), "on") != nil {
+					return
+				}
+			}
+		},
+		"large settings": func(c net.Conn) {
+			for index := 0; index < 4; index++ {
+				if writePGParameter(c, fmt.Sprintf("setting_%d", index), strings.Repeat("x", 32<<10)) != nil {
+					return
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			go func() {
+				connection, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer connection.Close()
+				_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+				var sslRequest [8]byte
+				if _, err := io.ReadFull(connection, sslRequest[:]); err != nil {
+					return
+				}
+				_, _ = connection.Write([]byte{'N'})
+				if _, err := readPGStartup(connection); err != nil {
+					return
+				}
+				_ = writePGAuth(connection, 0, nil)
+				announce(connection)
+				_ = writePGMessage(connection, 'Z', []byte{'I'})
+			}()
+			adapters := &protocolAdapters{dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
+			}}
+			connection, _, err := adapters.connectPostgresUpstream(context.Background(), binding, "phase-user", "test-live-password", map[string]string{"database": "phase-db"})
+			if connection != nil || !errors.Is(err, errPostgresUpstreamProtocol) {
+				t.Fatalf("an unbounded login was accepted: (%v, %v)", connection, err)
+			}
+		})
+	}
 }

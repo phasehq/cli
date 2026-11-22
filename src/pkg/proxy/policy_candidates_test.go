@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
@@ -142,6 +143,56 @@ func TestAWSSelectorsDecideAloneOnlyWhereTheServiceActsOnThem(t *testing.T) {
 	}
 }
 
+// Rails (Rack), Laravel and Symfony read the method of a POST from a form
+// body's _method field.
+func TestFormBodyMethodOverrideAddsTheNamedMethodsClass(t *testing.T) {
+	connection := httpPolicyConnection(t, `{"version":1,"default":"allow","rules":[{"class":"delete","effect":"block"}]}`, "")
+	form := func(method, contentType, body string) *http.Request {
+		created, err := http.NewRequest(method, "https://api.example.test/v1/items/1", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contentType != "" {
+			created.Header.Set("Content-Type", contentType)
+		}
+		return created
+	}
+	for _, contentType := range []string{"application/x-www-form-urlencoded", "Application/X-WWW-Form-Urlencoded; charset=utf-8", ""} {
+		request := form("POST", contentType, "name=x&_method=delete")
+		decision := decide(t, request, connection)
+		if decision.Effect != agentapi.PolicyBlock || decision.Method != "DELETE" {
+			t.Errorf("%q form: effect=%s method=%s", contentType, decision.Effect, decision.Method)
+		}
+		if forwarded, _ := io.ReadAll(request.Body); string(forwarded) != "name=x&_method=delete" {
+			t.Errorf("%q form: body forwarded as %q", contentType, forwarded)
+		}
+	}
+	// Only a form body sent with POST is read, and only for _method.
+	for name, request := range map[string]*http.Request{
+		"JSON body":    form("POST", "application/json", `{"_method":"DELETE"}`),
+		"PUT form":     form("PUT", "application/x-www-form-urlencoded", "_method=DELETE"),
+		"plain form":   form("POST", "application/x-www-form-urlencoded", "name=x"),
+		"POST renamed": form("POST", "application/x-www-form-urlencoded", "_method=post"),
+	} {
+		if classes := callClasses(t, request, connection); len(classes) != 1 {
+			t.Errorf("%s: classes = %v", name, classes)
+		}
+	}
+	// A form body that cannot be read in full is not judged by its method.
+	large := form("POST", "application/x-www-form-urlencoded", "_method=DELETE&pad="+strings.Repeat("x", int(maximumMintingInspectionBytes)))
+	if _, err := ClassifyCall(large, connection); !errors.Is(err, ErrCallUninspectable) {
+		t.Errorf("an oversized form body: err=%v", err)
+	}
+	unknownLength := form("POST", "application/x-www-form-urlencoded", "_method=DELETE&pad="+strings.Repeat("x", int(maximumMintingInspectionBytes)))
+	unknownLength.ContentLength = -1
+	if _, err := ClassifyCall(unknownLength, connection); !errors.Is(err, ErrCallUninspectable) {
+		t.Errorf("an oversized form body of unknown length: err=%v", err)
+	}
+	if _, err := ClassifyCall(form("POST", "application/x-www-form-urlencoded", "a=%zz&_method=DELETE"), connection); !errors.Is(err, ErrCallUninspectable) {
+		t.Errorf("an unreadable form naming _method: err=%v", err)
+	}
+}
+
 func TestMethodOverrideAddsTheNamedMethodsClass(t *testing.T) {
 	policy := `{"version":1,"default":"allow","rules":[{"class":"delete","effect":"block"},{"match":{"methods":["PUT"],"path":"/v1/settings"},"effect":"ask"}]}`
 	connection := httpPolicyConnection(t, policy, "")
@@ -221,7 +272,7 @@ func TestTemporaryAllowCoversTheOverriddenMethod(t *testing.T) {
 // Rules that stop a call match a respelled path; rules and temporary allows
 // that let one through match only the path as sent.
 func TestStoppingRulesMatchARespelledPathAndAllowingOnesDoNot(t *testing.T) {
-	respellings := []string{"/v1/admin", "/v1/admin/", "/V1/Admin", "/v1/admin;jsessionid=1", "/v1/ADMIN;x/", "/v1/admin/;x"}
+	respellings := []string{"/v1/admin", "/v1/admin/", "/V1/Admin", "/v1/admin;jsessionid=1", "/v1/ADMIN;x/", "/v1/admin/;x", "/v1;x/admin"}
 	for _, effect := range []string{"block", "ask"} {
 		connection := httpPolicyConnection(t, `{"version":1,"default":"allow","rules":[{"match":{"path":"/v1/admin"},"effect":"`+effect+`"}]}`, "")
 		for _, spelled := range respellings {
@@ -636,7 +687,9 @@ func TestLoosePathComparisons(t *testing.T) {
 		{"/", "/", true},
 		{"/v1/admin", "/v1/admin//", false},
 		{"/v1/admin", "/v1/admin/users", false},
-		{"/v1/admin", "/v1;x/admin", false},
+		{"/v1/admin", "/v1;x/admin", true},
+		{"/v1/admin/secret", "/v1/admin;x/secret", true},
+		{"/v1/admin/secret", "/v1;a/ADMIN;b/secret;c/", true},
 		{"/v1/admin", "/v1/admins", false},
 		{"/v1/admin", "/", false},
 	} {
@@ -645,7 +698,7 @@ func TestLoosePathComparisons(t *testing.T) {
 		}
 	}
 	for path, want := range map[string]string{
-		"/": "/", "/a": "/a", "/a/": "/a", "/a;x": "/a", "/a;x/": "/a", "/a/;x": "/a", "/;x": "/", "/a;x/b": "/a;x/b", "/a//": "/a/",
+		"/": "/", "/a": "/a", "/a/": "/a", "/a;x": "/a", "/a;x/": "/a", "/a/;x": "/a", "/;x": "/", "/a;x/b": "/a/b", "/a;x/b;y/": "/a/b", "/a//": "/a/",
 	} {
 		if got := loosePath(path); got != want {
 			t.Errorf("loosePath(%q) = %q, want %q", path, got, want)

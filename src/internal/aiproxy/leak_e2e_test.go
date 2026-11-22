@@ -921,7 +921,7 @@ func TestLeakProtectionFixtureEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := rig.guard.add(entry, nil); err != nil {
+		if _, _, _, err := rig.guard.add(entry, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -435,6 +435,7 @@ func TestControlRotateKeepsBackendCredentialProxyOnly(t *testing.T) {
 	proxyHandler := &httpProxy{state: state, control: &controlHandler{state: state}}
 	rotate := httptest.NewRequest(http.MethodPost, phaseproxy.ControlURL+"/v1/rotate", nil)
 	setProxyCapability(rotate, "runtime-capability")
+	rotate.Header.Set(phaseproxy.ControlIntentHeader, "1")
 	recorder := httptest.NewRecorder()
 	proxyHandler.ServeHTTP(recorder, rotate)
 	body := recorder.Body.Bytes()

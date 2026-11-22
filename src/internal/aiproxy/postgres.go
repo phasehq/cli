@@ -29,6 +29,13 @@ import (
 
 const maxPGMessageBytes = 16 << 20
 
+// maxPGParameterStatuses and maxPGParameterStatusBytes bound the settings an
+// upstream announces during login.
+const (
+	maxPGParameterStatuses    = 256
+	maxPGParameterStatusBytes = 64 << 10
+)
+
 var (
 	errPostgresUpstreamUnavailable         = errors.New("PostgreSQL upstream is unavailable")
 	errPostgresUpstreamTLSRequired         = errors.New("PostgreSQL upstream TLS is required")
@@ -38,6 +45,7 @@ var (
 	errPostgresUpstreamRejected            = errors.New("PostgreSQL upstream rejected the connection")
 	errPostgresUpstreamProtocol            = errors.New("PostgreSQL upstream protocol is unsupported")
 	errPostgresUpstreamStartupSetting      = errors.New("PostgreSQL upstream rejected a client startup setting")
+	errPostgresUpstreamPlainAuth           = errors.New("PostgreSQL upstream asked for a password in the clear")
 )
 
 type pgSessionIdentity struct {
@@ -290,6 +298,7 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 		return fail(errPostgresUpstreamUnavailable)
 	}
 	var response [1]byte
+	plaintext := false
 	if _, err = io.ReadFull(connection, response[:]); err != nil {
 		return fail(errPostgresUpstreamUnavailable)
 	}
@@ -308,11 +317,13 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 	case 'N':
 		// Stock local PostgreSQL containers commonly disable server TLS. The
 		// decoy-facing adapter remains TLS-only, while its upstream leg may use
-		// plaintext only when the established TCP peer itself is loopback. A
-		// configured hostname is never trusted as evidence of locality.
+		// plaintext only when the established TCP peer itself is loopback, and
+		// then answers only SCRAM. A configured hostname is never trusted as
+		// evidence of locality.
 		if !postgresUpstreamIsLoopback(connection) {
 			return fail(errPostgresUpstreamTLSRequired)
 		}
+		plaintext = true
 	default:
 		return fail(errPostgresUpstreamProtocol)
 	}
@@ -322,6 +333,7 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 	}
 	scram := pgSCRAMState{}
 	var statuses [][]byte
+	statusBytes := 0
 	for {
 		kind, payload, readErr := readPGMessage(connection)
 		if readErr != nil {
@@ -329,6 +341,12 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 		}
 		switch kind {
 		case 'S':
+			// A server announces a dozen or so settings; they are held until
+			// login ends, so how many and how large is bounded.
+			statusBytes += len(payload)
+			if len(statuses) == maxPGParameterStatuses || statusBytes > maxPGParameterStatusBytes {
+				return fail(errPostgresUpstreamProtocol)
+			}
 			statuses = append(statuses, append([]byte(nil), payload...))
 		case 'R':
 			if len(payload) < 4 {
@@ -339,10 +357,19 @@ func (a *protocolAdapters) connectPostgresUpstream(ctx context.Context, binding 
 			switch code {
 			case 0:
 			case 3:
+				// Without TLS nothing shows the peer is the database: whatever
+				// holds the loopback port would get the password, or with MD5 a
+				// hash it can replay. SCRAM proves the password without sending it.
+				if plaintext {
+					return fail(errPostgresUpstreamPlainAuth)
+				}
 				if err = writePGMessage(connection, 'p', []byte(password+"\x00")); err != nil {
 					return fail(errPostgresUpstreamUnavailable)
 				}
 			case 5:
+				if plaintext {
+					return fail(errPostgresUpstreamPlainAuth)
+				}
 				if len(data) != 4 {
 					return fail(errPostgresUpstreamProtocol)
 				}
@@ -499,6 +526,8 @@ func postgresUpstreamClientFailure(err error) (message, sqlState, reason string)
 		return "PostgreSQL upstream database is unavailable", "3D000", "upstream_database_unavailable"
 	case errors.Is(err, errPostgresUpstreamTLSRequired):
 		return "PostgreSQL upstream does not offer TLS; plaintext is allowed only for a loopback endpoint", "08006", "upstream_tls_required"
+	case errors.Is(err, errPostgresUpstreamPlainAuth):
+		return "PostgreSQL upstream asked for a cleartext or MD5 password over a connection without TLS; enable TLS or SCRAM-SHA-256 authentication on the server", "28000", "upstream_plain_auth_refused"
 	case errors.Is(err, errPostgresUpstreamTLSFailed):
 		return "PostgreSQL upstream TLS verification failed", "08006", "upstream_tls_failed"
 	case errors.Is(err, errPostgresUpstreamUnavailable):
@@ -697,8 +726,11 @@ func (a *protocolAdapters) refusePGCredentialChange(kind byte, payload []byte, b
 	}
 	blocked := &phaseproxy.CredentialMintingBlock{Operation: "PostgreSQL " + operation}
 	message := blocked.Message()
-	if operation == pgNestedTooDeep {
+	switch operation {
+	case pgNestedTooDeep:
 		message = "Phase blocked " + blocked.Operation + ": Phase reads no deeper into DO blocks and function bodies to rule out creating a role or setting a password."
+	case pgDynamicSQL:
+		message = "Phase blocked " + blocked.Operation + ": the statement could not be checked, because the SQL that EXECUTE runs is built at run time, so Phase cannot rule out creating a role or setting a password. Send the statement itself instead."
 	}
 	a.emitProtocolEventWithDetail(binding, "postgres", "QUERY", "block", "denied", "credential_minting_blocked", map[string]any{"blocked_operation": blocked.Operation})
 	refusal := "DO $phase$BEGIN RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = '" + strings.ReplaceAll(message, "'", "''") + "'; END$phase$"
@@ -709,9 +741,13 @@ func (a *protocolAdapters) refusePGCredentialChange(kind byte, payload []byte, b
 // nested too deeply for it to read.
 const pgNestedTooDeep = "code nested more than 4 deep"
 
+// pgDynamicSQL is the operation pgCredentialChange names for a DO block or
+// function body that runs SQL with EXECUTE.
+const pgDynamicSQL = "dynamic SQL (EXECUTE in a DO block or function body)"
+
 // pgCredentialChange names the statement in sql that creates a role or sets a
-// role password. It also reads the code of DO blocks and function bodies, but
-// it is a best-effort guard: SQL assembled at run time (EXECUTE, format) gets past.
+// role password. It also reads the code of DO blocks and function bodies, and
+// names pgDynamicSQL for code that builds SQL at run time, which it cannot read.
 func pgCredentialChange(sql string) string {
 	// Whether a backslash escapes in a quoted string depends on
 	// standard_conforming_strings, which the proxy does not see.
@@ -732,6 +768,13 @@ func pgScanCredentialChange(sql string, depth int, backslashes bool) string {
 			}
 			if operation := pgScanCredentialChange(text, depth+1, backslashes); operation != "" {
 				return operation
+			}
+		}
+		// Code that runs SQL it builds at run time cannot be read here. EXECUTE
+		// ON is a privilege (GRANT EXECUTE ON FUNCTION), not dynamic SQL.
+		if word == "execute" && depth > 0 {
+			if following, _, _, _ := pgToken(sql, next, backslashes); following != "on" {
+				return pgDynamicSQL
 			}
 		}
 		if operation := matcher.next(word); operation != "" {

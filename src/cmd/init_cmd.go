@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -174,8 +173,6 @@ func writePhaseConfig(appName, appID, envName, envID string, monorepo bool) erro
 	if err := config.WritePhaseConfig(phaseConfig); err != nil {
 		return fmt.Errorf("failed to write .phase.json: %w", err)
 	}
-
-	os.Chmod(config.PhaseEnvConfig, 0600)
 
 	fmt.Println(util.BoldGreen("✅ Initialization completed successfully."))
 	return nil

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/phasehq/cli/pkg/config"
@@ -44,11 +45,7 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		// ~/.phase also holds the Phase AI directory: its logs, spooled audit
 		// events and trust files. Stop the proxy first so it writes nothing
 		// back, and drop the CA key from the system keystore with them.
-		stopContext, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
-		if err := stopHookRuntime(stopContext); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
-		}
-		cancel()
+		stopRuntimeForLoginChange(cmd)
 		// A keystore that could not be reached keeps what it holds: said in
 		// one line, of the keys this machine made.
 		var left []string
@@ -102,6 +99,7 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		}
 
 		accountID := ids[0]
+		stopRuntimeForLoginChange(cmd)
 		// What the leak protection inventory stored for this login goes with
 		// it: read who it is before its record does.
 		var leaving *config.UserConfig
@@ -118,8 +116,9 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		keyring.DeleteCredentials(accountID)
 
 		// Clean up offline cache for this user
-		cacheDir := offline.CacheDir(config.PhaseSecretsDir, accountID)
-		os.RemoveAll(cacheDir)
+		if cacheDir, ok := offlineCacheDir(accountID); ok {
+			os.RemoveAll(cacheDir)
+		}
 
 		if err := config.RemoveUser(accountID); err != nil {
 			return fmt.Errorf("failed to update config: %w", err)
@@ -137,4 +136,37 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// stopHookRuntimeForLogin is stopHookRuntime; tests replace it.
+var stopHookRuntimeForLogin = stopHookRuntime
+
+// stopRuntimeForLoginChange stops a running Phase AI proxy. It holds the login
+// it started with, and would keep using one that was logged out or switched
+// away from; the next harness session starts it on the current login.
+func stopRuntimeForLoginChange(cmd *cobra.Command) {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stopContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := stopHookRuntimeForLogin(stopContext); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
+	}
+}
+
+// offlineCacheDir returns the account's offline cache directory, and false
+// when the id would name a path outside the Phase offline directory.
+func offlineCacheDir(accountID string) (string, bool) {
+	if !config.ValidAccountID(accountID) {
+		return "", false
+	}
+	base := filepath.Join(config.PhaseSecretsDir, "offline")
+	cacheDir := offline.CacheDir(config.PhaseSecretsDir, accountID)
+	relative, err := filepath.Rel(base, cacheDir)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return cacheDir, true
 }

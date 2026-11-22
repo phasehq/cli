@@ -25,6 +25,7 @@ All IDs, URLs and values in the examples are dummies.
 | Content type | JSON in, JSON out. `Cache-Control: no-store` on every control response. |
 | Query strings | Rejected (400 `invalid_control_query`) except `?wait=` on request creation/polling and `?serviceType=` on context. |
 | Browser safety | A `POST` carrying `Origin`, `Referer` or a `Sec-Fetch-Site` other than `none` is refused with 403 `browser_control_mutation_rejected`. |
+| Control intent | `POST /v1/revoke` and `POST /v1/rotate` take no body, so a client that follows an upstream's redirect could send one with the Agent's proxy credentials. They require `X-Phase-Control: 1`, which the CLI's own callers set and a redirected request does not carry; without it they answer 403 `control_intent_required`. |
 | Limits | Request bodies ≤ 128 KiB. IDs match `^[A-Za-z0-9._-]{1,128}$`. `markdown` ≤ 16 KiB. `title` ≤ 120 characters. A Workflow context ≤ 16384 characters. `wait` is 0–300 whole seconds. |
 
 Missing or wrong capability on **any** proxied request:
@@ -654,7 +655,7 @@ Content-Type: application/json
  "liveEntries":[{"v":1,"type":"secret","id":"<secret id>","forms":[...]}],"idKinds":["phase_id"],
  "tenant":"<as in the key request>","login":"<as in the key request>","keyId":"<from the key answer>"}
 
-200 {"schemaVersion":1,"added":1,"unprotected":0}
+200 {"schemaVersion":1,"added":1,"unprotected":0,"partial":0}
 ```
 
 - `tenant` and `login` say who the command is, as in the key request, and
@@ -695,11 +696,17 @@ Content-Type: application/json
 - A value too short or plain to protect is counted once for its type and id,
   however often it is registered, and at most 4096 such are remembered; past
   that the count stays where it is.
+- `partial` counts the added values indexed only in part where what was left
+  out may be secret: a document with a leaf of letters and digits too short
+  to index, or numbers that look like key material. Leaves left out as public
+  or as labels do not count. A value sent with `liveEntries` is counted by
+  those. Status counts them the same way, as `partial`, for the proxy's own
+  login only, as it counts `unprotected`; a guest's are in its answer alone.
 - Entries never replace those held for the same `type` and `id`, whatever
   their schemes: another value may share the id, and both stay matched.
 - No route returns entries, hashes or the id of a secret. `GET /v1/status`
   adds `leakProtection` with counts, host names, reasons and rule ids only:
-  `{"mode":"censor","secretsKnown":12,"unprotected":1,"inspectedHosts":[...],"unreadHosts":[...],"inventory":{...}}`.
+  `{"mode":"censor","secretsKnown":12,"unprotected":1,"partial":2,"inspectedHosts":[...],"unreadHosts":[...],"inventory":{...}}`.
   `inspectedHosts` is every host the table reads, whichever tool the proxy
   was started for.
 - `inventory` says whether the values outlive the proxy, in counts of the
@@ -877,7 +884,7 @@ in a body or a message stops a request.
 | a protobuf message, or any bytes that are not text, on a host that speaks Connect (a body, a message of a stream) | overwritten where it sits, by the placeholder padded or cut to its length; never blocks | overwritten or reported, as the rule says |
 | a body or message that cannot be decoded (an encoding the proxy does not undo, a message compressed against the handshake) | blocks, and it is reported as unread | reported as unread |
 | a body that cannot be decoded, on a host that speaks Connect | reported, and it is reported as unread; never blocks | reported as unread |
-| a body or message over 16 MiB, or a message in more than 4096 frames | not read: passes, reported as unread | |
+| a body or message over 40 MiB, or a message in more than 4096 frames | not read: passes, reported as unread | |
 
 `observe` reads the same way and never replaces or blocks. A blocked request
 is refused:
@@ -893,7 +900,7 @@ On a WebSocket the compression offer is removed from the handshake, each
 client message is held until its last frame has arrived, and a message that is
 replaced goes out as one new frame of the opcode the client framed it with:
 JSON sent in a binary frame is replaced like JSON anywhere else, and stays a
-binary message. At most 16 MiB and 4096 frames of one message are held; a
+binary message. At most 40 MiB and 4096 frames of one message are held; a
 message past either is not read, and what was held and the rest of it go out
 as the client framed them. A blocked message is never sent: the client gets a
 close frame with code 1008 (policy violation) and the reason, the service a
@@ -1010,13 +1017,13 @@ a body is (the type alone: `application/connect+proto; charset=utf-8` is
 
 | `Content-Type` | Read as |
 |---|---|
-| `application/proto` | one protobuf message. Read whole (16 MiB), any `Content-Encoding` undone as for other bodies, overwritten in place, encoded again the same way |
+| `application/proto` | one protobuf message. Read whole (40 MiB), any `Content-Encoding` undone as for other bodies, overwritten in place, encoded again the same way |
 | `application/connect+proto` | a stream of protobuf messages, read as it is sent (below) |
 | `application/connect+json` | a stream of JSON messages: each is read as JSON is anywhere, so a placeholder there is not padded and the envelope states the new length. One that is not text is overwritten in place |
 | `application/grpc`, `application/grpc-web`, either with `+proto` or another name | a stream of protobuf messages in the same envelopes; the encoding of a compressed one is what `Grpc-Encoding` names |
 | `application/grpc+json`, `application/grpc-web+json` | the same with JSON messages |
 | `application/json`, `+json`, `text/*`, `application/x-ndjson`, `application/x-www-form-urlencoded` | what its bytes say; bytes that are not text are overwritten in place |
-| `application/x-protobuf`, `application/protobuf` | one protobuf message with the rules of its path: read whole (16 MiB), overwritten in place |
+| `application/x-protobuf`, `application/protobuf` | one protobuf message with the rules of its path: read whole (40 MiB), overwritten in place |
 | `application/grpc-web-text`, with or without a name | gRPC-Web envelopes in base64, which an overwrite would break: looked at for the report and sent on unread, `body_undecodable`, `scope` `request`; with no stated length, sent on at once as `body_streamed` |
 | anything else (`application/octet-stream`, none) | bytes whose length must not change: overwritten in place when their length is stated, sent on unread over HTTP/2 when it is not |
 
@@ -1042,7 +1049,7 @@ hands on one envelope at a time and holds no more than that one. For each:
   `message_encoding_unsupported`; a payload that does not inflate, or
   inflates past 64 MiB, is `message_undecodable`. Both go on as they came and
   are reported as `unread` with `scope` `message`;
-- a payload over 16 MiB goes on as it comes: `body_over_limit`, `scope`
+- a payload over 40 MiB goes on as it comes: `body_over_limit`, `scope`
   `message`;
 - otherwise the message is read. When something in it was replaced the new
   message goes on, compressed again if it came compressed, under a prefix
@@ -1052,9 +1059,9 @@ hands on one envelope at a time and holds no more than that one. For each:
 
 A stream compressed as a whole (a `Content-Encoding` on the request) shows no
 envelopes and is forwarded unread: `body_undecodable`, `scope` `request`. A
-stream whose length the client stated, up to 16 MiB, is whole before any
+stream whose length the client stated, up to 40 MiB, is whole before any
 answer and is read whole, so what is sent states the length it then has; any
-other is forwarded as it comes, and a stated length over 16 MiB is dropped in
+other is forwarded as it comes, and a stated length over 40 MiB is dropped in
 `censor` mode, since a compressed message may come out another length. An
 envelope the client never finished goes on as far as it came, and the stream
 ends as the client's did: `message_truncated`, `scope` `message`.
@@ -1802,8 +1809,8 @@ is returned as it is, never retried or delayed.
 
 ### POST /v1/rotate
 
-No body. Rotates the proxy's *backend* session credential with Console. The
-process-local capability does not change.
+No body; requires `X-Phase-Control: 1`. Rotates the proxy's *backend* session
+credential with Console. The process-local capability does not change.
 
 ```json
 { "schemaVersion": 1, "sessionUid": "sess_01HZX9K3M2", "expiresAt": "2026-10-17T10:12:30Z", "configGeneration": 5, "rotated": true }
@@ -1811,8 +1818,9 @@ process-local capability does not change.
 
 ### POST /v1/revoke
 
-No body. Revokes the session in Console and stops the proxy; used by
-`phase ai disable` and by a hook replacing an outdated daemon.
+No body; requires `X-Phase-Control: 1`. Revokes the session in Console and
+stops the proxy; used by `phase ai disable` and by a hook replacing an outdated
+daemon.
 
 ```json
 { "schemaVersion": 1, "sessionUid": "sess_01HZX9K3M2", "revokedAt": "2026-10-17T10:13:02Z" }

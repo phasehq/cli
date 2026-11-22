@@ -746,7 +746,7 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 		return []*censor.Entries{entry}
 	}
 	for i := 0; i < 200; i++ {
-		if _, unprotected, err := guard.add(short("LOG_LEVEL"), nil); err != nil || unprotected != 1 {
+		if _, unprotected, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || unprotected != 1 {
 			t.Fatalf("registration %d: %d %v", i, unprotected, err)
 		}
 	}
@@ -756,7 +756,7 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 	// The index's own caps do not see a value with nothing to index, so the
 	// names are bounded here.
 	for i := 0; i < maxUnprotectedNames+500; i++ {
-		if _, _, err := guard.add(short(fmt.Sprintf("lease-%d", i)), nil); err != nil {
+		if _, _, _, err := guard.add(short(fmt.Sprintf("lease-%d", i)), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -768,15 +768,73 @@ func TestUnprotectableValuesAreCountedOnceAndBounded(t *testing.T) {
 	}
 	// One that is kept is still counted once, and stops counting when the
 	// same id is registered with a value that can be protected.
-	if _, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || guard.status().Unprotected != maxUnprotectedNames {
+	if _, _, _, err := guard.add(short("LOG_LEVEL"), nil); err != nil || guard.status().Unprotected != maxUnprotectedNames {
 		t.Fatal("a value already counted was counted again")
 	}
 	long, err := censor.IndexValue(guard.key, "secret", "LOG_LEVEL", leakSecretOne)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added, _, err := guard.add([]*censor.Entries{long}, nil); err != nil || added != 1 || guard.status().Unprotected != maxUnprotectedNames-1 {
+	if added, _, _, err := guard.add([]*censor.Entries{long}, nil); err != nil || added != 1 || guard.status().Unprotected != maxUnprotectedNames-1 {
 		t.Fatalf("a value that became protectable is still counted: %d", guard.status().Unprotected)
+	}
+}
+
+// A document indexed with some of its leaves left out, such as one too short
+// for a leaf under a neutral name, is protected in part: the registration's
+// answer and status count it, once however often it is registered, and stop
+// when the same id is registered whole.
+func TestValuesProtectedInPartAreCounted(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	document := `{"api_token":"` + leakSecretOne + `","ref_code":"Q7xL2mR9vT4kP8wZ"}`
+	values := []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: document}, {Type: "secret", ID: "STRIPE_KEY", Value: leakSecretTwo}}
+	for i := 0; i < 3; i++ {
+		if answer := registerThroughControl(t, rig.proxy, values, nil); answer == nil || answer.Added != 2 || answer.Unprotected != 0 || answer.Partial != 1 {
+			t.Fatalf("registration %d: %+v", i, answer)
+		}
+	}
+	status := rig.guard.status()
+	if status.Partial != 1 || status.Unprotected != 0 {
+		t.Fatalf("status counts %d values protected in part and %d unprotected", status.Partial, status.Unprotected)
+	}
+	if answer := registerThroughControl(t, rig.proxy, []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: leakSecretThree}}, nil); answer == nil || answer.Partial != 0 {
+		t.Fatalf("a whole registration: %+v", answer)
+	}
+	if status := rig.guard.status(); status.Partial != 0 {
+		t.Fatalf("a value registered whole is still counted as protected in part: %d", status.Partial)
+	}
+}
+
+// A proxy with an identity counts a value protected in part the same way: its
+// own login's, sent with live and stored entries, in the answer and status,
+// and a guest's in the guest's answer alone.
+func TestValuesProtectedInPartAreCountedByAProxyWithAnIdentity(t *testing.T) {
+	rig := newStoredLeakRig(t, newTestInventoryStore(t))
+	document := `{"api_token":"` + leakSecretOne + `","ref_code":"Q7xL2mR9vT4kP8wZ"}`
+	values := []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: document}, {Type: "secret", ID: "STRIPE_KEY", Value: leakSecretTwo}}
+	if keys := statedKey(t, rig.proxy, rig.guard.identity); keys.LiveKey == "" {
+		t.Fatal("the proxy's own login was handed no live key")
+	}
+	for i := 0; i < 3; i++ {
+		if answer := registerThroughControl(t, rig.proxy, values, nil); answer == nil || answer.Added != 2 || answer.Unprotected != 0 || answer.Partial != 1 {
+			t.Fatalf("registration %d: %+v", i, answer)
+		}
+	}
+	if status := rig.guard.status(); status.Partial != 1 || status.Unprotected != 0 {
+		t.Fatalf("status counts %d values protected in part and %d unprotected", status.Partial, status.Unprotected)
+	}
+	guest := []leakguard.Value{{Type: "secret", ID: "GUEST_CONFIG", Value: document}}
+	if answer := registerThroughControlAs(t, rig.proxy, otherTenantB, guest, nil); answer == nil || answer.Added != 1 || answer.Partial != 1 {
+		t.Fatalf("a guest's registration: %+v", answer)
+	}
+	if status := rig.guard.status(); status.Partial != 1 {
+		t.Fatalf("a guest's value is counted in status: %d", status.Partial)
+	}
+	if answer := registerThroughControl(t, rig.proxy, []leakguard.Value{{Type: "secret", ID: "CONFIG", Value: leakSecretThree}}, nil); answer == nil || answer.Partial != 0 {
+		t.Fatalf("a whole registration: %+v", answer)
+	}
+	if status := rig.guard.status(); status.Partial != 0 {
+		t.Fatalf("a value registered whole is still counted as protected in part: %d", status.Partial)
 	}
 }
 
@@ -1301,7 +1359,7 @@ func TestAKeyNameIsKnownBeforeItsValueCanBeFound(t *testing.T) {
 	guard.mu.Lock()
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := guard.add([]*censor.Entries{entry}, []bool{true})
+		_, _, _, err := guard.add([]*censor.Entries{entry}, []bool{true})
 		done <- err
 	}()
 	findable := false
@@ -1342,7 +1400,7 @@ func TestAKeyNameIsKnownBeforeItsValueCanBeFound(t *testing.T) {
 			named <- strings.Join(guard.eventPlaceholders([]string{placeholder}), ",")
 		}()
 		close(start)
-		if _, _, err := guard.add([]*censor.Entries{entry}, []bool{true}); err != nil {
+		if _, _, _, err := guard.add([]*censor.Entries{entry}, []bool{true}); err != nil {
 			t.Fatal(err)
 		}
 		if got := <-named; got != "ph:secret" {
@@ -1506,12 +1564,32 @@ func TestAMessageInTooManyFramesPassesUnread(t *testing.T) {
 	}
 }
 
+// A body over 16 MiB and under the size limit, as a long session's images can
+// make one, is read whole: a value at its end is replaced.
+func TestBodiesUpToTheProvidersLimitsAreRead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sends a payload of twenty megabytes")
+	}
+	rig := newLeakRig(t, leakModeCensor)
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	body := anthropicBody(strings.Repeat("a line of ordinary tool output\n", (20<<20)/32) + "key " + leakSecretOne)
+	if len(body) <= 16<<20 || len(body) > maxLeakBody {
+		t.Fatalf("the body is %d bytes", len(body))
+	}
+	client := rig.client(rig.phaseRoots)
+	client.Timeout = 120 * time.Second
+	postMessages(t, client, "https://api.anthropic.com/v1/messages", body, "")
+	if got := rig.lastReceived().body; bytes.Contains(got, []byte(leakSecretOne)) || !bytes.Contains(got, []byte("ph:secret:stripe")) {
+		t.Fatalf("a body of %d bytes was not read", len(body))
+	}
+}
+
 // A body and a message over the size limit are not read: they reach the
 // service byte for byte, and one unread event says so. What follows on the
 // same connection is read again.
 func TestOversizeBodiesAndMessagesPassUnread(t *testing.T) {
 	if testing.Short() {
-		t.Skip("sends two payloads of seventeen megabytes")
+		t.Skip("sends two payloads of forty-one megabytes")
 	}
 	rig := newLeakRig(t, leakModeCensor)
 	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})

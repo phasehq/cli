@@ -125,14 +125,19 @@ func Init(p *sdk.Phase) (*misc.AppKeyResponse, error) {
 }
 
 // AccountID returns the user_id or account_id from the response.
+// The id names local paths, so one that is not a plain identifier is refused.
 func AccountID(data *misc.AppKeyResponse) (string, error) {
-	if data.UserID != "" {
-		return data.UserID, nil
+	id := data.UserID
+	if id == "" {
+		id = data.AccountID
 	}
-	if data.AccountID != "" {
-		return data.AccountID, nil
+	if id == "" {
+		return "", fmt.Errorf("neither user_id nor account_id found in authentication response")
 	}
-	return "", fmt.Errorf("neither user_id nor account_id found in authentication response")
+	if !config.ValidAccountID(id) {
+		return "", fmt.Errorf("the Phase Console returned an account id that is not a valid identifier")
+	}
+	return id, nil
 }
 
 // PhaseGetContext resolves app/env context from user data, using .phase.json defaults.
@@ -246,7 +251,7 @@ func getCacheDir() string {
 		return ""
 	}
 	user, err := config.GetDefaultUser()
-	if err != nil || user == nil {
+	if err != nil || user == nil || !config.ValidAccountID(user.ID) {
 		return ""
 	}
 	return offline.CacheDir(config.PhaseSecretsDir, user.ID)

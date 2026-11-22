@@ -40,6 +40,11 @@ func shellCommandRequiresPhase(command string) bool {
 	if strings.ContainsAny(command, "‘’‚‛“”„") {
 		return false
 	}
+	// cmd and PowerShell read an unquoted backslash literally, so \; or \&
+	// is a separator there that a POSIX shell would escape.
+	if phaseUnquotedBackslash(command) {
+		return false
+	}
 	words, valid := phaseTokenizeShell(command)
 	if !valid {
 		return false
@@ -54,6 +59,23 @@ func shellCommandRequiresPhase(command string) bool {
 		simple = append(simple, word.value)
 	}
 	return phasePlainNetworkCall(simple)
+}
+
+func phaseUnquotedBackslash(command string) bool {
+	var quote rune
+	for _, character := range command {
+		switch {
+		case quote != 0:
+			if character == quote {
+				quote = 0
+			}
+		case character == '\\':
+			return true
+		case character == '\'' || character == '"':
+			quote = character
+		}
+	}
+	return false
 }
 
 // phasePlainNetworkCall proves that words form a single curl or wget call that
@@ -873,7 +895,8 @@ func phaseNetworkLongOption(executable, name string) phaseOptionKind {
 		switch name {
 		case "url":
 			return phaseOptionTarget
-		case "fail", "silent", "show-error", "include", "verbose", "location":
+		// verbose is left out: curl prints the proxy URL and its credentials.
+		case "fail", "silent", "show-error", "include", "location":
 			return phaseOptionFlag
 		case "request", "header", "data", "data-raw", "data-binary", "data-ascii", "data-urlencode",
 			"json", "max-time", "proxy", "output", "form", "form-string", "user-agent", "referer",
@@ -898,7 +921,7 @@ func phaseNetworkShortOption(executable string, flag byte) (takesValue, known bo
 	switch executable {
 	case "curl":
 		switch flag {
-		case 'f', 's', 'S', 'i', 'v', 'L', 'O', 'G', 'q', '#':
+		case 'f', 's', 'S', 'i', 'L', 'O', 'G', 'q', '#':
 			return false, true
 		case 'X', 'H', 'd', 'o', 'm', 'x', 'A', 'e', 'u', 'U', 'b', 'w':
 			return true, true

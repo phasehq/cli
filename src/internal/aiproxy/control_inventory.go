@@ -191,7 +191,7 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 		writeControlError(w, http.StatusBadRequest, "invalid_inventory", invalidInventoryMessage, false)
 		return
 	}
-	added, unprotected, err := h.leak.addAt(place, entries, live, keyNamed)
+	added, unprotected, partial, err := h.leak.addAt(place, entries, live, keyNamed)
 	switch {
 	case errors.Is(err, errLeakInventoryFull):
 		writeControlError(w, http.StatusInsufficientStorage, "leak_inventory_full", "The leak protection inventory has no room for more values from this login, or for this many in one registration. A proxy that starts again has room: it starts with the values registered most recently.", false)
@@ -200,5 +200,5 @@ func (h *controlHandler) addInventory(w http.ResponseWriter, req *http.Request) 
 		writeControlError(w, http.StatusBadRequest, "invalid_inventory", "An inventory entry is not valid.", false)
 		return
 	}
-	h.writeForward(w, remoteapi.InventoryResponse{SchemaVersion: agentapi.SchemaVersion, Added: added, Unprotected: unprotected}, nil)
+	h.writeForward(w, remoteapi.InventoryResponse{SchemaVersion: agentapi.SchemaVersion, Added: added, Unprotected: unprotected, Partial: partial}, nil)
 }

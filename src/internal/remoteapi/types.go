@@ -131,11 +131,12 @@ const (
 )
 
 // InventoryResponse counts the values a registration protected and those it
-// could not.
+// could not. Partial counts the added values protected only in part.
 type InventoryResponse struct {
 	SchemaVersion int `json:"schemaVersion"`
 	Added         int `json:"added"`
 	Unprotected   int `json:"unprotected"`
+	Partial       int `json:"partial"`
 }
 
 // LeakProtectionStatus describes the proxy's leak protection. It never names a
@@ -144,6 +145,7 @@ type LeakProtectionStatus struct {
 	Mode           string   `json:"mode"`
 	SecretsKnown   int      `json:"secretsKnown"`
 	Unprotected    int      `json:"unprotected"`
+	Partial        int      `json:"partial"`
 	InspectedHosts []string `json:"inspectedHosts"`
 	UnreadHosts    []string `json:"unreadHosts"`
 	// UnreadReasons says why a host the proxy's table reads is listed under

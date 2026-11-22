@@ -199,7 +199,8 @@ rules:
 // A rule file must not be able to switch protection off without an error or a
 // report: each of these is the shipped file with one thing wrong.
 func TestARuleFileCannotQuietlySwitchProtectionOff(t *testing.T) {
-	shipped := string(defaultRules)
+	// A Windows checkout may hold the file with CRLF line endings.
+	shipped := strings.ReplaceAll(string(defaultRules), "\r\n", "\n")
 	change := func(old, new string) []byte {
 		t.Helper()
 		if strings.Count(shipped, old) != 1 {

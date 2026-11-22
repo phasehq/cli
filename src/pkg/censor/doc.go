@@ -113,7 +113,17 @@
 // alone. A value under 12 bytes or 2.5 bits per byte is not indexed and is
 // listed as unprotected. So, in a document, are a string of a JSON value under
 // 20 bytes and a value of text under 12, a URL with no credential in it, an
-// email address and a certificate. Numbers next to strings in a JSON value
+// email address and a certificate. A leaf too short for its floor that is 12
+// bytes or more of letters and digits mixing digits with letters or the two
+// cases may be a secret, and is listed with its own reason; with numbers that
+// look like key material, it makes the value protected in part (Partial),
+// where public leaves and labels do not. A URL holds a credential when its user or
+// password does, or when it has a query or a fragment, or a path segment of 20
+// characters or more that is one run of base64 or hex, as a webhook's token
+// is; in one whose token is in its path, query or fragment, all but the token
+// is structure. So are the first five characters of such a token, and of a
+// URL's password or the token that is its user, so another URL of the service
+// is taken for it only when its credential begins with the same six. Numbers next to strings in a JSON value
 // are not indexed, and those that look like key material are listed: an array
 // of 16 integers or more, and an integer of 12 digits or more.
 //
@@ -185,7 +195,8 @@
 //
 // RewriteJSON walks a JSON body and rewrites string values in place, leaving
 // every other byte as it was; JSON held inside a string is walked too, and
-// base64-only strings of 16 KiB or more are skipped as images or files. The
+// base64-only strings of 16 KiB or more are taken for images or files: they
+// are not decoded, and up to 1 MiB they are matched as they stand. The
 // text of JSON held inside a string is also matched against the indexed values
 // as it stands: that finds a value that is JSON with no string in it, and puts
 // the placeholder where it was, so the string may no longer hold JSON. Redact
@@ -385,11 +396,19 @@
 //     could work a value out chunk by chunk. Whole, a guess is the value.
 //     What the time a scan takes still says of such a value is below.
 //   - A value transformed in any other way (reversed, split, re-encoded in a
-//     form not listed above, encrypted, compressed without base64 around it, or
-//     inside a base64 string of 16 KiB or more) is not found.
+//     form not listed above, encrypted, compressed without base64 around it,
+//     inside a base64 string of 16 KiB or more other than as it is or in its
+//     own base64, or anywhere inside one over 1 MiB) is not found. A value
+//     a process transforms on purpose (encoded over and over, cut into
+//     pieces, put in a protocol field, or compressed past the caps above) is
+//     outside what leak protection can catch.
 //   - The body's JSON object keys are not scanned, only values. Numbers and
 //     keys of JSON held inside a string are matched against the indexed values
-//     and by no rule.
+//     and by no rule. A number in the body's own JSON, outside any string, is
+//     not scanned: a value of digits is matched only as text.
+//   - The two places exempt as signed text are known by their shape alone,
+//     which nothing authenticates: text a client writes there itself is
+//     reported, not replaced.
 //   - In a protobuf message a value is found inside one string or bytes field.
 //     One that a client splits over two fields is not, and neither is one
 //     under 12 bytes. A field that ends inside a value holds a fragment of it,

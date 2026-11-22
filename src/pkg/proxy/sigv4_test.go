@@ -624,6 +624,49 @@ func TestRedactAWSSigV4ResponseKeepsETag(t *testing.T) {
 	}
 }
 
+func TestRedactedStreamIsNotHeldBackByAChunk(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
+	if err := RedactAWSSigV4Response(response, []CredentialRedaction{{Live: testLiveSecret, AgentVisible: testDecoySecret}}); err != nil {
+		t.Fatal(err)
+	}
+	// An event whose tail cannot begin the live value comes out whole while
+	// the stream stays open; one that ends in a prefix of it waits.
+	for _, event := range []string{"data: one\n\n", "data: " + testLiveSecret + "\n\n"} {
+		go func() { _, _ = writer.Write([]byte(event)) }()
+		want := strings.ReplaceAll(event, testLiveSecret, testDecoySecret)
+		got := make([]byte, 0, len(want))
+		done := make(chan error, 1)
+		go func() {
+			buffer := make([]byte, 64)
+			for len(got) < len(want) {
+				read, err := response.Body.Read(buffer)
+				got = append(got, buffer[:read]...)
+				if err != nil {
+					done <- err
+					return
+				}
+			}
+			done <- nil
+		}()
+		select {
+		case err := <-done:
+			if err != nil || string(got) != want {
+				t.Fatalf("read %q, err %v; want %q", got, err, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the event %q was held back", event)
+		}
+	}
+	go func() { _, _ = writer.Write([]byte("tail " + testLiveSecret[:5])) }()
+	buffer := make([]byte, 64)
+	read, _ := response.Body.Read(buffer)
+	if string(buffer[:read]) != "tail " {
+		t.Fatalf("read %q before the rest of a possible match", buffer[:read])
+	}
+}
+
 func TestRedactAWSSigV4ResponseReturnsCleanGzipObjectsUnchanged(t *testing.T) {
 	gzipped := func(content string) []byte {
 		var buffer bytes.Buffer
@@ -676,5 +719,29 @@ func TestRedactAWSSigV4ResponseReturnsCleanGzipObjectsUnchanged(t *testing.T) {
 		if err := RedactAWSSigV4Response(response, redactions); err == nil {
 			t.Fatalf("%s: encoded response was not refused", name)
 		}
+	}
+}
+
+// A small gzip body that inflates past the limit is refused, not decoded in
+// full, by redaction and by the credential scrubber alike.
+func TestGzipResponseInflatingPastTheLimitIsRefused(t *testing.T) {
+	var compressed bytes.Buffer
+	writer, _ := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	zeros := make([]byte, 1<<20)
+	for written := int64(0); written <= maximumDecodedGzipBytes; written += int64(len(zeros)) {
+		_, _ = writer.Write(zeros)
+	}
+	_ = writer.Close()
+	response := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "Content-Encoding": {"gzip"}},
+			Body: io.NopCloser(bytes.NewReader(compressed.Bytes())), ContentLength: int64(compressed.Len()),
+		}
+	}
+	if err := RedactAWSSigV4Response(response(), []CredentialRedaction{{Live: testLiveSecret, AgentVisible: testDecoySecret}}); err == nil {
+		t.Fatal("redaction returned a gzip body that inflates past the limit")
+	}
+	if err := ScrubAWSCredentialResponse(response(), nil); err == nil {
+		t.Fatal("the scrubber returned a gzip body that inflates past the limit")
 	}
 }

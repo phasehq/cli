@@ -1060,6 +1060,145 @@ func TestAURLWithATokenForItsUserIsProtected(t *testing.T) {
 	}
 }
 
+// A URL that carries its credential in a path segment, the query or the
+// fragment, as a webhook or a signed download does, is not public: as a leaf
+// of a document, or a value of an env file, it is indexed, and only its token
+// counts, so another URL of the same service is left alone. A URL with none of
+// that stays public.
+func TestAURLWithATokenInItsPathOrQueryIsProtected(t *testing.T) {
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redact := func(ix *Index, text string) (string, *Report) {
+		out, report := ix.RedactWith([]byte(text), ScanOptions{Rules: only})
+		return string(out), report
+	}
+	escape := strings.NewReplacer("+", "%2B", "/", "%2F", "=", "%3D").Replace
+	webhook := func() (string, string) {
+		token := randomString(t, alnum, 24)
+		return "https://hooks.chat.example.test/services/T0FAKE0001/B0FAKE0001/" + token, token
+	}
+	discord := func() (string, string) {
+		token := randomString(t, alnum+"-_", 68)
+		return "https://chat.example.test/api/webhooks/123456789012345678/" + token, token
+	}
+	sas := func() (string, string) {
+		signature := base64.StdEncoding.EncodeToString(randomBytes(t, 32))
+		return "https://acct.blob.storage.example.test/backups/db.tar?sv=2022-11-02&ss=b&srt=o&sp=r&se=2030-01-01T00%3A00%3A00Z&sig=" + escape(signature), escape(signature)
+	}
+	presigned := func() (string, string) {
+		signature := randomHex(t, 32)
+		return "https://bucket.s3.example.test/report.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAFAKEFAKEFAKE%2F20300101%2Fus-east-1%2Fs3%2Faws4_request" +
+			"&X-Amz-Date=20300101T000000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=" + signature, signature
+	}
+	fragment := func() (string, string) {
+		token := randomString(t, alnum, 32)
+		return "https://app.example.test/callback#access_token=" + token + "&token_type=bearer", token
+	}
+	const api = "https://api.example.com/v1"
+	if !looksPublic(api) || !looksPublic(api+"/") || !looksPublic("https://www.example.com/robot/v1/metadata/x509/deploy%40project.iam.example.com") {
+		t.Fatal("a plain URL is not public")
+	}
+	for name, newURL := range map[string]func() (string, string){
+		"a webhook token": webhook, "a long webhook token": discord, "a SAS signature": sas,
+		"a presigned signature": presigned, "a token in the fragment": fragment,
+	} {
+		value, token := newURL()
+		// Another URL of the service whose token begins as this one's does,
+		// for as many characters as are marked as structure: a chunk that holds
+		// no more of the token than that is no match.
+		other, otherToken := newURL()
+		other = strings.Replace(other, otherToken, token[:urlTokenLead]+otherToken[urlTokenLead:], 1)
+		for kind, registered := range map[string]string{
+			"a leaf of a JSON value": `{"base_url":"` + api + `","target":"` + value + `","name":"deploy-notifications"}`,
+			"a value of an env file": "BASE_URL=" + api + "\nTARGET=" + value + "\n",
+		} {
+			ix, entries := buildWithEntries(t, newKey(t), secret{ID: "doc", Value: registered})
+			public := 0
+			for _, u := range entries["doc"].Unprotected {
+				if u.Reason == ReasonPublicLeaf {
+					public++
+				}
+			}
+			if public != 1 || !entries["doc"].Protected() {
+				t.Errorf("%s, %s: unprotected %+v", name, kind, entries["doc"].Unprotected)
+			}
+			if out, report := redact(ix, "$ cat config\ntarget: "+value+"\n"); strings.Contains(out, token) || report.Inventory == 0 {
+				t.Errorf("%s, %s: the URL was left:\n%s", name, kind, out)
+			}
+			for _, text := range []string{"curl -s " + other + "\n", "see " + api + " for the API\n"} {
+				if out, report := redact(ix, text); out != text || report.Inventory != 0 {
+					t.Errorf("%s, %s: another URL was changed:\n%s", name, kind, out)
+				}
+			}
+		}
+	}
+}
+
+// A value counts as protected in part only when what was left out may be
+// secret: a leaf shaped like one and too short to index. The labels, public
+// URLs, addresses and ids of an ordinary key file do not count.
+func TestOnlyLeavesThatMayBeSecretMakeAValuePartlyProtected(t *testing.T) {
+	serviceAccount, _ := json.MarshalIndent(map[string]string{
+		"type": "service_account", "project_id": "orders-prod-482913", "private_key_id": randomHex(t, 20), "private_key": fakePEM(t),
+		"client_email": "deployer@orders-prod-482913.iam.gserviceaccount.com", "client_id": protectableDigits(t, 21),
+		"auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
+		"auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+		"client_x509_cert_url":        "https://www.googleapis.com/robot/v1/metadata/x509/deployer%40orders-prod-482913.iam.gserviceaccount.com",
+		"universe_domain":             "googleapis.com",
+	}, "", "  ")
+	awsCredentials := "[default]\naws_access_key_id = AKIA" + randomString(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16) +
+		"\naws_secret_access_key = " + randomString(t, alnum+"+/", 40) + "\nregion = us-east-1\noutput = json\n\n[deploy]\naws_access_key_id = AKIA" +
+		randomString(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16) + "\naws_secret_access_key = " + randomString(t, alnum+"+/", 40) + "\nregion = eu-west-2\n"
+	kubeconfig := "apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    certificate-authority-data: " + base64.StdEncoding.EncodeToString([]byte(fakeCertificate(t))) +
+		"\n    server: https://10.0.0.1:6443\n  name: orders-prod\ncontexts:\n- context:\n    cluster: orders-prod\n    user: deployer\n  name: deployer@orders-prod\n" +
+		"current-context: deployer@orders-prod\nusers:\n- name: deployer\n  user:\n    client-key-data: " + base64.StdEncoding.EncodeToString([]byte(fakePEM(t))) +
+		"\n    token: " + randomString(t, alnum, 40) + "\n"
+	for name, value := range map[string]string{"a service account key": string(serviceAccount), "an AWS credentials file": awsCredentials, "a kubeconfig": kubeconfig} {
+		_, entries := buildWithEntries(t, newKey(t), secret{ID: "doc", Value: value})
+		if e := entries["doc"]; !e.Protected() || e.Partial() {
+			t.Errorf("%s: protected %v, in part %v: %+v", name, e.Protected(), e.Partial(), e.Unprotected)
+		}
+	}
+	_, entries := buildWithEntries(t, newKey(t), secret{ID: "doc", Value: `{"api_token":"` + randomString(t, alnum, 40) + `","ref_code":"Q7xL2mR9vT4kP8"}`})
+	if e := entries["doc"]; !e.Partial() || len(e.Unprotected) != 1 || e.Unprotected[0].Reason != ReasonShortSecret {
+		t.Errorf("a 14-byte value under a neutral name: in part %v, %+v", e.Partial(), e.Unprotected)
+	}
+}
+
+// A URL's password, or the token that is its user, begins as structure does:
+// another URL of the same user and host is taken for it only when its
+// credential begins with the same urlTokenLead+1 characters.
+func TestAnotherURLWhosePasswordBeginsTheSameIsLeftAlone(t *testing.T) {
+	only, err := DefaultRules().Only("npm-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "https://ci:" and "https://" put one and four characters of the
+	// credential in the chunk that ends where the URL's scheme and user do.
+	for name, url := range map[string]func(credential string) string{
+		"a password":       func(credential string) string { return "https://ci:" + credential + "@git.internal/acme/orders.git" },
+		"a token for user": func(credential string) string { return "https://" + credential + "@git.internal/acme/orders.git" },
+	} {
+		credential, other := randomString(t, alnum, 32), randomString(t, alnum, 32)
+		other = credential[:urlTokenLead] + other[urlTokenLead:]
+		for kind, registered := range map[string]string{
+			"a value on its own":     url(credential),
+			"a leaf of a JSON value": `{"origin":"` + url(credential) + `","branch":"main"}`,
+		} {
+			ix := build(t, secret{ID: "git", Value: registered})
+			if out, _ := ix.RedactWith([]byte("origin	"+url(credential)+" (fetch)"), ScanOptions{Rules: only}); strings.Contains(string(out), credential) {
+				t.Errorf("%s, %s: the URL was left: %s", name, kind, out)
+			}
+			text := "origin	" + url(other) + " (fetch)"
+			if out, report := ix.RedactWith([]byte(text), ScanOptions{Rules: only}); string(out) != text || report.Inventory != 0 {
+				t.Errorf("%s, %s: another URL was changed: %s", name, kind, out)
+			}
+		}
+	}
+}
+
 // Next to strings, the numbers of a JSON value are not indexed. Those that
 // look like key material, an array of 16 integers or more and an integer of 12
 // digits or more, are listed as unprotected, so that it is not silent.

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/phasehq/cli/internal/leakguard"
@@ -31,13 +33,23 @@ const (
 )
 
 // unprotectedWarning says how many of a command's values leak protection
-// could not take, and never which: a value too short or plain to tell from
-// ordinary text is handed out all the same.
-func unprotectedWarning(count int) string {
-	if count == 1 {
-		return "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic."
+// could not take, and how many it took only in part, and never which: a value
+// too short or plain to tell from ordinary text is handed out all the same.
+func unprotectedWarning(count, partial int) string {
+	var sentences []string
+	switch {
+	case count == 1:
+		sentences = append(sentences, "1 value from this command is too short or plain to protect, so it is not removed from model traffic.")
+	case count > 1:
+		sentences = append(sentences, fmt.Sprintf("%d values from this command are too short or plain to protect, so they are not removed from model traffic.", count))
 	}
-	return fmt.Sprintf("Phase: %d values from this command are too short or plain to protect, so they are not removed from model traffic.", count)
+	switch {
+	case partial == 1:
+		sentences = append(sentences, "1 value from this command is protected in part: a part of it that may be secret could not be protected, so it is not removed from model traffic.")
+	case partial > 1:
+		sentences = append(sentences, fmt.Sprintf("%d values from this command are protected in part: parts of them that may be secret could not be protected, so they are not removed from model traffic.", partial))
+	}
+	return "Phase: " + strings.Join(sentences, " ")
 }
 
 // leakRuntimeSource names the source that finds the hook-managed proxy from
@@ -114,12 +126,47 @@ func hookRuntimeRestarting() bool {
 // leakLocate finds the proxy to register with, leakIdentity says who this
 // command is to it, and leakRegister registers with it; tests replace them.
 var (
-	leakLocate   = leakguard.Locate
+	leakLocate   = locateLeakProxy
 	leakIdentity = phase.LoginIdentity
 	leakRegister = func(ctx context.Context, proxy leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
 		return proxy.Register(ctx, values)
 	}
 )
+
+// locateLeakProxy is leakguard.Locate, except that a session's proxy at the
+// address of a hook daemon that is gone is not trusted. On Windows the shell
+// guard only probes the port, which a listener that took it over passes too.
+func locateLeakProxy() (leakguard.Proxy, bool) {
+	proxy, found := leakguard.Locate()
+	if found && proxy.InSession() && proxy.URL != "" && sessionProxyOfDeadRuntime(proxy.URL) {
+		return leakguard.Proxy{Source: leakguard.SourceSession}, true
+	}
+	return proxy, found
+}
+
+// sessionProxyOfDeadRuntime reports a proxy address the hook daemon's state
+// names while the process its runtime lock names is not alive.
+func sessionProxyOfDeadRuntime(sessionURL string) bool {
+	directory, err := hookRuntimeDir()
+	if err != nil {
+		return false
+	}
+	state, err := readHookRuntimeState(filepath.Join(directory, hookRuntimeStateFile))
+	if err != nil || !sameProxyAddress(state.ProxyURL, sessionURL) {
+		return false
+	}
+	lock, err := readHookRuntimeLock(filepath.Join(directory, hookRuntimeLockFile))
+	return err != nil || lock.PID <= 0 || lock.PID != state.PID || !processIsAlive(lock.PID)
+}
+
+func sameProxyAddress(a, b string) bool {
+	first, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	second, err := url.Parse(b)
+	return err == nil && first.Host != "" && strings.EqualFold(first.Host, second.Host)
+}
 
 // leakWarnings is where warnings go; tests replace it. Never stdout, which
 // may be what the command's output is piped into.
@@ -185,8 +232,8 @@ func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent 
 	proxy.Identity = leakIdentity(ctx)
 	result, err := leakRegister(ctx, proxy, values)
 	if err == nil {
-		if result.Unprotected > 0 {
-			fmt.Fprintln(leakWarnings, unprotectedWarning(result.Unprotected))
+		if result.Unprotected > 0 || result.Partial > 0 {
+			fmt.Fprintln(leakWarnings, unprotectedWarning(result.Unprotected, result.Partial))
 		}
 		return nil
 	}

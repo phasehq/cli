@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -116,25 +117,28 @@ func TestOtherLoginsWarnOnceAndCarryOn(t *testing.T) {
 }
 
 // A value too short to protect is still handed out, to an Agent login too,
-// and the command says how many such values there were and nothing else of
-// them.
+// and the command says how many such values there were, and how many were
+// protected in part, and nothing else of them.
 func TestValuesThatCouldNotBeProtectedAreCountedInAWarning(t *testing.T) {
 	const short = "Pa55w0rd!x"
 	previous := leakRegister
 	t.Cleanup(func() { leakRegister = previous })
 	session := leakguard.Proxy{URL: "http://phase:capability@127.0.0.1:1", Source: leakguard.SourceSession}
 	for _, c := range []struct {
-		unprotected int
-		want        string
+		unprotected, partial int
+		want                 string
 	}{
-		{0, ""},
-		{1, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic.\n"},
-		{3, "Phase: 3 values from this command are too short or plain to protect, so they are not removed from model traffic.\n"},
+		{0, 0, ""},
+		{1, 0, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic.\n"},
+		{3, 0, "Phase: 3 values from this command are too short or plain to protect, so they are not removed from model traffic.\n"},
+		{0, 1, "Phase: 1 value from this command is protected in part: a part of it that may be secret could not be protected, so it is not removed from model traffic.\n"},
+		{1, 2, "Phase: 1 value from this command is too short or plain to protect, so it is not removed from model traffic. " +
+			"2 values from this command are protected in part: parts of them that may be secret could not be protected, so they are not removed from model traffic.\n"},
 	} {
 		for _, agent := range []bool{true, false} {
 			warnings := captureLeakWarnings(t)
 			leakRegister = func(_ context.Context, _ leakguard.Proxy, values []leakguard.Value) (leakguard.Result, error) {
-				return leakguard.Result{Added: len(values) - c.unprotected, Unprotected: c.unprotected}, nil
+				return leakguard.Result{Added: len(values) - c.unprotected, Unprotected: c.unprotected, Partial: c.partial}, nil
 			}
 			values := []leakguard.Value{
 				{Type: "secret", ID: "DB_PASSWORD", Value: short}, {Type: "secret", ID: "ADMIN_PIN", Value: "4821"},
@@ -219,6 +223,11 @@ func TestStatusLineSummarisesLeakProtection(t *testing.T) {
 	}
 	if line := leakProtectionSummary(remoteapi.LeakProtectionStatus{Mode: "off", SecretsKnown: 1}); line != "off (model traffic is not inspected); 1 secret known" {
 		t.Fatalf("off: %s", line)
+	}
+	// Values protected in part are counted next to those not protected.
+	line = leakProtectionSummary(remoteapi.LeakProtectionStatus{Mode: "censor", SecretsKnown: 4, Unprotected: 1, Partial: 2})
+	if want := "censor (secrets in model traffic are replaced with placeholders); 4 secrets known, 1 too short or plain to protect, 2 protected in part"; line != want {
+		t.Fatalf("status line:\n%s\n%s", line, want)
 	}
 	// A host that would be read, and is not being read now, is listed with
 	// why; a host the table never reads has no reason to give.
@@ -1045,5 +1054,66 @@ func TestAnAgentCommandStatesWhoTheConsoleSaysItsTokenIs(t *testing.T) {
 		if stated != want {
 			t.Fatalf("the command said it is %q of %q", stated.Login, stated.Tenant)
 		}
+	}
+}
+
+// A session whose proxy address is that of a hook daemon that is gone does
+// not register with whatever now listens there: an Agent login is refused.
+func TestSessionProxyOfADeadDaemonIsNotTrusted(t *testing.T) {
+	directory := withHookRuntimeDirectory(t)
+	var connections atomic.Int32
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connections.Add(1)
+			_ = connection.Close()
+		}
+	}()
+	proxyURL := "http://phase:capability@" + listener.Addr().String()
+	environment := map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": proxyURL}
+	previous := leakguard.Environment
+	leakguard.Environment = func(key string) string { return environment[key] }
+	t.Cleanup(func() { leakguard.Environment = previous })
+
+	exited := exec.Command(os.Args[0], "-test.run=^$")
+	if err := exited.Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadPID := exited.Process.Pid
+	hookProxyState(t, directory, proxyURL, deadPID)
+	lock := hookRuntimeLock{Version: hookRuntimeStateVersion, Generation: "generation-leak", PID: deadPID, CreatedAt: time.Now().UTC()}
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), lock); err != nil {
+		t.Fatal(err)
+	}
+
+	proxy, found := leakLocate()
+	if !found || !proxy.InSession() || proxy.URL != "" {
+		t.Fatalf("located %+v, %t; want the session with no address to trust", proxy, found)
+	}
+	captureLeakWarnings(t)
+	err = protectValues(context.Background(), true, []leakguard.Value{{Type: "secret", ID: "STRIPE_KEY", Value: leakTestSecrets[0].Value}})
+	if !errors.Is(err, errLeakProtectionUnreachable) {
+		t.Fatalf("an Agent login got %v, want it refused", err)
+	}
+	if connections.Load() != 0 {
+		t.Fatal("values were sent to the listener at a dead daemon's address")
+	}
+
+	// While the daemon that owns the address runs, the session is trusted.
+	hookProxyState(t, directory, proxyURL, os.Getpid())
+	lock.PID = os.Getpid()
+	if err := writeOwnerOnlyJSON(filepath.Join(directory, hookRuntimeLockFile), lock); err != nil {
+		t.Fatal(err)
+	}
+	if proxy, _ := leakLocate(); proxy.URL != proxyURL {
+		t.Fatalf("a live daemon's session proxy was not trusted: %+v", proxy)
 	}
 }

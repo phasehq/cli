@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/phasehq/cli/pkg/config"
+	"github.com/spf13/cobra"
 	gokeyring "github.com/zalando/go-keyring"
 )
 
@@ -113,5 +115,85 @@ func TestLogoutPurgeNamesAPhaseRootLeftInTheTrustStore(t *testing.T) {
 	caTrustLeftover = func() string { return "" }
 	if stdout, _ := purgeWithPhaseAIData(t, true); strings.Contains(stdout, "root certificate") || !strings.HasSuffix(stdout, "Logged out and purged all local data.\n") {
 		t.Fatalf("a purge with no root in the trust store: %q", stdout)
+	}
+}
+
+// A saved account id is used as a path component; one that climbs out of the
+// Phase directory must never make logout delete what it names.
+func TestLogoutNeverDeletesOutsideThePhaseDirectory(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	gokeyring.MockInit()
+	aiDirectory := filepath.Join(filepath.Dir(config.PhaseSecretsDir), "ai")
+	originalDirectory := hookRuntimeDir
+	hookRuntimeDir = func() (string, error) { return aiDirectory, nil }
+	t.Cleanup(func() { hookRuntimeDir = originalDirectory })
+
+	home := filepath.Dir(filepath.Dir(config.PhaseSecretsDir))
+	victim := filepath.Join(home, "Documents")
+	if err := os.MkdirAll(victim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "notes.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Join([]string{"..", "..", "..", "Documents"}, string(filepath.Separator))
+	if err := config.AddUser(config.UserConfig{Host: console.server.URL, ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, err := runPhaseCommand(t, "", "users", "logout"); err != nil {
+		t.Fatalf("logout: %v %s", err, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(victim, "notes.txt")); err != nil {
+		t.Fatalf("logout deleted a directory outside ~/.phase: %v", err)
+	}
+}
+
+func TestOfflineCacheDirAcceptsOnlyPlainIDs(t *testing.T) {
+	isolateAgentCommand(t, "https://console.phase.invalid")
+	for _, id := range []string{"", ".", "..", "../x", `..\x`, "a/b", "/abs"} {
+		if dir, ok := offlineCacheDir(id); ok {
+			t.Errorf("id %q gave %s", id, dir)
+		}
+	}
+	dir, ok := offlineCacheDir("0b5c0a6e-2f6b-4e3a-9a52-1c2d3e4f5a6b")
+	if !ok || filepath.Dir(dir) != filepath.Join(config.PhaseSecretsDir, "offline") {
+		t.Fatalf("a UUID id gave %q, %v", dir, ok)
+	}
+}
+
+// The Phase AI proxy keeps the login it started with, so an ordinary logout
+// and a switch to another user stop it, as a purge does.
+func TestLogoutAndSwitchStopThePhaseAIProxy(t *testing.T) {
+	console := newFakeAgentConsole(t)
+	isolateAgentCommand(t, console.server.URL)
+	gokeyring.MockInit()
+	stops := 0
+	original := stopHookRuntimeForLogin
+	stopHookRuntimeForLogin = func(context.Context) error { stops++; return nil }
+	t.Cleanup(func() { stopHookRuntimeForLogin = original })
+
+	for _, id := range []string{"user-1", "user-2"} {
+		if err := config.AddUser(config.UserConfig{Host: console.server.URL, ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := switchDefaultUser(&cobra.Command{}, config.UserConfig{Host: console.server.URL, ID: "user-1"}, "user-2"); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 1 {
+		t.Fatalf("switching user stopped the proxy %d times, want 1", stops)
+	}
+	if err := switchDefaultUser(&cobra.Command{}, config.UserConfig{Host: console.server.URL, ID: "user-1"}, "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 1 {
+		t.Fatalf("choosing the current user stopped the proxy")
+	}
+	if _, stderr, err := runPhaseCommand(t, "", "users", "logout"); err != nil {
+		t.Fatalf("logout: %v %s", err, stderr)
+	}
+	if stops != 2 {
+		t.Fatalf("logout stopped the proxy %d times in all, want 2", stops)
 	}
 }

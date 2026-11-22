@@ -149,6 +149,9 @@ func newFakeProxy(t *testing.T) (*fakeProxy, *httptest.Server) {
 					}
 					fake.liveEntries = append(fake.liveEntries, entry)
 				}
+				if entry.Partial() {
+					answer.Partial++
+				}
 				if entry.Protected() {
 					answer.Added++
 				} else {
@@ -237,8 +240,9 @@ func TestRegisterSendsKeyedHashesOnlyAndFetchesTheKeyOnce(t *testing.T) {
 			{Type: "secret", ID: "secret-uuid-1", Value: value},
 			{Type: "Sealed", ID: "DATABASE URL", Value: "postgres://u:Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3@db:5432/app"},
 			{Type: "dynamic", ID: "lease-1", Value: "abc"},
+			{Type: "secret", ID: "secret-uuid-2", Value: `{"api_token":"Zx9Qv7Lm3Tn8Rk2Wp6Yc4Hd1Bf5Gj0Ks","ref_code":"Q7xL2mR9vT4kP8wZ"}`},
 		})
-		if err != nil || result.Added != 2 || result.Unprotected != 1 {
+		if err != nil || result.Added != 3 || result.Unprotected != 1 || result.Partial != 1 {
 			t.Fatalf("register: %+v %v", result, err)
 		}
 	}

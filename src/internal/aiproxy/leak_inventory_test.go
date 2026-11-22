@@ -201,7 +201,7 @@ func TestLeakInventoryMatchesSchemeOneEntriesFromMemoryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added, _, err := first.add([]*censor.Entries{old, current}, []bool{false, false}); err != nil || added != 2 {
+	if added, _, _, err := first.add([]*censor.Entries{old, current}, []bool{false, false}); err != nil || added != 2 {
 		t.Fatalf("%d %v", added, err)
 	}
 	if out, _ := first.index.Redact([]byte(leakSecretOne + " " + leakSecretTwo)); string(out) != "ph:secret:one ph:secret:two" {
@@ -220,7 +220,7 @@ func TestLeakInventoryMatchesSchemeOneEntriesFromMemoryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := first.add([]*censor.Entries{again}, []bool{false}); err != nil {
+	if _, _, _, err := first.add([]*censor.Entries{again}, []bool{false}); err != nil {
 		t.Fatal(err)
 	}
 	if out, _ := first.index.Redact([]byte(leakSecretOne + " " + other)); string(out) != "ph:secret:one ph:secret:one" {
