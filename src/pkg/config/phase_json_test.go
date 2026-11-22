@@ -144,6 +144,12 @@ func TestWritePhaseConfigRefusesASymbolicLink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(work, PhaseEnvConfig)); err != nil {
 		t.Skipf("symbolic links unavailable: %v", err)
 	}
+	// Compared with what it was, not 0644: Windows reports any writable file
+	// as 0666.
+	before, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
 	withWorkingDir(t, work)
 
 	if err := WritePhaseConfig(&PhaseJSONConfig{Version: "2", AppID: "app"}); err == nil {
@@ -153,8 +159,8 @@ func TestWritePhaseConfigRefusesASymbolicLink(t *testing.T) {
 	if err != nil || string(data) != "keep me" {
 		t.Fatalf("outside file changed: %q, %v", data, err)
 	}
-	if info, err := os.Stat(outside); err != nil || info.Mode().Perm() != 0o644 {
-		t.Fatalf("outside file mode changed: %v, %v", info.Mode(), err)
+	if info, err := os.Stat(outside); err != nil || info.Mode() != before.Mode() {
+		t.Fatalf("outside file mode changed from %v: %v, %v", before.Mode(), info.Mode(), err)
 	}
 }
 
