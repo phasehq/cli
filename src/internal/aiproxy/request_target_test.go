@@ -83,10 +83,10 @@ func TestTunnelRefusesARequestTargetThatIsNotAPath(t *testing.T) {
 	host, port, _ := net.SplitHostPort(parsed.Host)
 	authority := parsed.Host
 
-	// One packaged service with a path rule, a class override and, being
-	// GitHub, a path rule of the secret guard.
-	policy := policyDocument("allow", []any{matchRule("block", "/admin/*"), classRule("update", "block")})
-	connection := packagedHTTPPayload(policy, githubGraphQLUpdate)
+	// One packaged service with a path rule, a class rule and, being GitHub, a
+	// path rule of the secret guard.
+	policy := policyDocument("allow", []any{matchRule("block", "/admin/*"), classRule("create", "block")})
+	connection := packagedHTTPPayload(policy)
 	connection["hosts"] = []any{map[string]any{"match": "exact", "value": host, "port": mustPort(t, port)}}
 	client, shipped := eventConsole(t)
 	payload := customSessionPayload("psx_sess_request_target_0123456789", 1, connection)
@@ -117,7 +117,7 @@ func TestTunnelRefusesARequestTargetThatIsNotAPath(t *testing.T) {
 
 	for name, requestLine := range map[string]string{
 		"a path rule":                     "DELETE x:https://" + authority + "/admin/users/1",
-		"a class override":                "POST x:https://" + authority + "/graphql",
+		"a class rule":                    "POST x:https://" + authority + "/graphql",
 		"the secret guard's path rule":    "POST x:https://" + authority + "/app/installations/1/access_tokens",
 		"an absolute URL of another host": "GET x:https://attacker.example.net/collect",
 		"an opaque target under https":    "GET https:admin/users/1",

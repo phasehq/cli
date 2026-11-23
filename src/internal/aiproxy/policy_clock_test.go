@@ -31,8 +31,9 @@ func (b *heldBody) Close() error { return nil }
 
 func TestTemporaryAllowIsCheckedWhenTheBodyHasArrived(t *testing.T) {
 	expiry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	policy := policyDocument("allow", []any{classRule("delete", "ask")},
-		map[string]any{"id": "allow-delete", "class": "delete", "expiresAt": expiry.Format(time.RFC3339)})
+	// The POST is a create; the secret guard reads its body before the policy.
+	policy := policyDocument("allow", []any{classRule("create", "ask")},
+		map[string]any{"id": "allow-create", "class": "create", "expiresAt": expiry.Format(time.RFC3339)})
 	_, proxy, upstream := policyProxy(t, awsPolicyConnection(policy))
 	now := expiry.Add(-time.Minute)
 	proxy.clock = func() time.Time { return now }

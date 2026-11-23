@@ -85,7 +85,7 @@ func TestAccessPolicyEvaluation(t *testing.T) {
 		{name: "both match", policy: `{"version":1,"rules":[{"match":{"methods":["POST"],"path":"/v1/charges/*"},"effect":"block"}]}`, method: "POST", path: "/v1/charges/ch_1", class: "create", effect: "block", ruleIndex: 0},
 		{name: "both: method misses", policy: `{"version":1,"rules":[{"match":{"methods":["POST"],"path":"/v1/charges/*"},"effect":"block"}]}`, method: "GET", path: "/v1/charges/ch_1", class: "read", effect: "allow", ruleIndex: -1},
 		{name: "both: path misses", policy: `{"version":1,"rules":[{"match":{"methods":["POST"],"path":"/v1/charges/*"},"effect":"block"}]}`, method: "POST", path: "/v1/refunds/re_1", class: "create", effect: "allow", ruleIndex: -1},
-		{name: "a class rule ignores other classes", policy: `{"version":1,"rules":[{"class":"admin","effect":"block"}]}`, method: "DELETE", path: "/x", class: "delete", effect: "allow", ruleIndex: -1},
+		{name: "a class rule ignores other classes", policy: `{"version":1,"rules":[{"class":"update","effect":"block"}]}`, method: "DELETE", path: "/x", class: "delete", effect: "allow", ruleIndex: -1},
 
 		// A path the proxy cannot bring into canonical form matches every ask
 		// or block path rule and no allow path rule.
@@ -142,13 +142,13 @@ func TestTemporaryAllowExpiresAtRequestTime(t *testing.T) {
 // restricted one, and the answer names that one.
 func TestAccessPolicyTakesTheStrongestEffectAcrossCandidateClasses(t *testing.T) {
 	policy := testPolicy(t, `{"version":1,"rules":[{"class":"delete","effect":"block"},{"class":"update","effect":"ask"}]}`)
-	request := policyRequest(t, http.MethodPost, "https://ec2.eu-central-1.amazonaws.com/")
+	request := policyRequest(t, http.MethodPost, "https://api.example.test/v1/items/1")
 	decision := EvaluateAccessPolicy(policy, []ClassifiedCall{
-		{Class: agentapi.ClassRead, Operation: "ec2:DescribeInstances"},
-		{Class: agentapi.ClassUpdate, Operation: "ec2:StopInstances"},
-		{Class: agentapi.ClassDelete, Operation: "ec2:TerminateInstances"},
+		{Class: agentapi.ClassCreate},
+		{Class: agentapi.ClassUpdate, Method: http.MethodPut},
+		{Class: agentapi.ClassDelete, Method: http.MethodDelete},
 	}, request, policyTestNow)
-	if decision.Effect != agentapi.PolicyBlock || decision.Class != agentapi.ClassDelete || decision.Operation != "ec2:TerminateInstances" {
+	if decision.Effect != agentapi.PolicyBlock || decision.Class != agentapi.ClassDelete || decision.Method != http.MethodDelete {
 		t.Fatalf("decision = %+v", decision)
 	}
 	if allowed := EvaluateAccessPolicy(nil, nil, request, policyTestNow); allowed.Effect != agentapi.PolicyAllow {
@@ -156,66 +156,26 @@ func TestAccessPolicyTakesTheStrongestEffectAcrossCandidateClasses(t *testing.T)
 	}
 }
 
-func TestCustomHTTPCallsAreClassifiedByOverridesThenMethod(t *testing.T) {
-	overrides := `[
-		{"match":{"methods":["POST"],"path":"/graphql"},"class":"read"},
-		{"match":{"methods":["POST"],"path":"/v1/search/*"},"class":"read"},
-		{"match":{"path":"/v1/admin/*"},"class":"admin"},
-		{"match":{"methods":["PUT"]},"class":"create"},
-		{"match":{"methods":["PUT"],"path":"/v1/never-reached"},"class":"delete"}
-	]`
-	var classes agentapi.OperationClasses
-	if err := json.Unmarshal([]byte(overrides), &classes); err != nil || classes.Unsupported() || len(classes.Entries) != 5 {
-		t.Fatalf("overrides = %+v err=%v", classes, err)
+// Every HTTP call is classed by its method alone, whatever the Connection:
+// GET, HEAD and OPTIONS read, POST create, PUT and PATCH update, DELETE
+// delete, any other method update. A path or a body never changes the class.
+func TestEveryHTTPCallIsClassedByItsMethodAlone(t *testing.T) {
+	connections := map[string]agentapi.Connection{
+		"custom":   {ServiceType: agentapi.CustomHTTPServiceType, Protocol: "http"},
+		"packaged": withProviderRules(t, agentapi.Connection{ServiceType: "github", Protocol: "http"}),
+		"aws":      withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}}),
 	}
-	with := agentapi.Connection{ServiceType: agentapi.CustomHTTPServiceType, Protocol: "http", OperationClasses: classes}
-	without := agentapi.Connection{ServiceType: agentapi.CustomHTTPServiceType, Protocol: "http"}
-	tests := []struct {
-		method, path string
-		overridden   []string
-		byMethod     string
-	}{
-		{"GET", "/v1/items", []string{"read"}, "read"},
-		{"HEAD", "/v1/items", []string{"read"}, "read"},
-		{"OPTIONS", "/v1/items", []string{"read"}, "read"},
-		{"POST", "/v1/items", []string{"create"}, "create"},
-		{"PATCH", "/v1/items/1", []string{"update"}, "update"},
-		{"DELETE", "/v1/items/1", []string{"delete"}, "delete"},
-		{"PROPFIND", "/v1/items", []string{"update"}, "update"},
-		{"TRACE", "/v1/items", []string{"update"}, "update"},
-		// Overrides, first match wins.
-		{"POST", "/graphql", []string{"read"}, "create"},
-		{"POST", "/v1/search/issues", []string{"read"}, "create"},
-		{"GET", "/graphql", []string{"read"}, "read"},
-		{"GET", "/v1/admin/users", []string{"admin"}, "read"},
-		{"DELETE", "/v1/admin/users/7", []string{"admin"}, "delete"},
-		{"PUT", "/v1/items/1", []string{"create"}, "update"},
-		{"PUT", "/v1/never-reached", []string{"create"}, "update"},
-		{"PUT", "/v1/admin/users/7", []string{"admin"}, "update"},
-		// A path that cannot be compared keeps every class it might have.
-		{"POST", "/v1/x/../search/issues", []string{"read", "admin", "create"}, "create"},
-		{"GET", "/v1//admin/users", []string{"admin", "read"}, "read"},
-		{"PUT", "/v1/./admin/users/7", []string{"admin", "create"}, "update"},
-	}
-	for _, test := range tests {
-		request := policyRequest(t, test.method, "https://api.example.test"+test.path)
-		classified, err := ClassifyCall(request, with)
-		if err != nil {
-			t.Fatalf("%s %s: %v", test.method, test.path, err)
-		}
-		got := make([]string, 0, len(classified))
-		for _, call := range classified {
-			if call.Operation != "" {
-				t.Fatalf("%s %s: a custom HTTP call named an operation %q", test.method, test.path, call.Operation)
+	for method, class := range map[string]string{
+		"GET": "read", "HEAD": "read", "OPTIONS": "read", "POST": "create", "PUT": "update", "PATCH": "update",
+		"DELETE": "delete", "PROPFIND": "update", "TRACE": "update", "get": "read",
+	} {
+		for name, connection := range connections {
+			for _, path := range []string{"/v1/items", "/graphql", "/v1/admin/users", "/"} {
+				calls, err := ClassifyCall(policyRequest(t, method, "https://api.example.test"+path), connection)
+				if err != nil || !reflect.DeepEqual(calls, []ClassifiedCall{{Class: class}}) {
+					t.Errorf("%s %s %s = %+v err=%v, want %s", name, method, path, calls, err, class)
+				}
 			}
-			got = append(got, call.Class)
-		}
-		if !reflect.DeepEqual(got, test.overridden) {
-			t.Errorf("%s %s with overrides = %v, want %v", test.method, test.path, got, test.overridden)
-		}
-		plain, err := ClassifyCall(request, without)
-		if err != nil || len(plain) != 1 || plain[0].Class != test.byMethod {
-			t.Errorf("%s %s by method = %+v err=%v, want %s", test.method, test.path, plain, err, test.byMethod)
 		}
 	}
 }
@@ -290,21 +250,22 @@ func TestExactPathGlobMatchesOnlyTheRequestPath(t *testing.T) {
 	}
 }
 
-func TestClassifyCallFailsClosedOnAnAWSRequestItCannotRead(t *testing.T) {
-	aws := withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}})
-	huge, _ := http.NewRequest(http.MethodPost, "https://ec2.eu-central-1.amazonaws.com/", strings.NewReader("Action=TerminateInstances"))
-	huge.Header.Set("Content-Type", "text/plain")
+func TestClassifyCallFailsClosedOnARequestItCannotRead(t *testing.T) {
+	custom := agentapi.Connection{ServiceType: agentapi.CustomHTTPServiceType, Protocol: "http"}
+	huge, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items", strings.NewReader("_method=DELETE"))
+	huge.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	huge.ContentLength = maximumMintingInspectionBytes + 1
-	if _, err := ClassifyCall(huge, aws); !errors.Is(err, ErrCallUninspectable) {
-		t.Fatalf("an oversized query-protocol body was classified: %v", err)
+	if _, err := ClassifyCall(huge, custom); !errors.Is(err, ErrCallUninspectable) {
+		t.Fatalf("an oversized form body was classified: %v", err)
 	}
-	repeated := signedQueryRequest(t, "dynamodb.eu-central-1.amazonaws.com", "{}")
-	repeated.Header.Set("Content-Type", "application/x-amz-json-1.0")
-	repeated.Header["X-Amz-Target"] = []string{"DynamoDB_20120810.GetItem", "DynamoDB_20120810.DeleteTable"}
-	if _, err := ClassifyCall(repeated, aws); !errors.Is(err, ErrCallUninspectable) {
-		t.Fatalf("a repeated X-Amz-Target was classified: %v", err)
-	}
-	if _, err := ClassifyCall(nil, aws); !errors.Is(err, ErrCallUninspectable) {
+	if _, err := ClassifyCall(nil, custom); !errors.Is(err, ErrCallUninspectable) {
 		t.Fatalf("a missing request was classified: %v", err)
+	}
+	// AWS never reads _method from a body, so an AWS upload is never buffered.
+	aws := withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}})
+	upload, _ := http.NewRequest(http.MethodPost, "https://bucket.s3.us-east-1.amazonaws.com/key?uploadId=1", errorReader{err: errors.New("the body was read")})
+	upload.ContentLength = 5 << 30
+	if calls, err := ClassifyCall(upload, aws); err != nil || !reflect.DeepEqual(calls, []ClassifiedCall{{Class: agentapi.ClassCreate}}) {
+		t.Fatalf("an AWS upload = %+v err=%v", calls, err)
 	}
 }

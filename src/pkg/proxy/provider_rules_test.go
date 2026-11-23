@@ -17,10 +17,6 @@ func withProviderRules(_ testing.TB, connection agentapi.Connection) agentapi.Co
 	return providerrulestest.Apply(connection)
 }
 
-func testAWSClasses(t testing.TB) *agentapi.ActionClasses {
-	return withProviderRules(t, agentapi.Connection{ServiceType: "aws"}).ActionClasses
-}
-
 func testSecretGuard(t testing.TB, serviceType string) *agentapi.SecretGuard {
 	return withProviderRules(t, agentapi.Connection{ServiceType: serviceType}).SecretGuard
 }
@@ -34,84 +30,60 @@ func decodedConnection(t *testing.T, document string) agentapi.Connection {
 	return connection
 }
 
-// An AWS Connection that arrives without its secret guard or call classes is
-// never served as if it had no guard: it is unavailable, and the guard and
-// the classifier refuse its calls if they are ever asked.
-func TestAWSConnectionWithoutItsProviderRulesFailsClosed(t *testing.T) {
+// An AWS Connection that arrives without its secret guard is never served as
+// if it had no guard: it is unavailable, and the guard refuses its calls if it
+// is ever asked. The guard is all the provider rules it needs.
+func TestAWSConnectionWithoutItsSecretGuardFailsClosed(t *testing.T) {
 	ordinary := func() *http.Request {
 		return awsCall(t, "GET", "https://bucket.s3.us-east-1.amazonaws.com/key", "s3", "", "", nil)
 	}
-	assume := func() *http.Request {
-		return awsCall(t, "POST", "https://sts.us-east-1.amazonaws.com/", "sts", "application/x-www-form-urlencoded", "Action=AssumeRole", nil)
-	}
 	complete := withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}})
 	if failure := complete.AccessPolicyFailure(); failure != "" {
-		t.Fatalf("an AWS Connection with its rules is unavailable: %s", failure)
+		t.Fatalf("an AWS Connection with its guard is unavailable: %s", failure)
+	}
+	for _, minting := range []struct{ host, service, body, operation string }{
+		{"sts.us-east-1.amazonaws.com", "sts", "Action=AssumeRole&RoleArn=arn%3Aaws%3Aiam%3A%3A123%3Arole%2Fx&RoleSessionName=s", "sts:AssumeRole"},
+		{"iam.amazonaws.com", "iam", "Action=CreateAccessKey&UserName=bob", "iam:CreateAccessKey"},
+	} {
+		request := awsCall(t, "POST", "https://"+minting.host+"/", minting.service, "application/x-www-form-urlencoded", minting.body, nil)
+		if blocked, err := CredentialMintingBlocked(request, complete); err != nil || blocked == nil || blocked.Operation != minting.operation {
+			t.Errorf("%s with the guard alone: blocked=%v err=%v", minting.operation, blocked, err)
+		}
 	}
 
 	bare := complete
-	bare.SecretGuard, bare.ActionClasses = nil, nil
-	guardOnly := complete
-	guardOnly.ActionClasses = nil
-	classesOnly := complete
-	classesOnly.SecretGuard = nil
-	signedOnly := classesOnly
+	bare.SecretGuard = nil
+	signedOnly := bare
 	signedOnly.ServiceType = "unlisted-service"
-	for name, connection := range map[string]agentapi.Connection{"no rules": bare, "no classes": guardOnly, "no guard": classesOnly, "SigV4 on another service": signedOnly} {
+	for name, connection := range map[string]agentapi.Connection{"no guard": bare, "SigV4 on another service": signedOnly} {
 		if failure := connection.AccessPolicyFailure(); failure != agentapi.ProviderRulesMissing {
 			t.Errorf("%s: failure = %q", name, failure)
 		}
-	}
-	for name, connection := range map[string]agentapi.Connection{"no rules": bare, "no guard": classesOnly} {
 		if blocked, err := CredentialMintingBlocked(ordinary(), connection); blocked != nil || !errors.Is(err, ErrMintingInspectionUnavailable) {
 			t.Errorf("%s: guard = %v err=%v", name, blocked, err)
 		}
 	}
-	if blocked, err := CredentialMintingBlocked(assume(), guardOnly); blocked != nil || !errors.Is(err, ErrMintingInspectionUnavailable) {
-		t.Errorf("guard without classes on a guarded service: %v err=%v", blocked, err)
-	}
-	for name, connection := range map[string]agentapi.Connection{"no rules": bare, "no classes": guardOnly} {
-		if calls, err := ClassifyCall(ordinary(), connection); !errors.Is(err, ErrCallUninspectable) {
-			t.Errorf("%s: classified as %+v", name, calls)
-		}
-	}
 }
 
-// Rules this client cannot read in full make the Connection unusable with the
-// "update the Phase CLI" refusal. Call classes matter only where calls are
-// classified, except on AWS, whose guard reads them too.
+// A guard this client cannot read in full makes the Connection unusable with
+// the "update the Phase CLI" refusal. Keys it does not know elsewhere on a
+// Connection, such as the call classes Consoles used to send, are ignored.
 func TestProviderRulesThisClientCannotReadAreNeverEnforcedInPart(t *testing.T) {
 	aws := string(providerrulestest.Raw("aws"))
-	newerScheme := strings.Replace(aws, `"version": 1`, `"version": 2`, 1)
-	otherScheme := strings.Replace(aws, `"scheme": "aws_actions"`, `"scheme": "graphql_operations"`, 1)
-	unknownClass := strings.Replace(aws, `"kms:ScheduleKeyDeletion": "delete"`, `"kms:ScheduleKeyDeletion": "destroy"`, 1)
 	unknownGuardMember := strings.Replace(aws, `"hostLabel": "iot"`, `"hostLabel": "iot", "hostSuffix": "amazonaws.com"`, 1)
-	for name, rules := range map[string]string{"newer version": newerScheme, "other scheme": otherScheme, "unknown class": unknownClass, "unknown guard member": unknownGuardMember} {
-		if rules == aws {
-			t.Fatalf("%s: the rules were not changed", name)
-		}
-		connection := decodedConnection(t, `{"serviceType":"aws","protocol":"http","injection":{"action":"aws_sigv4"}}`)
-		if err := json.Unmarshal([]byte(rules), &connection); err != nil {
-			t.Fatalf("%s: a session would fail to decode: %v", name, err)
-		}
-		if failure := connection.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
-			t.Errorf("%s: failure = %q", name, failure)
-		}
-		request := awsCall(t, "POST", "https://sts.us-east-1.amazonaws.com/", "sts", "application/x-www-form-urlencoded", "Action=AssumeRole", nil)
-		if blocked, err := CredentialMintingBlocked(request, connection); blocked == nil && err == nil {
-			t.Errorf("%s: the guard let a minting call through", name)
-		}
+	if unknownGuardMember == aws {
+		t.Fatal("the rules were not changed")
 	}
-
-	restricting := `"policy":{"version":1,"default":"allow","rules":[{"class":"delete","effect":"block"}]}`
-	classes := `"actionClasses":{"scheme":"graphql_operations","version":1}`
-	github := decodedConnection(t, `{"serviceType":"github","protocol":"http",`+classes+`}`)
-	if failure := github.AccessPolicyFailure(); failure != "" {
-		t.Errorf("unread classes unused without a restricting policy made the Connection unavailable: %q", failure)
+	connection := decodedConnection(t, `{"serviceType":"aws","protocol":"http","injection":{"action":"aws_sigv4"}}`)
+	if err := json.Unmarshal([]byte(unknownGuardMember), &connection); err != nil {
+		t.Fatalf("a session would fail to decode: %v", err)
 	}
-	github = decodedConnection(t, `{"serviceType":"github","protocol":"http",`+classes+`,`+restricting+`}`)
-	if failure := github.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
-		t.Errorf("unread classes under a restricting policy: failure = %q", failure)
+	if failure := connection.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+		t.Errorf("unknown guard member: failure = %q", failure)
+	}
+	request := awsCall(t, "POST", "https://sts.us-east-1.amazonaws.com/", "sts", "application/x-www-form-urlencoded", "Action=AssumeRole", nil)
+	if blocked, err := CredentialMintingBlocked(request, connection); blocked == nil && err == nil {
+		t.Error("unknown guard member: the guard let a minting call through")
 	}
 	guard := decodedConnection(t, `{"serviceType":"github","protocol":"http","secretGuard":{"paths":[{"method":"POST","pattern":"/x","operation":"x","bodyField":"token"}]}}`)
 	if failure := guard.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
@@ -120,12 +92,28 @@ func TestProviderRulesThisClientCannotReadAreNeverEnforcedInPart(t *testing.T) {
 	if blocked, err := CredentialMintingBlocked(policyRequest(t, "GET", "https://api.github.com/user"), guard); blocked != nil || !errors.Is(err, ErrMintingInspectionUnavailable) {
 		t.Errorf("unread guard: blocked=%v err=%v", blocked, err)
 	}
+
+	restricting := `"policy":{"version":1,"default":"allow","rules":[{"class":"delete","effect":"block"}]}`
+	elsewhere := `"actionClasses":{"scheme":"graphql_operations","version":9},"operationClasses":[{"match":{"methods":["POST"]},"class":"read"}],"riskScore":{"nested":[1,2]}`
+	for _, document := range []string{
+		`{"serviceType":"github","protocol":"http",` + elsewhere + `,` + restricting + `}`,
+		`{"serviceType":"aws","protocol":"http","injection":{"action":"aws_sigv4"},` + elsewhere + `,` + restricting + `}`,
+	} {
+		connection := decodedConnection(t, document)
+		connection = withProviderRules(t, connection)
+		if failure := connection.AccessPolicyFailure(); failure != "" {
+			t.Errorf("unknown keys beside the rules made the Connection unavailable: %q", failure)
+		}
+		calls, err := ClassifyCall(policyRequest(t, "POST", "https://api.example.test/graphql"), connection)
+		if err != nil || len(calls) != 1 || calls[0].Class != agentapi.ClassCreate {
+			t.Errorf("%s: a POST = %+v err=%v, want a create by its method", connection.ServiceType, calls, err)
+		}
+	}
 }
 
-// Rules that are read in full but cannot work make the Connection unusable
-// too, judged by their shape alone: an empty guard, an AWS guard without
-// operations, AWS classes without verbs or protocol lists, or a list with an
-// empty entry.
+// A guard that is read in full but cannot work makes the Connection unusable
+// too, judged by its shape alone: an empty guard, an AWS guard without
+// operations, or a list with an empty entry.
 func TestProviderRulesThatCannotWorkFailClosed(t *testing.T) {
 	mutated := func(change func(rules map[string]any)) string {
 		var rules map[string]any
@@ -139,19 +127,10 @@ func TestProviderRulesThatCannotWorkFailClosed(t *testing.T) {
 		}
 		return string(encoded)
 	}
-	classes := func(rules map[string]any) map[string]any { return rules["actionClasses"].(map[string]any) }
 	guard := func(rules map[string]any) map[string]any { return rules["secretGuard"].(map[string]any) }
 	cases := map[string]string{
-		"empty guard":               mutated(func(r map[string]any) { r["secretGuard"] = map[string]any{} }),
-		"guard without operations":  mutated(func(r map[string]any) { delete(guard(r), "operations") }),
-		"no query protocol list":    mutated(func(r map[string]any) { delete(classes(r), "queryProtocolServices") }),
-		"empty query protocol list": mutated(func(r map[string]any) { classes(r)["queryProtocolServices"] = []string{} }),
-		"no JSON target list":       mutated(func(r map[string]any) { delete(classes(r), "jsonTargetServices") }),
-		"no read verbs":             mutated(func(r map[string]any) { delete(classes(r), "readVerbs") }),
-		"no create verbs":           mutated(func(r map[string]any) { classes(r)["createVerbs"] = []string{} }),
-		"no delete verbs":           mutated(func(r map[string]any) { delete(classes(r), "deleteVerbs") }),
-		"empty verb":                mutated(func(r map[string]any) { classes(r)["readVerbs"] = []string{"Get", ""} }),
-		"empty admin suffix":        mutated(func(r map[string]any) { classes(r)["adminSuffixes"] = []string{" "} }),
+		"empty guard":              mutated(func(r map[string]any) { r["secretGuard"] = map[string]any{} }),
+		"guard without operations": mutated(func(r map[string]any) { delete(guard(r), "operations") }),
 	}
 	requests := map[string]func() *http.Request{
 		"form AssumeRole": func() *http.Request {
@@ -173,6 +152,14 @@ func TestProviderRulesThatCannotWorkFailClosed(t *testing.T) {
 			if blocked, err := CredentialMintingBlocked(request(), connection); blocked == nil && err == nil {
 				t.Errorf("%s: the guard let %s through", name, requestName)
 			}
+		}
+	}
+	// The complete guard stops both as well: STS takes a form body whatever
+	// Content-Type the request claims.
+	complete := withProviderRules(t, agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}})
+	for requestName, request := range requests {
+		if blocked, err := CredentialMintingBlocked(request(), complete); err != nil || blocked == nil || blocked.Operation != "sts:AssumeRole" {
+			t.Errorf("complete guard, %s: blocked=%v err=%v", requestName, blocked, err)
 		}
 	}
 	empty := decodedConnection(t, `{"serviceType":"github","protocol":"http","secretGuard":{}}`)

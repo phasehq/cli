@@ -346,28 +346,6 @@ func TestAskRequestNamesTheNarrowestAllow(t *testing.T) {
 	}
 }
 
-func TestOperationClassOverridesDecideTheClassOfACustomCall(t *testing.T) {
-	connection := customPolicyConnection(policyDocument("allow", []any{classRule("create", "block")}))
-	_, plain, plainUpstream := policyProxy(t, connection)
-	graphql := func() *http.Request {
-		request, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
-		return request
-	}
-	if result := processThrough(plain, graphql()); result.failure == nil || result.failure.code != "agent_access_policy_blocked" || plainUpstream.calls.Load() != 0 {
-		t.Fatalf("without an override a POST is a create call: %+v", result.failure)
-	}
-	overridden := customPolicyConnection(policyDocument("allow", []any{classRule("create", "block")}))
-	overridden["operationClasses"] = []any{map[string]any{"match": map[string]any{"methods": []string{"POST"}, "path": "/v1/graphql"}, "class": "read"}}
-	_, proxy, upstream := policyProxy(t, overridden)
-	if result := processThrough(proxy, graphql()); result.failure != nil || upstream.calls.Load() != 1 {
-		t.Fatalf("the override did not make the query a read: %+v", result.failure)
-	}
-	other, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items", strings.NewReader(`{}`))
-	if result := processThrough(proxy, other); result.failure == nil || upstream.calls.Load() != 1 {
-		t.Fatal("the override reached a path it does not name")
-	}
-}
-
 func TestTemporaryAllowAppliesOnlyToAnAskAndOnlyUntilItExpires(t *testing.T) {
 	expiry := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 	policy := policyDocument("allow", []any{classRule("delete", "ask"), matchRule("block", "/v1/items/protected", "DELETE")},
@@ -435,76 +413,85 @@ func awsErrorBody(t *testing.T, failure *requestFailure) (code, message string) 
 }
 
 func TestAWSConnectionPolicyAnswers(t *testing.T) {
-	policy := policyDocument("allow", []any{classRule("delete", "ask"), classRule("admin", "block")})
+	policy := policyDocument("allow", []any{classRule("create", "ask"), classRule("delete", "block")})
 	_, proxy, upstream := policyProxy(t, awsPolicyConnection(policy))
 	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
 
 	// A read goes through and is re-signed with the live key.
-	describe := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=DescribeInstances&Version=2016-11-15", form)
-	if result := processThrough(proxy, describe); result.failure != nil || upstream.calls.Load() != 1 ||
+	object := signedAWSRequest(t, http.MethodGet, "https://bucket.s3.aws.example.test/reports/2026.csv", "s3", "", nil)
+	if result := processThrough(proxy, object); result.failure != nil || upstream.calls.Load() != 1 ||
 		!strings.Contains(upstream.last.Load().Header.Get("Authorization"), "Credential="+policyAWSLiveKeyID+"/") {
 		t.Fatalf("an allowed AWS call did not go through: %+v", result.failure)
 	}
 
-	// An action named in the body shares its method and path with every
-	// other action of the service, so the request asks for that one action.
-	terminate := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=TerminateInstances&InstanceId.1=i-0abc&Version=2016-11-15", form)
-	asked := processThrough(proxy, terminate)
+	// A query-protocol action is a POST, so it is a create whatever it does,
+	// and the request asks for its method and exact path like any other call.
+	describe := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=DescribeInstances&Version=2016-11-15", form)
+	asked := processThrough(proxy, describe)
 	if asked.failure == nil || upstream.calls.Load() != 1 {
 		t.Fatalf("an asked AWS call was forwarded: %+v", asked.failure)
 	}
 	code, message := awsErrorBody(t, asked.failure)
-	wantRequest := `{"action":{"allow":{"operation":"ec2:TerminateInstances"},"blockedCall":{"class":"delete","host":"ec2.aws.example.test","method":"POST","operation":"ec2:TerminateInstances","path":"/"},"connectionId":"connection-aws","type":"agent_grant.allow","version":1},"kind":"access_change","title":"Allow ec2:TerminateInstances on Staging AWS"}`
-	if code != "PhaseAccessPolicyAsk" || !strings.Contains(message, "ec2:TerminateInstances (a delete call) on Staging AWS needs a member's approval") ||
+	wantRequest := `{"action":{"allow":{"match":{"methods":["POST"],"path":"/"}},"blockedCall":{"class":"create","host":"ec2.aws.example.test","method":"POST","path":"/"},"connectionId":"connection-aws","type":"agent_grant.allow","version":1},"kind":"access_change","title":"Allow POST / on Staging AWS"}`
+	if code != "PhaseAccessPolicyAsk" || !strings.Contains(message, "this POST (a create call) on Staging AWS needs a member's approval") ||
 		!strings.Contains(message, "send this JSON unchanged to POST http://phase.invalid/v1/requests") || !strings.HasSuffix(message, " JSON: "+wantRequest+" Connection: connection-aws. Grant: grant-aws.") {
 		t.Fatalf("AWS ask answer: code=%s message=%s", code, message)
 	}
-	if asked.failure.details["operation"] != "ec2:TerminateInstances" || asked.failure.details["class"] != "delete" ||
-		asked.event.Detail["operation"] != "ec2:TerminateInstances" || asked.event.Reason != "agent_access_policy_ask" || asked.event.ProxyDecision != "ask" {
+	if _, named := asked.failure.details["operation"]; named || asked.failure.details["class"] != "create" ||
+		asked.event.Detail["operation"] != nil || asked.event.Reason != "agent_access_policy_ask" || asked.event.ProxyDecision != "ask" {
 		t.Fatalf("AWS ask details=%v event=%v", asked.failure.details, asked.event.Detail)
 	}
 
-	// A REST call has a method and a path of its own, so those are asked for.
-	object := signedAWSRequest(t, http.MethodDelete, "https://bucket.s3.aws.example.test/reports/2026.csv", "s3", "", nil)
-	restAsked := processThrough(proxy, object)
-	if restAsked.failure == nil {
-		t.Fatal("an S3 delete was not asked about")
-	}
-	_, restMessage := awsErrorBody(t, restAsked.failure)
-	if !strings.Contains(restMessage, `"allow":{"match":{"methods":["DELETE"],"path":"/reports/2026.csv"}}`) ||
-		!strings.Contains(restMessage, `"title":"Allow DELETE /reports/2026.csv on Staging AWS"`) {
-		t.Fatalf("AWS REST ask message = %s", restMessage)
-	}
-
-	// Block.
-	attach := signedAWSRequest(t, http.MethodPost, "https://iam.aws.example.test/", "iam", "Action=AttachRolePolicy&RoleName=r&PolicyArn=arn%3Aaws%3Aiam%3A%3Aaws%3Apolicy%2FAdministratorAccess&Version=2010-05-08", form)
-	blocked := processThrough(proxy, attach)
-	if blocked.failure == nil {
-		t.Fatal("an admin call was not blocked")
+	// A REST call has a method and a path of its own, and the same holds.
+	remove := signedAWSRequest(t, http.MethodDelete, "https://bucket.s3.aws.example.test/reports/2026.csv", "s3", "", nil)
+	blocked := processThrough(proxy, remove)
+	if blocked.failure == nil || upstream.calls.Load() != 1 {
+		t.Fatal("an S3 delete was not blocked")
 	}
 	code, message = awsErrorBody(t, blocked.failure)
-	if code != "PhaseAccessPolicyBlocked" || !strings.Contains(message, "iam:AttachRolePolicy (a admin call) on Staging AWS is blocked") ||
+	if code != "PhaseAccessPolicyBlocked" || !strings.Contains(message, "this DELETE (a delete call) on Staging AWS is blocked") ||
 		!strings.Contains(message, "A blocked call cannot be requested") || strings.Contains(message, "JSON:") {
 		t.Fatalf("AWS block answer: code=%s message=%s", code, message)
 	}
 
-	// A harmless selector beside the one the service acts on does not hide it.
-	masked := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=TerminateInstances&InstanceId.1=i-0abc",
-		map[string]string{"Content-Type": form["Content-Type"], "X-Amz-Target": "AmazonEC2.DescribeInstances"})
-	if result := processThrough(proxy, masked); result.failure == nil || result.failure.code != "agent_access_policy_ask" || result.failure.details["class"] != "delete" {
-		t.Fatalf("a masked delete got through: %+v", result.failure)
-	}
-
-	// A body that cannot be read on a query-protocol service is refused.
-	huge := signedAWSRequest(t, http.MethodPost, "https://sns.aws.example.test/", "sns", "Action=ListTopics", map[string]string{"Content-Type": "text/plain"})
-	huge.ContentLength = -1
-	uninspectable := processThrough(proxy, huge)
-	if uninspectable.failure == nil || uninspectable.failure.code != "agent_access_policy_uninspectable" ||
-		uninspectable.event.Reason != "access_policy_uninspectable" || uninspectable.event.ProxyDecision != "block" {
-		t.Fatalf("an unreadable AWS body was classified: %+v", uninspectable.failure)
+	// An action named in a header is no different: a JSON-protocol read is a POST.
+	getItem := signedAWSRequest(t, http.MethodPost, "https://dynamodb.aws.example.test/", "dynamodb", `{"TableName":"orders"}`,
+		map[string]string{"Content-Type": "application/x-amz-json-1.0", "X-Amz-Target": "DynamoDB_20120810.GetItem"})
+	if result := processThrough(proxy, getItem); result.failure == nil || result.failure.code != "agent_access_policy_ask" || result.failure.details["class"] != "create" {
+		t.Fatalf("a JSON-protocol read: %+v", result.failure)
 	}
 	if upstream.calls.Load() != 1 {
 		t.Fatalf("upstream calls = %d", upstream.calls.Load())
+	}
+}
+
+// Under a read-only policy an AWS DescribeInstances, a POST, is refused, and
+// an approved allow of POST / then covers every call to that service host
+// until it ends: AWS actions are controlled in IAM, not by Phase.
+func TestAWSAllowCoversTheMethodAndExactPath(t *testing.T) {
+	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
+	describe := func() *http.Request {
+		return signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=DescribeInstances&Version=2016-11-15", form)
+	}
+	_, readOnly, readOnlyUpstream := policyProxy(t, awsPolicyConnection(policyDocument("block", []any{classRule("read", "allow")})))
+	if result := processThrough(readOnly, describe()); result.failure == nil || result.failure.code != "agent_access_policy_blocked" ||
+		result.failure.details["class"] != "create" || result.failure.details["rule"] != "default" || readOnlyUpstream.calls.Load() != 0 {
+		t.Fatalf("a read-only policy let a POST through: %+v", result.failure)
+	}
+
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	policy := policyDocument("allow", []any{classRule("create", "ask")},
+		map[string]any{"id": "allow-ec2", "match": map[string]any{"methods": []string{"POST"}, "path": "/"}, "expiresAt": future})
+	_, proxy, upstream := policyProxy(t, awsPolicyConnection(policy))
+	terminate := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=TerminateInstances&InstanceId.1=i-0abc&Version=2016-11-15", form)
+	for name, request := range map[string]*http.Request{"the allowed call": describe(), "another action at the same path": terminate} {
+		if result := processThrough(proxy, request); result.failure != nil {
+			t.Fatalf("%s was stopped: %+v", name, result.failure)
+		}
+	}
+	other := signedAWSRequest(t, http.MethodPost, "https://bucket.s3.aws.example.test/key?uploads", "s3", "", nil)
+	if result := processThrough(proxy, other); result.failure == nil || result.failure.code != "agent_access_policy_ask" || upstream.calls.Load() != 2 {
+		t.Fatalf("the allow covered another path: %+v", result.failure)
 	}
 }
 
@@ -839,16 +826,6 @@ func TestPolicyAndTimeLimitChangesApplyInPlace(t *testing.T) {
 				}
 			},
 		},
-		"operation classes": {
-			mutate: func(connection, _ map[string]any) {
-				connection["operationClasses"] = []any{map[string]any{"match": map[string]any{"methods": []string{"POST"}, "path": "/v1/graphql"}, "class": "read"}}
-			},
-			check: func(t *testing.T, state *runtimeState) {
-				if entries := state.bindings[0].connection.OperationClasses.Entries; len(entries) != 1 || entries[0].Class != "read" {
-					t.Fatalf("operation classes = %+v", entries)
-				}
-			},
-		},
 		"grant expiry moved": {
 			mutate: func(connection, _ map[string]any) { connection["grantExpiresAt"] = "2027-01-01T00:00:00Z" },
 			check: func(t *testing.T, state *runtimeState) {
@@ -938,8 +915,7 @@ func TestPolicyAndTimeLimitChangesApplyInPlace(t *testing.T) {
 			discoverPayload, _ := json.Marshal(map[string]any{
 				"schemaVersion": 1, "sessionUid": "session-custom", "configGeneration": 2, "configEnv": map[string]string{},
 				"connections": []any{discoverEntry(next, map[string]any{
-					"policy": policyDocument("block", []any{classRule("admin", "block")}), "grantExpiresAt": "2030-01-01T00:00:00Z",
-					"operationClasses": []any{map[string]any{"match": map[string]any{"methods": []string{"GET"}}, "class": "admin"}},
+					"policy": policyDocument("block", []any{classRule("delete", "block")}), "grantExpiresAt": "2030-01-01T00:00:00Z",
 				})},
 				"expiredConnections": []any{map[string]any{"connectionId": "connection-other", "serviceType": "http", "expiredAt": "2026-11-01T00:00:00Z"}},
 			})
@@ -1737,7 +1713,7 @@ func TestEventDetailKeepsOnlyKnownBoundedPolicyMembers(t *testing.T) {
 	if again := safeEventDetail(reloaded, secrets); !sameJSON(t, mustJSON(t, again), []byte(want)) {
 		t.Fatalf("reloaded detail = %s", mustJSON(t, again))
 	}
-	for name, value := range map[string]any{"default": "default", "secret guard": "secret_guard", "class rule": agentapi.PolicyRule{Class: "admin", Effect: "block"}} {
+	for name, value := range map[string]any{"default": "default", "secret guard": "secret_guard", "class rule": agentapi.PolicyRule{Class: "delete", Effect: "block"}} {
 		if got := safeEventDetail(map[string]any{"rule": value}, secrets); got["rule"] == nil {
 			t.Errorf("%s rule was dropped", name)
 		}
@@ -1755,6 +1731,8 @@ func TestEventDetailKeepsOnlyKnownBoundedPolicyMembers(t *testing.T) {
 		"free text":               "class:delete",
 		"two targets":             map[string]any{"class": "delete", "match": map[string]any{"methods": []any{"DELETE"}}, "effect": "block"},
 		"no target":               map[string]any{"effect": "block"},
+		"a rule by AWS action":    map[string]any{"operation": "ec2:TerminateInstances", "effect": "block"},
+		"a class no longer used":  map[string]any{"class": "admin", "effect": "block"},
 		"no effect":               map[string]any{"class": "delete"},
 		"empty match":             map[string]any{"match": map[string]any{}, "effect": "block"},
 		"nested beyond a rule":    map[string]any{"match": map[string]any{"methods": []any{map[string]any{"x": 1}}}, "effect": "block"},

@@ -245,11 +245,11 @@ func (b *binding) authorizationDecision(now time.Time) connectionAuthorizationDe
 		}
 	}
 	// A policy this client cannot read is never enforced in part, and an AWS
-	// Connection is never used without its secret guard and call classes.
+	// Connection is never used without its secret guard.
 	if failure := b.connection.AccessPolicyFailure(); failure == agentapi.ProviderRulesMissing {
 		return connectionAuthorizationDecision{
 			code: codeProviderRulesMissing, reason: failure, status: http.StatusForbidden,
-			message: "The Phase Console did not send the AWS rules for this Connection (its secret guard and call classes), so Phase does not use it. Update the Phase Console.",
+			message: "The Phase Console did not send the secret guard for this AWS Connection, so Phase does not use it. Update the Phase Console.",
 		}
 	} else if failure != "" {
 		return connectionAuthorizationDecision{
@@ -662,10 +662,10 @@ type configChange struct {
 // be added: the Agent's processes are given nothing new, the proxy only starts
 // serving it.
 //
-// A grant's access policy, its temporary allows, a definition's operation
-// classes, the provider's secret guard and call classes, the grant's time
-// limit and the list of expired Connections are deliberately not compared: none of them is visible to the Agent's
-// processes, the proxy alone enforces them, so they always apply in place.
+// A grant's access policy, its temporary allows, the provider's secret guard,
+// the grant's time limit and the list of expired Connections are deliberately
+// not compared: none of them is visible to the Agent's processes, the proxy
+// alone enforces them, so they always apply in place.
 func classifyConfigChange(oldBindings, newBindings []*binding, oldConfigEnv, newConfigEnv map[string]string) configChange {
 	if !equalStringMap(oldConfigEnv, newConfigEnv) {
 		return configChange{reprovision: true}
@@ -931,7 +931,7 @@ func (s *runtimeState) applyTrustedDiscoverAuthorization(discover *agentapi.Disc
 // discoverConnectionMatchesRuntime checks the Agent-visible shape of a
 // Connection. The credential expiry is left out: assumed-role credentials get
 // a fresh expiry on every refresh without the environment changing. The
-// policy, operation classes and grant expiry are left out too: they are not
+// policy and grant expiry are left out too: they are not
 // part of the environment, a temporary allow or a renewal changes them between
 // two reads, and the proxy enforces its own copy, never the discover one.
 func discoverConnectionMatchesRuntime(discover agentapi.DiscoverConnection, runtime agentapi.Connection) bool {

@@ -11,18 +11,14 @@ import (
 // The mechanics that apply them (naming an AWS action, path normalisation,
 // the comparison rules) stay in pkg/proxy.
 //
-// Like a policy, the guard and the call classes are decoded strictly: rules
-// this client cannot read in full are never enforced in part, and the
-// Connection is unavailable instead (see AccessPolicyFailure).
+// Like a policy, the guard is decoded strictly: rules this client cannot read
+// in full are never enforced in part, and the Connection is unavailable
+// instead (see AccessPolicyFailure).
 
 const (
-	// ActionClassesSchemeAWS is the only call class scheme this client knows.
-	ActionClassesSchemeAWS  = "aws_actions"
-	actionClassesVersionAWS = 1
-
 	// ProviderRulesMissing is the reason an AWS Connection is unavailable when
-	// the Console sent it without its secret guard or call classes. Its calls
-	// could otherwise neither be guarded nor classified.
+	// the Console sent it without its secret guard, so its calls could not be
+	// guarded.
 	ProviderRulesMissing = "provider_rules_missing"
 
 	maxCredentialEnvironmentNames  = 64
@@ -106,114 +102,8 @@ func validateSecretGuard(operations map[string][]string, paths []SecretGuardPath
 	return nil
 }
 
-// ActionClasses is how a provider's calls are sorted into operation classes
-// by the action they name. Only the aws_actions scheme exists; its fields are
-// read by pkg/proxy/aws_classes.go, which documents what each one means.
-type ActionClasses struct {
-	Scheme                string                     `json:"scheme"`
-	Version               int                        `json:"version"`
-	ReadVerbs             []string                   `json:"readVerbs"`
-	CreateVerbs           []string                   `json:"createVerbs"`
-	DeleteVerbs           []string                   `json:"deleteVerbs"`
-	AdminServices         []string                   `json:"adminServices"`
-	AdminSuffixes         []string                   `json:"adminSuffixes"`
-	Exact                 map[string]string          `json:"exact"`
-	S3Subresources        map[string]string          `json:"s3Subresources"`
-	RESTOperations        []ActionClassRESTOperation `json:"restOperations"`
-	QueryProtocolServices []string                   `json:"queryProtocolServices"`
-	DualProtocolServices  []string                   `json:"dualProtocolServices"`
-	JSONTargetServices    []string                   `json:"jsonTargetServices"`
-	MixedServices         []string                   `json:"mixedServices"`
-
-	// exactFolded is Exact keyed without regard to letter case.
-	exactFolded map[string]string
-	raw         json.RawMessage
-	unsupported bool
-}
-
-// ActionClassRESTOperation is one REST call of a service, by method and path
-// pattern (path.Match syntax), and the action it performs.
-type ActionClassRESTOperation struct {
-	Service string `json:"service"`
-	Method  string `json:"method"`
-	Pattern string `json:"pattern"`
-	Action  string `json:"action"`
-}
-
-func (a *ActionClasses) UnmarshalJSON(data []byte) error {
-	*a = ActionClasses{raw: append(json.RawMessage(nil), data...)}
-	type plain ActionClasses
-	var wire plain
-	if strictDecode(data, &wire) != nil || validateActionClasses((*ActionClasses)(&wire)) != nil {
-		a.unsupported = true
-		return nil
-	}
-	wire.raw = a.raw
-	*a = ActionClasses(wire)
-	a.exactFolded = make(map[string]string, len(a.Exact))
-	for operation, class := range a.Exact {
-		a.exactFolded[strings.ToLower(operation)] = class
-	}
-	return nil
-}
-
-func (a ActionClasses) MarshalJSON() ([]byte, error) {
-	if len(a.raw) > 0 {
-		return a.raw, nil
-	}
-	type plain ActionClasses
-	return json.Marshal(plain(a))
-}
-
-// Unsupported reports whether the classes are in a scheme or version this
-// client does not know, or could not be read in full.
-func (a *ActionClasses) Unsupported() bool { return a != nil && a.unsupported }
-
-// ExactClass returns the class Exact gives "service:action", compared without
-// regard to letter case.
-func (a *ActionClasses) ExactClass(service, action string) (string, bool) {
-	key := strings.ToLower(service + ":" + action)
-	if a.exactFolded != nil {
-		class, ok := a.exactFolded[key]
-		return class, ok
-	}
-	for operation, class := range a.Exact {
-		if strings.ToLower(operation) == key {
-			return class, true
-		}
-	}
-	return "", false
-}
-
-func validateActionClasses(classes *ActionClasses) error {
-	if classes.Scheme != ActionClassesSchemeAWS || classes.Version != actionClassesVersionAWS {
-		return fmt.Errorf("unsupported action class scheme")
-	}
-	for _, table := range []map[string]string{classes.Exact, classes.S3Subresources} {
-		for _, class := range table {
-			if !userOperationClass(class) {
-				return fmt.Errorf("unsupported operation class")
-			}
-		}
-	}
-	for _, list := range [][]string{
-		classes.ReadVerbs, classes.CreateVerbs, classes.DeleteVerbs, classes.AdminServices, classes.AdminSuffixes,
-		classes.QueryProtocolServices, classes.DualProtocolServices, classes.JSONTargetServices, classes.MixedServices,
-	} {
-		if hasEmpty(list) {
-			return fmt.Errorf("action class list has an empty entry")
-		}
-	}
-	for _, operation := range classes.RESTOperations {
-		if operation.Service == "" || operation.Method == "" || !strings.HasPrefix(operation.Pattern, "/") || operation.Action == "" {
-			return fmt.Errorf("incomplete REST operation")
-		}
-	}
-	return nil
-}
-
-// hasEmpty reports whether a list has an empty entry, which would match
-// everything where entries are compared as prefixes or suffixes.
+// hasEmpty reports whether a list has an empty or blank entry, which no guard
+// rule may name.
 func hasEmpty(list []string) bool {
 	for _, entry := range list {
 		if strings.TrimSpace(entry) == "" {
@@ -223,23 +113,16 @@ func hasEmpty(list []string) bool {
 	return false
 }
 
-// AWSRulesIncomplete reports whether an AWS Connection's rules, though read in
-// full, lack what its guard and classifier need to work: guarded operations,
-// the verbs that sort calls, and which services speak which protocol (without
-// those, a form body sent under another content type is never read). Only the
-// shape is checked; the Console owns and tests the content.
+// AWSRulesIncomplete reports whether an AWS Connection's guard, though read in
+// full, names no guarded operations. Only the shape is checked; the Console
+// owns and tests the content.
 func (c Connection) AWSRulesIncomplete() bool {
-	if !c.AWSRulesRequired() || c.SecretGuard == nil || c.ActionClasses == nil {
-		return false
-	}
-	classes := c.ActionClasses
-	return len(c.SecretGuard.Operations) == 0 || len(classes.ReadVerbs) == 0 || len(classes.CreateVerbs) == 0 ||
-		len(classes.DeleteVerbs) == 0 || len(classes.QueryProtocolServices) == 0 || len(classes.JSONTargetServices) == 0
+	return c.AWSRulesRequired() && c.SecretGuard != nil && len(c.SecretGuard.Operations) == 0
 }
 
 // AWSRulesRequired reports whether the Connection's calls are AWS calls: the
-// aws service, or one signed with SigV4. Its secret guard and call classes
-// must come with it; without them the Connection is not used.
+// aws service, or one signed with SigV4. Its secret guard must come with it;
+// without it the Connection is not used.
 func (c Connection) AWSRulesRequired() bool {
 	if strings.EqualFold(strings.TrimSpace(c.ServiceType), "aws") {
 		return true
@@ -255,14 +138,12 @@ func (c Connection) AWSRulesRequired() bool {
 // providerRulesFailure names why the Connection's provider rules cannot be
 // enforced, or is empty when they can.
 func (c Connection) providerRulesFailure() string {
-	aws := c.AWSRulesRequired()
 	// The guard applies to every call, so a guard this client cannot read
-	// always makes the Connection unusable. The classes matter where calls
-	// are classified (a restricting policy) and, for AWS, to the guard too.
-	if c.SecretGuard.Unsupported() || (c.ActionClasses.Unsupported() && (aws || c.Policy.Restricts())) {
+	// always makes the Connection unusable.
+	if c.SecretGuard.Unsupported() {
 		return AccessPolicyUnsupported
 	}
-	if aws && (c.SecretGuard == nil || c.ActionClasses == nil) {
+	if c.AWSRulesRequired() && c.SecretGuard == nil {
 		return ProviderRulesMissing
 	}
 	if c.AWSRulesIncomplete() {

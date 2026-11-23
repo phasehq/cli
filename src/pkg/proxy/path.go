@@ -36,8 +36,8 @@ func globMatch(pattern, value string) bool {
 // looseGlobMatch is globMatch for the comparisons that must not be dodged by
 // respelling a path: it also matches when the pattern covers the path with
 // letter case, one trailing slash and ";params" on any segment left out, which
-// is how many servers route a request. Only what stops or reclassifies a call
-// is compared this way (see ruleMatches in policy.go).
+// is how many servers route a request. Only what stops a call is compared this
+// way (see ruleMatches in policy.go).
 func looseGlobMatch(pattern, value string) bool {
 	if globMatch(pattern, value) {
 		return true

@@ -1,8 +1,8 @@
 // Package providerrulestest holds, for tests, the provider rules the Console's
-// manifests send with each Connection (credentialEnvironment, secretGuard and
-// actionClasses), in their wire form. They were extracted from the tables the
-// CLI compiled in before the rules moved to the Console, and are what the
-// Console's services/v1/<service>.json files carry.
+// manifests send with each Connection (credentialEnvironment and secretGuard),
+// in their wire form. They were extracted from the tables the CLI compiled in
+// before the rules moved to the Console, and are what the Console's
+// services/v1/<service>.json files carry.
 package providerrulestest
 
 import (

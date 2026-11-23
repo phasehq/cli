@@ -37,7 +37,7 @@ import (
 //     blocked operation. A query-protocol service acts on a form body whatever
 //     Content-Type the request claims, so there the body is always read, and a
 //     body that names no operation at all cannot be inspected. Which services
-//     speak the query protocol comes from the Connection's actionClasses.
+//     speak the query protocol is listed below (awsQueryProtocolServices).
 //   - Paths (any HTTP API): method plus path pattern, matched with path.Match,
 //     and optionally a query parameter the request must carry. The path is
 //     compared as guardPathMatch reads it, so a respelling or an encoded
@@ -53,6 +53,23 @@ const (
 	// Query-protocol AWS bodies (sts, iam, redshift) are small; SAML assertions
 	// are the largest legitimate payload and stay well under this bound.
 	maximumMintingInspectionBytes = int64(256 << 10)
+)
+
+// How AWS services name their action on the wire, which the guard needs to
+// find it. These are facts about AWS protocols, not access rules.
+var (
+	// The query protocol takes the action from a form body whatever
+	// Content-Type the request claims.
+	awsQueryProtocolServices = []string{
+		"autoscaling", "cloudformation", "cloudsearch", "ec2", "elasticache", "elasticbeanstalk", "elasticloadbalancing",
+		"iam", "monitoring", "rds", "redshift", "sdb", "ses", "sns", "sqs", "sts",
+	}
+	// These also speak a JSON or CBOR protocol, chosen by Content-Type, under
+	// which the body is not a form.
+	awsDualProtocolServices = []string{"monitoring", "sqs"}
+	// These also serve a REST API under the same signing name, so only a call
+	// to the root path is a query-protocol call.
+	awsMixedServices = []string{"cloudsearch", "ses"}
 )
 
 // CredentialMintingBlock names the refused operation, for the error returned
@@ -119,11 +136,7 @@ func CredentialMintingBlocked(req *http.Request, connection agentapi.Connection)
 	if !guarded {
 		return nil, nil
 	}
-	classes := connection.ActionClasses
-	if classes == nil || classes.Unsupported() {
-		return nil, ErrMintingInspectionUnavailable
-	}
-	operations, err := awsOperations(req, service, true, classes)
+	operations, err := awsOperations(req, service)
 	if err != nil {
 		return nil, err
 	}
@@ -173,15 +186,13 @@ func awsScopeService(req *http.Request) string {
 // and the Action field of a form-encoded body. The selectors are not
 // reconciled against the service's protocol; a request that names a blocked
 // operation through any of them is refused, so a decoy selector cannot hide
-// the one the service will act on. guarded says the caller is the secret
-// guard on a service it has rules for, which reads a body of any type that is
-// not JSON.
-func awsOperations(req *http.Request, service string, guarded bool, classes *agentapi.ActionClasses) ([]string, error) {
+// the one the service will act on.
+func awsOperations(req *http.Request, service string) ([]string, error) {
 	operations, err := awsHeaderAndQueryOperations(req)
 	if err != nil {
 		return nil, err
 	}
-	if awsBodyReadAsForm(req, service, guarded, classes) {
+	if awsBodyReadAsForm(req, service) {
 		fromBody, err := awsFormBodyOperations(req)
 		if err != nil {
 			return nil, err
@@ -191,10 +202,19 @@ func awsOperations(req *http.Request, service string, guarded bool, classes *age
 	// A call to a query-protocol service always names its action. A body with
 	// no selector beside it hides the action from the proxy (an encoding it
 	// does not read, for one), so the call cannot be judged.
-	if len(operations) == 0 && awsRequestHasBody(req) && awsQueryProtocolCall(req, service, classes) {
+	if len(operations) == 0 && awsRequestHasBody(req) && awsQueryProtocolCall(req, service) {
 		return nil, ErrMintingInspectionUnavailable
 	}
 	return operations, nil
+}
+
+// awsQueryProtocolCall reports whether the request is a call to a
+// query-protocol service's action API, which takes its Action from the body.
+func awsQueryProtocolCall(req *http.Request, service string) bool {
+	if !slices.Contains(awsQueryProtocolServices, service) {
+		return false
+	}
+	return !slices.Contains(awsMixedServices, service) || req.URL.Path == "" || req.URL.Path == "/"
 }
 
 // awsHeaderAndQueryOperations reads the selectors that need no body.
@@ -267,23 +287,18 @@ func awsRequestHasBody(req *http.Request) bool {
 // protocol's own content type: the body is then not a form, and the action is
 // in X-Amz-Target or the path.
 //
-// On any other service the body is read only when it says it is a form, so an
-// S3 upload is never buffered. The secret guard, and a request whose service
-// the proxy cannot name, read every body that is not JSON: a missing or odd
-// Content-Type must not hide an Action.
-func awsBodyReadAsForm(req *http.Request, service string, guarded bool, classes *agentapi.ActionClasses) bool {
+// On any other guarded service every body that is not JSON is read: a missing
+// or odd Content-Type must not hide an Action.
+func awsBodyReadAsForm(req *http.Request, service string) bool {
 	if !awsRequestHasBody(req) {
 		return false
 	}
 	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
 	protocolBody := strings.HasPrefix(mediaType, "application/x-amz-json-") || mediaType == "application/cbor"
-	if awsQueryProtocolCall(req, service, classes) {
-		return !(protocolBody && slices.Contains(classes.DualProtocolServices, service))
+	if awsQueryProtocolCall(req, service) {
+		return !(protocolBody && slices.Contains(awsDualProtocolServices, service))
 	}
-	if guarded || service == "" {
-		return !protocolBody && mediaType != "application/json"
-	}
-	return mediaType == "application/x-www-form-urlencoded"
+	return !protocolBody && mediaType != "application/json"
 }
 
 func appendOperation(operations []string, operation string) []string {

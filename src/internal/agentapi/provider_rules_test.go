@@ -26,19 +26,16 @@ func decodeProviderRules(t *testing.T, connection *Connection) {
 func TestProviderRulesDecodeFromTheSessionPayload(t *testing.T) {
 	aws := Connection{ServiceType: "aws"}
 	decodeProviderRules(t, &aws)
-	if aws.SecretGuard.Unsupported() || aws.ActionClasses.Unsupported() || len(aws.SecretGuard.Operations["sts"]) == 0 ||
-		len(aws.SecretGuard.Paths) == 0 || aws.ActionClasses.Scheme != ActionClassesSchemeAWS || len(aws.CredentialEnvironment) == 0 {
-		t.Fatalf("aws rules = %+v %+v %v", aws.SecretGuard, aws.ActionClasses, aws.CredentialEnvironment)
-	}
-	if class, ok := aws.ActionClasses.ExactClass("KMS", "createGRANT"); !ok || class != ClassAdmin {
-		t.Fatalf("exact lookup ignores letter case: %q %t", class, ok)
+	if aws.SecretGuard.Unsupported() || len(aws.SecretGuard.Operations["sts"]) == 0 ||
+		len(aws.SecretGuard.Paths) == 0 || len(aws.CredentialEnvironment) == 0 {
+		t.Fatalf("aws rules = %+v %v", aws.SecretGuard, aws.CredentialEnvironment)
 	}
 	if err := ValidateCredentialEnvironment(aws.CredentialEnvironment); err != nil {
 		t.Fatal(err)
 	}
 	// What the Agent may be shown is the rules as the Console sent them.
-	encoded, err := json.Marshal(aws.ActionClasses)
-	if err != nil || !strings.Contains(string(encoded), `"scheme"`) {
+	encoded, err := json.Marshal(aws.SecretGuard)
+	if err != nil || !strings.Contains(string(encoded), `"operations"`) {
 		t.Fatalf("encoded = %s err=%v", encoded, err)
 	}
 }
@@ -77,7 +74,6 @@ func TestCanonicalSessionFixtureCarriesTheAWSProviderRules(t *testing.T) {
 	for name, pair := range map[string][2]any{
 		"credentialEnvironment": {fixture.CredentialEnvironment, want.CredentialEnvironment},
 		"secretGuard":           {fixture.SecretGuard, want.SecretGuard},
-		"actionClasses":         {fixture.ActionClasses, want.ActionClasses},
 	} {
 		left, _ := json.Marshal(pair[0])
 		right, _ := json.Marshal(pair[1])

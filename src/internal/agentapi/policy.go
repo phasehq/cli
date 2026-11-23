@@ -24,16 +24,17 @@ const (
 	ClassCreate            = string(sdkagents.ClassCreate)
 	ClassUpdate            = string(sdkagents.ClassUpdate)
 	ClassDelete            = string(sdkagents.ClassDelete)
-	ClassAdmin             = string(sdkagents.ClassAdmin)
 	ClassCredentialMinting = string(sdkagents.ClassCredentialMinting)
 
+	// The policy version this client enforces. A policy with a higher one
+	// holds something this client cannot enforce, so it is refused.
 	accessPolicyVersion = 1
 	maxPolicyPathLength = 1024
 	maxPolicyMethods    = 9
 
 	// AccessPolicyUnsupported is the reason a Connection is unavailable when
-	// its policy or operation classes are not something this client can
-	// enforce. Nothing is forwarded for it until the client understands them.
+	// its policy is not something this client can enforce. Nothing is
+	// forwarded for it until the client understands it.
 	AccessPolicyUnsupported = "access_policy_unsupported"
 	// AccessExpired is the reason a Connection whose time limit passed is
 	// unavailable.
@@ -47,13 +48,11 @@ type PolicyMatch struct {
 	Path    string   `json:"path,omitempty"`
 }
 
-// PolicyRule has exactly one of Class, Match or Operation. Operation is an
-// AWS action ("ec2:TerminateInstances") and is valid on AWS Connections only.
+// PolicyRule has exactly one of Class or Match.
 type PolicyRule struct {
-	Class     string       `json:"class,omitempty"`
-	Match     *PolicyMatch `json:"match,omitempty"`
-	Operation string       `json:"operation,omitempty"`
-	Effect    string       `json:"effect"`
+	Class  string       `json:"class,omitempty"`
+	Match  *PolicyMatch `json:"match,omitempty"`
+	Effect string       `json:"effect"`
 }
 
 // TemporaryAllow is an approved exception to an ask. It is honoured only
@@ -62,14 +61,14 @@ type TemporaryAllow struct {
 	ID        string       `json:"id"`
 	Class     string       `json:"class,omitempty"`
 	Match     *PolicyMatch `json:"match,omitempty"`
-	Operation string       `json:"operation,omitempty"`
 	ExpiresAt time.Time    `json:"expiresAt"`
 }
 
 // AccessPolicy is the policy on one Workflow-to-Connection grant as the proxy
-// enforces it. It is decoded strictly: a version, effect, class or rule shape
-// this client does not know makes the policy unsupported rather than silently
-// weaker, and the Connection is then unavailable (see Unsupported).
+// enforces it. A higher version, or a class, effect or rule kind this client
+// does not know, makes the policy unsupported rather than silently weaker,
+// and the Connection is then unavailable (see Unsupported). Other members it
+// does not know are ignored.
 type AccessPolicy struct {
 	Default         string
 	Rules           []PolicyRule
@@ -122,7 +121,7 @@ func (p *AccessPolicy) UnmarshalJSON(data []byte) error {
 	for _, rawAllow := range wire.TemporaryAllows {
 		var allow TemporaryAllow
 		if strictDecode(rawAllow, &allow) != nil || allow.ExpiresAt.IsZero() ||
-			validatePolicyTarget(allow.Class, allow.Match, allow.Operation) != nil {
+			validatePolicyTarget(allow.Class, allow.Match) != nil {
 			continue
 		}
 		p.TemporaryAllows = append(p.TemporaryAllows, allow)
@@ -165,57 +164,6 @@ func (p *AccessPolicy) Restricts() bool {
 	return false
 }
 
-// OperationClassRule overrides how a call to an HTTP Connection is
-// classified. The first matching entry wins.
-type OperationClassRule struct {
-	Match PolicyMatch `json:"match"`
-	Class string      `json:"class"`
-}
-
-// OperationClasses is the list of class overrides an HTTP Connection carries. Like a
-// policy it is decoded strictly, because a misread override would classify a
-// call wrongly.
-type OperationClasses struct {
-	Entries     []OperationClassRule
-	raw         json.RawMessage
-	unsupported bool
-}
-
-func (o *OperationClasses) UnmarshalJSON(data []byte) error {
-	*o = OperationClasses{raw: append(json.RawMessage(nil), data...)}
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		o.raw = nil
-		return nil
-	}
-	var rawEntries []json.RawMessage
-	if err := json.Unmarshal(data, &rawEntries); err != nil {
-		o.unsupported = true
-		return nil
-	}
-	for _, rawEntry := range rawEntries {
-		var entry OperationClassRule
-		if strictDecode(rawEntry, &entry) != nil || !userOperationClass(entry.Class) || validatePolicyMatch(&entry.Match) != nil {
-			o.unsupported = true
-			o.Entries = nil
-			return nil
-		}
-		o.Entries = append(o.Entries, entry)
-	}
-	return nil
-}
-
-func (o OperationClasses) MarshalJSON() ([]byte, error) {
-	if len(o.raw) > 0 {
-		return o.raw, nil
-	}
-	return json.Marshal(append([]OperationClassRule{}, o.Entries...))
-}
-
-// IsZero lets an absent list be left out when a Connection is encoded.
-func (o OperationClasses) IsZero() bool { return len(o.raw) == 0 && len(o.Entries) == 0 }
-
-func (o OperationClasses) Unsupported() bool { return o.unsupported }
-
 // ExpiredConnection names a grant of this Workflow whose time limit passed
 // recently. It carries nothing but identity, so the proxy can tell the Agent
 // what to ask to renew.
@@ -229,21 +177,11 @@ type ExpiredConnection struct {
 // AccessPolicyFailure names why the Connection's policy or provider rules
 // cannot be enforced, or is empty when they can.
 func (c Connection) AccessPolicyFailure() string {
-	if c.Policy.Unsupported() || c.OperationClasses.Unsupported() {
+	if c.Policy.Unsupported() {
 		return AccessPolicyUnsupported
 	}
 	if failure := c.providerRulesFailure(); failure != "" {
 		return failure
-	}
-	// A rule by AWS action can only be matched on an AWS Connection. On any
-	// other it could never apply, so the Connection is not used rather than
-	// run with a rule that silently does nothing.
-	if !strings.EqualFold(c.ServiceType, "aws") && c.Policy != nil {
-		for _, rule := range c.Policy.Rules {
-			if rule.Operation != "" {
-				return AccessPolicyUnsupported
-			}
-		}
 	}
 	// A policy that stops calls can be evaluated for HTTP only. One on any
 	// other protocol is not something this client can enforce.
@@ -278,26 +216,13 @@ func validatePolicyRule(rule PolicyRule) error {
 	default:
 		return fmt.Errorf("unsupported policy effect")
 	}
-	return validatePolicyTarget(rule.Class, rule.Match, rule.Operation)
+	return validatePolicyTarget(rule.Class, rule.Match)
 }
 
-// validatePolicyTarget accepts exactly one of a user class, a match or an AWS
-// operation.
-func validatePolicyTarget(class string, match *PolicyMatch, operation string) error {
-	set := 0
-	for _, present := range []bool{class != "", match != nil, operation != ""} {
-		if present {
-			set++
-		}
-	}
-	if set != 1 {
-		return fmt.Errorf("expected exactly one of class, match or operation")
-	}
-	if operation != "" {
-		if !sdkagents.ValidAWSOperation(operation) {
-			return fmt.Errorf("unsupported operation")
-		}
-		return nil
+// validatePolicyTarget accepts exactly one of a user class or a match.
+func validatePolicyTarget(class string, match *PolicyMatch) error {
+	if (class != "") == (match != nil) {
+		return fmt.Errorf("expected exactly one of class or match")
 	}
 	if class != "" {
 		if !userOperationClass(class) {
@@ -328,7 +253,7 @@ func validatePolicyMatch(match *PolicyMatch) error {
 
 func userOperationClass(class string) bool {
 	switch class {
-	case ClassRead, ClassCreate, ClassUpdate, ClassDelete, ClassAdmin:
+	case ClassRead, ClassCreate, ClassUpdate, ClassDelete:
 		return true
 	}
 	return false

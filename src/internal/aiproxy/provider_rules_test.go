@@ -11,8 +11,8 @@ import (
 )
 
 // withProviderRules adds to a Connection payload the provider rules its
-// service's manifest sends (credentialEnvironment, secretGuard,
-// actionClasses), keeping any the test set itself.
+// service's manifest sends (credentialEnvironment and secretGuard), keeping
+// any the test set itself.
 func withProviderRules(connection map[string]any) map[string]any {
 	service, _ := connection["serviceType"].(string)
 	raw := providerrulestest.Raw(service)
@@ -36,9 +36,9 @@ func withConnectionRules(connection agentapi.Connection) agentapi.Connection {
 	return providerrulestest.Apply(connection)
 }
 
-// The provider's guard and call classes apply in place on refresh, like the
-// policy. Its credential environment names reach the Agent's processes, so a
-// change to them recycles the session like any other environment change.
+// The provider's guard applies in place on refresh, like the policy. Its
+// credential environment names reach the Agent's processes, so a change to
+// them recycles the session like any other environment change.
 func TestProviderRulesOnRefresh(t *testing.T) {
 	aws := func(mutate func(map[string]any)) []*binding {
 		payload := awsPolicyConnection(nil)
@@ -54,12 +54,6 @@ func TestProviderRulesOnRefresh(t *testing.T) {
 	inPlace := map[string]func(map[string]any){
 		"secret guard": func(c map[string]any) {
 			c["secretGuard"] = map[string]any{"operations": map[string]any{"sts": []string{"AssumeRole"}}}
-		},
-		"call classes": func(c map[string]any) {
-			var classes map[string]any
-			_ = json.Unmarshal(c["actionClasses"].(json.RawMessage), &classes)
-			classes["exact"] = map[string]string{"s3:DeleteObject": "admin"}
-			c["actionClasses"] = classes
 		},
 		"credential environment order": func(c map[string]any) {
 			names := append([]string(nil), providerrulestest.CredentialEnvironment("aws")...)

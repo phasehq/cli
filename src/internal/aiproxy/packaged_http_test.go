@@ -20,7 +20,7 @@ const (
 // as the Console compiles it: one header injection, an integration credential
 // in the resolved material, a decoy and environment bindings. It is not a
 // custom Connection and has no definition.
-func packagedHTTPPayload(policy map[string]any, classes []any) map[string]any {
+func packagedHTTPPayload(policy map[string]any) map[string]any {
 	connection := customConnectionPayload(packagedDecoy, packagedLive)
 	connection["grantId"], connection["connectionId"], connection["connectionName"] = "grant-github", "connection-github", "GitHub"
 	connection["credentialId"], connection["credentialName"], connection["credentialProvider"], connection["serviceType"] = "credential-github", "GitHub token", "github", "github"
@@ -37,13 +37,8 @@ func packagedHTTPPayload(policy map[string]any, classes []any) map[string]any {
 	if policy != nil {
 		connection["policy"] = policy
 	}
-	if classes != nil {
-		connection["operationClasses"] = classes
-	}
 	return connection
 }
-
-var githubGraphQLUpdate = []any{map[string]any{"match": map[string]any{"methods": []string{"POST"}, "path": "/graphql"}, "class": "update"}}
 
 func githubRequest(t *testing.T, method, path, authorization string) *http.Request {
 	t.Helper()
@@ -61,8 +56,8 @@ func githubRequest(t *testing.T, method, path, authorization string) *http.Reque
 // is swapped, an absent value is attached, anything else is refused, and the
 // access policy and the secret guard apply.
 func TestPackagedHTTPServiceThroughTheProxy(t *testing.T) {
-	policy := policyDocument("allow", []any{classRule("update", "ask"), classRule("delete", "block")})
-	_, proxy, upstream := policyProxy(t, packagedHTTPPayload(policy, githubGraphQLUpdate))
+	policy := policyDocument("allow", []any{classRule("create", "ask"), classRule("delete", "block")})
+	_, proxy, upstream := policyProxy(t, packagedHTTPPayload(policy))
 
 	// Swap and attach, with the live value and never the decoy upstream.
 	for name, authorization := range map[string]string{"swap": "Bearer " + packagedDecoy, "attach": ""} {
@@ -83,18 +78,17 @@ func TestPackagedHTTPServiceThroughTheProxy(t *testing.T) {
 		t.Fatalf("a plain HTTP request carried the credential: %+v", result.failure)
 	}
 
-	// The single GraphQL endpoint is an update by operationClasses, not a
-	// create by its method.
+	// The single GraphQL endpoint is a create by its method, a query or not.
 	asked := processThrough(proxy, githubRequest(t, http.MethodPost, "/graphql", "Bearer "+packagedDecoy))
-	if asked.failure == nil || asked.failure.code != "agent_access_policy_ask" || asked.failure.details["class"] != "update" || upstream.calls.Load() != before {
+	if asked.failure == nil || asked.failure.code != "agent_access_policy_ask" || asked.failure.details["class"] != "create" || upstream.calls.Load() != before {
 		t.Fatalf("GraphQL POST = %+v", asked.failure)
 	}
-	if rule, _ := asked.event.Detail["rule"].(agentapi.PolicyRule); rule.Class != "update" || asked.event.ProxyDecision != "ask" {
+	if rule, _ := asked.event.Detail["rule"].(agentapi.PolicyRule); rule.Class != "create" || asked.event.ProxyDecision != "ask" {
 		t.Fatalf("event = %+v", asked.event)
 	}
-	// Another POST is a create by method and the policy allows it.
-	if result := processThrough(proxy, githubRequest(t, http.MethodPost, "/repos/acme/x/issues", "Bearer "+packagedDecoy)); result.failure != nil {
-		t.Fatalf("a create was refused: %+v", result.failure)
+	// An update is allowed by the default.
+	if result := processThrough(proxy, githubRequest(t, http.MethodPatch, "/repos/acme/x/issues/1", "Bearer "+packagedDecoy)); result.failure != nil {
+		t.Fatalf("an update was refused: %+v", result.failure)
 	}
 	// A delete is blocked.
 	blocked := processThrough(proxy, githubRequest(t, http.MethodDelete, "/repos/acme/x", "Bearer "+packagedDecoy))
@@ -115,96 +109,35 @@ func TestPackagedHTTPServiceThroughTheProxy(t *testing.T) {
 	}
 }
 
-// A packaged service's operationClasses change applies to the running
-// session, and discover relays them without reading them as drift.
-func TestPackagedHTTPServiceOperationClassesApplyInPlace(t *testing.T) {
-	first := packagedHTTPPayload(policyDocument("allow", []any{classRule("update", "ask")}), nil)
-	state := controlRuntimeState(t, unreachableConsoleClient(t), customSessionPayload("backend-packaged", 1, first), "runtime-packaged")
-	defer state.destroy()
-	state.decoys = newDecoyHistory()
-	environmentChecks := 0
-	state.setEnvironmentCheck(func(*agentapi.SessionConfig) bool { environmentChecks++; return false })
-
-	next := packagedHTTPPayload(policyDocument("allow", []any{classRule("update", "ask")}), githubGraphQLUpdate)
-	fresh := decodeTestSession(t, customSessionPayload("", 2, next))
-	if change := classifyConfigChange(state.bindings, mustParseBindings(t, fresh.Connections), state.configEnv, fresh.ConfigEnv); change.reprovision || change.reshaped || len(change.removed) != 0 {
-		t.Fatalf("the change was classified as %+v", change)
-	}
-	if err := state.replaceConfig(&fresh.SessionConfig); err != nil || state.availability() != nil || environmentChecks != 0 {
-		t.Fatalf("not applied in place: err=%v availability=%v checks=%d", err, state.availability(), environmentChecks)
-	}
-	if entries := state.bindings[0].connection.OperationClasses.Entries; len(entries) != 1 || entries[0].Class != "update" {
-		t.Fatalf("operation classes = %+v", entries)
-	}
-	proxy := &httpProxy{state: state, transport: &recordingUpstream{}, control: &controlHandler{state: state}}
-	if result := processThrough(proxy, githubRequest(t, http.MethodPost, "/graphql", "Bearer "+packagedDecoy)); result.failure == nil || result.failure.code != "agent_access_policy_ask" {
-		t.Fatalf("the new classes were not enforced: %+v", result.failure)
-	}
-
-	discoverPayload, _ := json.Marshal(map[string]any{
-		"schemaVersion": 1, "sessionUid": "session-custom", "configGeneration": 2, "configEnv": map[string]string{},
-		"connections": []any{discoverEntry(next, map[string]any{"operationClasses": []any{map[string]any{"match": map[string]any{"methods": []string{"GET"}}, "class": "admin"}}})},
-	})
-	var discover agentapi.DiscoverResponse
-	if err := json.Unmarshal(discoverPayload, &discover); err != nil {
-		t.Fatal(err)
-	}
-	if err := state.applyTrustedDiscoverAuthorization(&discover); err != nil {
-		t.Fatalf("discover read operationClasses as drift: %v", err)
-	}
-	if !strings.Contains(string(mustJSON(t, discover)), `"operationClasses":[{"class":"admin","match":{"methods":["GET"]}}]`) {
-		t.Fatal("discover no longer relays operationClasses")
-	}
-}
-
-// An operation rule on a Connection that is not the aws service cannot be
-// enforced, so that Connection is unavailable.
-func TestOperationRuleOnANonAWSConnectionMakesItUnavailable(t *testing.T) {
-	rule := map[string]any{"operation": "ec2:TerminateInstances", "effect": "block"}
-	state, proxy, upstream := policyProxy(t, packagedHTTPPayload(policyDocument("allow", []any{rule}), nil))
-	result := processThrough(proxy, githubRequest(t, http.MethodGet, "/user", "Bearer "+packagedDecoy))
-	if result.failure == nil || result.failure.code != "agent_access_policy_unsupported" || upstream.calls.Load() != 0 {
-		t.Fatalf("a non-AWS Connection with an operation rule was used: %+v", result.failure)
-	}
-	details := state.connectionDetails(time.Now(), "connection-github")
-	if len(details) != 1 || details[0].State != "unavailable" || details[0].StateReason != "access_policy_unsupported" {
-		t.Fatalf("connection detail = %+v", details)
-	}
-}
-
-// operationClasses on an AWS Connection are ignored: its calls are classified
-// by action.
-func TestAWSConnectionIgnoresOperationClasses(t *testing.T) {
-	connection := awsPolicyConnection(policyDocument("allow", []any{classRule("delete", "block")}))
-	connection["operationClasses"] = []any{map[string]any{"match": map[string]any{"methods": []string{"POST"}}, "class": "read"}}
-	_, proxy, upstream := policyProxy(t, connection)
-	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
-	terminate := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=TerminateInstances&InstanceId.1=i-0abc&Version=2016-11-15", form)
-	if result := processThrough(proxy, terminate); result.failure == nil || result.failure.details["class"] != "delete" || upstream.calls.Load() != 0 {
-		t.Fatalf("an AWS delete was classified by operationClasses: %+v", result.failure)
-	}
-}
-
-// An operation rule and a temporary allow on AWS: the allow covers the one
-// action it names and not another action of the same class.
-func TestAWSOperationAllowCoversOnlyThatAction(t *testing.T) {
-	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
-	policy := policyDocument("allow", []any{classRule("delete", "ask")},
-		map[string]any{"id": "allow-ec2", "operation": "ec2:TerminateInstances", "expiresAt": future})
-	_, proxy, upstream := policyProxy(t, awsPolicyConnection(policy))
-	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
-	terminate := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=TerminateInstances&InstanceId.1=i-0abc&Version=2016-11-15", form)
-	if result := processThrough(proxy, terminate); result.failure != nil || upstream.calls.Load() != 1 {
-		t.Fatalf("the allowed action was stopped: %+v", result.failure)
-	}
-	deleteVolume := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=DeleteVolume&VolumeId=vol-1&Version=2016-11-15", form)
-	result := processThrough(proxy, deleteVolume)
-	if result.failure == nil || result.failure.code != "agent_access_policy_ask" || upstream.calls.Load() != 1 {
-		t.Fatalf("another delete was allowed: %+v", result.failure)
-	}
-	request, _ := json.Marshal(result.failure.details["request"])
-	if !strings.Contains(string(request), `"allow":{"operation":"ec2:DeleteVolume"}`) || !strings.Contains(string(request), `"operation":"ec2:DeleteVolume"`) {
-		t.Fatalf("ask request = %s", request)
+// A policy this CLI cannot enforce in full (a higher version, or a class,
+// effect or rule kind it does not know) makes only that Connection
+// unavailable, AWS included, and its calls say to update the Phase CLI.
+func TestPolicyThisCLIDoesNotKnowAsksForANewerCLI(t *testing.T) {
+	for name, policy := range map[string]map[string]any{
+		"a higher version":     {"version": 2, "default": "allow", "rules": []any{classRule("delete", "block")}},
+		"an unknown class":     policyDocument("allow", []any{classRule("admin", "block")}),
+		"an unknown effect":    policyDocument("allow", []any{classRule("delete", "audit")}),
+		"an unknown default":   policyDocument("deny", nil),
+		"an unknown rule kind": policyDocument("allow", []any{map[string]any{"operation": "ec2:TerminateInstances", "effect": "block"}}),
+	} {
+		for _, aws := range []bool{false, true} {
+			connection := packagedHTTPPayload(policy)
+			request := githubRequest(t, http.MethodGet, "/user", "Bearer "+packagedDecoy)
+			if aws {
+				connection = awsPolicyConnection(policy)
+				request = signedAWSRequest(t, http.MethodGet, "https://bucket.s3.aws.example.test/key", "s3", "", nil)
+			}
+			state, proxy, upstream := policyProxy(t, connection)
+			result := processThrough(proxy, request)
+			if result.failure == nil || result.failure.code != "agent_access_policy_unsupported" || upstream.calls.Load() != 0 ||
+				!strings.Contains(result.failure.message, "Update the Phase CLI.") {
+				t.Fatalf("%s (aws=%t): failure = %+v", name, aws, result.failure)
+			}
+			details := state.connectionDetails(time.Now(), "")
+			if len(details) != 1 || details[0].State != "unavailable" || details[0].StateReason != "access_policy_unsupported" {
+				t.Fatalf("%s (aws=%t): connection detail = %+v", name, aws, details)
+			}
+		}
 	}
 }
 

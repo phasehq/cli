@@ -16,13 +16,13 @@ import (
 	"github.com/phasehq/cli/internal/agentapi/providerrulestest"
 )
 
-// The secret guard and the AWS classifier take their rules from the
-// Connection. testdata/provider_rules_equivalence.json holds requests (those
-// the tests of the classifier, the guard and the proxy send, and a generated
-// grid over every rule) with the answers the compiled tables gave before the
-// rules moved into the session payload (gzip, as it is large). These tests replay them through
-// Connections decoded from testdata/provider_rules, as a session payload
-// would carry them, and expect the same answers.
+// The secret guard takes its rules from the Connection.
+// testdata/provider_rules_equivalence.json holds requests (those the tests of
+// the guard and the proxy sent, and a generated grid over every rule) with the
+// answers the compiled tables gave before the rules moved into the session
+// payload (gzip, as it is large). This test replays them through Connections
+// decoded from testdata/provider_rules, as a session payload would carry them,
+// and expects the same answers.
 //
 // The corpus was recorded once, by the last build that still had the compiled
 // tables, so it cannot be regenerated. A deliberate rule change means editing
@@ -42,7 +42,6 @@ type equivalenceRequest struct {
 	BodyError     bool                `json:"bodyError,omitempty"`
 	ContentLength int64               `json:"contentLength"`
 	Guard         *equivalenceGuard   `json:"guard,omitempty"`
-	Classify      *equivalenceClasses `json:"classify,omitempty"`
 }
 
 type equivalenceGuard struct {
@@ -51,22 +50,11 @@ type equivalenceGuard struct {
 	BodyAfter string `json:"bodyAfter,omitempty"`
 }
 
-type equivalenceClasses struct {
-	Calls     []ClassifiedCall `json:"calls,omitempty"`
-	Error     string           `json:"error,omitempty"`
-	BodyAfter string           `json:"bodyAfter,omitempty"`
-}
-
 type equivalenceCorpus struct {
 	Requests []equivalenceRequest `json:"requests"`
-	// Actions lists action names; each service maps to their classes in the
-	// same order, one letter per class (r, c, u, d, a).
-	Actions struct {
-		Names    []string          `json:"names"`
-		Services map[string]string `json:"services"`
-	} `json:"actions"`
 }
 
+// The corpus recorded this text for a body the guard stopped reading.
 var errBodyNotCaptured = errors.New("body beyond what the classifier read")
 var errRecordedBody = errors.New("recorded body read error")
 
@@ -141,28 +129,6 @@ func runGuard(t *testing.T, input equivalenceRequest, connection agentapi.Connec
 	return result
 }
 
-func runClassify(t *testing.T, input equivalenceRequest, connection agentapi.Connection) *equivalenceClasses {
-	req := input.build(t)
-	calls, err := ClassifyCall(req, connection)
-	return &equivalenceClasses{Calls: calls, Error: errorText(err), BodyAfter: remainingBody(req)}
-}
-
-func classLetter(class string) string {
-	switch class {
-	case agentapi.ClassRead:
-		return "r"
-	case agentapi.ClassCreate:
-		return "c"
-	case agentapi.ClassUpdate:
-		return "u"
-	case agentapi.ClassDelete:
-		return "d"
-	case agentapi.ClassAdmin:
-		return "a"
-	}
-	return "?"
-}
-
 func readEquivalenceCorpus(t *testing.T) equivalenceCorpus {
 	t.Helper()
 	file, err := os.Open(filepath.FromSlash(equivalenceCorpusPath))
@@ -178,7 +144,7 @@ func readEquivalenceCorpus(t *testing.T) equivalenceCorpus {
 	if err := json.NewDecoder(reader).Decode(&corpus); err != nil {
 		t.Fatal(err)
 	}
-	if len(corpus.Requests) == 0 || len(corpus.Actions.Names) == 0 {
+	if len(corpus.Requests) == 0 {
 		t.Fatal("equivalence corpus is empty")
 	}
 	return corpus
@@ -209,42 +175,15 @@ func sameAnswer(t *testing.T, want, got any) bool {
 	return bytes.Equal(left, right)
 }
 
-func TestProviderRulesFromThePayloadGuardAndClassifyAsTheCompiledTablesDid(t *testing.T) {
+func TestSecretGuardFromThePayloadAnswersAsTheCompiledTablesDid(t *testing.T) {
 	corpus := readEquivalenceCorpus(t)
-	guarded, classified := 0, 0
 	for _, input := range corpus.Requests {
 		connection := equivalenceConnection(input.ServiceType, input.Action)
 		if got := runGuard(t, input, connection); !sameAnswer(t, input.Guard, got) {
 			t.Errorf("guard %s: got %+v, recorded %+v", describeRequest(input), got, input.Guard)
 		}
-		guarded++
-		if input.Classify == nil {
-			continue
-		}
-		if got := runClassify(t, input, connection); !sameAnswer(t, input.Classify, got) {
-			t.Errorf("classify %s: got %+v, recorded %+v", describeRequest(input), got, input.Classify)
-		}
-		classified++
 	}
-	if guarded < 10000 || classified < 9000 {
-		t.Fatalf("only %d guard and %d classifier answers were compared", guarded, classified)
-	}
-}
-
-func TestProviderRulesFromThePayloadClassifyActionsAsTheCompiledTablesDid(t *testing.T) {
-	corpus := readEquivalenceCorpus(t)
-	classes := testAWSClasses(t)
-	for service, want := range corpus.Actions.Services {
-		var got strings.Builder
-		for _, name := range corpus.Actions.Names {
-			got.WriteString(classLetter(classifyAWSAction(classes, service, name)))
-		}
-		if got.String() != want {
-			for index, name := range corpus.Actions.Names {
-				if got.String()[index] != want[index] {
-					t.Errorf("%s:%s = %c, recorded %c", service, name, got.String()[index], want[index])
-				}
-			}
-		}
+	if len(corpus.Requests) < 10000 {
+		t.Fatalf("only %d guard answers were compared", len(corpus.Requests))
 	}
 }

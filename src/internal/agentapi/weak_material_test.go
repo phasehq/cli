@@ -84,9 +84,6 @@ func TestCustomValueFoundInItsOwnDescriptionIsWithheld(t *testing.T) {
 				map[string]any{"match": map[string]any{"path": "/v1/" + exposedCustomValue + "/*"}, "effect": "block"},
 			}}
 		},
-		"a path in its operation classes": func(connection map[string]any) {
-			connection["operationClasses"] = []any{map[string]any{"match": map[string]any{"path": "/" + exposedCustomValue}, "class": "read"}}
-		},
 	}
 	for name, describe := range tests {
 		t.Run(name, func(t *testing.T) {

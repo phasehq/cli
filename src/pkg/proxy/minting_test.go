@@ -323,3 +323,31 @@ func TestCredentialMintingPathRulesReadAnEncodedSlashAsPartOfItsSegment(t *testi
 		}
 	}
 }
+
+// A query-protocol service that also speaks a JSON protocol is not read as a
+// form under that protocol's content type, and a REST call of one that also
+// serves a REST API is not taken for a query-protocol call.
+func TestSecretGuardReadsDualAndMixedServicesByTheirProtocol(t *testing.T) {
+	var guard agentapi.SecretGuard
+	if err := json.Unmarshal([]byte(`{"operations":{"sqs":["DeleteQueue"],"ses":["DeleteIdentity"]}}`), &guard); err != nil || guard.Unsupported() {
+		t.Fatalf("guard = %+v err=%v", guard, err)
+	}
+	connection := agentapi.Connection{ServiceType: "aws", Protocol: "http", Injection: agentapi.Injection{Action: "aws_sigv4"}, SecretGuard: &guard}
+	large := strings.Repeat("m", int(maximumMintingInspectionBytes)+1)
+	for name, test := range map[string]struct {
+		request   *http.Request
+		operation string
+	}{
+		"a large JSON-protocol body": {awsCall(t, "POST", "https://sqs.us-east-1.amazonaws.com/", "sqs", "application/x-amz-json-1.0",
+			`{"MessageBody":"`+large+`&Action=DeleteQueue&"}`, map[string]string{"X-Amz-Target": "AmazonSQS.SendMessage"}), ""},
+		"a form body under plain JSON": {awsCall(t, "POST", "https://sqs.us-east-1.amazonaws.com/", "sqs", "application/json",
+			"Action=DeleteQueue&QueueUrl=q", map[string]string{"X-Amz-Target": "AmazonSQS.ListQueues"}), "sqs:DeleteQueue"},
+		"a REST call": {awsCall(t, "POST", "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails", "ses", "application/json", `{"Content":{}}`, nil), ""},
+		"an action call at the root": {awsCall(t, "POST", "https://email.us-east-1.amazonaws.com/", "ses", "application/json", "Action=DeleteIdentity&Identity=x", nil), "ses:DeleteIdentity"},
+	} {
+		blocked, err := CredentialMintingBlocked(test.request, connection)
+		if err != nil || (blocked == nil) != (test.operation == "") || (blocked != nil && blocked.Operation != test.operation) {
+			t.Errorf("%s: blocked=%v err=%v, want %q", name, blocked, err, test.operation)
+		}
+	}
+}

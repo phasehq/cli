@@ -476,7 +476,7 @@ const (
 	// (allow, ask, block) and its time limit before it uses the credential.
 	FeatureAccessPolicy ClientFeature = "access_policy"
 	// FeatureProviderRules: the client takes a Connection's credential
-	// environment, secret guard and call classes from the session payload.
+	// environment and secret guard from the session payload.
 	FeatureProviderRules ClientFeature = "provider_rules"
 )
 
@@ -620,17 +620,15 @@ type RuntimeConnection struct {
 	SealedMaterial      *SealedMaterial         `json:"sealedMaterial,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
-	// Policy, OperationClasses and GrantExpiresAt limit how the grant may be
-	// used. None of them is visible in the Agent's environment.
-	Policy           *AccessPolicy        `json:"policy,omitempty"`
-	OperationClasses []OperationClassRule `json:"operationClasses,omitempty"`
-	GrantExpiresAt   *time.Time           `json:"grantExpiresAt,omitempty"`
-	// CredentialEnvironment, SecretGuard and ActionClasses are the provider's
-	// rules from the Console's manifest. The guard and the classes are carried
-	// as sent; the runtime decodes and enforces them.
+	// Policy and GrantExpiresAt limit how the grant may be used. Neither is
+	// visible in the Agent's environment.
+	Policy         *AccessPolicy `json:"policy,omitempty"`
+	GrantExpiresAt *time.Time    `json:"grantExpiresAt,omitempty"`
+	// CredentialEnvironment and SecretGuard are the provider's rules from the
+	// Console's manifest. The guard is carried as sent; the runtime decodes
+	// and enforces it.
 	CredentialEnvironment []string        `json:"credentialEnvironment,omitempty"`
 	SecretGuard           json.RawMessage `json:"secretGuard,omitempty"`
-	ActionClasses         json.RawMessage `json:"actionClasses,omitempty"`
 }
 
 // ValidateEnvironmentBindings verifies this runtime connection's binding
@@ -667,9 +665,9 @@ const (
 	PolicyBlock PolicyEffect = "block"
 )
 
-// OperationClass groups calls by what they do. Classification is owned by the
-// provider type and shipped with the client; credential_minting belongs to the
-// secret guard and never appears in a stored policy.
+// OperationClass groups calls by what they do. An HTTP call's class is its
+// method's; credential_minting belongs to the secret guard and never appears
+// in a stored policy.
 type OperationClass string
 
 const (
@@ -677,7 +675,6 @@ const (
 	ClassCreate            OperationClass = "create"
 	ClassUpdate            OperationClass = "update"
 	ClassDelete            OperationClass = "delete"
-	ClassAdmin             OperationClass = "admin"
 	ClassCredentialMinting OperationClass = "credential_minting"
 )
 
@@ -687,13 +684,11 @@ type PolicyMatch struct {
 	Path    string   `json:"path,omitempty"`
 }
 
-// PolicyRule has exactly one of Class, Match or Operation (an AWS action,
-// valid on AWS Connections only).
+// PolicyRule has exactly one of Class or Match.
 type PolicyRule struct {
-	Class     OperationClass `json:"class,omitempty"`
-	Match     *PolicyMatch   `json:"match,omitempty"`
-	Operation string         `json:"operation,omitempty"`
-	Effect    PolicyEffect   `json:"effect"`
+	Class  OperationClass `json:"class,omitempty"`
+	Match  *PolicyMatch   `json:"match,omitempty"`
+	Effect PolicyEffect   `json:"effect"`
 }
 
 // TemporaryAllow is an approved, time-limited exception to an ask.
@@ -701,7 +696,6 @@ type TemporaryAllow struct {
 	ID        string         `json:"id"`
 	Class     OperationClass `json:"class,omitempty"`
 	Match     *PolicyMatch   `json:"match,omitempty"`
-	Operation string         `json:"operation,omitempty"`
 	ExpiresAt time.Time      `json:"expiresAt"`
 }
 
@@ -719,13 +713,6 @@ type AccessPolicy struct {
 	Rules           []PolicyRule     `json:"rules"`
 	TemporaryAllows []TemporaryAllow `json:"temporaryAllows,omitempty"`
 	Managed         []ManagedPolicy  `json:"managed,omitempty"`
-}
-
-// OperationClassRule overrides how a call on an HTTP Connection is
-// classified. The first matching entry wins.
-type OperationClassRule struct {
-	Match PolicyMatch    `json:"match"`
-	Class OperationClass `json:"class"`
 }
 
 // ExpiredConnection names a grant whose time limit passed.
@@ -918,7 +905,6 @@ type DiscoverConnection struct {
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
 	Policy              *AccessPolicy           `json:"policy,omitempty"`
-	OperationClasses    []OperationClassRule    `json:"operationClasses,omitempty"`
 	GrantExpiresAt      *time.Time              `json:"grantExpiresAt,omitempty"`
 }
 

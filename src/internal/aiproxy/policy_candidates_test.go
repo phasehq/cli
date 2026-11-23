@@ -7,12 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/phasehq/cli/internal/agentapi"
 )
 
-// An S3 call dressed with a selector that names a read is still stopped by
-// the policy, and nothing is re-signed or sent.
+// An S3 call dressed with a selector that names a read is judged by its
+// method, so the policy still stops it, and nothing is re-signed or sent.
 func TestAWSDecoySelectorIsStoppedByThePolicy(t *testing.T) {
 	policy := policyDocument("block", []any{classRule("read", "allow")})
 	_, proxy, upstream := policyProxy(t, awsPolicyConnection(policy))
@@ -34,7 +32,7 @@ func TestAWSDecoySelectorIsStoppedByThePolicy(t *testing.T) {
 		if result.failure == nil || result.failure.code != codeAccessPolicyBlocked || result.event.ProxyDecision != "block" {
 			t.Errorf("%s was not blocked: %+v", name, result.failure)
 		}
-		if class := result.failure.details["class"]; class != "delete" && class != "admin" {
+		if class := result.failure.details["class"]; class == "read" {
 			t.Errorf("%s: stopped as %v", name, class)
 		}
 	}
@@ -124,74 +122,4 @@ func TestWebSocketUpgradeIsJudgedAsAnUpdate(t *testing.T) {
 		result.response.Body.Close()
 	}
 
-	// An override says what the stream is, and then that decides.
-	classified := customPolicyConnection(policy)
-	classified["operationClasses"] = []any{map[string]any{"match": map[string]any{"methods": []string{"GET"}, "path": "/v1/events"}, "class": "read"}}
-	_, withOverride, _ := policyProxy(t, classified)
-	if result := withOverride.process(handshake("/v1/events"), tunnel); result.failure != nil {
-		t.Fatalf("an upgrade an override classifies as a read was stopped: %+v", result.failure)
-	} else {
-		result.response.Body.Close()
-	}
-	if result := withOverride.process(handshake("/v1/stream"), tunnel); result.failure == nil || result.failure.code != codeAccessPolicyAsk {
-		t.Fatalf("an upgrade no override covers: %+v", result.failure)
-	}
-}
-
-// A call stopped by a rule on an AWS action keeps that rule in its event, in
-// memory and after a round trip through the spool.
-func TestEventKeepsTheOperationRuleThatDecided(t *testing.T) {
-	rule := agentapi.PolicyRule{Operation: "ec2:TerminateInstances", Effect: agentapi.PolicyBlock}
-	want := map[string]any{"effect": "block", "operation": "ec2:TerminateInstances"}
-	if kept, ok := safeEventRule(rule, nil); !ok || !reflect.DeepEqual(kept, want) {
-		t.Fatalf("the rule as the proxy holds it = %v %t", kept, ok)
-	}
-	var spooled any
-	if err := json.Unmarshal(mustJSON(t, rule), &spooled); err != nil {
-		t.Fatal(err)
-	}
-	if kept, ok := safeEventRule(spooled, nil); !ok || !reflect.DeepEqual(kept, want) {
-		t.Fatalf("the rule as the spool returns it = %v %t", kept, ok)
-	}
-	for name, unsafe := range map[string]any{
-		"two targets":              map[string]any{"effect": "block", "operation": "ec2:TerminateInstances", "class": "delete"},
-		"an operation and a match": map[string]any{"effect": "block", "operation": "ec2:TerminateInstances", "match": map[string]any{"path": "/x"}},
-		"not an AWS action":        map[string]any{"effect": "block", "operation": "terminate everything"},
-		"a wildcard":               map[string]any{"effect": "block", "operation": "ec2:*"},
-		"a secret":                 map[string]any{"effect": "block", "operation": "ec2:" + policyAWSLive},
-		"no target":                map[string]any{"effect": "block"},
-	} {
-		if kept, ok := safeEventRule(unsafe, []string{policyAWSLive}); ok {
-			t.Errorf("%s was kept: %v", name, kept)
-		}
-	}
-
-	policy := policyDocument("allow", []any{map[string]any{"operation": "ec2:TerminateInstances", "effect": "block"}})
-	client, shipped := eventConsole(t)
-	state := controlRuntimeState(t, client, customSessionPayload("backend-operation-rule", 1, awsPolicyConnection(policy)), "runtime-operation-rule")
-	defer state.destroy()
-	events, err := newEventBuffer(state, time.Hour, t.TempDir(), 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy := &httpProxy{state: state, events: events, transport: &recordingUpstream{}}
-	terminate := signedAWSRequest(t, http.MethodPost, "https://ec2.aws.example.test/", "ec2", "Action=TerminateInstances&InstanceId.1=i-0abc&Version=2016-11-15",
-		map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
-	result := processThrough(proxy, terminate)
-	if result.failure == nil || result.failure.code != codeAccessPolicyBlocked {
-		t.Fatalf("the call was not blocked: %+v", result.failure)
-	}
-	events.Emit(result.event)
-	if err := events.Stop(); err != nil {
-		t.Fatal(err)
-	}
-	stopped := shipped()
-	if len(stopped) == 0 {
-		t.Fatal("no event was shipped")
-	}
-	for _, event := range stopped {
-		if !reflect.DeepEqual(event.Detail["rule"], want) || event.Detail["operation"] != "ec2:TerminateInstances" || event.Detail["class"] != "delete" {
-			t.Fatalf("event detail = %v", event.Detail)
-		}
-	}
 }

@@ -18,16 +18,16 @@ func TestAccessAndContextActionsHaveLocalChecksAndStayOpaqueOtherwise(t *testing
 		kind   RequestKind
 		action string
 	}{
-		"allow by match":           {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"match":{"methods":["DELETE"],"path":"/repos/acme/x"}},"blockedCall":{"method":"DELETE","host":"api.github.com","path":"/repos/acme/x","class":"delete"}}`},
-		"allow by operation":       {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"ec2:TerminateInstances"},"blockedCall":{"method":"POST","host":"ec2.eu-central-1.amazonaws.com","path":"/","class":"delete","operation":"ec2:TerminateInstances"}}`},
-		"allow by class":           {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete"}}`},
-		"allow with later members": {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete"},"blockedCall":{"anything":["at","all"]},"reviewers":["ops"]}`},
-		"renew":                    {RequestAccessChange, `{"type":"agent_grant.renew","version":1,"connectionId":"connection-1"}`},
-		"context update":           {RequestContextUpdate, `{"type":"agent_workflow.context_update","version":1,"markdown":"# Deploys\n\nUse the staging account first."}`},
-		"empty context":            {RequestContextUpdate, `{"type":"agent_workflow.context_update","version":1,"markdown":""}`},
-		"context at the size cap":  {RequestContextUpdate, `{"type":"agent_workflow.context_update","version":1,"markdown":"` + strings.Repeat("é", MaxWorkflowContextLength) + `"}`},
-		"create from a preset":     {RequestSetup, `{"type":"agent_connection.create","version":1,"serviceType":"http","name":"GitHub","preset":"github"}`},
-		"preset with hosts":        {RequestSetup, `{"type":"agent_connection.create","version":1,"serviceType":"http","name":"GitLab","preset":"gitlab","hosts":[{"match":"exact","value":"gitlab.example.com","port":443}]}`},
+		"allow by match":             {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"match":{"methods":["DELETE"],"path":"/repos/acme/x"}},"blockedCall":{"method":"DELETE","host":"api.github.com","path":"/repos/acme/x","class":"delete"}}`},
+		"allow an AWS call by match": {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"match":{"methods":["POST"],"path":"/"}},"blockedCall":{"method":"POST","host":"ec2.eu-central-1.amazonaws.com","path":"/","class":"create"}}`},
+		"allow by class":             {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete"}}`},
+		"allow with later members":   {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete"},"blockedCall":{"anything":["at","all"]},"reviewers":["ops"]}`},
+		"renew":                      {RequestAccessChange, `{"type":"agent_grant.renew","version":1,"connectionId":"connection-1"}`},
+		"context update":             {RequestContextUpdate, `{"type":"agent_workflow.context_update","version":1,"markdown":"# Deploys\n\nUse the staging account first."}`},
+		"empty context":              {RequestContextUpdate, `{"type":"agent_workflow.context_update","version":1,"markdown":""}`},
+		"context at the size cap":    {RequestContextUpdate, `{"type":"agent_workflow.context_update","version":1,"markdown":"` + strings.Repeat("é", MaxWorkflowContextLength) + `"}`},
+		"create from a preset":       {RequestSetup, `{"type":"agent_connection.create","version":1,"serviceType":"http","name":"GitHub","preset":"github"}`},
+		"preset with hosts":          {RequestSetup, `{"type":"agent_connection.create","version":1,"serviceType":"http","name":"GitLab","preset":"gitlab","hosts":[{"match":"exact","value":"gitlab.example.com","port":443}]}`},
 	}
 	for name, test := range accepted {
 		if err := ValidateRequestAction(test.kind, json.RawMessage(test.action)); err != nil {
@@ -40,12 +40,8 @@ func TestAccessAndContextActionsHaveLocalChecksAndStayOpaqueOtherwise(t *testing
 	}{
 		"allow naming the secret guard's class": {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"credential_minting"}}`},
 		"allow with class and match":            {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete","match":{"methods":["DELETE"]}}}`},
-		"allow with class and operation":        {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete","operation":"ec2:TerminateInstances"}}`},
-		"allow with match and operation":        {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"match":{"methods":["DELETE"]},"operation":"ec2:TerminateInstances"}}`},
-		"allow operation with a wildcard":       {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"ec2:*"}}`},
-		"allow operation with no service":       {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"TerminateInstances"}}`},
-		"allow operation with an upper service": {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"EC2:TerminateInstances"}}`},
-		"allow operation is not text":           {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":7}}`},
+		"allow by AWS action alone":             {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"operation":"ec2:TerminateInstances"}}`},
+		"allow with class and classes":          {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{"class":"delete","classes":["create"]}}`},
 		"allow with neither":                    {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":{}}`},
 		"allow missing":                         {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1"}`},
 		"allow is text":                         {RequestAccessChange, `{"type":"agent_grant.allow","version":1,"connectionId":"connection-1","allow":"delete"}`},
@@ -179,7 +175,6 @@ func TestSessionMembersForPolicyAndTimeLimitsRoundTrip(t *testing.T) {
 		`"temporaryAllows":[{"id":"allow-1","class":"delete","expiresAt":"2026-11-15T10:00:00Z"},` +
 		`{"id":"allow-2","match":{"methods":["DELETE"],"path":"/repos/acme/x"},"expiresAt":"2026-11-15T11:00:00Z"}],` +
 		`"managed":[{"id":"secret_guard","locked":true,"rules":[{"class":"credential_minting","effect":"block"}]}]},` +
-		`"operationClasses":[{"match":{"methods":["POST"],"path":"/graphql"},"class":"read"}],` +
 		`"grantExpiresAt":"2026-11-15T10:00:00Z"}],` +
 		`"expiredConnections":[{"connectionId":"connection-old","connectionName":"Staging AWS","serviceType":"aws","expiredAt":"2026-11-13T10:00:00Z"}]}`
 	var response OpenSessionResponse
@@ -196,7 +191,7 @@ func TestSessionMembersForPolicyAndTimeLimitsRoundTrip(t *testing.T) {
 		connection.Policy.Rules[0].Class != ClassDelete || connection.Policy.Rules[0].Effect != PolicyBlock ||
 		connection.Policy.Rules[2].Match.Path != "/v1/charges/*" || len(connection.Policy.TemporaryAllows) != 2 ||
 		connection.Policy.Managed[0].ID != "secret_guard" || connection.Policy.Managed[0].Rules[0].Class != ClassCredentialMinting ||
-		connection.OperationClasses[0].Class != ClassRead || len(response.ExpiredConnections) != 1 {
+		len(response.ExpiredConnections) != 1 {
 		t.Fatalf("decoded members = %+v", connection)
 	}
 	expiry := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)

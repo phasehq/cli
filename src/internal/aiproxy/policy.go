@@ -75,7 +75,7 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 	if err != nil {
 		failure := &requestFailure{
 			status: http.StatusForbidden, code: codeAccessPolicyUninspectable, decision: "block", reason: reasonAccessPolicyUninspectable, binding: binding,
-			message: "Phase could not read which operation this request performs, so it could not check it against the Connection's access policy (the body is too large or unreadable). Use a smaller body.",
+			message: "Phase could not read which method this request asks to be run as, so it could not check it against the Connection's access rules (the form body is too large or unreadable). Use a smaller body.",
 		}
 		failure.details = p.policyDetails(connection, req, "", "", "default")
 		event := makeEvent(binding, req, "block", "denied", failure.reason, failure.status, time.Since(started), action)
@@ -99,7 +99,7 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 		name = connection.ConnectionID
 	}
 	failure := &requestFailure{status: http.StatusForbidden, decision: "block", binding: binding}
-	failure.details = p.policyDetails(connection, req, decision.Class, decision.Operation, rule)
+	failure.details = p.policyDetails(connection, req, decision.Class, "", rule)
 	if decision.Effect == agentapi.PolicyAsk {
 		request := p.askRequest(connection, req, host, decision)
 		failure.code, failure.reason, failure.decision = codeAccessPolicyAsk, codeAccessPolicyAsk, decisionAsk
@@ -184,9 +184,6 @@ func policyEventDetail(details map[string]any, connection agentapi.Connection) m
 }
 
 func describeCall(method string, decision phaseproxy.PolicyDecision) string {
-	if decision.Operation != "" {
-		return decision.Operation + " (a " + decision.Class + " call)"
-	}
 	method = strings.ToUpper(method)
 	// A method override asks the service to run the request as another
 	// method, and that is the call the policy stopped.
@@ -198,13 +195,10 @@ func describeCall(method string, decision phaseproxy.PolicyDecision) string {
 
 // askRequest builds the body an Agent sends unchanged to POST /v1/requests to
 // ask a member to allow the call for a limited time. It names the narrowest
-// thing that covers the call. For an AWS call whose action the proxy named,
-// that is the one action ("ec2:TerminateInstances"): the action travels in a
-// header or a body and shares its method and path with every other action of
-// the service. Otherwise it is the call's method and exact path. Where the
-// path cannot be spelled as an exact glob or must not be repeated, or an
-// action name is not one an allow may carry, it names the class. No duration
-// is sent, so the organisation's default applies; the reviewer may change it.
+// thing that covers the call: its method and exact path, AWS calls included.
+// Where the path cannot be spelled as an exact glob or must not be repeated,
+// it names the class. No duration is sent, so the organisation's default
+// applies; the reviewer may change it.
 func (p *httpProxy) askRequest(connection agentapi.Connection, req *http.Request, host string, decision phaseproxy.PolicyDecision) json.RawMessage {
 	// The allow names the method the stopped candidate runs as: the request's
 	// own, or the one a method override asks for.
@@ -220,15 +214,7 @@ func (p *httpProxy) askRequest(connection agentapi.Connection, req *http.Request
 	allow := map[string]any{"class": decision.Class}
 	title := "Allow " + decision.Class + " calls on " + name
 	blockedCall := map[string]any{"method": method, "host": host, "path": reportedPath, "class": decision.Class}
-	if decision.Operation != "" {
-		blockedCall["operation"] = decision.Operation
-		if sdkagents.ValidAWSOperation(decision.Operation) {
-			allow = map[string]any{"operation": decision.Operation}
-			title = "Allow " + decision.Operation + " on " + name
-		} else {
-			title = "Allow " + decision.Class + " calls (" + decision.Operation + ") on " + name
-		}
-	} else if glob, exact := phaseproxy.ExactPathGlob(req); exact && policyMethod(method) && p.pathIsReportable(glob) {
+	if glob, exact := phaseproxy.ExactPathGlob(req); exact && policyMethod(method) && p.pathIsReportable(glob) {
 		allow = map[string]any{"match": map[string]any{"methods": []string{method}, "path": glob}}
 		title = "Allow " + method + " " + reportedPath + " on " + name
 	}

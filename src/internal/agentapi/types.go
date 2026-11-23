@@ -329,7 +329,7 @@ func shorterThan(values []string, minimum int) bool {
 func descriptionContains(connection Connection, values []string) bool {
 	described, err := json.Marshal([]any{
 		connection.ConnectionName, connection.CredentialName, connection.Hosts,
-		connection.ConnectionConfig, connection.Policy, connection.OperationClasses,
+		connection.ConnectionConfig, connection.Policy,
 	})
 	if err != nil {
 		return true
@@ -635,20 +635,18 @@ type Connection struct {
 	SealedMaterial      *SealedMaterial         `json:"sealedMaterial,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
-	// Policy, OperationClasses and GrantExpiresAt limit how this grant may be
-	// used. The proxy enforces them before it swaps in or attaches the
-	// credential. None of them reaches the Agent's environment, so a change to
-	// any of them applies to a running session.
-	Policy           *AccessPolicy    `json:"policy,omitempty"`
-	OperationClasses OperationClasses `json:"operationClasses,omitzero"`
-	GrantExpiresAt   *time.Time       `json:"grantExpiresAt,omitempty"`
-	// CredentialEnvironment, SecretGuard and ActionClasses are the provider's
-	// rules from the Console's manifest (see provider_rules.go). The guard and
-	// the classes are applied in place on refresh, like the policy; the
-	// credential environment names are exported to the Agent's processes.
-	CredentialEnvironment []string       `json:"credentialEnvironment,omitempty"`
-	SecretGuard           *SecretGuard   `json:"secretGuard,omitempty"`
-	ActionClasses         *ActionClasses `json:"actionClasses,omitempty"`
+	// Policy and GrantExpiresAt limit how this grant may be used. The proxy
+	// enforces them before it swaps in or attaches the credential. Neither
+	// reaches the Agent's environment, so a change to either applies to a
+	// running session.
+	Policy         *AccessPolicy `json:"policy,omitempty"`
+	GrantExpiresAt *time.Time    `json:"grantExpiresAt,omitempty"`
+	// CredentialEnvironment and SecretGuard are the provider's rules from the
+	// Console's manifest (see provider_rules.go). The guard is applied in place
+	// on refresh, like the policy; the credential environment names are
+	// exported to the Agent's processes.
+	CredentialEnvironment []string     `json:"credentialEnvironment,omitempty"`
+	SecretGuard           *SecretGuard `json:"secretGuard,omitempty"`
 
 	// materialFailure is set when the client withheld this Connection's value.
 	materialFailure string
@@ -748,13 +746,11 @@ type DiscoverConnection struct {
 	EnvironmentBindings []EnvironmentBinding    `json:"environmentBindings,omitempty"`
 	AllowPlainHTTP      bool                    `json:"allowPlainHttp,omitempty"`
 	Authorization       ConnectionAuthorization `json:"authorization"`
-	// Policy, OperationClasses and GrantExpiresAt are forwarded as the Console
-	// sent them. The proxy enforces the copies in its own configuration and
-	// never compares these against it: none of them is part of the Agent's
-	// environment.
-	Policy           json.RawMessage `json:"policy,omitempty"`
-	OperationClasses json.RawMessage `json:"operationClasses,omitempty"`
-	GrantExpiresAt   *time.Time      `json:"grantExpiresAt,omitempty"`
+	// Policy and GrantExpiresAt are forwarded as the Console sent them. The
+	// proxy enforces the copies in its own configuration and never compares
+	// these against it: neither is part of the Agent's environment.
+	Policy         json.RawMessage `json:"policy,omitempty"`
+	GrantExpiresAt *time.Time      `json:"grantExpiresAt,omitempty"`
 }
 
 type DiscoverResponse struct {

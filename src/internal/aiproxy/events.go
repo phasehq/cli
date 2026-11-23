@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/phasehq/cli/internal/agentapi"
-	sdkagents "github.com/phasehq/cli/internal/agentsdk"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 )
 
@@ -236,7 +235,7 @@ func safeEventDetail(detail map[string]any, secrets []string) map[string]any {
 
 // safeEventRule accepts the rule a policy answer names: "default",
 // "secret_guard", or one rule object with an effect and exactly one of a
-// class, a match or an operation (an AWS action).
+// class or a match.
 // It returns the rule rebuilt from its known members only, so nothing else
 // rides along. A spooled event comes back from JSON with generic values, so
 // both forms are read.
@@ -250,9 +249,7 @@ func safeEventRule(value any, secrets []string) (any, bool) {
 		return rule, rule == "default" || rule == phaseproxy.SecretGuardRule
 	case agentapi.PolicyRule:
 		encoded := map[string]any{"effect": rule.Effect}
-		if rule.Operation != "" {
-			encoded["operation"] = rule.Operation
-		} else if rule.Match != nil {
+		if rule.Match != nil {
 			match := map[string]any{}
 			if len(rule.Match.Methods) > 0 {
 				methods := make([]any, 0, len(rule.Match.Methods))
@@ -277,25 +274,17 @@ func safeEventRule(value any, secrets []string) (any, bool) {
 		result := map[string]any{"effect": effect}
 		rawMatch, hasMatch := rule["match"].(map[string]any)
 		class, hasClass := text(rule["class"], 32)
-		operation, hasOperation := text(rule["operation"], maxEventDetailTextLength)
-		targets := 0
-		for _, present := range []bool{hasMatch, hasClass, hasOperation} {
-			if present {
-				targets++
-			}
-		}
-		if targets != 1 {
+		if hasMatch == hasClass {
 			return nil, false
 		}
 		if hasClass {
-			result["class"] = class
-			return result, true
-		}
-		if hasOperation {
-			if !sdkagents.ValidAWSOperation(operation) {
+			// A spooled rule may come from an older build; only the four classes go out.
+			switch class {
+			case agentapi.ClassRead, agentapi.ClassCreate, agentapi.ClassUpdate, agentapi.ClassDelete:
+			default:
 				return nil, false
 			}
-			result["operation"] = operation
+			result["class"] = class
 			return result, true
 		}
 		match := map[string]any{}
