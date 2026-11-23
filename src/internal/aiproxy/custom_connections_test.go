@@ -179,11 +179,6 @@ func TestCustomConnectionBindingsAreValidated(t *testing.T) {
 		"unknown action in a list": func(c map[string]any) {
 			c["injections"] = []any{bearerAttachInjection(), map[string]any{"action": "set_cookie", "name": "session"}}
 		},
-		"unknown whenAbsent": func(c map[string]any) {
-			injection := bearerAttachInjection()
-			injection["whenAbsent"] = "always"
-			c["injections"] = []any{injection}
-		},
 		"single injection names another finalizer": func(c map[string]any) {
 			c["injection"] = map[string]any{"action": "aws_sigv4", "valueFrom": map[string]any{"source": "credential", "fields": map[string]string{"accessKeyId": "token", "secretAccessKey": "token"}}}
 		},
@@ -194,6 +189,17 @@ func TestCustomConnectionBindingsAreValidated(t *testing.T) {
 		if err := parse(mutate); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
+	}
+	// A whenAbsent newer than this client is parsed; only its Connection is
+	// unavailable.
+	connection := customConnectionPayload(customDecoyToken, customLiveToken)
+	injection := bearerAttachInjection()
+	injection["whenAbsent"] = "always"
+	connection["injections"] = []any{injection}
+	session := decodeTestSession(t, customSessionPayload("backend", 1, connection))
+	if bindings, err := parseBindings(session.Connections); err != nil || len(bindings) != 1 ||
+		bindings[0].connection.AccessPolicyFailure() != agentapi.WhenAbsentUnsupported {
+		t.Errorf("unknown whenAbsent: err=%v", err)
 	}
 }
 
