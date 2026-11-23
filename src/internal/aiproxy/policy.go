@@ -94,7 +94,8 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 	if decision.Rule != nil {
 		rule = *decision.Rule
 	}
-	what := describeCall(p.reportableMethod(req.Method), decision)
+	runAs := p.runAsText(req.Method, decision)
+	what := describeCall(p.reportableMethod(req.Method), runAs, decision.Class)
 	name := connection.ConnectionName
 	if name == "" {
 		name = connection.ConnectionID
@@ -115,7 +116,7 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 		}, now)
 	} else {
 		failure.code, failure.reason = codeAccessPolicyBlocked, codeAccessPolicyBlocked
-		failure.message = "Phase blocked " + blockedCallText(failure.details["method"].(string), failure.details["path"].(string), decision) +
+		failure.message = "Phase blocked " + blockedCallText(failure.details["method"].(string), failure.details["path"].(string), runAs) +
 			" on " + name + ": " + blockedBecause(decision) + " A blocked call cannot be requested yet. " +
 			"If the task needs it, tell the human: a member can change this Connection's access rules in the Phase Console."
 	}
@@ -185,14 +186,26 @@ func policyEventDetail(details map[string]any, connection agentapi.Connection) m
 	return detail
 }
 
-func describeCall(method string, decision phaseproxy.PolicyDecision) string {
+// runAsText is the method an override asks the stopped call to be run as, as
+// an answer may repeat it, or empty when the call runs as its own method.
+func (p *httpProxy) runAsText(method string, decision phaseproxy.PolicyDecision) string {
+	if decision.Method == strings.ToUpper(method) {
+		return ""
+	}
+	if named := p.reportableMethod(decision.Method); named != "UNKNOWN" {
+		return named
+	}
+	return "another method"
+}
+
+func describeCall(method, runAs, class string) string {
 	method = strings.ToUpper(method)
 	// A method override asks the service to run the request as another
 	// method, and that is the call the policy stopped.
-	if policyMethod(decision.Method) && decision.Method != method {
-		return "this " + method + ", which asks to be run as " + decision.Method + " (" + classCall(decision.Class) + ")"
+	if runAs != "" {
+		return "this " + method + ", which asks to be run as " + runAs + " (" + classCall(class) + ")"
 	}
-	return "this " + method + " (" + classCall(decision.Class) + ")"
+	return "this " + method + " (" + classCall(class) + ")"
 }
 
 // classCall names a call by its class, with the article it takes.
@@ -205,9 +218,9 @@ func classCall(class string) string {
 
 // blockedCallText is the stopped call as a block names it: its method and
 // path, and the method an override asks it to be run as.
-func blockedCallText(method, path string, decision phaseproxy.PolicyDecision) string {
-	if policyMethod(decision.Method) && decision.Method != strings.ToUpper(method) {
-		return method + " " + path + ", which asks to be run as " + decision.Method + ","
+func blockedCallText(method, path, runAs string) string {
+	if runAs != "" {
+		return method + " " + path + ", which asks to be run as " + runAs + ","
 	}
 	return method + " " + path
 }

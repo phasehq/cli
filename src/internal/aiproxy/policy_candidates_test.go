@@ -95,15 +95,30 @@ func TestMethodOverrideIsAskedAboutAsTheMethodItNames(t *testing.T) {
 	}
 }
 
-// A block of a POST that asks to be run as a DELETE names both methods.
+// A block of a POST that asks to be run as another method names both, a
+// method outside the usual nine included; a name that cannot be repeated is
+// "another method".
 func TestBlockedMethodOverrideNamesTheMethodItAsksFor(t *testing.T) {
-	_, proxy, upstream := policyProxy(t, customPolicyConnection(policyDocument("allow", []any{classRule("delete", "block")})))
+	_, proxy, upstream := policyProxy(t, customPolicyConnection(policyDocument("allow", []any{classRule("delete", "block"), classRule("update", "block")})))
+	for override, want := range map[string]string{
+		"DELETE":                "Phase blocked POST /v1/items/42, which asks to be run as DELETE, on Example API: it is a delete call, and this Connection's Delete row is set to Block.",
+		"purge":                 "Phase blocked POST /v1/items/42, which asks to be run as PURGE, on Example API: it is an update call, and this Connection's Update row is set to Block.",
+		strings.Repeat("X", 40): "Phase blocked POST /v1/items/42, which asks to be run as another method, on Example API: it is an update call, and this Connection's Update row is set to Block.",
+	} {
+		overridden, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items/42", nil)
+		overridden.Header.Set("X-HTTP-Method-Override", override)
+		result := processThrough(proxy, overridden)
+		if result.failure == nil || result.failure.code != codeAccessPolicyBlocked || upstream.calls.Load() != 0 || !strings.HasPrefix(result.failure.message, want) {
+			t.Fatalf("%s: failure = %+v", override, result.failure)
+		}
+	}
+	// The ask names it the same way.
+	_, asking, _ := policyProxy(t, customPolicyConnection(policyDocument("allow", []any{classRule("update", "ask")})))
 	overridden, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items/42", nil)
-	overridden.Header.Set("X-HTTP-Method-Override", "DELETE")
-	result := processThrough(proxy, overridden)
-	if result.failure == nil || result.failure.code != codeAccessPolicyBlocked || upstream.calls.Load() != 0 ||
-		!strings.HasPrefix(result.failure.message, "Phase blocked POST /v1/items/42, which asks to be run as DELETE, on Example API: it is a delete call, and this Connection's Delete row is set to Block.") {
-		t.Fatalf("failure = %+v", result.failure)
+	overridden.Header.Set("X-HTTP-Method-Override", "PURGE")
+	if result := processThrough(asking, overridden); result.failure == nil ||
+		!strings.Contains(result.failure.message, "this POST, which asks to be run as PURGE (an update call) on Example API needs a member's approval") {
+		t.Fatalf("ask: failure = %+v", result.failure)
 	}
 }
 
