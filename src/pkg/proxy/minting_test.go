@@ -107,6 +107,20 @@ func TestCredentialMintingResolvesTargetHeaderQueryAndPathRules(t *testing.T) {
 	if blocked, err := CredentialMintingBlocked(issue, github); err != nil || blocked != nil {
 		t.Fatalf("github issue: blocked=%#v err=%v", blocked, err)
 	}
+	// Keys that open a repository or an account, on GitHub and under a GitHub
+	// Enterprise Server path prefix.
+	for target, operation := range map[string]string{
+		"https://api.github.com/user/keys":                                          "GitHub user SSH key",
+		"https://ghe.example.test/api/v3/user/keys":                                 "GitHub user SSH key",
+		"https://ghe.example.test/github/api/v3/user/keys":                          "GitHub user SSH key",
+		"https://ghe.example.test/github/api/v3/repos/o/r/keys":                     "GitHub repository deploy key",
+		"https://ghe.example.test/github/api/v3/app/installations/42/access_tokens": "GitHub App installation access token",
+	} {
+		request, _ := http.NewRequest(http.MethodPost, target, strings.NewReader("{}"))
+		if blocked, err := CredentialMintingBlocked(request, github); err != nil || blocked == nil || blocked.Operation != operation {
+			t.Errorf("%s: blocked=%#v err=%v, want %q", target, blocked, err, operation)
+		}
+	}
 	postgres := withProviderRules(t, agentapi.Connection{ServiceType: "postgres", Protocol: "postgres"})
 	if blocked, err := CredentialMintingBlocked(installation, postgres); err != nil || blocked != nil {
 		t.Fatalf("unguarded service: blocked=%#v err=%v", blocked, err)
@@ -342,7 +356,7 @@ func TestSecretGuardReadsDualAndMixedServicesByTheirProtocol(t *testing.T) {
 			`{"MessageBody":"`+large+`&Action=DeleteQueue&"}`, map[string]string{"X-Amz-Target": "AmazonSQS.SendMessage"}), ""},
 		"a form body under plain JSON": {awsCall(t, "POST", "https://sqs.us-east-1.amazonaws.com/", "sqs", "application/json",
 			"Action=DeleteQueue&QueueUrl=q", map[string]string{"X-Amz-Target": "AmazonSQS.ListQueues"}), "sqs:DeleteQueue"},
-		"a REST call": {awsCall(t, "POST", "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails", "ses", "application/json", `{"Content":{}}`, nil), ""},
+		"a REST call":                {awsCall(t, "POST", "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails", "ses", "application/json", `{"Content":{}}`, nil), ""},
 		"an action call at the root": {awsCall(t, "POST", "https://email.us-east-1.amazonaws.com/", "ses", "application/json", "Action=DeleteIdentity&Identity=x", nil), "ses:DeleteIdentity"},
 	} {
 		blocked, err := CredentialMintingBlocked(test.request, connection)
