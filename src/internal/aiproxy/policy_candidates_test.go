@@ -1,7 +1,10 @@
 package aiproxy
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"strings"
@@ -119,6 +122,47 @@ func TestBlockedMethodOverrideNamesTheMethodItAsksFor(t *testing.T) {
 	if result := processThrough(asking, overridden); result.failure == nil ||
 		!strings.Contains(result.failure.message, "this POST, which asks to be run as PURGE (an update call) on Example API needs a member's approval") {
 		t.Fatalf("ask: failure = %+v", result.failure)
+	}
+}
+
+// A multipart _method=DELETE within the first 256 KiB is a delete and is
+// blocked; one after it is not read, and the upload is forwarded whole.
+func TestMultipartMethodOverrideThroughTheProxy(t *testing.T) {
+	_, proxy, _ := policyProxy(t, customPolicyConnection(policyDocument("allow", []any{classRule("delete", "block")})))
+	var forwarded [][]byte
+	proxy.transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		forwarded = append(forwarded, body)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	})
+	form := func(fileBytes int, methodFirst bool) (*http.Request, []byte) {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		if methodFirst {
+			_ = writer.WriteField("_method", "DELETE")
+		}
+		file, _ := writer.CreateFormFile("upload", "report.bin")
+		_, _ = file.Write(bytes.Repeat([]byte("r"), fileBytes))
+		if !methodFirst {
+			_ = writer.WriteField("_method", "DELETE")
+		}
+		_ = writer.Close()
+		request, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items", bytes.NewReader(body.Bytes()))
+		request.Header.Set("Content-Type", writer.FormDataContentType())
+		return request, body.Bytes()
+	}
+
+	small, _ := form(1024, true)
+	if result := processThrough(proxy, small); result.failure == nil || result.failure.code != codeAccessPolicyBlocked ||
+		result.failure.details["class"] != "delete" || len(forwarded) != 0 {
+		t.Fatalf("a small multipart _method=DELETE: %+v", result.failure)
+	}
+	large, body := form(512<<10, false)
+	if result := processThrough(proxy, large); result.failure != nil || len(forwarded) != 1 || !bytes.Equal(forwarded[0], body) {
+		t.Fatalf("a large upload with _method after the bound: failure=%+v forwarded=%d", result.failure, len(forwarded))
 	}
 }
 

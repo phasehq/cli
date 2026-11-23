@@ -1876,7 +1876,8 @@ default) is not evaluated at all, and the Connection behaves as without one.
    On every HTTP Connection two things add a further candidate. A method
    override (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, a
    `_method` query parameter, or, except on the `aws` service, a `_method`
-   field of a `POST` form body) adds the class of the method it names, and
+   field of a `POST` form body, in a multipart body only within its first
+   256 KiB) adds the class of the method it names, and
    rules by method are matched against that method too; a name that is no HTTP
    method counts as `update`. A protocol upgrade (a WebSocket handshake) adds
    `update`, because the proxy does not see what travels afterwards.
@@ -1901,8 +1902,13 @@ are one path to many servers). An `allow` rule and a temporary allow match the
 path exactly as it was sent, so a respelled path never borrows an allow
 written for another one.
 
-A `POST` form body read for `_method` that is too large to read (256 KiB) or
-cannot be parsed is refused with `agent_access_policy_uninspectable`.
+A urlencoded `POST` form body is read whole for `_method`; one that is too
+large to read (256 KiB) or cannot be parsed is refused with
+`agent_access_policy_uninspectable`. In a `multipart/form-data` body a
+`_method` part is honoured only within the first 256 KiB: a larger upload is
+never refused for it, a part beyond or across that bound is not read, and the
+whole body is forwarded unchanged. A body whose first bytes do not arrive in
+time is refused like any body the proxy cannot read.
 
 #### Versioning
 

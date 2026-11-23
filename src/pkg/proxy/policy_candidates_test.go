@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"strings"
@@ -121,6 +123,86 @@ func TestFormBodyMethodOverrideAddsTheNamedMethodsClass(t *testing.T) {
 	}
 	if _, err := ClassifyCall(form("POST", "application/x-www-form-urlencoded", "a=%zz&_method=DELETE"), connection); !errors.Is(err, ErrCallUninspectable) {
 		t.Errorf("an unreadable form naming _method: err=%v", err)
+	}
+}
+
+// multipartForm is a multipart/form-data body with a file part of fileBytes
+// before or after a _method part, and its Content-Type.
+func multipartForm(t *testing.T, fileBytes int, methodFirst bool) (string, []byte) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	method := func() {
+		if err := writer.WriteField("_method", "DELETE"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if methodFirst {
+		method()
+	}
+	file, err := writer.CreateFormFile("upload", "report.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(bytes.Repeat([]byte("r"), fileBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if !methodFirst {
+		method()
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return writer.FormDataContentType(), body.Bytes()
+}
+
+// A _method part is read from the first 256 KiB of a multipart body only. A
+// larger upload is never refused for it, and the body goes on unchanged.
+func TestMultipartMethodOverrideIsReadWithinTheBound(t *testing.T) {
+	connection := httpPolicyConnection(t, `{"version":1,"default":"allow","rules":[{"class":"delete","effect":"block"}]}`)
+	bound := int(maximumMintingInspectionBytes)
+	// The file size that starts the _method value three bytes before the bound.
+	_, probe := multipartForm(t, bound, false)
+	straddling := bound - (bytes.LastIndex(probe, []byte("DELETE")) - bound) - 3
+	for name, test := range map[string]struct {
+		fileBytes     int
+		methodFirst   bool
+		unknownLength bool
+		classes       []string
+	}{
+		"a small form":                        {fileBytes: 1024, classes: []string{"create", "delete"}},
+		"_method before a large upload":       {fileBytes: bound * 2, methodFirst: true, classes: []string{"create", "delete"}},
+		"_method after the bound":             {fileBytes: bound + 1, classes: []string{"create"}},
+		"_method after the bound, any length": {fileBytes: bound * 3, unknownLength: true, classes: []string{"create"}},
+		"_method cut off by the bound":        {fileBytes: straddling, classes: []string{"create"}},
+	} {
+		contentType, body := multipartForm(t, test.fileBytes, test.methodFirst)
+		if name == "_method cut off by the bound" {
+			if at := bytes.LastIndex(body, []byte("DELETE")); at >= bound || at+len("DELETE") <= bound {
+				t.Fatalf("the _method value spans %d..%d, not the bound %d", at, at+6, bound)
+			}
+		}
+		request, err := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", contentType)
+		if test.unknownLength {
+			request.ContentLength = -1
+		}
+		if classes := callClasses(t, request, connection); !reflect.DeepEqual(classes, test.classes) {
+			t.Errorf("%s: classes = %v, want %v", name, classes, test.classes)
+		}
+		want := agentapi.PolicyAllow
+		if len(test.classes) > 1 {
+			want = agentapi.PolicyBlock
+		}
+		if decision := decide(t, request, connection); decision.Effect != want {
+			t.Errorf("%s: effect = %s, want %s", name, decision.Effect, want)
+		}
+		if forwarded, err := io.ReadAll(request.Body); err != nil || !bytes.Equal(forwarded, body) {
+			t.Errorf("%s: the body was not forwarded unchanged (%d of %d bytes, err=%v)", name, len(forwarded), len(body), err)
+		}
 	}
 }
 

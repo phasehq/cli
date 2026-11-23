@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -162,7 +164,10 @@ func formOverriddenMethods(req *http.Request) ([]string, error) {
 	}
 	// Rack also takes a POST without a Content-Type as a form.
 	mediaType, _, _ := strings.Cut(req.Header.Get("Content-Type"), ";")
-	if mediaType = strings.ToLower(strings.TrimSpace(mediaType)); mediaType != "" && mediaType != "application/x-www-form-urlencoded" {
+	if mediaType = strings.ToLower(strings.TrimSpace(mediaType)); mediaType == "multipart/form-data" {
+		return multipartOverriddenMethods(req)
+	}
+	if mediaType != "" && mediaType != "application/x-www-form-urlencoded" {
 		return nil, nil
 	}
 	if req.ContentLength > maximumMintingInspectionBytes {
@@ -185,6 +190,47 @@ func formOverriddenMethods(req *http.Request) ([]string, error) {
 		}
 	}
 	return methods, nil
+}
+
+// multipartOverriddenMethods reads _method parts from the first bytes of a
+// multipart body only, the bound a urlencoded body has: an upload is never
+// refused or held for this, and req forwards the whole body unchanged.
+func multipartOverriddenMethods(req *http.Request) ([]string, error) {
+	body := req.Body
+	prefix, err := io.ReadAll(io.LimitReader(body, maximumMintingInspectionBytes))
+	req.Body = prefixedBody{Reader: io.MultiReader(bytes.NewReader(prefix), body), Closer: body}
+	if err != nil {
+		return nil, ErrCallUninspectable
+	}
+	_, parameters, parseErr := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if parseErr != nil || parameters["boundary"] == "" {
+		return nil, nil
+	}
+	var methods []string
+	parts := multipart.NewReader(bytes.NewReader(prefix), parameters["boundary"])
+	for {
+		part, err := parts.NextPart()
+		if err != nil {
+			return methods, nil
+		}
+		// A part cut off by the bound is not read as a method.
+		value, readErr := io.ReadAll(part)
+		if readErr != nil {
+			return methods, nil
+		}
+		if part.FormName() != methodOverrideParameter {
+			continue
+		}
+		if name := strings.ToUpper(strings.TrimSpace(string(value))); name != "" && name != http.MethodPost {
+			methods = append(methods, name)
+		}
+	}
+}
+
+// prefixedBody replays the bytes already read from a body, then the rest.
+type prefixedBody struct {
+	io.Reader
+	io.Closer
 }
 
 // isUpgradeRequest reports whether the request asks to switch protocols, as a
