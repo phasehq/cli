@@ -1,0 +1,836 @@
+package tunnel
+
+import (
+	"bufio"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/netip"
+	"net/url"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
+
+	"github.com/phasehq/cli/internal/agentapi"
+	"github.com/phasehq/cli/internal/tunnel/owner"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
+)
+
+// ControlHost is the name programs use for the proxy's control API.
+const ControlHost = phaseproxy.ManifestHost
+
+// Rule is one Connection's host, without any credential.
+type Rule struct {
+	ConnectionID string
+	Protocol     string
+	Host         agentapi.HostRule
+}
+
+// RulesFromConnections copies the host rules out of a session.
+func RulesFromConnections(connections []agentapi.Connection) []Rule {
+	var rules []Rule
+	for _, connection := range connections {
+		for _, host := range connection.Hosts {
+			rules = append(rules, Rule{ConnectionID: connection.ConnectionID, Protocol: connection.Protocol, Host: host})
+		}
+	}
+	return rules
+}
+
+// Domains are the names the helper sends to the tunnel's resolver. Each covers its
+// subdomains, and anything under them that isn't a Connection host is answered from
+// the network's own DNS servers.
+//
+// The helper writes a DNS entry for each name, and refuses a whole attach over one it
+// can't write an entry for. So a host whose name isn't one a DNS entry can hold is
+// left out, and skipped counts those: such a host is still caught by the name in a
+// TLS hello when its traffic reaches the tunnel.
+func Domains(rules []Rule) (domains []string, skipped int) {
+	seen, left := map[string]bool{ControlHost: true}, map[string]bool{}
+	for _, rule := range rules {
+		value := strings.Trim(strings.ToLower(strings.TrimSpace(rule.Host.Value)), ".")
+		switch {
+		case value == "":
+		case CapturableDomain(value):
+			seen[value] = true
+		default:
+			left[value] = true
+		}
+	}
+	domains = make([]string, 0, len(seen))
+	for domain := range seen {
+		domains = append(domains, domain)
+	}
+	sort.Strings(domains)
+	return domains, len(left)
+}
+
+// Traffic counts what passed through, for status.
+type Traffic struct {
+	TCPUp, TCPDown, UDPUp, UDPDown atomic.Int64
+	ActiveTCP, ActiveUDP           atomic.Int64
+}
+
+// Router decides where each captured flow goes. Nothing here reads or changes a
+// credential: that stays in the proxy, which is why it works with or without a tunnel.
+type Router struct {
+	Upstream *Upstream
+	Traffic  Traffic
+
+	mu              sync.RWMutex
+	rules           []Rule
+	proxyAddress    string
+	proxyAuth       string
+	proxyURL        *url.URL
+	postgresAddress string
+	names           nameTable
+	counts          map[string]int
+	lastFailure     time.Time
+	logf            func(string, ...any)
+
+	// What decides whether a model host is read. See read.go.
+	reader    Reader
+	readNames bool
+	peerRules map[string]PeerRule
+	owner     OwnerFunc
+	ownerWait time.Duration
+	lookups   chan struct{}
+	// uid is the user the engine runs as, whose programs alone get what the proxy has.
+	uid int
+	// helloWait is how long a flow to port 443 is held for its TLS hello.
+	helloWait time.Duration
+
+	// route says where a socket nothing pins would leave from. See loops.
+	route    RouteFunc
+	lastLoop time.Time
+}
+
+// NewRouter starts with no Connections. Until Update, Connection hosts aren't captured.
+// Until Read, no model host is read.
+func NewRouter(upstream *Upstream, logf func(string, ...any)) *Router {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	r := &Router{
+		Upstream: upstream, names: newNameTable(namePool), counts: map[string]int{}, logf: logf,
+		owner: owner.Lookup, ownerWait: ownerWait, lookups: make(chan struct{}, ownerLookups),
+		helloWait: helloWait, route: unpinnedSource, uid: os.Getuid(),
+	}
+	r.peerRules = map[string]PeerRule{LocalPeer: r.localTool}
+	return r
+}
+
+// Update points the router at a proxy session's front doors and Connections.
+func (r *Router) Update(proxyURL, postgresAddress string, rules []Rule) error {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.User == nil {
+		return fmt.Errorf("the proxy's address is malformed")
+	}
+	password, _ := parsed.User.Password()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.proxyAddress = parsed.Host
+	r.proxyURL = parsed
+	r.proxyAuth = base64.StdEncoding.EncodeToString([]byte(parsed.User.Username() + ":" + password))
+	r.postgresAddress = postgresAddress
+	r.rules = append([]Rule(nil), rules...)
+	return nil
+}
+
+// Withdraw forgets the proxy's front doors and the capability for them, once the
+// session they belonged to has stopped. Until the next Update a Connection's flow
+// fails, and a model host's goes on unread, as with a proxy that isn't there. The
+// Connections' hosts are kept, so their names stay captured meanwhile.
+func (r *Router) Withdraw() {
+	r.mu.Lock()
+	r.proxyAddress, r.proxyAuth, r.proxyURL, r.postgresAddress = "", "", nil, ""
+	r.mu.Unlock()
+}
+
+// SetRules replaces the Connections' hosts, for a session that changed while it ran.
+func (r *Router) SetRules(rules []Rule) {
+	r.mu.Lock()
+	r.rules = append([]Rule(nil), rules...)
+	r.mu.Unlock()
+}
+
+// CapturedDomains are the names the helper sends to the tunnel's resolver: the
+// Connections' hosts and, when model hosts are captured by name, those as well.
+// skipped counts the Connections' hosts whose names couldn't be sent.
+func (r *Router) CapturedDomains() (domains []string, skipped int) {
+	r.mu.RLock()
+	rules, reader, byName := append([]Rule(nil), r.rules...), r.reader, r.readNames
+	r.mu.RUnlock()
+	domains, skipped = Domains(rules)
+	if reader == nil || !byName {
+		return domains, skipped
+	}
+	seen := map[string]bool{}
+	for _, domain := range domains {
+		seen[domain] = true
+	}
+	for _, domain := range ReadDomains(reader.ToolHosts()) {
+		if !seen[domain] {
+			domains = append(domains, domain)
+		}
+	}
+	sort.Strings(domains)
+	return domains, skipped
+}
+
+// Counts reports how many flows took each route.
+func (r *Router) Counts() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	counts := make(map[string]int, len(r.counts))
+	for key, value := range r.counts {
+		counts[key] = value
+	}
+	return counts
+}
+
+func (r *Router) count(route string) {
+	r.mu.Lock()
+	r.counts[route]++
+	r.mu.Unlock()
+}
+
+// captured reports whether a name belongs to a Connection, and its protocol at port.
+func (r *Router) captured(name string, port int) (bool, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if strings.EqualFold(name, ControlHost) {
+		return true, "control"
+	}
+	for _, rule := range r.rules {
+		if phaseproxy.MatchHostOnly(rule.Host, name, port) {
+			return true, rule.Protocol
+		}
+	}
+	return false, ""
+}
+
+// capturedName reports whether a name belongs to a Connection on any port.
+func (r *Router) capturedName(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if strings.EqualFold(name, ControlHost) {
+		return true
+	}
+	for _, rule := range r.rules {
+		port := rule.Host.Port
+		if port == 0 {
+			port = 443
+		}
+		if phaseproxy.MatchHostOnly(rule.Host, name, port) {
+			return true
+		}
+	}
+	return false
+}
+
+// AnswerDNS answers for Connection hosts with a tunnel address, and asks the network's
+// own servers about everything else that reaches it. A model host captured by name
+// gets a tunnel address too.
+func (r *Router) AnswerDNS(query []byte) []byte {
+	var parser dnsmessage.Parser
+	header, err := parser.Start(query)
+	if err != nil {
+		return nil
+	}
+	question, err := parser.Question()
+	if err != nil {
+		return nil
+	}
+	name := strings.TrimSuffix(strings.ToLower(question.Name.String()), ".")
+	if !r.capturedName(name) && !r.readByName(name) {
+		return r.Upstream.Forward(name, query)
+	}
+	reply := dnsmessage.Message{
+		Header:    dnsmessage.Header{ID: header.ID, Response: true, RecursionDesired: header.RecursionDesired, RecursionAvailable: true},
+		Questions: []dnsmessage.Question{question},
+	}
+	// Other record types get an empty answer, which keeps a program from learning a
+	// real address through AAAA or HTTPS records.
+	if question.Type == dnsmessage.TypeA && question.Class == dnsmessage.ClassINET {
+		address, ok := r.names.address(name)
+		if !ok {
+			r.count("dns_no_address")
+			return refused(query)
+		}
+		reply.Answers = []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 10},
+			Body:   &dnsmessage.AResource{A: address.As4()},
+		}}
+	}
+	packed, err := reply.Pack()
+	if err != nil {
+		return nil
+	}
+	return packed
+}
+
+// Prepare reaches the real destination before the program's connection completes, so
+// a refused connection looks refused.
+func (r *Router) Prepare(flow Flow) (any, bool) {
+	dest := flow.Dest.Addr()
+	if dest == ProbeAddress {
+		return nil, flow.Dest.Port() == ProbePort
+	}
+	if TunnelPrefix.Contains(dest) {
+		_, known := r.names.name(dest)
+		return nil, known
+	}
+	if r.loops(dest) {
+		return nil, false
+	}
+	upstream, err := r.Upstream.DialContext(context.Background(), "tcp", flow.Dest.String())
+	if err != nil {
+		r.count("tcp_failed")
+		r.noteFailure(flow, err)
+		return nil, false
+	}
+	return upstream, true
+}
+
+// noteFailure logs why the engine couldn't reach a destination, at most every few
+// seconds. It's the one clue to a machine-wide problem, such as no route out.
+func (r *Router) noteFailure(flow Flow, err error) {
+	r.mu.Lock()
+	quiet := time.Since(r.lastFailure) < 5*time.Second
+	if !quiet {
+		r.lastFailure = time.Now()
+	}
+	r.mu.Unlock()
+	if !quiet {
+		name, index, _ := Physical.Current()
+		r.logf("reaching %s failed, leaving by %s (%d): %v", flow.Dest, name, index, err)
+	}
+}
+
+// HandleTCP routes one connection.
+func (r *Router) HandleTCP(client net.Conn, flow Flow) {
+	dest := flow.Dest.Addr()
+	if dest == ProbeAddress {
+		_, _ = io.WriteString(client, ProbeReply)
+		return
+	}
+	if upstream, ok := flow.Prepared.(net.Conn); ok {
+		defer upstream.Close()
+		r.passThrough(client, upstream, flow)
+		return
+	}
+	name, known := r.names.name(dest)
+	if !known {
+		return
+	}
+	port := int(flow.Dest.Port())
+	_, protocol := r.captured(name, port)
+	switch protocol {
+	case "control":
+		// It answers with what a session holds, for this user's programs alone.
+		if !r.ownFlow(flow) {
+			return
+		}
+		r.count("control")
+		r.serveControl(client, port)
+	case "postgres":
+		if !r.ownFlow(flow) {
+			// The adapter signs in with the Connection's credential.
+			r.relayOut(client, net.JoinHostPort(name, strconv.Itoa(port)))
+			return
+		}
+		r.count("postgres")
+		r.mu.RLock()
+		adapter := r.postgresAddress
+		r.mu.RUnlock()
+		if adapter == "" {
+			return
+		}
+		upstream, err := net.DialTimeout("tcp", adapter, 5*time.Second)
+		if err != nil {
+			return
+		}
+		defer upstream.Close()
+		relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
+	default:
+		r.byName(client, flow, name, port)
+	}
+}
+
+// byName handles a flow to one of the tunnel's own addresses, whose name is known
+// from the DNS answer that handed the address out.
+func (r *Router) byName(client net.Conn, flow Flow, name string, port int) {
+	authority := net.JoinHostPort(name, strconv.Itoa(port))
+	connection := r.capturedName(name)
+	reader, _ := r.reading()
+	reads := reader != nil && reader.ReadsHost(name)
+	tool := ""
+	var toProxy bool
+	switch {
+	case reads && port == 443:
+		toProxy, tool = r.handOver(flow, name, connection)
+	case reads && !connection:
+	default:
+		toProxy = r.ownFlow(flow)
+	}
+	if !toProxy {
+		// Not its own tool's flow to a model host, or not this user's flow to what
+		// only the proxy serves: it leaves from here unread.
+		r.relayOut(client, authority)
+		return
+	}
+	// A model host's flow is at the proxy only to be read, and works without it.
+	needed := connection || !reads
+	if needed {
+		r.count("proxy")
+	}
+	upstream, err := r.connect(flow.peer(), authority, tool, needed)
+	if err != nil {
+		if !needed {
+			r.count(unreadBecause(err))
+			r.relayOut(client, authority)
+		}
+		return
+	}
+	defer upstream.Close()
+	relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
+}
+
+// relayOut reaches a named host from here and relays the flow unread. It's for a flow
+// that came to a tunnel address, so there was no real address to reach beforehand.
+func (r *Router) relayOut(client net.Conn, authority string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	upstream, err := r.Upstream.DialContext(ctx, "tcp", authority)
+	cancel()
+	if err != nil {
+		r.count("tcp_failed")
+		return
+	}
+	defer upstream.Close()
+	r.relayUnread(client, upstream, nil)
+}
+
+// passThrough relays a flow that came to a real address. The only thing read is the
+// name in a TLS hello, to catch a host the proxy should have: a Connection host
+// reached by a program with its own DNS or a hard-coded address, which never asks the
+// system resolver, and a model host opened by the tool it is read for.
+func (r *Router) passThrough(client, upstream net.Conn, flow Flow) {
+	var head []byte
+	if flow.Dest.Port() == 443 {
+		name, read, late := peekClientHello(client, r.helloWait)
+		head = read
+		if late {
+			// Nothing is known of it, so it goes on unread whatever it turns out to
+			// carry. That is counted apart from a flow whose host nobody reads.
+			r.count("unread_no_hello")
+		}
+		captured, protocol := r.captured(name, 443)
+		connection := captured && protocol != "postgres" && protocol != "control"
+		if toProxy, tool := r.handOver(flow, name, connection); toProxy {
+			if connection {
+				r.count("proxy_by_tls_name")
+			}
+			proxied, err := r.connect(flow.peer(), net.JoinHostPort(name, "443"), tool, connection)
+			if err == nil {
+				_ = upstream.Close()
+				defer proxied.Close()
+				if _, err := proxied.Write(head); err != nil {
+					return
+				}
+				relayTCP(client, proxied, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
+				return
+			}
+			if connection {
+				// It can't go on without the credential only the proxy holds.
+				return
+			}
+			// A model host needs nothing from the proxy to work. When the proxy can't
+			// take the flow, or can't be told whose it is, it goes on unread rather
+			// than fail.
+			r.count(unreadBecause(err))
+		}
+	}
+	r.relayUnread(client, upstream, head)
+}
+
+// relayUnread carries a flow to its destination untouched, sending on first whatever
+// was read of it to find its name.
+func (r *Router) relayUnread(client, upstream net.Conn, head []byte) {
+	r.count("tcp")
+	r.Traffic.ActiveTCP.Add(1)
+	defer r.Traffic.ActiveTCP.Add(-1)
+	if len(head) > 0 {
+		if _, err := upstream.Write(head); err != nil {
+			return
+		}
+		r.Traffic.TCPUp.Add(int64(len(head)))
+	}
+	relayTCP(client, upstream, &r.Traffic.TCPUp, &r.Traffic.TCPDown)
+}
+
+// RefuseUDP refuses UDP to port 443 at a real address that reached the tunnel. That
+// is HTTP/3, and nothing here can tell which host it is for: relayed, a tool's model
+// traffic would pass with nobody asked whether to read it, and a Connection's without
+// its credential. Refused, the program is told at once and falls back to TCP, where
+// the name in its TLS hello decides. With less routed in, only what is routed in is
+// refused, and a host caught by its name has a tunnel address, which gives UDP no
+// answer.
+func (r *Router) RefuseUDP(flow Flow) bool {
+	reader, _ := r.reading()
+	if flow.Dest.Port() != 443 || reader == nil || TunnelPrefix.Contains(flow.Dest.Addr()) {
+		return false
+	}
+	r.count("udp_443_refused")
+	return true
+}
+
+// HandleUDP carries one UDP conversation. A Connection host's tunnel address gets no
+// answer, so a QUIC program falls back to TCP, where the proxy can see it.
+func (r *Router) HandleUDP(client net.Conn, flow Flow) {
+	defer client.Close()
+	// What RefuseUDP refuses is never relayed, whether or not it was asked first.
+	if TunnelPrefix.Contains(flow.Dest.Addr()) || r.loops(flow.Dest.Addr()) || r.RefuseUDP(flow) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	upstream, err := r.Upstream.DialContext(ctx, "udp", flow.Dest.String())
+	cancel()
+	if err != nil {
+		r.count("udp_failed")
+		return
+	}
+	defer upstream.Close()
+	r.count("udp")
+	r.Traffic.ActiveUDP.Add(1)
+	defer r.Traffic.ActiveUDP.Add(-1)
+	idle := 2 * time.Minute
+	if flow.Dest.Port() == 53 {
+		idle = 30 * time.Second
+	}
+	relayUDP(client, upstream, idle, &r.Traffic.UDPUp, &r.Traffic.UDPDown)
+}
+
+// Echo pings the real destination. A tunnel address gets no answer.
+func (r *Router) Echo(dest netip.Addr, sequence uint16, payload []byte) bool {
+	if TunnelPrefix.Contains(dest) || r.loops(dest) {
+		return false
+	}
+	return PingOnce(dest, sequence, payload)
+}
+
+// RouteFunc reports the address a socket of this process to dest would leave from
+// when nothing pins it to an interface: an address of the interface its route goes
+// by. unpinnedSource is the one used outside tests.
+type RouteFunc func(dest netip.Addr) (source netip.Addr, err error)
+
+// FindRoutesWith replaces how a destination's route is found. Tests use it.
+func (r *Router) FindRoutesWith(route RouteFunc) {
+	r.mu.Lock()
+	r.route = route
+	r.mu.Unlock()
+}
+
+// loops reports whether reaching dest from here would only bring it back, and counts
+// it when so.
+//
+// Nearly every socket the engine opens is pinned to the physical interface, and can't
+// come back. The ranges of another VPN are left to that VPN's own routes. When the
+// VPN is down those routes are gone, the range falls under the routes that capture
+// everything, and what the engine sends there re-enters the tunnel to be sent again:
+// TCP until every place for a connection that is still opening is taken, UDP and
+// pings for as long as they are sent. So a destination that is left to its route, and
+// whose route leads into the tunnel, is refused.
+func (r *Router) loops(dest netip.Addr) bool {
+	if !leftToItsRoute(dest) {
+		return false
+	}
+	r.mu.RLock()
+	route := r.route
+	r.mu.RUnlock()
+	// With no route at all there is nothing to come back by.
+	source, err := route(dest)
+	if err != nil || !ownAddress(source) {
+		return false
+	}
+	r.mu.Lock()
+	r.counts["loop_refused"]++
+	quiet := time.Since(r.lastLoop) < 5*time.Second
+	if !quiet {
+		r.lastLoop = time.Now()
+	}
+	r.mu.Unlock()
+	if !quiet {
+		r.logf("refused %s: its route leads back into Phase, as it does while the VPN it belongs to is down", dest)
+	}
+	return true
+}
+
+// connect opens a CONNECT tunnel through the proxy, as a program with proxy settings
+// would. The proxy's password is presented here on the program's behalf, so behind a
+// tunnel the decoy is the only thing a program has to hold.
+//
+// The proxy is told whose flow it is before the CONNECT is sent: the peer it came
+// from, and the tool it is read for, or "" when it isn't to be read. That is done for
+// every CONNECT sent from here, because one the proxy knows nothing about is taken for
+// a program given the proxy through its environment, for which any model host is read.
+//
+// When the proxy can't keep what it was told, a flow that is only there to be read
+// isn't handed over, and the error is errNotNoted. A flow that needs the proxy, for
+// a Connection's credential, still goes: the proxy takes it as the tunnel's, from no
+// known tool, and reads nothing of it.
+//
+// A flow that was handed over for a tool is counted here, by what the proxy did with
+// it. The proxy's answer says whether it serves the tunnel itself, which is where it
+// reads, or only relays it. Only the first is a flow that was read, and not even
+// that one when the proxy says afterwards that it handed it on unread: it does that
+// for a while for a program that keeps refusing its certificate at that host, which
+// it knows by the program's TLS hello, and that comes after the answer.
+//
+// However the connection ends, here or once the flow is over, it ends in one place:
+// bufferedConn.Close, which tells the proxy first.
+func (r *Router) connect(peer, authority, tool string, needed bool) (net.Conn, error) {
+	r.mu.RLock()
+	address, auth, reader := r.proxyAddress, r.proxyAuth, r.reader
+	r.mu.RUnlock()
+	if address == "" {
+		return nil, fmt.Errorf("the proxy isn't ready")
+	}
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	held := &bufferedConn{Conn: conn, reader: bufio.NewReader(conn), closed: func() {}}
+	noted, flow := false, &handed{}
+	if reader != nil {
+		closed, noteErr := reader.NoteFlow(conn.LocalAddr().String(), peer, tool, func() { r.wentUnread(flow) })
+		if closed != nil {
+			held.closed = closed
+		}
+		noted = noteErr == nil
+		if !noted && !needed {
+			_ = held.Close()
+			return nil, errNotNoted
+		}
+		if !noted {
+			r.count("proxy_not_noted")
+		}
+	}
+	fail := func(err error) (net.Conn, error) {
+		_ = held.Close()
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", authority, authority, auth); err != nil {
+		return fail(err)
+	}
+	response, err := http.ReadResponse(held.reader, nil)
+	if err != nil {
+		return fail(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fail(fmt.Errorf("the proxy answered %s", response.Status))
+	}
+	_ = conn.SetDeadline(time.Time{})
+	if tool != "" && noted {
+		r.countHanded(flow, response.Header.Get(phaseproxy.TunnelHeader) == phaseproxy.TunnelTerminated)
+	}
+	return held, nil
+}
+
+// serveControl makes http://phase.invalid work with no proxy settings. port is the
+// one the program connected to.
+//
+// It answers only for its own name. The proxy's password is presented here on the
+// program's behalf, and a browser lets a page read whatever its own origin answers:
+// a page whose name was pointed at this address would otherwise read a Connection's
+// environment as if it were the page's own.
+func (r *Router) serveControl(client net.Conn, port int) {
+	r.mu.RLock()
+	proxyURL := r.proxyURL
+	r.mu.RUnlock()
+	if proxyURL == nil {
+		return
+	}
+	// The proxy's address carries its password, which the transport presents.
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true}
+	forward := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.Out.URL.Scheme = "http"
+			request.Out.URL.Host = ControlHost
+			request.Out.Host = ControlHost
+		},
+	}
+	listener := newSingleConnListener(client)
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if !controlAuthority(request.Host, port) {
+				r.count("control_refused")
+				http.Error(w, "This address answers only as "+ControlHost+".", http.StatusForbidden)
+				return
+			}
+			forward.ServeHTTP(w, request)
+		}),
+		ReadHeaderTimeout: 30 * time.Second,
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				listener.Close()
+			}
+		},
+	}
+	_ = server.Serve(listener)
+	<-listener.closed
+}
+
+// controlAuthority reports whether a request names the control host itself: the name
+// alone, or the name with the port the program connected to.
+func controlAuthority(authority string, port int) bool {
+	name := authority
+	if host, named, err := net.SplitHostPort(authority); err == nil {
+		if named != strconv.Itoa(port) {
+			return false
+		}
+		name = host
+	}
+	return strings.EqualFold(strings.TrimSuffix(name, "."), ControlHost)
+}
+
+// bufferedConn is a connection to the proxy. It keeps bytes the CONNECT reader
+// already buffered, and says when the router is done with the connection.
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+	closed func()
+	once   sync.Once
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+// Close says the router is done with the connection, and then closes it. In that
+// order: the proxy knows the connection by the address it comes from, and while the
+// router still holds the port nothing else can connect from that address. Closed
+// first, the port could go to another program while the proxy still took a
+// connection from it for this one, with whatever was noted for it.
+func (c *bufferedConn) Close() error {
+	c.once.Do(c.closed)
+	return c.Conn.Close()
+}
+
+func (c *bufferedConn) CloseWrite() error {
+	if closer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return closer.CloseWrite()
+	}
+	return nil
+}
+
+// singleConnListener serves exactly one connection.
+type singleConnListener struct {
+	conn   chan net.Conn
+	addr   net.Addr
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newSingleConnListener(conn net.Conn) *singleConnListener {
+	listener := &singleConnListener{conn: make(chan net.Conn, 1), addr: conn.LocalAddr(), closed: make(chan struct{})}
+	listener.conn <- conn
+	return listener
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conn:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *singleConnListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *singleConnListener) Addr() net.Addr { return l.addr }
+
+// nameTable hands out tunnel addresses to Connection hosts, reusing the oldest once
+// the pool runs out, but never one handed out within addressHold.
+type nameTable struct {
+	mu     sync.Mutex
+	pool   netip.Prefix
+	byName map[string]netip.Addr
+	byAddr map[netip.Addr]string
+	// handed is when each address was last given out, by clock.
+	handed map[netip.Addr]time.Time
+	clock  func() time.Time
+	next   netip.Addr
+}
+
+// addressHold is how long an address is kept for its name after it was last given
+// out: well past the 10 seconds a program may keep the answer.
+const addressHold = 30 * time.Second
+
+func newNameTable(pool netip.Prefix) nameTable {
+	return nameTable{
+		pool: pool, byName: map[string]netip.Addr{}, byAddr: map[netip.Addr]string{},
+		handed: map[netip.Addr]time.Time{}, clock: time.Now, next: pool.Addr().Next(),
+	}
+}
+
+// address gives name its tunnel address. ok is false when every address was given
+// out too recently to take back: a program may still be using it for its old name.
+func (t *nameTable) address(name string) (addr netip.Addr, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.clock()
+	if addr, ok := t.byName[name]; ok {
+		t.handed[addr] = now
+		return addr, true
+	}
+	// Of any one more addresses than are in use, one is free.
+	for tries := len(t.byAddr) + 1; tries > 0; tries-- {
+		addr = t.next
+		t.next = addr.Next()
+		if !t.pool.Contains(t.next) || t.next == lastAddress(t.pool) {
+			t.next = t.pool.Addr().Next()
+		}
+		old, used := t.byAddr[addr]
+		if used && now.Sub(t.handed[addr]) < addressHold {
+			continue
+		}
+		if used {
+			delete(t.byName, old)
+		}
+		t.byName[name] = addr
+		t.byAddr[addr] = name
+		t.handed[addr] = now
+		return addr, true
+	}
+	return netip.Addr{}, false
+}
+
+func (t *nameTable) name(addr netip.Addr) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	name, ok := t.byAddr[addr]
+	return name, ok
+}
+
+func lastAddress(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Masked().Addr()
+	for next := addr.Next(); prefix.Contains(next); next = next.Next() {
+		addr = next
+	}
+	return addr
+}

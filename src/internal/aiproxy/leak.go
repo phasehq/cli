@@ -82,8 +82,7 @@ type leakGuard struct {
 	limitedRules *censor.Rules
 	// skipped are the pattern rules this proxy is not applying. Status counts
 	// and names them.
-	skipped  []censor.SkippedRule
-	reported *placeholderLog
+	skipped []censor.SkippedRule
 
 	// matches remembers what the table says about the hosts seen, per flow, so
 	// the check every request makes allocates nothing.
@@ -100,6 +99,17 @@ type leakGuard struct {
 	// client that registered them said. An event never carries such an id.
 	keyNamed map[string]struct{}
 
+	// The memory embedded here is the local peer's, which is all status tells
+	// of; peers holds every other capture peer's, by the peer's id.
+	*peerMemory
+	peerMu sync.Mutex
+	peers  map[string]*peerMemory
+}
+
+// peerMemory is what is remembered of one capture peer's traffic, by tool and
+// host. Each peer has its own, bounds included, so none can touch another's.
+type peerMemory struct {
+	reported   *placeholderLog
 	handshakes *handshakeTracker
 	unread     *unreadLog
 	// mirrored keeps the hellos of clients whose hello is copied, as they
@@ -111,9 +121,38 @@ type leakGuard struct {
 	connections *connectionLog
 }
 
+func newPeerMemory() *peerMemory {
+	return &peerMemory{
+		reported: newPlaceholderLog(), handshakes: newHandshakeTracker(), unread: newUnreadLog(),
+		mirrored: newFreshHellos(), connections: newConnectionLog(),
+	}
+}
+
+// maxRememberedPeers bounds the peers remembered. Their ids are given by code
+// in this process; past the bound they all start afresh, which reads more.
+const maxRememberedPeers = 1024
+
+// memoryOf returns what is remembered for the peer a match's flow came from.
+func (g *leakGuard) memoryOf(match *leakHostMatch) *peerMemory {
+	if match == nil || match.flow.peer() == PeerLocal {
+		return g.peerMemory
+	}
+	g.peerMu.Lock()
+	defer g.peerMu.Unlock()
+	kept := g.peers[match.flow.Peer]
+	if kept == nil {
+		if g.peers == nil || len(g.peers) >= maxRememberedPeers {
+			g.peers = map[string]*peerMemory{}
+		}
+		kept = newPeerMemory()
+		g.peers[match.flow.Peer] = kept
+	}
+	return kept
+}
+
 // leakMatchKey is a flow and the host as a client wrote it.
 type leakMatchKey struct {
-	tool, capture, host string
+	peer, tool, capture, host string
 }
 
 func newLeakGuard(mode string) (*leakGuard, error) {
@@ -190,9 +229,8 @@ func newLeakGuardWithInventory(mode string, rules *censor.Rules, inventory *phas
 	}
 	guard := &leakGuard{
 		mode: leakModeFrom(mode), hosts: defaultLeakHosts, identity: identity, principal: principal, key: key, index: index, inventory: inventory, limitedRules: limited,
-		skipped:  append(rules.Skipped(), absent...),
-		reported: newPlaceholderLog(), unprotected: map[string]struct{}{}, partial: map[string]struct{}{}, keyNamed: map[string]struct{}{},
-		handshakes: newHandshakeTracker(), unread: newUnreadLog(), mirrored: newFreshHellos(), connections: newConnectionLog(),
+		skipped:     append(rules.Skipped(), absent...),
+		unprotected: map[string]struct{}{}, partial: map[string]struct{}{}, keyNamed: map[string]struct{}{}, peerMemory: newPeerMemory(),
 	}
 	if err := guard.guests.start(); err != nil {
 		return nil, err
@@ -654,6 +692,8 @@ func (g *leakGuard) eventPlaceholders(found []string) []string {
 // pass-through window, and while a connection to it that was handed to the
 // service unread is open or was opened in the last unreadPeriod.
 func (g *leakGuard) status() *remoteapi.LeakProtectionStatus {
+	// Windows and connections are the local peer's: status is this machine's,
+	// and what another capture peer's clients do must not change it.
 	inspected := g.hosts.hostNames(leakTreatmentInspect)
 	// A host one tool lists as not read is read when another tool's list
 	// reads it.
@@ -744,7 +784,7 @@ func (g *leakGuard) inspects(flow FlowContext, host string, port int) *leakHostM
 	if flow.Tool == "" && flow.Capture == CaptureTunnel {
 		return nil
 	}
-	key := leakMatchKey{tool: flow.Tool, capture: flow.capture(), host: host}
+	key := leakMatchKey{peer: flow.peer(), tool: flow.Tool, capture: flow.capture(), host: host}
 	g.matchMu.Lock()
 	match, known := g.matches[key]
 	g.matchMu.Unlock()

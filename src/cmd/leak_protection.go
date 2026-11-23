@@ -13,7 +13,9 @@ import (
 	"sync"
 
 	"github.com/phasehq/cli/internal/leakguard"
+	"github.com/phasehq/cli/internal/tunnel/engine"
 	"github.com/phasehq/cli/pkg/phase"
+	phaseproxy "github.com/phasehq/cli/pkg/proxy"
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
 )
 
@@ -30,6 +32,17 @@ const (
 	leakProtectionWarning     = "Phase: leak protection could not be reached, so values from this command are not removed from model traffic. Run phase ai status to see why."
 	leakInventoryFullWarning  = "Phase: the leak protection inventory has no room for more values from this login, so values from this command are not removed from model traffic. Restarting the Phase AI proxy makes room: it starts again with the values registered most recently."
 	leakProtectionInactiveMsg = "Phase: leak protection is not active in this shell, so values from this command are not removed from model traffic."
+	// The first two for the hook-managed proxy when it is one of several
+	// proxies the command found. Another proxy may have taken the values, so
+	// the line names this one and speaks of the model traffic it reads only.
+	leakHookProxyWarning     = "Phase: the hook-managed Phase AI proxy could not be reached, so values from this command are not removed from the model traffic it reads. Run phase ai status to see why."
+	leakHookProxyFullWarning = "Phase: the leak protection inventory of the hook-managed Phase AI proxy has no room for more values from this login, so values from this command are not removed from the model traffic it reads. Restarting the Phase AI proxy makes room: it starts again with the values registered most recently."
+	// The same four for the proxy of a phase up engine, which phase ai status
+	// does not show and phase ai does not restart.
+	leakTunnelWarning          = "Phase: leak protection could not be reached, so values from this command are not removed from model traffic. Run phase status to see why."
+	leakTunnelFullWarning      = "Phase: the leak protection inventory has no room for more values from this login, so values from this command are not removed from model traffic. Running phase down and then phase up makes room: it starts again with the values registered most recently."
+	leakTunnelProxyWarning     = "Phase: the phase up engine could not be reached, so values from this command are not removed from the model traffic it reads. Run phase status to see why."
+	leakTunnelProxyFullWarning = "Phase: the leak protection inventory of the phase up engine has no room for more values from this login, so values from this command are not removed from the model traffic it reads. Running phase down and then phase up makes room: it starts again with the values registered most recently."
 )
 
 // unprotectedWarning says how many of a command's values leak protection
@@ -53,16 +66,39 @@ func unprotectedWarning(count, partial int) string {
 }
 
 // leakRuntimeSource names the source that finds the hook-managed proxy from
-// the runtime state on disk.
-const leakRuntimeSource = "runtime"
+// the runtime state on disk, and leakTunnelSource the one that finds the proxy
+// of a running phase up engine from the engine's.
+const (
+	leakRuntimeSource = "runtime"
+	leakTunnelSource  = "up"
+)
+
+// leakProxyWarning is what a failed registration says of a proxy that is not
+// the session's own: unreachable and full when it is the only proxy the
+// command found, and the two that name it when it is one of several.
+type leakProxyWarning struct {
+	unreachable, full           string
+	namedUnreachable, namedFull string
+}
+
+// leakProxyWarnings holds those lines by the source that found the proxy. A
+// source that is not here speaks as the hook-managed proxy does on its own.
+var leakProxyWarnings = map[string]leakProxyWarning{
+	leakRuntimeSource: {leakProtectionWarning, leakInventoryFullWarning, leakHookProxyWarning, leakHookProxyFullWarning},
+	leakTunnelSource:  {leakTunnelWarning, leakTunnelFullWarning, leakTunnelProxyWarning, leakTunnelProxyFullWarning},
+}
 
 // The session's own environment is leakguard's first source. The proxy the
 // harness hooks keep running is the second: a command in a shell that does
 // not load the Phase environment (Codex's and Cursor's shells, another
-// terminal) still hands out values a harness on this machine can read. A
-// later source, such as the phase up engine, is one more AddSource.
+// terminal) still hands out values a harness on this machine can read. So
+// can a command inside a session, which is why every source is asked and
+// every proxy found is registered with. The proxy of a running phase up
+// engine is the third: it is the one that reads the model traffic of the
+// tools on this machine through the tunnel, whatever else runs.
 func init() {
 	leakguard.AddSource(leakguard.Source{Name: leakRuntimeSource, Find: hookRuntimeProxy, Restarting: hookRuntimeRestarting})
+	leakguard.AddSource(leakguard.Source{Name: leakTunnelSource, Find: tunnelEngineProxy})
 }
 
 // leakRuntimeStat is the file check a command pays when no proxy runs, once
@@ -123,8 +159,33 @@ func hookRuntimeRestarting() bool {
 	return err == nil && lock.PID > 0 && state.PID == lock.PID && state.Generation == lock.Generation && processIsAlive(lock.PID)
 }
 
-// leakLocate finds the proxy to register with, leakIdentity says who this
-// command is to it, and leakRegister registers with it; tests replace them.
+// leakTunnelStat is the one file check a command pays for phase up when no
+// engine runs; tests count it.
+var leakTunnelStat = os.Lstat
+
+// tunnelEngineProxy finds the proxy of a running phase up engine from the
+// state the engine keeps while its proxy serves a session, when the process
+// that wrote it is alive. With no engine it costs one stat, and it never
+// touches the network. State that is not the owner's alone, is not a regular
+// file or is of another version is not used.
+func tunnelEngineProxy() (string, bool) {
+	directory, err := tunnelStateDirectory()
+	if err != nil {
+		return "", false
+	}
+	if _, err := leakTunnelStat(engine.ProxyStatePath(directory)); err != nil {
+		return "", false
+	}
+	state, err := engine.ReadProxyState(directory)
+	if err != nil || !processIsAlive(state.PID) {
+		return "", false
+	}
+	return state.ProxyURL, true
+}
+
+// leakLocate finds the proxies to register with, leakIdentity says who this
+// command is to them, and leakRegister registers with one of them; tests
+// replace them.
 var (
 	leakLocate   = locateLeakProxy
 	leakIdentity = phase.LoginIdentity
@@ -136,12 +197,14 @@ var (
 // locateLeakProxy is leakguard.Locate, except that a session's proxy at the
 // address of a hook daemon that is gone is not trusted. On Windows the shell
 // guard only probes the port, which a listener that took it over passes too.
-func locateLeakProxy() (leakguard.Proxy, bool) {
-	proxy, found := leakguard.Locate()
-	if found && proxy.InSession() && proxy.URL != "" && sessionProxyOfDeadRuntime(proxy.URL) {
-		return leakguard.Proxy{Source: leakguard.SourceSession}, true
+func locateLeakProxy() []leakguard.Proxy {
+	proxies := leakguard.Locate()
+	for i, proxy := range proxies {
+		if proxy.InSession() && proxy.URL != "" && sessionProxyOfDeadRuntime(proxy.URL) {
+			proxies[i] = leakguard.Proxy{Source: leakguard.SourceSession}
+		}
 	}
-	return proxy, found
+	return proxies
 }
 
 // sessionProxyOfDeadRuntime reports a proxy address the hook daemon's state
@@ -172,8 +235,32 @@ func sameProxyAddress(a, b string) bool {
 // may be what the command's output is piped into.
 var leakWarnings io.Writer = os.Stderr
 
-// inactiveNotice and runtimeWarning are each printed at most once per process.
-var inactiveNotice, runtimeWarning sync.Once
+// oncePerSource runs what it is given at most once in a process for each
+// source.
+type oncePerSource struct {
+	mu   sync.Mutex
+	done map[string]bool
+}
+
+func (o *oncePerSource) Do(source string, run func()) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.done[source] {
+		return
+	}
+	if o.done == nil {
+		o.done = map[string]bool{}
+	}
+	o.done[source] = true
+	run()
+}
+
+// inactiveNotice is printed at most once per process, and so is the warning
+// about each proxy that is not the session's own.
+var (
+	inactiveNotice sync.Once
+	proxyWarning   oncePerSource
+)
 
 // protectValues registers values with leak protection before the command
 // hands them to anything outside the CLI.
@@ -181,8 +268,7 @@ func protectValues(ctx context.Context, agent bool, values []leakguard.Value) er
 	if len(values) == 0 {
 		return nil
 	}
-	proxy, found := leakLocate()
-	return protectValuesWith(ctx, proxy, found, agent, values)
+	return protectValuesWith(ctx, leakLocate(), agent, values)
 }
 
 // noProxyRunning is what a command does when there is no proxy to register
@@ -195,68 +281,115 @@ func noProxyRunning(agent bool) {
 	}
 }
 
-// protectValuesWith registers values with the proxy that was found, and says
-// what a failure means:
-//   - inside a session, a failure refuses the command for an Agent login and
-//     warns otherwise: what the command hands out is in front of the model;
-//   - a proxy found any other way is registered with as well, and a failure
-//     there warns once and never refuses, whoever is logged in: the command
-//     may have nothing to do with an AI tool;
-//   - a proxy found any other way that nothing listens at is no proxy: the
-//     state that named it is stale, or its process id went to another
-//     program. Warning then would warn on every command, in every shell.
-//     Nothing listens where the connection is refused or is not made within
-//     the registration's short dial timeout, which is how it shows where the
-//     system is slow to refuse, as Windows can be (leakguard.ErrNotListening);
+// inSession reports proxies found by a command that runs inside a session:
+// the session's own proxy is then the first of them.
+func inSession(proxies []leakguard.Proxy) bool {
+	return len(proxies) > 0 && proxies[0].InSession()
+}
+
+// protectValuesWith registers values with every proxy that was found, one
+// after another, and says what a failure means:
+//   - the session's own proxy comes first and decides for the command: a
+//     failure refuses it for an Agent login, before any other proxy is
+//     spoken to, and warns otherwise. What the command hands out is in front
+//     of the model;
+//   - every other proxy is registered with as well, inside a session or not:
+//     it reads the model traffic of tools the session's proxy never sees. A
+//     failure there warns once and never refuses, whoever is logged in: the
+//     command may have nothing to do with an AI tool. When it is one of
+//     several proxies the warning names it;
+//   - such a proxy that nothing listens at is no proxy: the state that named
+//     it is stale, or its process id went to another program. Warning then
+//     would warn on every command, in every shell. Nothing listens where the
+//     connection is refused or is not made within the registration's short
+//     dial timeout, which is how it shows where the system is slow to
+//     refuse, as Windows can be (leakguard.ErrNotListening);
 //   - unless its daemon is starting or recycling its session: the
 //     registration has then waited for it (hookRuntimeRestarting), and a
 //     daemon that did not come back in time is a proxy that could not be
 //     reached, not one that is not running;
-//   - with no proxy at all, see noProxyRunning.
+//   - with no proxy at all, or none that runs, see noProxyRunning.
 //
-// Values the proxy took the registration of and could not protect are
-// counted in a warning and handed out all the same.
-func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent bool, values []leakguard.Value) error {
+// Values a proxy took the registration of and could not protect, or protected
+// only in part, are counted in a warning and handed out all the same. Every
+// proxy is sent the same values, so the warning is given once, with the most
+// any of them counted.
+//
+// What the registrations may take in all is leakguard's to bound: the first
+// has a registration's usual time and each one after it what is left of that
+// (leakguard.Proxy.Register).
+func protectValuesWith(ctx context.Context, proxies []leakguard.Proxy, agent bool, values []leakguard.Value) error {
 	if len(values) == 0 {
-		return nil
-	}
-	if !found {
-		noProxyRunning(agent)
 		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// The command states its own login, the one its values were read with:
-	// the proxy it found may be running as another, and decides by this.
-	proxy.Identity = leakIdentity(ctx)
-	result, err := leakRegister(ctx, proxy, values)
-	if err == nil {
-		if result.Unprotected > 0 || result.Partial > 0 {
-			fmt.Fprintln(leakWarnings, unprotectedWarning(result.Unprotected, result.Partial))
+	// The command states its own login, the one its values were read with,
+	// to every proxy: each may be running as another, and decides by this.
+	var identity phaseproxy.InventoryIdentity
+	if len(proxies) > 0 {
+		identity = leakIdentity(ctx)
+	}
+	// running says some proxy runs: it took the values, or was there and
+	// did not. unprotected and partial are the most values any of them could
+	// not protect, or protected only in part.
+	running, unprotected, partial := false, 0, 0
+	for _, proxy := range proxies {
+		proxy.Identity = identity
+		result, err := leakRegister(ctx, proxy, values)
+		full := errors.Is(err, leakguard.ErrInventoryFull)
+		switch {
+		case err == nil:
+			running = true
+			unprotected = max(unprotected, result.Unprotected)
+			partial = max(partial, result.Partial)
+		case proxy.InSession() && agent && full:
+			return errLeakInventoryFull
+		case proxy.InSession() && agent:
+			return errLeakProtectionUnreachable
+		case proxy.InSession():
+			running = true
+			if full {
+				fmt.Fprintln(leakWarnings, leakInventoryFullWarning)
+			} else {
+				fmt.Fprintln(leakWarnings, leakProtectionWarning)
+			}
+		case errors.Is(err, leakguard.ErrNotListening):
+			// Nothing listens where its state points: no proxy runs there.
+		default:
+			running = true
+			warning := failedProxyWarning(proxy.Source, len(proxies) > 1, full)
+			proxyWarning.Do(proxy.Source, func() { fmt.Fprintln(leakWarnings, warning) })
 		}
-		return nil
 	}
-	if !proxy.InSession() && errors.Is(err, leakguard.ErrNotListening) {
+	if unprotected > 0 || partial > 0 {
+		fmt.Fprintln(leakWarnings, unprotectedWarning(unprotected, partial))
+	}
+	if !running {
 		noProxyRunning(agent)
-		return nil
-	}
-	full := errors.Is(err, leakguard.ErrInventoryFull)
-	warning := leakProtectionWarning
-	if full {
-		warning = leakInventoryFullWarning
-	}
-	switch {
-	case !proxy.InSession():
-		runtimeWarning.Do(func() { fmt.Fprintln(leakWarnings, warning) })
-	case agent && full:
-		return errLeakInventoryFull
-	case agent:
-		return errLeakProtectionUnreachable
-	default:
-		fmt.Fprintln(leakWarnings, warning)
 	}
 	return nil
+}
+
+// failedProxyWarning is the line for a failed registration with the proxy a
+// source other than the session's found. several says the command found
+// more than one proxy, and full that this one's inventory is.
+func failedProxyWarning(source string, several, full bool) string {
+	lines, known := leakProxyWarnings[source]
+	if !known {
+		lines = leakProxyWarnings[leakRuntimeSource]
+		several = false
+	}
+	switch {
+	case several && full:
+		return lines.namedFull
+	case several:
+		return lines.namedUnreachable
+	case full:
+		return lines.full
+	}
+	return lines.unreachable
 }
 
 // protectSecrets registers the secrets a command is about to hand out. A
@@ -264,8 +397,8 @@ func protectValuesWith(ctx context.Context, proxy leakguard.Proxy, found, agent 
 // its key name, and the registration says which it is.
 func protectSecrets(ctx context.Context, backend phase.SecretsBackend, secrets []sdk.SecretResult) error {
 	typed, agent := backend.(*phase.AgentBackend)
-	proxy, found := leakLocate()
-	if !found && !agent {
+	proxies := leakLocate()
+	if len(proxies) == 0 && !agent {
 		return nil
 	}
 	values := make([]leakguard.Value, 0, len(secrets))
@@ -287,10 +420,10 @@ func protectSecrets(ctx context.Context, backend phase.SecretsBackend, secrets [
 	// Only a session treats an Agent login differently, and outside one only
 	// the backend says whether this is an Agent login, so nothing else is read
 	// for a command that registers nothing.
-	if found && proxy.InSession() && !agent {
+	if inSession(proxies) && !agent {
 		agent = phase.ActiveLoginIsAgent()
 	}
-	return protectValuesWith(ctx, proxy, found, agent, values)
+	return protectValuesWith(ctx, proxies, agent, values)
 }
 
 // protectLeaseCredentials registers the credentials of the leases in a

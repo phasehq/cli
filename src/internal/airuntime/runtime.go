@@ -137,6 +137,34 @@ func (r *Runtime) identify(session *agentapi.OpenSessionResponse) proxy.Inventor
 	return identity
 }
 
+// NewForUp builds the runtime for `phase up`. It's a network feature, so it doesn't
+// depend on the `phase ai enable` setup, and it takes the same logins `phase ai run`
+// does: an Agent token, or a user login with a Workflow.
+func NewForUp(workflowOverride string) (*Runtime, error) {
+	// One look at the login, as New takes it: the host and the token are one
+	// account's, and who that is comes from the session the Console opens.
+	login, err := activeLogin()
+	if err != nil {
+		return nil, ErrAuthenticationRequired
+	}
+	client, err := clientForSavedLogin(login.Host, login.Token)
+	if err != nil {
+		return nil, err
+	}
+	if client.TokenType() == agentapi.TokenService {
+		return nil, errors.New("Phase Service tokens cannot use phase up; use a User or Agent token")
+	}
+	workflowID := workflowOverride
+	if client.TokenType() == agentapi.TokenAgent {
+		workflowID = ""
+	} else if workflowID == "" {
+		if aiConfig := config.LoadAIConfig(); aiConfig != nil {
+			workflowID = aiConfig.DefaultWorkflowID
+		}
+	}
+	return &Runtime{Client: client, WorkflowID: workflowID, HarnessLabel: "phase up"}, nil
+}
+
 func clientForSavedLogin(host, token string) (*agentapi.Client, error) {
 	if _, _, err := agentapi.ParseDurableToken(token); err != nil {
 		return nil, ErrAuthenticationRequired

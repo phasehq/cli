@@ -46,6 +46,7 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 		// events and trust files. Stop the proxy first so it writes nothing
 		// back, and drop the CA key from the system keystore with them.
 		stopRuntimeForLoginChange(cmd)
+		stopEngineForLogin(cmd)
 		// A keystore that could not be reached keeps what it holds: said in
 		// one line, of the keys this machine made.
 		var left []string
@@ -100,6 +101,7 @@ func runUsersLogout(cmd *cobra.Command, args []string) error {
 
 		accountID := ids[0]
 		stopRuntimeForLoginChange(cmd)
+		stopEngineForLogin(cmd)
 		// What the leak protection inventory stored for this login goes with
 		// it: read who it is before its record does.
 		var leaving *config.UserConfig
@@ -153,6 +155,31 @@ func stopRuntimeForLoginChange(cmd *cobra.Command) {
 	defer cancel()
 	if err := stopHookRuntimeForLogin(stopContext); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop the running Phase AI proxy: %v\n", err)
+	}
+}
+
+// stopEngineForLogin is stopTunnelEngine; tests replace it.
+var stopEngineForLogin = stopTunnelEngine
+
+// stopTunnelEngine stops phase up's engine, which holds a session and its
+// credentials in memory and keeps its state under ~/.phase. It stops the way
+// phase down stops it: the helper steps aside first, so the machine's traffic
+// goes direct again, and nothing is left running with its state deleted.
+func stopTunnelEngine(cmd *cobra.Command) {
+	directory, err := tunnelStateDirectory()
+	if err != nil {
+		return
+	}
+	pid, running := tunnelEnginePID(directory)
+	if !running {
+		return
+	}
+	stopped := stopTunnel(directory)
+	if processIsAlive(pid) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Could not stop phase up's engine (pid %d); run phase down.\n", pid)
+	}
+	if stopped.stillAttached != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s is still attached to the Phase helper, and wasn't stopped.\n", stopped.stillAttached)
 	}
 }
 

@@ -225,7 +225,7 @@ func (t leakHostTable) lookupFlow(flow FlowContext, host string) *leakHostMatch 
 		match.harness = flow.Tool
 	}
 	if match != nil {
-		match.flow = FlowContext{Capture: flow.capture(), Tool: flow.Tool}
+		match.flow = FlowContext{Capture: flow.capture(), Tool: flow.Tool, Peer: flow.peer()}
 		match.key = leakStateKey{tool: match.harness, host: leakHostName(host)}
 	}
 	return match

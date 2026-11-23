@@ -914,10 +914,11 @@ func registerThroughControlAs(t *testing.T, proxy *httpProxy, stated phaseproxy.
 // registerAsCommand registers through the CLI's own client as a command of
 // the stated login would. The zero identity is a command that cannot tell.
 func registerAsCommand(stated phaseproxy.InventoryIdentity, values []leakguard.Value) (leakguard.Result, error) {
-	proxy, found := leakguard.Locate()
-	if !found {
+	found := leakguard.Locate()
+	if len(found) == 0 {
 		return leakguard.Result{}, errors.New("no proxy was found")
 	}
+	proxy := found[0]
 	proxy.Identity = stated
 	return proxy.Register(context.Background(), values)
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/phasehq/cli/internal/leakguard"
 	"github.com/phasehq/cli/internal/remoteapi"
 	phaseproxy "github.com/phasehq/cli/pkg/proxy"
+	"golang.org/x/net/http2"
 )
 
 // The tests of who is calling. Behind the environment proxy any listed host
@@ -286,6 +287,9 @@ func (r *leakRig) connectAs(t *testing.T, host string, flow *FlowContext, header
 	}
 	t.Cleanup(func() { _ = raw.Close() })
 	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
+	if r.opened != nil {
+		r.opened(raw.LocalAddr().String())
+	}
 	if flow != nil {
 		if err := r.proxy.flows.note(raw.LocalAddr().String(), *flow); err != nil {
 			t.Fatal(err)
@@ -601,44 +605,82 @@ func TestAConnectRefusedWhileDrainingUsesItsNoteUp(t *testing.T) {
 	}
 }
 
-// A capture layer drops the note of a connection that ended without sending
-// its CONNECT.
-func TestForgetFlowDropsANoteNobodyUsed(t *testing.T) {
+// A tunnel that is done with a connection takes the note its CONNECT never
+// used with it, and nothing of any other connection.
+func TestATunnelsConnectionTakesItsUnusedNoteWithIt(t *testing.T) {
 	engine := New()
+	notes := engine.flowNotes()
 	flow := tunnelFlow("opencode")
+	done := map[string]func(){}
 	for _, address := range []string{"127.0.0.1:50320", "127.0.0.1:50321", "[::1]:50322"} {
+		done[address] = engine.TunnelConnection(address)
 		if err := engine.NoteFlow(address, flow); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Two of them ended without sending their CONNECT.
+	done["127.0.0.1:50320"]()
+	done["[::1]:50322"]()
 	// The address is the same however it is written.
-	engine.ForgetFlow("[::ffff:127.0.0.1]:50320")
-	engine.ForgetFlow("[::1]:50322")
-	// What names no note changes nothing.
-	for _, address := range []string{"127.0.0.1:50399", "192.0.2.10:50321", "127.0.0.1", "not an address", ""} {
-		engine.ForgetFlow(address)
-	}
-	notes := engine.flowNotes()
-	if _, noted := notes.take("127.0.0.1:50320"); noted {
-		t.Fatal("a forgotten note was still used")
+	if _, noted := notes.take("[::ffff:127.0.0.1]:50320"); noted {
+		t.Fatal("the note of a connection that ended was still used")
 	}
 	if _, noted := notes.take("[::1]:50322"); noted {
-		t.Fatal("a forgotten note was still used")
+		t.Fatal("the note of a connection that ended was still used")
 	}
 	if got, noted := notes.take("127.0.0.1:50321"); !noted || got != flow {
 		t.Fatalf("another connection's note: %+v %v", got, noted)
 	}
-	// Forgetting a note twice, or one that was used, is nothing.
-	engine.ForgetFlow("127.0.0.1:50321")
-	engine.ForgetFlow("127.0.0.1:50320")
+	// Being done with a connection twice, or with one whose note was used, is
+	// nothing.
+	done["127.0.0.1:50321"]()
+	done["127.0.0.1:50320"]()
+	if len(notes.notes) != 0 || len(notes.tunnelled) != 0 {
+		t.Fatalf("%d notes and %d connections are left", len(notes.notes), len(notes.tunnelled))
+	}
+
+	// The address goes to a later connection before the tunnel says it is done
+	// with the earlier one. The later one does not inherit the earlier one's
+	// note, and the earlier one takes nothing of the later one with it.
+	earlier := engine.TunnelConnection("127.0.0.1:50324")
+	if err := engine.NoteFlow("127.0.0.1:50324", flow); err != nil {
+		t.Fatal(err)
+	}
+	later := engine.TunnelConnection("127.0.0.1:50324")
+	if len(notes.notes) != 0 {
+		t.Fatal("a later connection from the same address inherited a note")
+	}
+	codex := tunnelFlow("codex")
+	if err := engine.NoteFlow("127.0.0.1:50324", codex); err != nil {
+		t.Fatal(err)
+	}
+	earlier()
+	if !notes.tunnels("127.0.0.1:50324") {
+		t.Fatal("an earlier connection took a later one's place with it")
+	}
+	if got, noted := notes.take("127.0.0.1:50324"); !noted || got != codex {
+		t.Fatalf("an earlier connection took a later one's note with it: %+v %v", got, noted)
+	}
+	later()
+
+	// A note left for a connection no tunnel said is its own waits for its
+	// CONNECT as before, and another connection being done leaves it alone.
+	if err := engine.NoteFlow("127.0.0.1:50325", flow); err != nil {
+		t.Fatal(err)
+	}
+	engine.TunnelConnection("127.0.0.1:50326")()
+	if got, noted := notes.take("127.0.0.1:50325"); !noted || got != flow {
+		t.Fatalf("a note of its own: %+v %v", got, noted)
+	}
+
 	var zero Engine
-	zero.ForgetFlow("127.0.0.1:50323")
+	ended := zero.TunnelConnection("127.0.0.1:50323")
 	if err := zero.NoteFlow("127.0.0.1:50323", flow); err != nil {
 		t.Fatal(err)
 	}
-	zero.ForgetFlow("127.0.0.1:50323")
+	ended()
 	if _, noted := zero.flowNotes().take("127.0.0.1:50323"); noted {
-		t.Fatal("a zero engine kept a forgotten note")
+		t.Fatal("a zero engine kept the note of a connection that ended")
 	}
 }
 
@@ -728,6 +770,219 @@ func TestTheSessionsToolNeverDecidesWhatIsRead(t *testing.T) {
 	if !reflect.DeepEqual(status.UnreadHosts, []string{"left.example"}) {
 		t.Fatalf("not inspected: %v", status.UnreadHosts)
 	}
+}
+
+// A tunnel's own connection is never taken for a client of the proxy
+// environment. Its note can be refused, or forgotten before a slow CONNECT is
+// read; the CONNECT then arrives with none, and is a tunnel's flow from no
+// known tool: the host is read for nobody, whichever tools list it.
+func TestATunnelsConnectionWithNoNoteIsReadForNoTool(t *testing.T) {
+	rig := newLeakRig(t, leakModeCensor)
+	rig.proxy.flows = newFlowNotes()
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	const host, path = "api.anthropic.com", "/v1/messages"
+	var closed []func()
+	rig.opened = func(local string) { closed = append(closed, rig.proxy.flows.tunnel(local)) }
+
+	// No note was kept for it.
+	if rig.sendAs(t, host, path, nil) {
+		t.Fatal("a tunnel's connection with no note was read as a client of the proxy environment")
+	}
+	// Its note was forgotten by the time the CONNECT was read.
+	noted := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	asked := 0
+	rig.proxy.flows.now = func() time.Time {
+		if asked++; asked == 1 {
+			return noted
+		}
+		return noted.Add(flowNoteLifetime)
+	}
+	claude := tunnelFlow("claude")
+	if rig.sendAs(t, host, path, &claude) {
+		t.Fatal("a tunnel's connection whose note had expired was read")
+	}
+	if asked != 2 || len(rig.proxy.flows.notes) != 0 {
+		t.Fatalf("the note was looked at %d times and %d are left", asked, len(rig.proxy.flows.notes))
+	}
+	rig.proxy.flows.now = nil
+	// A note that is there says whose flow it is, as before.
+	if !rig.sendAs(t, host, path, &claude) {
+		t.Fatal("a noted flow on a tunnel's connection was not read for its tool")
+	}
+	if got := rig.seenLeakEvents(t); !reflect.DeepEqual(got, []seenLeakEvent{{"claude", CaptureTunnel, host}}) {
+		t.Fatalf("events: %+v", got)
+	}
+
+	// Once the tunnel has closed its connections nothing is remembered of
+	// them, and a client of the proxy environment is read as ever.
+	for _, forget := range closed {
+		forget()
+	}
+	if len(closed) != 3 || len(rig.proxy.flows.tunnelled) != 0 {
+		t.Fatalf("%d connections were opened and %d are still kept", len(closed), len(rig.proxy.flows.tunnelled))
+	}
+	rig.opened = nil
+	if !rig.sendAs(t, host, path, nil) {
+		t.Fatal("a client of the proxy environment was not read")
+	}
+
+	// A tunnel's connection that ends without sending its CONNECT takes its
+	// note with it. The next program to connect from that address and port,
+	// which the system hands out again, is a client of the proxy environment
+	// and is read. Left behind, the note would name it an unknown program's
+	// flow through a tunnel, which is never read.
+	raw, err := net.Dial("tcp", rig.proxyURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := raw.LocalAddr().String()
+	done := rig.proxy.flows.tunnel(local)
+	if err := rig.proxy.flows.note(local, tunnelFlow("")); err != nil {
+		t.Fatal(err)
+	}
+	done()
+	_ = raw.Close()
+	if len(rig.proxy.flows.notes) != 0 || len(rig.proxy.flows.tunnelled) != 0 {
+		t.Fatalf("%d notes and %d connections are left", len(rig.proxy.flows.notes), len(rig.proxy.flows.tunnelled))
+	}
+	if !rig.sendOver(t, rig.connectFrom(t, local, host), host, path) {
+		t.Fatal("the next CONNECT from the address of a connection that sent none was taken for that connection's flow")
+	}
+}
+
+// sendOverHTTP2 is sendOver for a client that speaks HTTP/2 and nothing
+// else: one of Cursor's unary calls, over a tunnel that is already open.
+func (r *leakRig) sendOverHTTP2(t *testing.T, service *connectService, raw net.Conn, host string) (read bool) {
+	t.Helper()
+	conn := tls.Client(raw, &tls.Config{ServerName: host, RootCAs: r.bothRoots, MinVersion: tls.VersionTLS12, NextProtos: []string{http2.NextProtoTLS}})
+	if err := conn.Handshake(); err != nil {
+		t.Fatalf("TLS with %s: %v", host, err)
+	}
+	state := conn.ConnectionState()
+	if state.NegotiatedProtocol != http2.NextProtoTLS {
+		t.Fatalf("%s answered with %q", host, state.NegotiatedProtocol)
+	}
+	_, phaseErr := state.PeerCertificates[0].Verify(x509.VerifyOptions{Roots: r.phaseRoots, DNSName: host})
+	client, err := (&http2.Transport{}).NewClientConn(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := agentMessage("the key is " + leakSecretOne)
+	request, _ := http.NewRequest(http.MethodPost, "https://"+host+cursorUnaryPath, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/proto")
+	response, err := client.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("%s: %v", host, err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	_ = conn.Close()
+	if response.StatusCode != http.StatusOK || response.ProtoMajor != 2 {
+		t.Fatalf("%s: status %d over %s", host, response.StatusCode, response.Proto)
+	}
+	received := service.last(t).body
+	replaced := !bytes.Contains(received, []byte(leakSecretOne)) && bytes.Contains(received, []byte("ph:secret:stripe"))
+	if untouched := bytes.Equal(received, body); replaced == untouched || replaced != (phaseErr == nil) {
+		t.Fatalf("%s: answered by Phase = %v, value replaced = %v, body untouched = %v", host, phaseErr == nil, replaced, untouched)
+	}
+	return replaced
+}
+
+// A tunnel spoken to over HTTP/2 is read by the flow of its CONNECT, as one
+// over HTTP/1.1 is: for the host's own tool and no other program, noted or not.
+func TestATunnelsFlowOverHTTP2IsReadForItsOwnToolOnly(t *testing.T) {
+	rig, service := newConnectRig(t, leakModeCensor)
+	rig.proxy.flows = newFlowNotes()
+	registerLeakValues(t, rig.guard, map[string]string{"stripe": leakSecretOne})
+	const host = cursorAPIHost
+	send := func(flow *FlowContext) bool {
+		t.Helper()
+		return rig.sendOverHTTP2(t, service, rig.connectAs(t, host, flow), host)
+	}
+	cursor, unknown, claude := tunnelFlow("cursor"), tunnelFlow(""), tunnelFlow("claude")
+	if !send(&cursor) {
+		t.Fatal("Cursor's flow to its own host was not read over HTTP/2")
+	}
+	if send(&unknown) {
+		t.Fatal("a tunnel flow from no known tool was read over HTTP/2")
+	}
+	if send(&claude) {
+		t.Fatal("Claude's flow to Cursor's host was read over HTTP/2")
+	}
+	// A tunnel's own connection whose note was not kept is read for no tool.
+	var closed []func()
+	rig.opened = func(local string) { closed = append(closed, rig.proxy.flows.tunnel(local)) }
+	if send(nil) {
+		t.Fatal("a tunnel's connection with no note was read over HTTP/2 as a client of the proxy environment")
+	}
+	if !send(&cursor) {
+		t.Fatal("a noted flow on a tunnel's connection was not read for its tool over HTTP/2")
+	}
+	for _, forget := range closed {
+		forget()
+	}
+	rig.opened = nil
+	// A client of the proxy environment is read as before.
+	if !send(nil) {
+		t.Fatal("a client of the proxy environment was not read over HTTP/2")
+	}
+	// The one event is of Cursor's own flow, the first to hold the value there.
+	events := rig.leakEventsNow()
+	if len(events) != 1 || events[0].Protocol != leakProtocolHTTP2 || events[0].Host != host ||
+		events[0].Detail["harness"] != "cursor" || events[0].Detail["capture"] != CaptureTunnel {
+		t.Fatalf("events: %+v", events)
+	}
+}
+
+func TestATunnelsConnectionsAreKeptWhileTheyAreOpen(t *testing.T) {
+	notes := newFlowNotes()
+	first := notes.tunnel("127.0.0.1:50001")
+	if !notes.tunnels("127.0.0.1:50001") || !notes.tunnels("[::ffff:127.0.0.1]:50001") || notes.tunnels("127.0.0.1:50002") {
+		t.Fatal("a tunnel's connection is not known by the address it comes from")
+	}
+	// The address goes to a later connection before the earlier one's close is
+	// told: that close forgets nothing of the later one.
+	second := notes.tunnel("127.0.0.1:50001")
+	first()
+	if !notes.tunnels("127.0.0.1:50001") {
+		t.Fatal("closing an earlier connection forgot a later one from the same address")
+	}
+	second()
+	second()
+	if notes.tunnels("127.0.0.1:50001") || len(notes.tunnelled) != 0 {
+		t.Fatal("a closed connection is still kept")
+	}
+	// Only a loopback address and port is one the proxy accepts from.
+	for _, address := range []string{"192.0.2.10:50003", "127.0.0.1", "127.0.0.1:0", "localhost:50003", ""} {
+		notes.tunnel(address)()
+		forget := notes.tunnel(address)
+		if notes.tunnels(address) || len(notes.tunnelled) != 0 {
+			t.Errorf("%q was kept as a tunnel's connection", address)
+		}
+		forget()
+	}
+	// A note left for a tunnel's connection is still used once, and by it.
+	defer notes.tunnel("127.0.0.1:50004")()
+	if err := notes.note("127.0.0.1:50004", tunnelFlow("codex")); err != nil {
+		t.Fatal(err)
+	}
+	if got, noted := notes.take("127.0.0.1:50004"); !noted || got != tunnelFlow("codex") {
+		t.Fatalf("the note: %+v %v", got, noted)
+	}
+
+	// Through the engine, whenever its proxy starts; a zero engine as well.
+	t.Setenv(LeakProtectionEnvironmentKey, "")
+	engine := New()
+	closed := engine.TunnelConnection("127.0.0.1:50100")
+	if !engine.flowNotes().tunnels("127.0.0.1:50100") {
+		t.Fatal("the engine did not keep a tunnel's connection")
+	}
+	closed()
+	if engine.flowNotes().tunnels("127.0.0.1:50100") {
+		t.Fatal("the engine kept a tunnel's connection after it closed")
+	}
+	var zero Engine
+	zero.TunnelConnection("127.0.0.1:50101")()
 }
 
 // A proxy started for one tool still reads every listed host for the clients

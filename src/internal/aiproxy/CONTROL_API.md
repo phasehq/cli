@@ -150,13 +150,15 @@ revision.
 ### POST /v1/inventory/key and POST /v1/inventory (leak protection)
 
 Used by the CLI itself (`internal/leakguard`), never by the Agent's own tools.
-Before a command hands out secret values it looks for a running proxy, tells
-it who the command itself is (the tenant and login of the login that command
-uses), fetches the keys the proxy hands such a command, indexes each value
-locally with `pkg/censor`, and registers the entries, saying who it is again.
-The entries carry keyed hashes and lengths, never a value.
+Before a command hands out secret values it looks for the running proxies,
+and with each one tells it who the command itself is (the tenant and login of
+the login that command uses), fetches the keys that proxy hands such a
+command, indexes each value locally with `pkg/censor`, and registers the
+entries, saying who it is again. Each proxy's keys are its own, fetched from
+it and used with it alone. The entries carry keyed hashes and lengths, never
+a value.
 
-The proxy it finds may be running as another login: a daemon started before
+A proxy it finds may be running as another login: a daemon started before
 `phase users switch`, or a command with another account's token in its
 environment. So nothing is decided by the proxy's login alone. The proxy
 knows who its own session is from the session the Console opened for it, the
@@ -203,8 +205,9 @@ both, and a scan makes a pass for each of the two keys. It is registered
 with this proxy now, by whichever of its entries it is found: where it
 cannot be replaced it stops the request, as below.
 
-The proxy is looked for through an ordered list of sources, and the first one
-that finds a proxy is used (`leakguard.AddSource` adds another):
+The proxies are looked for through an ordered list of sources
+(`leakguard.AddSource` adds another). Every source is asked, and every proxy
+found is registered with, one after another in this order:
 
 1. The session the command runs in: `PHASE_AI_ENABLED=1` and the proxy
    variables in its environment.
@@ -213,6 +216,14 @@ that finds a proxy is used (`leakguard.AddSource` adds another):
    that wrote it is alive. This is what covers a command in a shell that does
    not load the Phase environment: Codex's and Cursor's shells, or another
    terminal.
+
+One proxy is not enough, because each reads model traffic the others do not
+see: a value handed out inside a session can reach a harness whose traffic
+only the hook-managed proxy reads. A value has the same placeholder at every
+proxy that knows it. The type and the id are the CLI's own, and only the
+hashes are made with each proxy's key. A proxy two sources find is one proxy,
+registered with once as the earlier source's: in a shell that loads the
+hook-managed proxy's environment that proxy is the session's own.
 
 The hook-managed proxy is away for some seconds whenever its daemon starts or
 recycles its session: the listener closes, the state is withdrawn, and both
@@ -243,20 +254,31 @@ each. Stale state so costs a command a quarter of a second at most on any
 system. A proxy that took the connection and did not answer in time is
 another matter: it is there, and failed.
 
+The command does not wait on each proxy in turn as long as it would on one.
+The first registration has the bounds above: a second for a proxy that is
+restarting, and a second each for the key and for the values. Each one after
+it has what is left of one second (`leakguard.Timeout`) counted from when the
+first began, for its wait and its calls together, and never less than the
+250 ms of a dial; its dial is given at most half of what it has, so nothing
+listening is still told from no answer. A proxy that is away or does not
+answer so costs the ones after it 250 ms each at the most, and they are
+registered with all the same. A proxy that runs answers in a few
+milliseconds.
+
 With no proxy and no daemon the lookup costs two file checks, of the state
-and of the lock: nothing is read, nothing is called and nothing is waited
-for. Process liveness is all the lock is judged by, so a lock and state left
-by a daemon that was killed, whose process id another program now holds,
-read as a daemon between two sessions. What a failed registration means
-depends on how the proxy was found:
+and of the lock, inside a session as outside one: nothing is read, nothing is
+called and nothing is waited for. Process liveness is all the lock is judged
+by, so a lock and state left by a daemon that was killed, whose process id
+another program now holds, read as a daemon between two sessions. What a
+failed registration means depends on how the proxy was found:
 
 | The proxy was found through | When the registration fails |
 |---|---|
-| the session's environment | An Agent-token login is refused before any value leaves. Any other login gets one warning line on stderr and carries on. Nothing listening there is such a failure too: the session's own proxy is meant to be there. |
-| the runtime state, and nothing listens at its address (the connection is refused, or is not made within 250 ms) | No proxy is running: the last row applies. Nothing listens there, so the state is stale or its process id now belongs to another program, and a warning would repeat on every command in every shell. |
-| the runtime lock or state of a daemon that is starting or recycling, and it is not back within the second | The next row applies: a proxy is there and could not be reached. It is never taken for no proxy. |
-| the runtime state, any other failure | One warning line on stderr, once per process, and the command carries on, whoever is logged in. A timeout, an HTTP error, an answer that cannot be read and a full inventory are such failures: a proxy is there and did not take the values. |
-| nothing | Nothing is registered. An Agent-token login is told once that leak protection is not active; any other login is told nothing. |
+| the session's environment | An Agent-token login is refused before any value leaves, and before any other proxy is registered with. Any other login gets one warning line on stderr and carries on, to the other proxies too. Nothing listening there is such a failure too: the session's own proxy is meant to be there. |
+| the runtime state, and nothing listens at its address (the connection is refused, or is not made within the dial's time) | No proxy runs there, and nothing is said of it; when no other proxy runs either, the last row applies. Nothing listens there, so the state is stale or its process id now belongs to another program, and a warning would repeat on every command in every shell. |
+| the runtime lock or state of a daemon that is starting or recycling, and it is not back in time | The next row applies: a proxy is there and could not be reached. It is never taken for no proxy. |
+| the runtime state, any other failure | One warning line on stderr, once per process, and the command carries on, whoever is logged in, inside a session or not. A timeout, an HTTP error, an answer that cannot be read and a full inventory are such failures: a proxy is there and did not take the values. When the command found more than one proxy the line names the hook-managed proxy and speaks of the model traffic that proxy reads: another proxy may have taken the values. |
+| nothing, or only state that nothing listens at | Nothing is registered. An Agent-token login is told once that leak protection is not active; any other login is told nothing. |
 
 #### The inventory across restarts
 
@@ -809,19 +831,45 @@ well (below).
 Where a flow comes from:
 
 - A capture layer in the proxy's own process (a tunnel's router) calls
-  `Engine.NoteFlow(remoteAddr, FlowContext{Capture, Tool})` with the loopback
-  address and port its connection to the proxy comes from, before it sends the
-  CONNECT. The note is used up by the first CONNECT from that address,
+  `Engine.NoteFlow(remoteAddr, FlowContext{Capture, Tool, Peer})` with the
+  loopback address and port its connection to the proxy comes from, before it
+  sends the CONNECT. The note is used up by the first CONNECT from that address,
   whatever becomes of that CONNECT: one refused for its capability (407) or
   while the session is refreshing (503) uses it up like one that is served,
   so a second CONNECT on the same connection needs a note of its own. A note
-  nobody uses waits about ten seconds; `Engine.ForgetFlow(remoteAddr)` drops
-  it at once, and a capture layer calls it when a connection it noted ends
-  without sending its CONNECT. A note left behind would name the next
-  connection from the same address and port. At most 4096 notes wait at once;
+  nobody uses waits about ten seconds. At most 4096 notes wait at once;
   `NoteFlow` returns an error when it could not keep one, and the flow must
-  then not be handed over.
-- Nothing a request carries sets a flow: no header, target or proxy user name.
+  then not be handed over to be read.
+- A tunnel first calls `Engine.TunnelConnection(remoteAddr)` for every
+  connection it opens to the proxy, and calls what that returns when it is
+  done with the connection, before it closes it. In between, what the proxy
+  knows of the address is that connection's alone. A CONNECT from it that
+  finds no note (the note was refused and the flow needs a Connection's
+  credential, or the CONNECT was read after the note was forgotten) is a
+  tunnel's flow from no known tool, so it is never read as a client of the
+  proxy environment. A note its CONNECT never used goes with the connection:
+  left behind, it would name the next connection from the same address and
+  port.
+- A capture layer that counts what was read goes by what the proxy did, in two
+  steps. The answer to a CONNECT whose tunnel the proxy serves itself carries
+  `X-Phase-Tunnel: terminated`; a tunnel it only relays is answered without
+  the header. The answer goes out before the client's TLS hello is read, so a
+  tunnel answered that way can still be handed to its service unread: the
+  client is in a pass-through window of its own, or a hello that has to be
+  copied could not be. The proxy then calls what the tunnel gave
+  `Engine.OnTunnelUnread(remoteAddr, unread)`, which a tunnel calls after
+  `TunnelConnection` for the same address and before it sends the CONNECT.
+  `unread` is called at most once, and is forgotten with the connection.
+- `Peer` is the capture peer the flow came from: an opaque id of up to 64
+  letters, digits, `.`, `_` and `-`, compared exactly. `local`
+  (`aiproxy.PeerLocal`), which an empty `Peer` is read as, is this machine: the
+  proxy environment and this machine's own tunnel. A tunnel's capturing half
+  need not run where the proxy does, so the capture layer names the peer each
+  flow arrived from, and gives no other peer the id `local`. A tunnel's own
+  connection whose CONNECT finds no note names no peer: nothing of it is
+  read, so nothing is kept of it.
+- Nothing a request carries sets a flow, its peer included: no header, target
+  or proxy user name.
 - A CONNECT nobody noted is a client of the proxy environment. Its tool is the
   one the proxy was started for (`phase ai run -- claude` is `claude`,
   `phase ai exec` the harness that invoked it); the hook-managed proxy serves
@@ -831,11 +879,16 @@ Where a flow comes from:
 - `Engine.ShouldRead(tool, host)` and `Engine.ReadHosts(tool)` tell a capture
   layer which flows to hand over, without a copy of the table.
 
-What the proxy remembers about a host it remembers per tool and host: the
-pass-through windows, the once-a-minute limit on unread reports and the
-placeholders already reported. The tool is the one the flow is named as
-(`harness` in its events). One tool's refused handshakes never open a window
-for another tool on the same host.
+What the proxy remembers about a host it remembers per peer, tool and host:
+the pass-through windows, the once-a-minute limit on unread reports, the
+placeholders already reported, the hellos kept for a host whose hello is
+copied, and the count of connections copied or passed through unread. The
+tool is the one the flow is named as (`harness` in its events). One tool's
+refused handshakes never open a window for another tool on the same host.
+Each peer has a memory of its own, with its own bounds, so the same holds
+between two peers with the same tool on the same host, and a peer that
+fills its memory takes nothing from another's. `GET /v1/status` tells of the
+`local` peer only.
 
 A pass-through window is narrower still: it is for the client that refused.
 Every program started in a session is named as the session's tool, so a
@@ -934,6 +987,7 @@ session unavailable. `detail` holds:
 | `mode` | `censor` or `observe` |
 | `harness` | the flow's tool when that tool's list reads the host, otherwise the tool whose entry the host is read by |
 | `capture` | `proxy` or `tunnel` |
+| `peer` | the capture peer the flow came from, when it is not `local`. Absent for this machine's own traffic |
 | `where` | `url`, `header`, `body`, `message` (of a WebSocket, or of a Connect stream), comma-separated |
 | `inventoryHits`, `ruleRedactions`, `ruleAlerts`, `signedFindings` | counts; `signedFindings` is what was found in text the provider signed and left as it was |
 | `labels` | rule labels |

@@ -63,6 +63,10 @@ type Engine struct {
 	Stderr                io.Writer
 	OnStarted             func(Endpoints)
 	UpstreamTLSConfig     *tls.Config
+	// OnConnectionsChanged is called when the Connections of a running session
+	// change where they go, with all of them as they now are. It lets a front end
+	// that routes by host, such as phase up's tunnel, follow the session.
+	OnConnectionsChanged func([]ConnectionHosts)
 
 	runtime *engineRuntime
 }
@@ -312,6 +316,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	// working after a recycle.
 	state.decoys = e.decoyHistory()
 	state.decoys.remember(session.Config.Connections)
+	startedWith := state.connectionHosts()
 
 	proxyListener, err := net.Listen("tcp", defaultAddress(e.ListenAddress))
 	if err != nil {
@@ -444,6 +449,13 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	if e.OnStarted != nil {
 		e.OnStarted(endpoints)
 	}
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		if e.OnConnectionsChanged != nil {
+			e.watchConnections(ctx, state, startedWith)
+		}
+	}()
 
 	var runErr error
 	if command == nil {
@@ -493,6 +505,7 @@ func (e *Engine) execute(parent context.Context, session *airuntime.ProxySession
 	adapters.Close()
 	<-serverDone
 	<-monitorDone
+	<-watchDone
 	// Nothing registers any more: what was acknowledged reaches the store
 	// before the process can exit.
 	e.finishLeakWrites()

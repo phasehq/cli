@@ -199,11 +199,11 @@ func TestOutsideASessionNothingHappens(t *testing.T) {
 func TestASessionMarkerWithNoProxyIsABrokenSession(t *testing.T) {
 	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1"})
 	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_0123456789abcdefghij"}}
-	proxy, found := Locate()
-	if !found || !proxy.InSession() || proxy.URL != "" {
-		t.Fatalf("a session with no proxy in its environment was located as %+v, found %t", proxy, found)
+	found := Locate()
+	if len(found) != 1 || !found[0].InSession() || found[0].URL != "" {
+		t.Fatalf("a session with no proxy in its environment was located as %+v", found)
 	}
-	if _, err := proxy.Register(context.Background(), value); !errors.Is(err, ErrNotListening) {
+	if _, err := found[0].Register(context.Background(), value); !errors.Is(err, ErrNotListening) {
 		t.Fatalf("registering with a session that names no proxy: %v", err)
 	}
 	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) {
@@ -212,8 +212,8 @@ func TestASessionMarkerWithNoProxyIsABrokenSession(t *testing.T) {
 
 	machine, server := newFakeProxy(t)
 	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { return capabilityURL(server), true }})
-	if proxy, found := Locate(); !found || proxy.Source != "runtime" {
-		t.Fatalf("a proxy another source finds was passed over: %+v, found %t", proxy, found)
+	if found := Locate(); len(found) != 1 || found[0].Source != "runtime" {
+		t.Fatalf("a proxy another source finds was passed over: %+v", found)
 	}
 	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || machine.posts != 1 {
 		t.Fatalf("registering with the proxy another source found: %+v %v", result, err)
@@ -609,16 +609,21 @@ func capabilityURL(server *httptest.Server) string {
 	return strings.Replace(server.URL, "http://", "http://phase:capability@", 1)
 }
 
-// A proxy is looked for in order: the session's own environment first, then
-// whatever else was added. The first that finds one is registered with.
-func TestSourcesAreTriedInOrder(t *testing.T) {
+// A proxy is looked for through every source, the session's own environment
+// first, and every one that is found is registered with: each reads model
+// traffic the others do not see. Before, only the first one found was, and a
+// proxy that reads what the tools on the machine send never learnt a value
+// handed out inside a session, or while another proxy ran.
+func TestEveryProxyFoundIsRegisteredWith(t *testing.T) {
 	session, sessionServer := newFakeProxy(t)
 	machine, machineServer := newFakeProxy(t)
 	later, laterServer := newFakeProxy(t)
-	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}
+	// A value no pattern rule knows the format of: only a proxy that was told
+	// of it finds it.
+	secret := "Vq8Lm2Zr6Tx4Nb9Wc1Ke7Hy3Jd5Sa0Pf"
+	value := []Value{{Type: "secret", ID: "x", Value: secret}}
 	machineRuns := true
-	asked := 0
-	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { asked++; return capabilityURL(machineServer), machineRuns }})
+	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { return capabilityURL(machineServer), machineRuns }})
 	withSource(t, Source{Name: "later", Find: func() (string, bool) { return capabilityURL(laterServer), true }})
 	// A source without a name or a way to look is not kept.
 	sourcesMu.RLock()
@@ -631,34 +636,254 @@ func TestSourcesAreTriedInOrder(t *testing.T) {
 		t.Fatalf("the sources: %d, first %q", len(sources), sources[0].Name)
 	}
 	sourcesMu.RUnlock()
+	posts := func() [3]int {
+		var counts [3]int
+		for index, fake := range []*fakeProxy{session, machine, later} {
+			fake.mu.Lock()
+			counts[index] = fake.posts
+			fake.mu.Unlock()
+		}
+		return counts
+	}
+	named := func(found []Proxy) []string {
+		names := make([]string, 0, len(found))
+		for _, proxy := range found {
+			names = append(names, proxy.Source)
+		}
+		return names
+	}
 
-	// Inside a session the session's own proxy is used, and nothing else is
-	// even asked.
+	// Inside a session the session's own proxy comes first, and it is the
+	// one whose outcome Register returns. The others are registered with too.
 	withEnvironment(t, sessionEnvironment(sessionServer))
-	found, ok := Locate()
-	if !ok || !found.InSession() || found.Source != SourceSession || asked != 0 {
-		t.Fatalf("inside a session: %+v %v, %d other sources asked", found, ok, asked)
+	found := Locate()
+	if got := named(found); len(got) != 3 || got[0] != SourceSession || got[1] != "runtime" || got[2] != "later" {
+		t.Fatalf("inside a session: %v", got)
 	}
-	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || session.posts != 1 || machine.posts != 0 {
-		t.Fatalf("inside a session: %+v %v", result, err)
+	if !found[0].InSession() || found[1].InSession() || found[2].InSession() || found[1].URL != capabilityURL(machineServer) {
+		t.Fatalf("inside a session: %+v", found)
+	}
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || posts() != [3]int{1, 1, 1} {
+		t.Fatalf("inside a session: %+v %v, registrations %v", result, err, posts())
+	}
+	// Each proxy's key is fetched once in a process, although the
+	// registrations go from one proxy to the next and back.
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || posts() != [3]int{2, 2, 2} {
+		t.Fatalf("inside a session, again: %+v %v, registrations %v", result, err, posts())
+	}
+	if session.keyCalls != 1 || machine.keyCalls != 1 || later.keyCalls != 1 {
+		t.Fatalf("the keys were fetched %d, %d and %d times", session.keyCalls, machine.keyCalls, later.keyCalls)
 	}
 
-	// With no proxy in the environment, the next source that finds one.
+	// With no proxy in the environment, every other source that finds one.
 	withEnvironment(t, map[string]string{})
-	found, ok = Locate()
-	if !ok || found.InSession() || found.Source != "runtime" || found.URL != capabilityURL(machineServer) {
-		t.Fatalf("outside a session: %+v %v", found, ok)
+	if got := named(Locate()); len(got) != 2 || got[0] != "runtime" || got[1] != "later" {
+		t.Fatalf("outside a session: %v", got)
 	}
-	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || machine.posts != 1 || machine.keyCalls != 1 || session.posts != 1 {
-		t.Fatalf("outside a session: %+v %v", result, err)
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || posts() != [3]int{2, 3, 3} {
+		t.Fatalf("outside a session: %+v %v, registrations %v", result, err, posts())
 	}
-	// And the one after it when that one finds nothing.
+	// A source that finds nothing is left out, and the ones after it are not.
 	machineRuns = false
-	if found, ok = Locate(); !ok || found.Source != "later" {
-		t.Fatalf("after the first found nothing: %+v %v", found, ok)
+	if got := named(Locate()); len(got) != 1 || got[0] != "later" {
+		t.Fatalf("after one found nothing: %v", got)
 	}
-	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || later.posts != 1 || machine.posts != 1 {
-		t.Fatalf("after the first found nothing: %+v %v", result, err)
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || posts() != [3]int{2, 3, 4} {
+		t.Fatalf("after one found nothing: %+v %v, registrations %v", result, err, posts())
+	}
+
+	// The value is known to each proxy under that proxy's own key, and has
+	// the same placeholder at each: the type and the id are the caller's.
+	var replaced []string
+	for _, fake := range []*fakeProxy{session, machine, later} {
+		index, _ := censor.NewIndex(fake.key, censor.IndexOptions{})
+		if err := index.Add(fake.entries[0]); err != nil {
+			t.Fatal(err)
+		}
+		out, report, err := index.RewriteJSON([]byte(`{"messages":["`+secret+`"]}`), censor.ScanOptions{})
+		if err != nil || !report.Changed {
+			t.Fatalf("a proxy does not find the value it was told of: %s %v", out, err)
+		}
+		replaced = append(replaced, string(out))
+	}
+	if replaced[0] != `{"messages":["ph:secret:x"]}` || replaced[1] != replaced[0] || replaced[2] != replaced[0] {
+		t.Fatalf("the same value is replaced differently by each proxy: %q", replaced)
+	}
+	if string(session.bodies[0]) == string(machine.bodies[0]) {
+		t.Fatal("two proxies were sent the same entries: one of them was indexed with the other's key")
+	}
+	// Another proxy's index finds nothing in them.
+	wrong, _ := censor.NewIndex(machine.key, censor.IndexOptions{})
+	if err := wrong.Add(session.entries[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := wrong.RewriteJSON([]byte(`{"messages":["`+secret+`"]}`), censor.ScanOptions{}); err != nil || report.Changed {
+		t.Fatalf("entries made with one proxy's key are found with another's: %v", err)
+	}
+
+	// A proxy two sources find is one proxy: it is registered with once, as
+	// the session's own when the session's environment names it.
+	machineRuns = true
+	withEnvironment(t, sessionEnvironment(machineServer))
+	found = Locate()
+	if got := named(found); len(got) != 2 || got[0] != SourceSession || got[1] != "later" || found[0].URL != capabilityURL(machineServer) {
+		t.Fatalf("a session whose proxy another source finds too: %+v", found)
+	}
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || posts() != [3]int{2, 4, 5} {
+		t.Fatalf("a session whose proxy another source finds too: %+v %v, registrations %v", result, err, posts())
+	}
+	machineRuns = false
+
+	// What Register returns is what the first proxy came to, whatever the
+	// ones after it did.
+	withSource(t, Source{Name: "gone", Find: func() (string, bool) { return closedProxy(t), true }})
+	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": closedProxy(t)})
+	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || posts() != [3]int{2, 4, 6} {
+		t.Fatalf("a session whose proxy is gone: %v, registrations %v", err, posts())
+	}
+	withEnvironment(t, sessionEnvironment(sessionServer))
+	if result, err := Register(context.Background(), value); err != nil || result.Added != 1 || posts() != [3]int{3, 4, 7} {
+		t.Fatalf("a session with a proxy that is gone after it: %+v %v, registrations %v", result, err, posts())
+	}
+}
+
+// stalledProxy is the URL of a proxy that takes a connection and never
+// answers on it.
+func stalledProxy(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+	})
+	return "http://phase:capability@" + listener.Addr().String()
+}
+
+// The proxies a command found are registered with one after another, and the
+// command does not wait on each of them as long as it would on one. The first
+// registration has its usual bounds. Each one after it has what is left of
+// Timeout since the first began, and never less than one dial timeout: a
+// proxy that is away or does not answer costs the ones after it that much and
+// no more, and they are still registered with.
+func TestProxiesFoundTogetherShareTheTimeOfOneRegistration(t *testing.T) {
+	value := []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}}
+	// Where the system is slow to refuse a connection nothing listens for.
+	slowRefusals(t, 2*time.Second)
+	// dials holds how long each proxy's connection was given to be made.
+	dials := map[string]time.Duration{}
+	slow := controlClient
+	controlClient = func(rawProxyURL string, dial, timeout time.Duration) (*http.Client, error) {
+		dials[rawProxyURL] = dial
+		return slow(rawProxyURL, dial, timeout)
+	}
+	t.Cleanup(func() { controlClient = slow })
+	first, firstServer := newFakeProxy(t)
+	last, lastServer := newFakeProxy(t)
+	stalled, gone := stalledProxy(t), closedProxy(t)
+	withEnvironment(t, map[string]string{})
+	withSource(t, Source{Name: "first", Find: func() (string, bool) { return capabilityURL(firstServer), true }})
+	withSource(t, (&restartingSource{restarting: true}).source())
+	withSource(t, Source{Name: "stalled", Find: func() (string, bool) { return stalled, true }})
+	withSource(t, Source{Name: "gone", Find: func() (string, bool) { return gone, true }})
+	withSource(t, Source{Name: "last", Find: func() (string, bool) { return capabilityURL(lastServer), true }})
+	found := Locate()
+	if len(found) != 5 || found[1].Source != "runtime" || found[1].URL != "" {
+		t.Fatalf("the proxies found: %+v", found)
+	}
+	// took registers with one of them and says how long that took.
+	took := func(proxy Proxy) (Result, time.Duration, error) {
+		began := time.Now()
+		result, err := proxy.Register(context.Background(), value)
+		return result, time.Since(began), err
+	}
+
+	// A registration of nothing is no registration: the time is not counted
+	// from it.
+	if _, err := found[0].Register(context.Background(), []Value{{Type: "config", ID: "LOG_LEVEL", Value: "debug-level-value"}}); err != nil || !found[0].turns.began.IsZero() {
+		t.Fatalf("a registration of nothing: %v, counted from %v", err, found[0].turns.began)
+	}
+	started := time.Now()
+	if result, elapsed, err := took(found[0]); err != nil || result.Added != 1 || elapsed > Timeout/2 {
+		t.Fatalf("the first proxy: %+v %v after %v", result, err, elapsed)
+	}
+	// A proxy that is restarting is waited for as long as is left of Timeout
+	// since the first registration began, which here is nearly all of it.
+	_, elapsed, err := took(found[1])
+	if !errors.Is(err, ErrRestarting) || elapsed < Timeout*7/10 || time.Since(started) > Timeout+Timeout/4 {
+		t.Fatalf("a proxy that stayed away: %v after %v, %v after the first began", err, elapsed, time.Since(started))
+	}
+	// Nothing is left. A proxy that takes the connection and does not answer
+	// is given one dial timeout, and is a proxy that failed.
+	_, elapsed, err = took(found[2])
+	if err == nil || errors.Is(err, ErrNotListening) || errors.Is(err, ErrRestarting) || elapsed < dialTimeout*7/10 || elapsed > dialTimeout+Timeout/4 {
+		t.Fatalf("a proxy that did not answer, with no time left: %v after %v", err, elapsed)
+	}
+	// One nothing listens at is still told from it, although the system does
+	// not refuse the connection: the dial has half of that time, so it is the
+	// dial that runs out, and is seen to, before the registration does.
+	_, elapsed, err = took(found[3])
+	if !errors.Is(err, ErrNotListening) || elapsed < dialTimeout*4/10 || elapsed > dialTimeout+Timeout/4 {
+		t.Fatalf("a proxy nothing listens at, with no time left: %v after %v", err, elapsed)
+	}
+	if dials[capabilityURL(firstServer)] != dialTimeout || dials[stalled] != dialTimeout/2 || dials[gone] != dialTimeout/2 {
+		t.Fatalf("the dials were given %v, of a dial timeout of %v", dials, dialTimeout)
+	}
+	// And a proxy that runs is registered with, however late its turn comes.
+	if result, elapsed, err := took(found[4]); err != nil || result.Added != 1 || last.posts != 1 || first.posts != 1 || elapsed > dialTimeout {
+		t.Fatalf("the last proxy: %+v %v after %v", result, err, elapsed)
+	}
+	// All of it took Timeout and one dial timeout for each proxy after the
+	// first that was not there, at the most.
+	if total := time.Since(started); total > Timeout+3*dialTimeout {
+		t.Fatalf("five proxies, three of them away, took %v", total)
+	}
+}
+
+// The time the proxies found together share is counted from the first
+// registration with any of them.
+func TestTheFirstRegistrationHasItsUsualBounds(t *testing.T) {
+	// A proxy that was not found with others shares nothing.
+	var alone *turns
+	if _, limited := alone.next(); limited {
+		t.Fatal("a proxy on its own was held to another's time")
+	}
+	shared := &turns{}
+	if _, limited := shared.next(); limited {
+		t.Fatal("the first registration was held to less than its usual bounds")
+	}
+	if allowed, limited := shared.next(); !limited || allowed > Timeout || allowed < Timeout*9/10 {
+		t.Fatalf("right after the first began: %v, limited %v", allowed, limited)
+	}
+	shared.began = time.Now().Add(-Timeout / 2)
+	if allowed, limited := shared.next(); !limited || allowed > Timeout/2 || allowed < Timeout*4/10 {
+		t.Fatalf("half of the time later: %v, limited %v", allowed, limited)
+	}
+	// Once it is spent a proxy still has one dial timeout.
+	for _, ago := range []time.Duration{Timeout - dialTimeout/2, Timeout, 5 * Timeout} {
+		shared.began = time.Now().Add(-ago)
+		if allowed, limited := shared.next(); !limited || allowed != dialTimeout {
+			t.Fatalf("%v after the first began: %v, limited %v", ago, allowed, limited)
+		}
 	}
 }
 
@@ -669,7 +894,7 @@ func TestNoProxyFoundCostsNothing(t *testing.T) {
 	withSource(t, Source{Name: "runtime", Find: func() (string, bool) { return "", false }})
 	// A source that says it found a proxy and names none found none.
 	withSource(t, Source{Name: "empty", Find: func() (string, bool) { return "", true }})
-	if found, ok := Locate(); ok {
+	if found := Locate(); len(found) != 0 {
 		t.Fatalf("a proxy was found: %+v", found)
 	}
 	result, err := Register(context.Background(), []Value{{Type: "secret", ID: "x", Value: "sk_" + "live_Q7tZ2mK9pL4vX8rN1wB6yC3dF5hJ0aS"}})
@@ -800,9 +1025,9 @@ func TestARegistrationWaitsForAProxyThatIsRestarting(t *testing.T) {
 			withEnvironment(t, map[string]string{})
 			away := &restartingSource{found: start(t), restarting: true}
 			withSource(t, away.source())
-			found, ok := Locate()
-			if !ok || found.InSession() || found.Source != "runtime" {
-				t.Fatalf("a proxy that is restarting was not found: %+v %v", found, ok)
+			found := Locate()
+			if len(found) != 1 || found[0].InSession() || found[0].Source != "runtime" {
+				t.Fatalf("a proxy that is restarting was not found: %+v", found)
 			}
 			go func() {
 				time.Sleep(150 * time.Millisecond)
@@ -833,10 +1058,11 @@ func TestARegistrationWaitsForAProxyThatIsRestarting(t *testing.T) {
 			withEnvironment(t, map[string]string{})
 			away := &restartingSource{found: start(t), restarting: true}
 			withSource(t, away.source())
-			proxy, ok := Locate()
-			if !ok {
-				t.Fatal("a proxy that is restarting was not found")
+			found := Locate()
+			if len(found) != 1 {
+				t.Fatalf("a proxy that is restarting was not found: %+v", found)
 			}
+			proxy := found[0]
 			// Its process ends while it is waited for: no proxy runs.
 			go func() {
 				time.Sleep(100 * time.Millisecond)
@@ -863,7 +1089,7 @@ func TestARegistrationWaitsForAProxyThatIsRestarting(t *testing.T) {
 		t.Fatalf("a proxy that is not running: %v after %v", err, time.Since(started))
 	}
 	gone.set(closedProxy(t), true)
-	proxy, _ := Locate()
+	proxy := Locate()[0]
 	asked := gone.timesAsked()
 	if result, err := proxy.Register(context.Background(), []Value{{Type: "config", ID: "LOG_LEVEL", Value: "debug-level-value"}}); err != nil || result != (Result{}) || gone.timesAsked() != asked {
 		t.Fatalf("a registration of nothing: %+v %v, the source was asked %d times", result, err, gone.timesAsked()-asked)
@@ -890,9 +1116,13 @@ func TestARegistrationWaitsForAProxyThatIsRestarting(t *testing.T) {
 	// A session's own proxy says nothing of the kind: nothing listening there
 	// fails after one dial, as before, and no other source is asked about it.
 	withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": closedProxy(t)})
+	found := Locate()
+	if len(found) != 2 || !found[0].InSession() {
+		t.Fatalf("a session with another proxy on the machine: %+v", found)
+	}
 	asked = gone.timesAsked()
 	started = time.Now()
-	if _, err := Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > oneDial || gone.timesAsked() != asked {
+	if _, err := found[0].Register(context.Background(), value); !errors.Is(err, ErrNotListening) || time.Since(started) > oneDial || gone.timesAsked() != asked {
 		t.Fatalf("a session whose proxy is gone: %v after %v, another source asked %d times", err, time.Since(started), gone.timesAsked()-asked)
 	}
 }
@@ -1028,7 +1258,7 @@ func TestASlowRefusalIsNotWaitedFor(t *testing.T) {
 		// A session whose proxy is gone: the same error as soon.
 		withEnvironment(t, map[string]string{"PHASE_AI_ENABLED": "1", "HTTPS_PROXY": closedProxy(t)})
 		started = time.Now()
-		_, err = Register(context.Background(), value)
+		_, err = Locate()[0].Register(context.Background(), value)
 		if elapsed := time.Since(started); !errors.Is(err, ErrNotListening) || elapsed > oneDial {
 			t.Fatalf("a session whose proxy is gone: %v after %v", err, elapsed)
 		}
@@ -1122,10 +1352,11 @@ func TestRegistrationStatesTheCommandsOwnIdentity(t *testing.T) {
 	values := []Value{{Type: "secret", ID: "one", Value: "Kq7mZ2xVw9LpT4nB8rYc3HdF6sJa1Ge5"}}
 	register := func(identity phaseproxy.InventoryIdentity) {
 		t.Helper()
-		proxy, found := Locate()
-		if !found {
+		found := Locate()
+		if len(found) == 0 {
 			t.Fatal("no proxy")
 		}
+		proxy := found[0]
 		proxy.Identity = identity
 		if result, err := proxy.Register(context.Background(), values); err != nil || result.Added != 1 {
 			t.Fatalf("%+v %v", result, err)

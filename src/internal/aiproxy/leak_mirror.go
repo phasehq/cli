@@ -227,7 +227,7 @@ func (p *httpProxy) mirroredHello(match *leakHostMatch, hello []byte) (mirrored 
 	}
 	// The hello this client sent when it had no session is its own in every
 	// part, padding included. The one made here is used when none was seen.
-	if seen := p.leak.mirrored.like(match.key.perHost(), fresh); seen != nil {
+	if seen := p.leak.memoryOf(match).mirrored.like(match.key.perHost(), fresh); seen != nil {
 		return seen, true, false, ""
 	}
 	return fresh, true, true, ""
@@ -254,7 +254,7 @@ func (p *httpProxy) dialMirror(ctx context.Context, match *leakHostMatch, host s
 	}
 	if !offered {
 		// This is the hello the client sends without a session, as it sent it.
-		p.leak.mirrored.remember(match.key.perHost(), hello)
+		p.leak.memoryOf(match).mirrored.remember(match.key.perHost(), hello)
 	}
 	tunnel := &mirrorTunnel{
 		proxy: p, host: host, address: net.JoinHostPort(host, strconv.Itoa(port)), hello: hello, roots: p.unboundRoots(),
@@ -264,11 +264,11 @@ func (p *httpProxy) dialMirror(ctx context.Context, match *leakHostMatch, host s
 	// every part is the first thing to look at when the service turns the
 	// connection or its requests away.
 	if rebuilt && !errors.Is(err, errMirrorUnreachable) {
-		p.leak.connections.noteRebuilt(match.key.host)
+		p.leak.memoryOf(match).connections.noteRebuilt(match.key.host)
 	}
 	switch {
 	case err == nil:
-		p.leak.connections.noteCopied(match.key.host)
+		p.leak.memoryOf(match).connections.noteCopied(match.key.host)
 	case errors.Is(err, errMirrorUnreachable):
 		return nil, "", err
 	case errors.Is(err, errMirrorNotHTTP1):
@@ -387,13 +387,16 @@ func stillOpen(conn net.Conn) bool {
 // long as the client keeps it: status lists the host as not read meanwhile,
 // and the event is repeated.
 func (p *httpProxy) passThroughUnread(ctx context.Context, client net.Conn, read []byte, host string, port int, match *leakHostMatch, selection, reason string) {
+	// As for a client in a pass-through window: whoever handed the flow over
+	// to be read is told it won't be.
+	p.flows.handedOver(client.RemoteAddr().String())
 	upstream, err := p.dialUnbound(ctx, net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return
 	}
 	defer upstream.Close()
 	p.noteUnreadTunnel(host, port, match, reason)
-	defer p.leak.connections.passed(match.key.host, reason)()
+	defer p.leak.memoryOf(match).connections.passed(match.key.host, reason)()
 	if _, err := upstream.Write(read); err != nil {
 		return
 	}
@@ -416,7 +419,7 @@ func (p *httpProxy) noteUnreadTunnel(host string, port int, match *leakHostMatch
 // at the pace every unread report keeps: once for its tool, host and reason,
 // then at most once in unreadPeriod.
 func (p *httpProxy) reportUnreadTunnel(host string, port int, match *leakHostMatch, reason string) {
-	if p.events == nil || !p.leak.unread.fresh(match.key.perHost(), reason) {
+	if p.events == nil || !p.leak.memoryOf(match).unread.fresh(match.key.perHost(), reason) {
 		return
 	}
 	event := newRequestEvent(nil, http.MethodConnect, host, port, "/", "allow", outcomeUnread, reason, 0, 0, "")
