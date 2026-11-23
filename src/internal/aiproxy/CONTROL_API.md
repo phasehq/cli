@@ -1931,7 +1931,7 @@ a call open waiting for approval:
 {
   "error": {
     "code": "agent_access_policy_ask",
-    "message": "Phase did not send this call: this DELETE (a delete call) on Example API needs a member's approval under this Workflow's access policy. To ask for it, send the JSON in details.request unchanged to POST http://phase.invalid/v1/requests, show the human the approvalUrl, and retry the call once the request is approved.",
+    "message": "Phase did not send this call: this DELETE (a delete call) on Example API needs a member's approval under this Connection's access rules. To ask for it, send the JSON in details.request unchanged to POST http://phase.invalid/v1/requests, show the human the approvalUrl, and retry the call once the request is approved.",
     "retryable": false,
     "details": {
       "connectionId": "c0a80101-0000-4000-8000-0000000000b1",

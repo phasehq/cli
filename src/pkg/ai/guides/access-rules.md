@@ -1,6 +1,6 @@
 # Access rules: allowed, ask, blocked
 
-A member can set rules on this Workflow's access to a Connection. Each call is sorted into a class by its HTTP method alone (`GET`, `HEAD`, `OPTIONS` are `read`; `POST` is `create`; `PUT`, `PATCH` are `update`; `DELETE` is `delete`; any other method is `update`), on every Connection: an AWS action or a GraphQL query sent as a `POST` is a `create`. The rules decide per class, method, or path whether the call is allowed, needs a member's approval, or is blocked. `GET http://phase.invalid/v1/connections` shows each Connection's `policy`. The proxy decides before it uses the credential and answers at once with HTTP 403; it never holds a call open.
+A member sets access rules on each Connection. Each call is sorted into a class by its HTTP method alone (`GET`, `HEAD`, `OPTIONS` are `read`; `POST` is `create`; `PUT`, `PATCH` are `update`; `DELETE` is `delete`; any other method is `update`), on every Connection: an AWS action or a GraphQL query sent as a `POST` is a `create`. The rules decide per class, method, or path whether the call is allowed, needs a member's approval, or is blocked. `GET http://phase.invalid/v1/connections` shows each Connection's `policy`. The proxy decides before it uses the credential and answers at once with HTTP 403; it never holds a call open.
 
 These answers are decisions about this Workflow's access, not outages. Do not retry unchanged and do not switch credentials.
 

@@ -64,8 +64,8 @@ type TemporaryAllow struct {
 	ExpiresAt time.Time    `json:"expiresAt"`
 }
 
-// AccessPolicy is the policy on one Workflow-to-Connection grant as the proxy
-// enforces it. A higher version, or a class, effect or rule kind this client
+// AccessPolicy is a Connection's access policy, with this Workflow's
+// temporary allows, as the proxy enforces it. A higher version, or a class, effect or rule kind this client
 // does not know, makes the policy unsupported rather than silently weaker,
 // and the Connection is then unavailable (see Unsupported). Other members it
 // does not know are ignored.

@@ -662,10 +662,10 @@ type configChange struct {
 // be added: the Agent's processes are given nothing new, the proxy only starts
 // serving it.
 //
-// A grant's access policy, its temporary allows, the provider's secret guard,
-// the grant's time limit and the list of expired Connections are deliberately
-// not compared: none of them is visible to the Agent's processes, the proxy
-// alone enforces them, so they always apply in place.
+// A Connection's access policy, the grant's temporary allows, the provider's
+// secret guard, the grant's time limit and the list of expired Connections are
+// deliberately not compared: none of them is visible to the Agent's processes,
+// the proxy alone enforces them, so they always apply in place.
 func classifyConfigChange(oldBindings, newBindings []*binding, oldConfigEnv, newConfigEnv map[string]string) configChange {
 	if !equalStringMap(oldConfigEnv, newConfigEnv) {
 		return configChange{reprovision: true}

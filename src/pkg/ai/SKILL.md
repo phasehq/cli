@@ -3,7 +3,7 @@
 Phase can give this session two kinds of access:
 
 - **App secrets**: secrets and configuration in a Phase app and environment, used through `phase secrets ...`, `phase run`, `phase apps list` and `phase init`.
-- **Connections** (Phase AI): credentials for a third-party service (a cloud provider, a Git host, a custom HTTP API) used through a local proxy. A Phase-managed command gets decoy credentials; the proxy checks them, adds the live credential, and enforces this Workflow's rules. Live credentials stay inside Phase.
+- **Connections** (Phase AI): credentials for a third-party service (a cloud provider, a Git host, a custom HTTP API) used through a local proxy. A Phase-managed command gets decoy credentials; the proxy checks them, adds the live credential, and enforces the Connection's access rules. Live credentials stay inside Phase.
 
 ## Credential-source boundary
 

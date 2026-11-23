@@ -123,7 +123,8 @@ func TestWebSocketUpgradeIsJudgedAsAnUpdate(t *testing.T) {
 	tunnel := &tunnelAuthentication{}
 
 	result := proxy.process(handshake("/v1/stream"), tunnel)
-	if result.failure == nil || result.failure.code != codeAccessPolicyAsk || result.failure.details["class"] != "update" || upstream.calls.Load() != 0 {
+	if result.failure == nil || result.failure.code != codeAccessPolicyAsk || result.failure.details["class"] != "update" || upstream.calls.Load() != 0 ||
+		!strings.Contains(result.failure.message, "this GET (an update call) on Example API needs a member's approval under this Connection's access rules.") {
 		t.Fatalf("an upgrade was not asked about: %+v", result.failure)
 	}
 	// An ordinary GET on the same path is a read.

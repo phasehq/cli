@@ -186,8 +186,8 @@ func TestCustomConnectionPolicyAnswers(t *testing.T) {
 		t.Fatalf("ask details = %s", got)
 	}
 	message, _ := envelope["message"].(string)
-	if !strings.Contains(message, "needs a member's approval") || !strings.Contains(message, "POST http://phase.invalid/v1/requests") ||
-		!strings.Contains(message, "details.request") {
+	if !strings.Contains(message, "this DELETE (a delete call) on Example API needs a member's approval under this Connection's access rules.") ||
+		!strings.Contains(message, "POST http://phase.invalid/v1/requests") || !strings.Contains(message, "details.request") {
 		t.Fatalf("ask message = %q", message)
 	}
 	// The event carries the same members, the rule as one object, and never

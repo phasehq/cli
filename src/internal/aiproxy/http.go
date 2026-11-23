@@ -311,9 +311,9 @@ func (p *httpProxy) process(req *http.Request, tunnelAuth *tunnelAuthentication)
 	if stopped := p.inspectForLeaks(req, upstream, binding, flow, host, port, started); stopped != nil {
 		return *stopped
 	}
-	// The secret guard, then the grant's access policy, both before anything
-	// is re-signed, swapped in or attached. Both may read the body, which must
-	// arrive within bodyInspectionTimeout.
+	// The secret guard, then the Connection's access policy, both before
+	// anything is re-signed, swapped in or attached. Both may read the body,
+	// which must arrive within bodyInspectionTimeout.
 	clearDeadline := setBodyReadDeadline(req, time.Now().Add(bodyInspectionTimeout))
 	if stopped := p.enforceSecretGuard(req, upstream, binding, started); stopped != nil {
 		clearDeadline()

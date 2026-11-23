@@ -240,8 +240,9 @@ type ConnectionDetail struct {
 	Definition    map[string]any `json:"definition,omitempty"`
 	ValueRevision *int           `json:"valueRevision,omitempty"`
 	KeyVersion    *int           `json:"keyVersion,omitempty"`
-	// Policy is the access policy on this Workflow's grant, as the Console
-	// sent it: rules, temporary allows and the managed secret guard.
+	// Policy is the Connection's access policy, with this Workflow's temporary
+	// allows, as the Console sent it: rules, temporary allows and the managed
+	// secret guard.
 	Policy *agentapi.AccessPolicy `json:"policy,omitempty"`
 	// GrantExpiresAt is when time-limited access ends; ExpiredAt is when it
 	// ended. Request is a complete body for POST /v1/requests that asks to

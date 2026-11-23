@@ -202,6 +202,27 @@ func TestAgentSkillExplainsAccessPoliciesTimeLimitsPresetsAndContext(t *testing.
 	}
 }
 
+// Access rules live on a Connection; only its temporary allows and its time
+// limit belong to this Workflow's grant.
+func TestAgentFacingTextPutsAccessRulesOnTheConnection(t *testing.T) {
+	reference, err := os.ReadFile(filepath.Join("..", "..", "internal", "aiproxy", "CONTROL_API.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"skill and guides": allGuidance(t), "control API reference": string(reference)} {
+		for _, wrong := range []string{"Workflow's access policy", "Workflow's rules", "rules on this Workflow"} {
+			if strings.Contains(text, wrong) {
+				t.Fatalf("the %s says %q; access rules are the Connection's", name, wrong)
+			}
+		}
+	}
+	for _, want := range []string{"A member sets access rules on each Connection.", "enforces the Connection's access rules"} {
+		if !strings.Contains(allGuidance(t), want) {
+			t.Fatalf("the skill and guides no longer say %q", want)
+		}
+	}
+}
+
 // Everything an Agent or a person reads says "request", in the skill and in
 // the control API reference alike.
 func TestAgentFacingTextSaysRequest(t *testing.T) {

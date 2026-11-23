@@ -103,7 +103,7 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 	if decision.Effect == agentapi.PolicyAsk {
 		request := p.askRequest(connection, req, host, decision)
 		failure.code, failure.reason, failure.decision = codeAccessPolicyAsk, codeAccessPolicyAsk, decisionAsk
-		failure.message = "Phase did not send this call: " + what + " on " + name + " needs a member's approval under this Workflow's access policy. " +
+		failure.message = "Phase did not send this call: " + what + " on " + name + " needs a member's approval under this Connection's access rules. " +
 			"To ask for it, send the JSON in details.request unchanged to POST " + requestsURL +
 			", show the human the approvalUrl, and retry the call once the request is approved."
 		failure.details["request"] = request
@@ -189,9 +189,17 @@ func describeCall(method string, decision phaseproxy.PolicyDecision) string {
 	// A method override asks the service to run the request as another
 	// method, and that is the call the policy stopped.
 	if policyMethod(decision.Method) && decision.Method != method {
-		return "this " + method + ", which asks to be run as " + decision.Method + " (a " + decision.Class + " call)"
+		return "this " + method + ", which asks to be run as " + decision.Method + " (" + classCall(decision.Class) + ")"
 	}
-	return "this " + method + " (a " + decision.Class + " call)"
+	return "this " + method + " (" + classCall(decision.Class) + ")"
+}
+
+// classCall names a call by its class, with the article it takes.
+func classCall(class string) string {
+	if class == agentapi.ClassUpdate {
+		return "an update call"
+	}
+	return "a " + class + " call"
 }
 
 // blockedCallText is the stopped call as a block names it: its method and
@@ -210,10 +218,7 @@ func blockedBecause(decision phaseproxy.PolicyDecision) string {
 		match := plainTitleText(strings.TrimSpace(strings.Join(decision.Rule.Match.Methods, ", ") + " " + decision.Rule.Match.Path))
 		return "it matches this Connection's HTTP rule \"" + match + "\", which is set to Block."
 	}
-	call := "a " + decision.Class + " call"
-	if decision.Class == agentapi.ClassUpdate {
-		call = "an update call"
-	}
+	call := classCall(decision.Class)
 	row := decision.Class
 	if row != "" {
 		row = strings.ToUpper(row[:1]) + row[1:]
