@@ -2,14 +2,20 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"time"
 )
 
 const (
 	PhaseCloudAPIHost = "https://console.phase.dev"
 	PhaseEnvConfig    = ".phase.json"
+	PrincipalAgent    = "agent"
 )
 
 var (
@@ -28,11 +34,21 @@ func homeDir() string {
 type UserConfig struct {
 	Host             string  `json:"host"`
 	ID               string  `json:"id"`
+	PrincipalType    string  `json:"principal_type,omitempty"`
+	PrincipalID      string  `json:"principal_id,omitempty"`
+	PrincipalName    string  `json:"principal_name,omitempty"`
+	WorkflowID       string  `json:"workflow_id,omitempty"`
+	WorkflowName     string  `json:"workflow_name,omitempty"`
 	Email            string  `json:"email,omitempty"`
 	OrganizationID   *string `json:"organization_id,omitempty"`
 	OrganizationName *string `json:"organization_name,omitempty"`
 	WrappedKeyShare  *string `json:"wrapped_key_share,omitempty"`
 	Token            string  `json:"token,omitempty"`
+}
+
+// IsAgentPrincipal reports whether this login was made with an Agent token.
+func (u UserConfig) IsAgentPrincipal() bool {
+	return u.PrincipalType == PrincipalAgent
 }
 
 type Config struct {
@@ -41,7 +57,7 @@ type Config struct {
 }
 
 func LoadConfig() (*Config, error) {
-	data, err := os.ReadFile(ConfigFilePath)
+	data, err := readConfigFile(ConfigFilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +76,7 @@ func SaveConfig(config *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ConfigFilePath, data, 0600)
+	return writeFileAtomically(ConfigFilePath, data)
 }
 
 func GetDefaultUser() (*UserConfig, error) {
@@ -95,25 +111,65 @@ func GetDefaultAccountID(allIDs bool) ([]string, error) {
 }
 
 func GetDefaultUserHost() (string, error) {
-	if host := os.Getenv("PHASE_HOST"); host != "" {
-		return host, nil
-	}
-
+	override := os.Getenv("PHASE_HOST")
 	if os.Getenv("PHASE_SERVICE_TOKEN") != "" {
+		if override != "" {
+			return override, nil
+		}
 		return PhaseCloudAPIHost, nil
 	}
 
 	config, err := LoadConfig()
 	if err != nil {
+		if override != "" {
+			return override, nil
+		}
 		return "", fmt.Errorf("config file not found and no PHASE_SERVICE_TOKEN environment variable set")
+	}
+	if config.DefaultUser == "" && override != "" {
+		return override, nil
 	}
 
 	for _, user := range config.PhaseUsers {
 		if user.ID == config.DefaultUser {
+			// A saved login's token is only ever sent to the host it was saved
+			// with, so an override that names another host cannot redirect it.
+			if override != "" && !SameHost(override, user.Host) {
+				return "", SavedLoginHostError(override, user.Host)
+			}
 			return user.Host, nil
 		}
 	}
 	return "", fmt.Errorf("no user found in config.json with id: %s", config.DefaultUser)
+}
+
+// ValidAccountID reports whether id is safe to use as one component of a
+// local path and a keystore name: the Console's ids are UUIDs, and an Agent
+// login's is "agent-" and hex.
+func ValidAccountID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// SavedLoginHostError refuses a PHASE_HOST that names another host than the
+// one the saved login belongs to.
+func SavedLoginHostError(override, saved string) error {
+	return fmt.Errorf("PHASE_HOST is set to %s, but the saved login belongs to %s. Unset PHASE_HOST, or log in to %s with phase auth", override, saved, override)
+}
+
+// SameHost reports whether two Phase host URLs name the same Console.
+func SameHost(a, b string) bool {
+	normalize := func(host string) string {
+		return strings.TrimRight(strings.TrimSpace(host), "/")
+	}
+	return strings.EqualFold(normalize(a), normalize(b))
 }
 
 func GetDefaultUserToken() (string, error) {
@@ -156,17 +212,6 @@ func AddUser(user UserConfig) error {
 	return SaveConfig(config)
 }
 
-func GetDefaultUserOrg() (string, error) {
-	user, err := GetDefaultUser()
-	if err != nil {
-		return "", err
-	}
-	if user.OrganizationName != nil && *user.OrganizationName != "" {
-		return *user.OrganizationName, nil
-	}
-	return "", fmt.Errorf("no organization name found for default user")
-}
-
 func SetDefaultUser(accountID string) error {
 	config, err := LoadConfig()
 	if err != nil {
@@ -188,24 +233,159 @@ func SetDefaultUser(accountID string) error {
 
 var AIConfigPath = filepath.Join(homeDir(), ".phase", "ai.json")
 
+const AIConfigVersion = "3"
+
+// releasedAIConfigVersion is what CLI v2.3.3 and earlier wrote.
+const releasedAIConfigVersion = "1"
+
 type AIConfig struct {
-	Version          string `json:"version"`
-	MaskSecretValues bool   `json:"maskSecretValues"`
+	Version           string   `json:"version"`
+	Enabled           bool     `json:"enabled"`
+	DefaultWorkflowID string   `json:"defaultWorkflowId,omitempty"`
+	SkillInstallPaths []string `json:"skillInstallPaths,omitempty"`
+	HarnessIDs        []string `json:"harnessIds,omitempty"`
+	// OpenCode's root follows its environment, so refresh and disable use the
+	// plugin paths enable wrote rather than the current environment's.
+	OpenCodePlugins []string `json:"openCodePlugins,omitempty"`
 }
 
 func LoadAIConfig() *AIConfig {
-	data, err := os.ReadFile(AIConfigPath)
+	data, err := readConfigFile(AIConfigPath)
 	if err != nil {
 		return nil
 	}
-	var cfg AIConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var raw struct {
+		Version           string   `json:"version"`
+		Enabled           *bool    `json:"enabled"`
+		DefaultWorkflowID string   `json:"defaultWorkflowId"`
+		SkillInstallPaths []string `json:"skillInstallPaths"`
+		HarnessIDs        []string `json:"harnessIds"`
+		OpenCodePlugins   []string `json:"openCodePlugins"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
-	return &cfg
+	if raw.Version == releasedAIConfigVersion {
+		// The released CLI wrote only a version and a masking choice, and the
+		// file's presence meant AI mode was on. It installed a skill and no
+		// harness integration, so it reads as enabled with no harnesses.
+		return &AIConfig{Version: AIConfigVersion, Enabled: true}
+	}
+	if raw.Version != AIConfigVersion || raw.Enabled == nil {
+		return nil
+	}
+	return &AIConfig{
+		Version:           AIConfigVersion,
+		Enabled:           *raw.Enabled,
+		DefaultWorkflowID: raw.DefaultWorkflowID,
+		SkillInstallPaths: uniqueNonEmpty(raw.SkillInstallPaths),
+		HarnessIDs:        uniqueNonEmpty(raw.HarnessIDs),
+		OpenCodePlugins:   uniqueNonEmpty(raw.OpenCodePlugins),
+	}
+}
+
+// ConfiguredHarnessIDs returns every harness configured for automatic Phase
+// integration.
+func (cfg *AIConfig) ConfiguredHarnessIDs() []string {
+	if cfg == nil {
+		return nil
+	}
+	return uniqueNonEmpty(cfg.HarnessIDs)
+}
+
+// ConfiguredSkillInstallPaths returns every skill copy Phase should keep
+// refreshed.
+func (cfg *AIConfig) ConfiguredSkillInstallPaths() []string {
+	if cfg == nil {
+		return nil
+	}
+	return uniqueNonEmpty(cfg.SkillInstallPaths)
+}
+
+// HarnessEnabled reports whether an installed harness integration may start
+// Phase. An empty v3 list means no automatic harness is authorized.
+func (cfg *AIConfig) HarnessEnabled(harness string) bool {
+	if cfg == nil || !cfg.Enabled {
+		return false
+	}
+	return cfg.HarnessConfigured(harness)
+}
+
+// HarnessConfigured reports whether the harness belongs to this setup without
+// considering the global enabled bit. It is used during disable-time cleanup.
+func (cfg *AIConfig) HarnessConfigured(harness string) bool {
+	if cfg == nil {
+		return false
+	}
+	return slices.Contains(cfg.ConfiguredHarnessIDs(), harness)
+}
+
+// AddHarnessInstallation records one additional integration without replacing
+// any previously installed harness or skill target.
+func (cfg *AIConfig) AddHarnessInstallation(harness, skillPath string) {
+	if cfg == nil {
+		return
+	}
+	cfg.HarnessIDs = uniqueNonEmpty(cfg.ConfiguredHarnessIDs(), harness)
+	cfg.SkillInstallPaths = uniqueNonEmpty(cfg.ConfiguredSkillInstallPaths(), skillPath)
+}
+
+// ClearHarnessInstallations forgets adapters and skill copies after a
+// successful global disable. The Workflow default is retained for the next
+// enable.
+func (cfg *AIConfig) ClearHarnessInstallations() {
+	if cfg == nil {
+		return
+	}
+	cfg.HarnessIDs = nil
+	cfg.SkillInstallPaths = nil
+	cfg.OpenCodePlugins = nil
+}
+
+// RecordOpenCodePlugin adds path to the saved config's OpenCode plugins. Enable
+// records a plugin before writing it, so disable finds it even if a later step
+// of enable fails.
+func RecordOpenCodePlugin(path string) error {
+	cfg := LoadAIConfig()
+	if cfg == nil {
+		// Never replace an ai.json this build cannot read: redaction fails
+		// closed on it, and it may hold a newer CLI's settings.
+		if _, err := os.Stat(AIConfigPath); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("Phase AI configuration cannot be read")
+		}
+		cfg = &AIConfig{}
+	}
+	if slices.Contains(cfg.OpenCodePlugins, path) {
+		return nil
+	}
+	cfg.OpenCodePlugins = append(cfg.OpenCodePlugins, path)
+	return SaveAIConfig(cfg)
+}
+
+func uniqueNonEmpty(values []string, extras ...string) []string {
+	seen := make(map[string]struct{})
+	unique := make([]string, 0, len(values)+len(extras))
+	for _, item := range append(append([]string(nil), values...), extras...) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		unique = append(unique, item)
+	}
+	return unique
 }
 
 func SaveAIConfig(cfg *AIConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("AI config is required")
+	}
+	cfg.Version = AIConfigVersion
+	cfg.HarnessIDs = cfg.ConfiguredHarnessIDs()
+	cfg.SkillInstallPaths = cfg.ConfiguredSkillInstallPaths()
 	if err := os.MkdirAll(filepath.Dir(AIConfigPath), 0700); err != nil {
 		return err
 	}
@@ -213,7 +393,52 @@ func SaveAIConfig(cfg *AIConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(AIConfigPath, data, 0600)
+	return writeFileAtomically(AIConfigPath, data)
+}
+
+// readConfigFile retries a read that races writeFileAtomically: Windows refuses
+// to open the file for the instant its replacement is renamed over it.
+func readConfigFile(path string) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		data, err := os.ReadFile(path)
+		if err == nil || runtime.GOOS != "windows" || errors.Is(err, os.ErrNotExist) || attempt == 20 {
+			return data, err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// writeFileAtomically replaces path with one rename, so a concurrent reader
+// sees the previous or the new file and never a truncated one.
+func writeFileAtomically(path string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	for attempt := 0; ; attempt++ {
+		err = os.Rename(temporary.Name(), path)
+		// Windows cannot replace a file while a reader has it open; reads are brief.
+		if err == nil || runtime.GOOS != "windows" || attempt == 50 {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func RemoveUser(id string) error {

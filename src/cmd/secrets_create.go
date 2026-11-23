@@ -45,6 +45,9 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 	if err := sdk.ValidateSecretType(secretType); err != nil {
 		return err
 	}
+	if override && phase.ActiveLoginIsAgent() {
+		return phase.ErrAgentOverride
+	}
 
 	var key string
 	if len(args) > 0 {
@@ -103,7 +106,7 @@ func runSecretsCreate(cmd *cobra.Command, args []string) error {
 
 	appName, envName, appID = phase.GetConfig(appName, envName, appID)
 
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
 		return err
 	}

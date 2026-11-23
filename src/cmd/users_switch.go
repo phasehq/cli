@@ -31,23 +31,7 @@ func runUsersSwitch(cmd *cobra.Command, args []string) error {
 	// Build display labels for each user
 	items := make([]string, len(cfg.PhaseUsers))
 	for i, user := range cfg.PhaseUsers {
-		orgName := "N/A"
-		if user.OrganizationName != nil {
-			orgName = *user.OrganizationName
-		}
-		email := "Service Account"
-		if user.Email != "" {
-			email = user.Email
-		}
-		shortID := user.ID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
-		}
-		marker := ""
-		if user.ID == cfg.DefaultUser {
-			marker = " (current)"
-		}
-		items[i] = fmt.Sprintf("🏢 %s, ✉️  %s, ☁️  %s, 🆔 %s%s", orgName, email, user.Host, shortID, marker)
+		items[i] = switchUserLabel(user, user.ID == cfg.DefaultUser)
 	}
 
 	prompt := promptui.Select{
@@ -59,20 +43,17 @@ func runUsersSwitch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prompt cancelled")
 	}
 
-	selectedUser := cfg.PhaseUsers[idx]
+	return switchDefaultUser(cmd, cfg.PhaseUsers[idx], cfg.DefaultUser)
+}
+
+func switchDefaultUser(cmd *cobra.Command, selectedUser config.UserConfig, previousID string) error {
 	if err := config.SetDefaultUser(selectedUser.ID); err != nil {
 		return fmt.Errorf("failed to switch user: %w", err)
 	}
-
-	orgName := "N/A"
-	if selectedUser.OrganizationName != nil {
-		orgName = *selectedUser.OrganizationName
-	}
-	email := "Service Account"
-	if selectedUser.Email != "" {
-		email = selectedUser.Email
+	if selectedUser.ID != previousID {
+		stopRuntimeForLoginChange(cmd)
 	}
 
-	fmt.Printf("Switched to account 🙋: %s (%s)\n", email, orgName)
+	fmt.Println(switchedUserMessage(selectedUser))
 	return nil
 }

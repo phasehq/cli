@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -32,12 +31,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	envFlag, _ := cmd.Flags().GetString("env")
 	monorepoFlag, _ := cmd.Flags().GetBool("monorepo")
 
-	p, err := phase.NewPhase(true, "", "")
+	p, err := phase.NewBackend()
 	if err != nil {
 		return err
 	}
 
-	data, err := phase.Init(p)
+	data, err := phase.UserData(p)
 	if err != nil {
 		return err
 	}
@@ -174,8 +173,6 @@ func writePhaseConfig(appName, appID, envName, envID string, monorepo bool) erro
 	if err := config.WritePhaseConfig(phaseConfig); err != nil {
 		return fmt.Errorf("failed to write .phase.json: %w", err)
 	}
-
-	os.Chmod(config.PhaseEnvConfig, 0600)
 
 	fmt.Println(util.BoldGreen("✅ Initialization completed successfully."))
 	return nil

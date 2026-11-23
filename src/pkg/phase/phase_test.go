@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	sdk "github.com/phasehq/golang-sdk/v2/phase"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 )
 
 // userDataJSON is a minimal AppKeyResponse as served by
@@ -114,5 +115,22 @@ func TestResolveNamesFallsBackToAppIDOnLookupFailure(t *testing.T) {
 	app, env := resolveNames(&sdk.Phase{}, "", "Development", "8e977d18-3fdc-45a5-91a9-3e6a9e5b3f11", "")
 	if app != "8e977d18-3fdc-45a5-91a9-3e6a9e5b3f11" || env != "Development" {
 		t.Fatalf("failure fallback: got %q/%q, want app ID and selector env", app, env)
+	}
+}
+
+// The account id becomes a local path, so the Console may not name one that
+// leaves the Phase directory.
+func TestAccountIDRefusesIDsThatAreNotPlainIdentifiers(t *testing.T) {
+	for _, id := range []string{"../../../Documents", `..\..\x`, "a/b", ".", "..", "id with space"} {
+		if got, err := AccountID(&misc.AppKeyResponse{UserID: id}); err == nil {
+			t.Errorf("user id %q accepted as %q", id, got)
+		}
+		if got, err := AccountID(&misc.AppKeyResponse{AccountID: id}); err == nil {
+			t.Errorf("account id %q accepted as %q", id, got)
+		}
+	}
+	got, err := AccountID(&misc.AppKeyResponse{UserID: "0b5c0a6e-2f6b-4e3a-9a52-1c2d3e4f5a6b"})
+	if err != nil || got != "0b5c0a6e-2f6b-4e3a-9a52-1c2d3e4f5a6b" {
+		t.Fatalf("UUID: %q, %v", got, err)
 	}
 }

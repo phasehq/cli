@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/phasehq/cli/pkg/config"
 	phaseerrors "github.com/phasehq/cli/pkg/errors"
+	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/version"
 	"github.com/spf13/cobra"
 )
@@ -35,9 +37,29 @@ var rootCmd = &cobra.Command{
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		if code, ok := phaseCLIExitCode(err); ok {
+			os.Exit(code)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %s\n", phaseerrors.FormatSDKError(err))
 		os.Exit(1)
 	}
+}
+
+type phaseCLIExitCoder interface {
+	error
+	phaseCLIExitCode() int
+}
+
+func phaseCLIExitCode(err error) (int, bool) {
+	var exitCoder phaseCLIExitCoder
+	if !errors.As(err, &exitCoder) {
+		return 0, false
+	}
+	code := exitCoder.phaseCLIExitCode()
+	if code < 1 {
+		code = 1
+	}
+	return code, true
 }
 
 func init() {
@@ -46,7 +68,12 @@ func init() {
 	// `phase auth --mode aws-iam` / `--mode azure` that don't go through
 	// NewPhase(). The SDK caches its HTTP client on first use, so this must
 	// happen before any request is made.
+	// The root hook runs for every command, including subcommands that define
+	// their own hook, because hooks are traversed.
+	cobra.EnableTraverseRunHooks = true
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) { noticeStaleSkill(cmd) }
 	config.ConfigureSSLVerification()
+	phase.ConfigureUserAgent()
 
 	rootCmd.Version = version.Version
 	rootCmd.SetVersionTemplate("{{ .Version }}\n")

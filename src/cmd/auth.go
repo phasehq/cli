@@ -7,11 +7,14 @@ import (
 	"syscall"
 
 	"github.com/manifoldco/promptui"
+	"github.com/phasehq/cli/internal/agentapi"
 	"github.com/phasehq/cli/pkg/config"
 	"github.com/phasehq/cli/pkg/keyring"
 	"github.com/phasehq/cli/pkg/phase"
 	"github.com/phasehq/cli/pkg/util"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/blake2b"
 	"golang.org/x/term"
 )
 
@@ -28,6 +31,7 @@ func init() {
 	authCmd.Flags().String("service-account-id", "", "Service account ID (required for aws-iam and azure modes)")
 	authCmd.Flags().Int("ttl", 0, "Token TTL in seconds (for external identity modes)")
 	authCmd.Flags().Bool("no-store", false, "Print token to stdout instead of storing (for external identity modes)")
+	authCmd.Flags().Bool("insecure-storage", false, "Store the token in plain text in the Phase config file when no system keystore is available")
 	authCmd.Flags().String("azure-resource", "", "Azure AD resource/audience for token request (for azure mode, default: https://management.azure.com/)")
 	rootCmd.AddCommand(authCmd)
 }
@@ -83,7 +87,7 @@ func runAuth(cmd *cobra.Command, args []string) error {
 
 func runTokenAuth(cmd *cobra.Command, host string) error {
 	// Get token
-	fmt.Print("Please enter Personal Access Token (PAT) or Service Account Token (hidden): ")
+	fmt.Print("Please enter Personal Access Token (PAT), Service Account Token, or Agent Token (hidden): ")
 	tokenBytes, err := term.ReadPassword(int(syscall.Stdin))
 	if err != nil {
 		return fmt.Errorf("failed to read token: %w", err)
@@ -92,6 +96,10 @@ func runTokenAuth(cmd *cobra.Command, host string) error {
 	authToken := strings.TrimSpace(string(tokenBytes))
 	if authToken == "" {
 		return fmt.Errorf("token is required")
+	}
+
+	if strings.HasPrefix(authToken, "pss_agent:") {
+		return runAgentTokenAuth(cmd, host, authToken)
 	}
 
 	isPersonalToken := strings.HasPrefix(authToken, "pss_user:")
@@ -142,32 +150,145 @@ func runTokenAuth(cmd *cobra.Command, host string) error {
 		wrappedKeyShare = &userData.WrappedKeyShare
 	}
 
-	// Save credentials to keyring
-	tokenSavedInKeyring := true
-	if err := keyring.SetCredentials(accountID, authToken); err != nil {
-		tokenSavedInKeyring = false
+	userConfig := config.UserConfig{
+		Host:             host,
+		ID:               accountID,
+		Email:            userEmail,
+		OrganizationID:   orgID,
+		OrganizationName: orgName,
+		WrappedKeyShare:  wrappedKeyShare,
+	}
+	if err := saveUserLogin(cmd, userConfig, authToken); err != nil {
+		return err
 	}
 
-	// Build user config
-	userConfig := config.UserConfig{
+	fmt.Println(util.BoldGreen("✅ Authentication successful."))
+	return nil
+}
+
+func runAgentTokenAuth(cmd *cobra.Command, host, authToken string) error {
+	tokenType, lookup, err := agentapi.ParseDurableToken(authToken)
+	if err != nil || tokenType != agentapi.TokenAgent {
+		return fmt.Errorf("invalid Agent token")
+	}
+	client, err := agentapi.NewClient(host, authToken, nil)
+	if err != nil {
+		return fmt.Errorf("invalid Agent token: %w", err)
+	}
+	identity, err := client.Identity(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("resolve Agent identity: %w", err)
+	}
+
+	accountID := agentLocalAccountID(lookup)
+	// An Agent token goes to the system keystore. Without one the login fails,
+	// unless the person chose plain-text storage with --insecure-storage.
+	insecureStorage, _ := cmd.Flags().GetBool("insecure-storage")
+	userConfig := agentUserConfig(host, accountID, identity)
+	var storedInConfig bool
+	storedInConfig, err = storeLoginToken(keyring.SetCredentials, accountID, authToken, insecureStorage)
+	if err != nil {
+		return err
+	}
+	if storedInConfig {
+		userConfig.Token = authToken
+	}
+	if err := config.AddUser(userConfig); err != nil {
+		_ = keyring.DeleteCredentials(accountID)
+		return fmt.Errorf("save Agent login metadata: %w", err)
+	}
+	if storedInConfig {
+		fmt.Fprintln(cmd.ErrOrStderr(), "⚠️  No system keystore is available, so the Agent token is stored in plain text in the Phase config file.")
+	}
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"%s\n",
+		util.BoldGreen(fmt.Sprintf(
+			"✅ AI Agent authentication successful: %s / %s (%s). This login can use phase ai, and phase secrets, phase run, phase apps list and phase init for the apps its Workflow has access to.",
+			agentDisplayName(userConfig),
+			agentWorkflowDisplay(userConfig),
+			organizationDisplayName(userConfig),
+		)),
+	)
+	return nil
+}
+
+// saveUserLogin saves a personal or service login: the token goes to the
+// system keystore, or to the config file only when --insecure-storage is set.
+func saveUserLogin(cmd *cobra.Command, userConfig config.UserConfig, token string) error {
+	insecureStorage, _ := cmd.Flags().GetBool("insecure-storage")
+	storedInConfig, err := storeLoginToken(keyring.SetCredentials, userConfig.ID, token, insecureStorage)
+	if err != nil {
+		return err
+	}
+	if storedInConfig {
+		userConfig.Token = token
+	}
+	if err := config.AddUser(userConfig); err != nil {
+		_ = keyring.DeleteCredentials(userConfig.ID)
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	if storedInConfig {
+		fmt.Fprintln(cmd.ErrOrStderr(), "⚠️  No system keystore is available, so the token is stored in plain text in the Phase config file.")
+	}
+	return nil
+}
+
+// saveServiceAccountLogin saves a token an external identity (AWS IAM, Azure)
+// was exchanged for, the same way as any other personal or service login.
+func saveServiceAccountLogin(cmd *cobra.Command, host, token string, userData *misc.AppKeyResponse) error {
+	accountID, err := phase.AccountID(userData)
+	if err != nil {
+		return err
+	}
+	var orgID, orgName *string
+	if userData.Organisation != nil {
+		orgID = &userData.Organisation.ID
+		orgName = &userData.Organisation.Name
+	}
+	var wrappedKeyShare *string
+	if userData.WrappedKeyShare != "" {
+		wrappedKeyShare = &userData.WrappedKeyShare
+	}
+	return saveUserLogin(cmd, config.UserConfig{
 		Host:             host,
 		ID:               accountID,
 		OrganizationID:   orgID,
 		OrganizationName: orgName,
 		WrappedKeyShare:  wrappedKeyShare,
-	}
-	if userEmail != "" {
-		userConfig.Email = userEmail
-	}
-	if !tokenSavedInKeyring {
-		userConfig.Token = authToken
-	}
+	}, token)
+}
 
-	// Save to config
-	if err := config.AddUser(userConfig); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+// storeLoginToken puts the token in the system keystore. When the keystore
+// refuses it, the login fails unless plain-text storage was chosen; it then
+// reports that the caller must keep the token in the config file.
+func storeLoginToken(set func(accountID, token string) error, accountID, token string, insecureStorage bool) (inConfig bool, err error) {
+	if err := set(accountID, token); err != nil {
+		if !insecureStorage {
+			return false, fmt.Errorf("store the token in the system keystore: %w; if this machine has no keystore, rerun with --insecure-storage to store the token in plain text in the Phase config file", err)
+		}
+		return true, nil
 	}
+	return false, nil
+}
 
-	fmt.Println(util.BoldGreen("✅ Authentication successful."))
-	return nil
+func agentUserConfig(host, accountID string, identity *agentapi.AgentIdentity) config.UserConfig {
+	organizationID := identity.Organization.ID
+	organizationName := identity.Organization.Name
+	return config.UserConfig{
+		Host:             host,
+		ID:               accountID,
+		PrincipalType:    config.PrincipalAgent,
+		PrincipalID:      identity.Agent.ID,
+		PrincipalName:    identity.Agent.Name,
+		WorkflowID:       identity.Workflow.ID,
+		WorkflowName:     identity.Workflow.Name,
+		OrganizationID:   &organizationID,
+		OrganizationName: &organizationName,
+	}
+}
+
+func agentLocalAccountID(lookup string) string {
+	digest := blake2b.Sum256([]byte("phase-agent-login:" + lookup))
+	return fmt.Sprintf("agent-%x", digest[:12])
 }

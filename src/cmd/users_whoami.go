@@ -23,18 +23,6 @@ func runUsersWhoami(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not logged in: %w", err)
 	}
 
-	email := user.Email
-	if email == "" {
-		email = "N/A (Service Account)"
-	}
-
-	fmt.Printf("✉️\u200A Email: %s\n", email)
-	fmt.Printf("🙋 Account ID: %s\n", user.ID)
-	orgName := "N/A"
-	if user.OrganizationName != nil {
-		orgName = *user.OrganizationName
-	}
-	fmt.Printf("🏢 Organization: %s\n", orgName)
-	fmt.Printf("☁️\u200A Host: %s\n", user.Host)
+	writeWhoami(cmd.OutOrStdout(), *user)
 	return nil
 }

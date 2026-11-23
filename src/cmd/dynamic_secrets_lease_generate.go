@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/phasehq/golang-sdk/v2/phase/network"
 	"github.com/phasehq/cli/pkg/phase"
+	"github.com/phasehq/golang-sdk/v2/phase/network"
 	"github.com/spf13/cobra"
 )
 
@@ -53,6 +53,10 @@ func runDynamicSecretsLeaseGenerate(cmd *cobra.Command, args []string) error {
 
 	result, err := network.CreateDynamicSecretLease(p.TokenType, p.AppToken, p.Host, resolvedAppID, resolvedEnvName, secretID, ttlPtr)
 	if err != nil {
+		return err
+	}
+
+	if err := protectLeaseCredentials(cmd.Context(), result); err != nil {
 		return err
 	}
 

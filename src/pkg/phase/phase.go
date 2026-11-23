@@ -2,6 +2,7 @@ package phase
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,13 +19,24 @@ import (
 	"github.com/phasehq/golang-sdk/v2/phase/network"
 )
 
-// Create new Phase client. Return host and token
+// errAgentLoginCommand is what a command that only personal and service
+// tokens can use says to an Agent login.
+var errAgentLoginCommand = errors.New("This command is not available to an Agent login. An Agent can use phase ai, phase secrets, phase run, phase apps list and phase init.")
+
+// Create new Phase client. Return host and token. The SDK client serves
+// personal and service tokens only; an Agent login goes through NewBackend.
 func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
+	var account string
 	if init {
+		if ActiveLoginIsAgent() {
+			return nil, errAgentLoginCommand
+		}
 		creds, err := keyring.GetCredentials()
 		if err != nil {
 			return nil, err
 		}
+		account = keyring.LastAccount()
+		warnAIToolBroadToken(creds)
 		pss = creds
 		h, err := config.GetDefaultUserHost()
 		if err != nil {
@@ -36,12 +48,20 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 			return nil, fmt.Errorf("both pss and host must be provided when init is false")
 		}
 	}
+	if strings.HasPrefix(pss, "pss_agent:") {
+		return nil, errAgentLoginCommand
+	}
 
-	setUserAgent()
+	// Root initialization configures this once for CLI commands. Keep this call
+	// for direct package callers so NewPhase preserves its historical behavior.
+	ConfigureUserAgent()
 
 	p, err := sdk.New(pss, host, false)
 	if err != nil {
 		return nil, err
+	}
+	if init {
+		rememberLogin(p, account)
 	}
 
 	// Configure offline: always cache on success, only serve from cache when PHASE_OFFLINE=1
@@ -55,7 +75,10 @@ func NewPhase(init bool, pss string, host string) (*sdk.Phase, error) {
 	return p, nil
 }
 
-func setUserAgent() {
+// UserAgent returns the Phase CLI identity attached to every Console request.
+// Keeping the builder here gives both the legacy SDK client and the Agent API
+// client one canonical version, platform, user, host, and harness string.
+func UserAgent() string {
 	hostname, _ := os.Hostname()
 	username := "unknown"
 	if u, err := os.UserHomeDir(); err == nil {
@@ -70,8 +93,13 @@ func setUserAgent() {
 	if agent := ai.DetectAIAgent(); agent != "" {
 		ua += fmt.Sprintf(" (ai-agent/%s)", agent)
 	}
+	return ua
+}
 
-	network.SetUserAgent(ua)
+// ConfigureUserAgent installs the shared CLI identity in the Go SDK network
+// package. The root command invokes this once before any subcommand runs.
+func ConfigureUserAgent() {
+	network.SetUserAgent(UserAgent())
 }
 
 func Auth(p *sdk.Phase) error {
@@ -97,14 +125,19 @@ func Init(p *sdk.Phase) (*misc.AppKeyResponse, error) {
 }
 
 // AccountID returns the user_id or account_id from the response.
+// The id names local paths, so one that is not a plain identifier is refused.
 func AccountID(data *misc.AppKeyResponse) (string, error) {
-	if data.UserID != "" {
-		return data.UserID, nil
+	id := data.UserID
+	if id == "" {
+		id = data.AccountID
 	}
-	if data.AccountID != "" {
-		return data.AccountID, nil
+	if id == "" {
+		return "", fmt.Errorf("neither user_id nor account_id found in authentication response")
 	}
-	return "", fmt.Errorf("neither user_id nor account_id found in authentication response")
+	if !config.ValidAccountID(id) {
+		return "", fmt.Errorf("the Phase Console returned an account id that is not a valid identifier")
+	}
+	return id, nil
 }
 
 // PhaseGetContext resolves app/env context from user data, using .phase.json defaults.
@@ -134,8 +167,17 @@ func PhaseGetContext(userData *misc.AppKeyResponse, appName, envName, appID stri
 // extra request is needed. The network is consulted only when no cache is
 // available, and never in offline mode. If nothing resolves, falls back to the
 // supplied selectors, with the app ID standing in for a missing app name.
-func ResolveNames(p *sdk.Phase, appName, envName, appID string) (string, string) {
-	return resolveNames(p, appName, envName, appID, getCacheDir())
+//
+// An Agent login resolves from the listing its backend already holds.
+func ResolveNames(backend SecretsBackend, appName, envName, appID string) (string, string) {
+	switch b := backend.(type) {
+	case *AgentBackend:
+		return b.resolveNames(appName, envName, appID)
+	case *sdk.Phase:
+		return resolveNames(b, appName, envName, appID, getCacheDir())
+	default:
+		return fallbackNames(appName, envName, appID)
+	}
 }
 
 func resolveNames(p *sdk.Phase, appName, envName, appID, cacheDir string) (string, string) {
@@ -209,7 +251,7 @@ func getCacheDir() string {
 		return ""
 	}
 	user, err := config.GetDefaultUser()
-	if err != nil || user == nil {
+	if err != nil || user == nil || !config.ValidAccountID(user.ID) {
 		return ""
 	}
 	return offline.CacheDir(config.PhaseSecretsDir, user.ID)
