@@ -1895,7 +1895,7 @@ no `allow` path rule.
 
 Path globs are compared in two ways, on purpose. An `ask` or `block` rule also
 matches a path that differs only in letter case, one trailing slash, or a
-`;params` tail on its last segment (`/v1/admin`, `/V1/Admin/` and `/v1/admin;x`
+`;params` tail on any segment (`/v1/admin`, `/V1/Admin/` and `/v1;x/admin;y`
 are one path to many servers). An `allow` rule and a temporary allow match the
 path exactly as it was sent, so a respelled path never borrows an allow
 written for another one.
