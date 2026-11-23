@@ -1842,8 +1842,8 @@ plain-HTTP request unless the Connection carries `allowPlainHttp: true`
 envelope from §3 for most services and an AWS-style XML error
 (`<Error><Code>PhaseProxyError|PhaseAccessDenied|PhaseCredentialMintingBlocked|PhaseAccessPolicyAsk|PhaseAccessPolicyBlocked|PhaseAccessExpired</Code>…`)
 for `aws_sigv4` Connections. Codes worth knowing: `agent_connection_denied`
-(403, Connection not authorized), `agent_connection_unsupported` (403, an
-environment binding newer than this CLI; update it), `agent_access_policy_ask` and
+(403, Connection not authorized), `agent_connection_unsupported` (403, a
+secret guard or environment binding this CLI cannot apply; update it), `agent_access_policy_ask` and
 `agent_access_policy_blocked` (403, below), `agent_access_expired` (403,
 time-limited access ended), `agent_credential_injection_failed` (403, e.g. the
 request was not signed with the decoy), `agent_binding_unavailable` (503, session
@@ -1917,14 +1917,15 @@ temporary allow this CLI cannot read is left out, so the call it covered keeps
 asking. Keys this CLI does not know anywhere else are ignored: beside a
 policy's own members, on a Connection, and in the rest of the session payload.
 Two other parts of a Connection are read in full, and refuse only that
-Connection when they cannot be: `secretGuard` (below) makes it unavailable in
-the same way, and so does an entry of `environmentBindings` with a member, an
-`action` or a `source` this CLI does not know, with `stateReason`
-`environment_bindings_unsupported` and 403 `agent_connection_unsupported`
-(`PhaseAccessDenied` in the AWS envelope), also ending "Update the Phase CLI.".
-Nothing that Connection would export is set; its credential names stay
-reserved and its hosts still go through the proxy, which refuses its calls.
-The session and its other Connections work as usual. The Console raises `version`
+Connection when they cannot be, with 403 `agent_connection_unsupported`
+(`PhaseAccessDenied` in the AWS envelope) and a message that also ends "Update
+the Phase CLI.": a `secretGuard` (below) with a member this CLI does not know
+(`stateReason` `secret_guard_unsupported`), and an entry of
+`environmentBindings` with a member, an `action` or a `source` this CLI does
+not know (`environment_bindings_unsupported`). For the latter nothing that
+Connection would export is set; its credential names stay reserved and its
+hosts still go through the proxy, which refuses its calls. The session and its
+other Connections work as usual. The Console raises `version`
 whenever it adds anything an older CLI has to enforce, so an older CLI refuses
 that Connection instead of enforcing less than a member set.
 

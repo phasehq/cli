@@ -252,6 +252,11 @@ func (b *binding) authorizationDecision(now time.Time) connectionAuthorizationDe
 			code: codeProviderRulesMissing, reason: failure, status: http.StatusForbidden,
 			message: "The Phase Console did not send the secret guard for this AWS Connection, so Phase does not use it. Update the Phase Console.",
 		}
+	} else if failure == agentapi.SecretGuardUnsupported {
+		return connectionAuthorizationDecision{
+			code: codeConnectionUnsupported, reason: failure, status: http.StatusForbidden,
+			message: "This Phase CLI cannot apply this Connection's secret guard, so it does not use the Connection. Update the Phase CLI.",
+		}
 	} else if failure == agentapi.EnvironmentBindingsUnsupported {
 		return connectionAuthorizationDecision{
 			code: codeConnectionUnsupported, reason: failure, status: http.StatusForbidden,

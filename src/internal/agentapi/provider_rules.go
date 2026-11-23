@@ -20,6 +20,9 @@ const (
 	// the Console sent it without its secret guard, so its calls could not be
 	// guarded.
 	ProviderRulesMissing = "provider_rules_missing"
+	// SecretGuardUnsupported is the reason a Connection is unavailable when its
+	// secret guard holds something this client cannot read or apply.
+	SecretGuardUnsupported = "secret_guard_unsupported"
 
 	maxCredentialEnvironmentNames  = 64
 	maxCredentialEnvironmentLength = 128
@@ -141,13 +144,13 @@ func (c Connection) providerRulesFailure() string {
 	// The guard applies to every call, so a guard this client cannot read
 	// always makes the Connection unusable.
 	if c.SecretGuard.Unsupported() {
-		return AccessPolicyUnsupported
+		return SecretGuardUnsupported
 	}
 	if c.AWSRulesRequired() && c.SecretGuard == nil {
 		return ProviderRulesMissing
 	}
 	if c.AWSRulesIncomplete() {
-		return AccessPolicyUnsupported
+		return SecretGuardUnsupported
 	}
 	return ""
 }

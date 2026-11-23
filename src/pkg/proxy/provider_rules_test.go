@@ -78,7 +78,7 @@ func TestProviderRulesThisClientCannotReadAreNeverEnforcedInPart(t *testing.T) {
 	if err := json.Unmarshal([]byte(unknownGuardMember), &connection); err != nil {
 		t.Fatalf("a session would fail to decode: %v", err)
 	}
-	if failure := connection.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+	if failure := connection.AccessPolicyFailure(); failure != agentapi.SecretGuardUnsupported {
 		t.Errorf("unknown guard member: failure = %q", failure)
 	}
 	request := awsCall(t, "POST", "https://sts.us-east-1.amazonaws.com/", "sts", "application/x-www-form-urlencoded", "Action=AssumeRole", nil)
@@ -86,7 +86,7 @@ func TestProviderRulesThisClientCannotReadAreNeverEnforcedInPart(t *testing.T) {
 		t.Error("unknown guard member: the guard let a minting call through")
 	}
 	guard := decodedConnection(t, `{"serviceType":"github","protocol":"http","secretGuard":{"paths":[{"method":"POST","pattern":"/x","operation":"x","bodyField":"token"}]}}`)
-	if failure := guard.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+	if failure := guard.AccessPolicyFailure(); failure != agentapi.SecretGuardUnsupported {
 		t.Errorf("unread guard: failure = %q", failure)
 	}
 	if blocked, err := CredentialMintingBlocked(policyRequest(t, "GET", "https://api.github.com/user"), guard); blocked != nil || !errors.Is(err, ErrMintingInspectionUnavailable) {
@@ -145,7 +145,7 @@ func TestProviderRulesThatCannotWorkFailClosed(t *testing.T) {
 		if err := json.Unmarshal([]byte(rules), &connection); err != nil {
 			t.Fatalf("%s: a session would fail to decode: %v", name, err)
 		}
-		if failure := connection.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+		if failure := connection.AccessPolicyFailure(); failure != agentapi.SecretGuardUnsupported {
 			t.Errorf("%s: failure = %q", name, failure)
 		}
 		for requestName, request := range requests {
@@ -163,14 +163,14 @@ func TestProviderRulesThatCannotWorkFailClosed(t *testing.T) {
 		}
 	}
 	empty := decodedConnection(t, `{"serviceType":"github","protocol":"http","secretGuard":{}}`)
-	if failure := empty.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+	if failure := empty.AccessPolicyFailure(); failure != agentapi.SecretGuardUnsupported {
 		t.Errorf("empty guard on another service: failure = %q", failure)
 	}
 	if blocked, err := CredentialMintingBlocked(policyRequest(t, "POST", "https://api.github.com/x"), empty); blocked != nil || !errors.Is(err, ErrMintingInspectionUnavailable) {
 		t.Errorf("empty guard on another service: blocked=%v err=%v", blocked, err)
 	}
 	emptyService := decodedConnection(t, `{"serviceType":"github","protocol":"http","secretGuard":{"paths":[{"method":"POST","pattern":"/x","operation":"x","services":[""]}]}}`)
-	if failure := emptyService.AccessPolicyFailure(); failure != agentapi.AccessPolicyUnsupported {
+	if failure := emptyService.AccessPolicyFailure(); failure != agentapi.SecretGuardUnsupported {
 		t.Errorf("empty service in a guard path: failure = %q", failure)
 	}
 }

@@ -141,6 +141,26 @@ func TestPolicyThisCLIDoesNotKnowAsksForANewerCLI(t *testing.T) {
 	}
 }
 
+// A secret guard this CLI cannot read in full makes only that Connection
+// unavailable, and the refusal names the guard, not the access policy.
+func TestSecretGuardThisCLICannotReadAsksForANewerCLI(t *testing.T) {
+	connection := awsPolicyConnection(nil)
+	connection["secretGuard"] = map[string]any{"operations": map[string]any{"sts": []string{"AssumeRole"}}, "bodyFields": []string{"token"}}
+	state, proxy, upstream := policyProxy(t, connection)
+	result := processThrough(proxy, signedAWSRequest(t, http.MethodGet, "https://bucket.s3.aws.example.test/key", "s3", "", nil))
+	if result.failure == nil || result.failure.code != "agent_connection_unsupported" || upstream.calls.Load() != 0 || result.event.Reason != "secret_guard_unsupported" ||
+		!strings.HasPrefix(result.failure.message, "This Phase CLI cannot apply this Connection's secret guard") || !strings.HasSuffix(result.failure.message, " Update the Phase CLI.") {
+		t.Fatalf("failure = %+v", result.failure)
+	}
+	if code, _ := awsErrorBody(t, result.failure); code != "PhaseAccessDenied" {
+		t.Fatalf("AWS error code = %s", code)
+	}
+	details := state.connectionDetails(time.Now(), "")
+	if len(details) != 1 || details[0].State != "unavailable" || details[0].StateReason != "secret_guard_unsupported" {
+		t.Fatalf("connection detail = %+v", details)
+	}
+}
+
 const registryWithServices = `{"schemaVersion":1,"capabilities":{},"services":{` +
 	`"gitlab":{"serviceType":"gitlab","displayName":"GitLab","credentialProviders":["gitlab"],"hosts":[{"match":"exact","value":"gitlab.com","port":443,"path":"/api/*"}]},` +
 	`"aws":{"serviceType":"aws","displayName":"AWS","credentialProviders":["aws"],"hosts":[{"match":"suffix","value":".amazonaws.com"}]},` +
