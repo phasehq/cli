@@ -567,6 +567,36 @@ func TestEnvironmentBindingWireIsValueFreeAndStrict(t *testing.T) {
 	}
 }
 
+// A binding newer than this client (a member, an action or a source it does
+// not know) is never applied, and costs only its own Connection.
+func TestNewerEnvironmentBindingMakesOnlyItsConnectionUnavailable(t *testing.T) {
+	current := `{"name":"EXAMPLE_API_KEY","action":"set","source":"decoy","sourceField":"token","sensitive":true,"systemManaged":false}`
+	for name, newer := range map[string]string{
+		"an unknown member":       `{"name":"EXAMPLE_API_KEY","action":"set","source":"decoy","sourceField":"token","sensitive":true,"systemManaged":false,"format":"file"}`,
+		"a value beside the name": `{"name":"EXAMPLE_API_KEY","action":"set","source":"decoy","sourceField":"token","sensitive":true,"systemManaged":false,"value":"x"}`,
+		"an unknown source":       `{"name":"EXAMPLE_API_KEY","action":"set","source":"secret_reference","sourceField":"token","sensitive":true,"systemManaged":false}`,
+		"an unknown action":       `{"name":"EXAMPLE_API_KEY","action":"append","source":"decoy","sourceField":"token","sensitive":true,"systemManaged":false}`,
+	} {
+		payload := `{"schemaVersion":1,"sessionUid":"session-1","configGeneration":1,"configEnv":{},"connections":[` +
+			`{"connectionId":"newer","serviceType":"http","protocol":"http","environmentBindings":[` + current + `,` + newer + `]},` +
+			`{"connectionId":"current","serviceType":"http","protocol":"http","environmentBindings":[` + current + `]}]}`
+		var config SessionConfig
+		if err := json.Unmarshal([]byte(payload), &config); err != nil {
+			t.Fatalf("%s: the session payload was refused outright: %v", name, err)
+		}
+		binding := config.Connections[0].EnvironmentBindings[1]
+		if !binding.Unsupported() || binding.Validate() == nil || config.Connections[0].EnvironmentBindings[0].Unsupported() {
+			t.Errorf("%s: binding = %+v", name, binding)
+		}
+		if failure := config.Connections[0].AccessPolicyFailure(); failure != EnvironmentBindingsUnsupported {
+			t.Errorf("%s: failure = %q", name, failure)
+		}
+		if failure := config.Connections[1].AccessPolicyFailure(); failure != "" {
+			t.Errorf("%s: the other Connection is unavailable: %q", name, failure)
+		}
+	}
+}
+
 func TestResolvedEnvironmentBindingProvenanceIsFailClosed(t *testing.T) {
 	bindings := []EnvironmentBinding{
 		{Name: "AWS_ACCESS_KEY_ID", Action: EnvironmentBindingSet, Source: EnvironmentSourceIdentifier, SourceField: "access_key_id", SystemManaged: true},

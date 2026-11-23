@@ -424,6 +424,55 @@ func TestCanonicalOpenFixtureCompilesProviderProcessEnvironment(t *testing.T) {
 	}
 }
 
+// A Connection whose environment bindings are newer than this CLI exports
+// nothing, and the session's environment still compiles: its credential names
+// stay reserved and its clients still trust the proxy, which refuses its calls.
+func TestNewerEnvironmentBindingExportsNothingForItsConnection(t *testing.T) {
+	payload, err := os.ReadFile("../agentapi/testdata/open_session_response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	connection := document["connections"].([]any)[0].(map[string]any)
+	connection["environmentBindings"].([]any)[0].(map[string]any)["format"] = "file"
+	newer, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response agentapi.OpenSessionResponse
+	if err := json.Unmarshal(newer, &response); err != nil {
+		t.Fatalf("a newer binding failed the session: %v", err)
+	}
+	if failure := response.Connections[0].AccessPolicyFailure(); failure != agentapi.EnvironmentBindingsUnsupported {
+		t.Fatalf("failure = %q", failure)
+	}
+	session := &ProxySession{Config: &response, CAPaths: proxy.CAPaths{Bundle: "/phase/runtime-ca-bundle.pem"}}
+	plan, err := session.CompileProcessEnvironment("http://phase:capability@127.0.0.1:9543", nil, nil)
+	if err != nil {
+		t.Fatalf("the session environment did not compile: %v", err)
+	}
+	for _, key := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+		if _, set := plan.Set[key]; set {
+			t.Errorf("%s was exported for a Connection that is not used", key)
+		}
+	}
+	reserved := proxy.SplitReservedEnvironment(plan.Set[proxy.ReservedEnvironmentKey])
+	for _, name := range response.Connections[0].CredentialEnvironment {
+		if !containsEnvironment(reserved, name) {
+			t.Errorf("%s is no longer reserved", name)
+		}
+	}
+	if plan.Set["AWS_CA_BUNDLE"] != "/phase/runtime-ca-bundle.pem" {
+		t.Errorf("AWS_CA_BUNDLE = %q", plan.Set["AWS_CA_BUNDLE"])
+	}
+	if _, err := session.ProviderProcessEnvironment(); err != nil {
+		t.Fatalf("the provider environment did not compile: %v", err)
+	}
+}
+
 // The launch environment exports the session's provider credential names for
 // phase run, and the AWS SDKs' trust variable for the SigV4 Connection.
 func TestCanonicalOpenFixtureExportsReservedNamesAndScopedTrust(t *testing.T) {

@@ -374,6 +374,10 @@ type EnvironmentBinding struct {
 	SourceField   string                   `json:"sourceField,omitempty"`
 	Sensitive     bool                     `json:"sensitive"`
 	SystemManaged bool                     `json:"systemManaged"`
+
+	// unknownMembers marks a binding that held members this client does not
+	// know, which is never applied (see Unsupported).
+	unknownMembers bool
 }
 
 func (b *EnvironmentBinding) UnmarshalJSON(payload []byte) error {
@@ -382,7 +386,13 @@ func (b *EnvironmentBinding) UnmarshalJSON(payload []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&decoded); err != nil {
-		return err
+		// A member from a newer Console costs only this binding's Connection.
+		if json.Unmarshal(payload, &decoded) != nil {
+			return err
+		}
+		*b = EnvironmentBinding(decoded)
+		b.unknownMembers = true
+		return nil
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return errors.New("environment binding contains trailing JSON")
@@ -391,7 +401,38 @@ func (b *EnvironmentBinding) UnmarshalJSON(payload []byte) error {
 	return nil
 }
 
+// Unsupported reports whether the binding holds a member, an action or a
+// source this client does not know. Its Connection is then not used.
+func (b EnvironmentBinding) Unsupported() bool {
+	switch {
+	case b.unknownMembers:
+		return true
+	case b.Action != EnvironmentBindingSet && b.Action != EnvironmentBindingUnset:
+		return true
+	}
+	switch b.Source {
+	case EnvironmentSourceIdentifier, EnvironmentSourceDecoy, EnvironmentSourceConnectionConfig,
+		EnvironmentSourceRuntime, EnvironmentSourceProxy, EnvironmentSourceCA:
+		return false
+	}
+	return true
+}
+
+// EnvironmentBindingsUnsupported reports whether one of the Connection's
+// environment bindings is one this client cannot apply in full.
+func (c Connection) EnvironmentBindingsUnsupported() bool {
+	for _, binding := range c.EnvironmentBindings {
+		if binding.Unsupported() {
+			return true
+		}
+	}
+	return false
+}
+
 func (b EnvironmentBinding) Validate() error {
+	if b.unknownMembers {
+		return errors.New("environment binding holds members this client does not know")
+	}
 	if !validEnvironmentName(b.Name) || b.Name != strings.ToUpper(b.Name) {
 		return errors.New("environment binding name is invalid")
 	}

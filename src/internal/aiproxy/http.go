@@ -1304,7 +1304,7 @@ func proxyFailurePayload(failure *requestFailure) (string, []byte) {
 	if failure != nil && failure.binding != nil && failure.binding.connection.Injection.Action == "aws_sigv4" {
 		code := "PhaseProxyError"
 		switch failure.code {
-		case "agent_connection_denied":
+		case "agent_connection_denied", codeConnectionUnsupported:
 			code = "PhaseAccessDenied"
 		case "credential_minting_uninspectable":
 			code = "PhaseCredentialMintingBlocked"

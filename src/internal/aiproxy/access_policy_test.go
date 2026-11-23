@@ -659,6 +659,43 @@ func TestUnreadablePolicyMakesOnlyThatConnectionUnavailable(t *testing.T) {
 	}
 }
 
+// An environment binding newer than this CLI makes only its Connection
+// unavailable: the session opens, the other Connections work, and its calls
+// say to update the Phase CLI.
+func TestNewerEnvironmentBindingMakesOnlyThatConnectionUnavailable(t *testing.T) {
+	for name, binding := range map[string]map[string]any{
+		"an unknown member": {"name": "EXAMPLE_API_KEY", "action": "set", "source": "decoy", "sourceField": "token", "sensitive": true, "systemManaged": false, "format": "file"},
+		"an unknown source": {"name": "EXAMPLE_API_KEY", "action": "set", "source": "secret_reference", "sourceField": "token", "sensitive": true, "systemManaged": false},
+	} {
+		newer := customConnectionPayload(customDecoyToken, customLiveToken)
+		newer["environmentBindings"] = []any{binding}
+		other := customConnectionPayload("sk-phx-decoy-other-0123456789abcdef", "sk-live-other-0123456789abcdefgh")
+		other["grantId"], other["connectionId"], other["credentialId"], other["connectionName"] = "grant-other", "connection-other", "connection-other", "Other API"
+		other["hosts"] = []any{map[string]any{"match": "exact", "value": "other.example.test", "port": 443}}
+		other["agentEnv"] = map[string]string{"OTHER_API_KEY": "ph:keyword_secret:6"}
+		other["environmentBindings"] = []any{map[string]any{"name": "OTHER_API_KEY", "action": "set", "source": "decoy", "sourceField": "token", "sensitive": true, "systemManaged": false}}
+		state, proxy, upstream := policyProxy(t, newer, other)
+
+		request, _ := http.NewRequest(http.MethodGet, "https://api.example.test/v1/items", nil)
+		result := processThrough(proxy, request)
+		if result.failure == nil || result.failure.code != "agent_connection_unsupported" || result.failure.status != http.StatusForbidden ||
+			!strings.HasSuffix(result.failure.message, " Update the Phase CLI.") || result.event.Reason != "environment_bindings_unsupported" || upstream.calls.Load() != 0 {
+			t.Fatalf("%s: a Connection with a newer binding was used: %+v", name, result.failure)
+		}
+		working, _ := http.NewRequest(http.MethodGet, "https://other.example.test/v1/items", nil)
+		if result := processThrough(proxy, working); result.failure != nil || upstream.calls.Load() != 1 {
+			t.Fatalf("%s: another Connection stopped working: %+v", name, result.failure)
+		}
+		details := state.connectionDetails(time.Now(), "connection-example")
+		if len(details) != 1 || details[0].State != "unavailable" || details[0].StateReason != "environment_bindings_unsupported" {
+			t.Fatalf("%s: connection detail = %+v", name, details)
+		}
+		if state.availability() != nil {
+			t.Fatalf("%s: a newer binding ended the session", name)
+		}
+	}
+}
+
 func TestGrantExpiryIsEnforcedAtRequestTimeAndListedWithARenewRequest(t *testing.T) {
 	// The proxy's clock is moved by the test; the expiry lies ahead of the
 	// real one, which open streams are checked against.

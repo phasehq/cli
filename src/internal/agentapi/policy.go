@@ -36,6 +36,9 @@ const (
 	// its policy is not something this client can enforce. Nothing is
 	// forwarded for it until the client understands it.
 	AccessPolicyUnsupported = "access_policy_unsupported"
+	// EnvironmentBindingsUnsupported is the reason a Connection is unavailable
+	// when one of its environment bindings is newer than this client.
+	EnvironmentBindingsUnsupported = "environment_bindings_unsupported"
 	// AccessExpired is the reason a Connection whose time limit passed is
 	// unavailable.
 	AccessExpired = "access_expired"
@@ -174,9 +177,13 @@ type ExpiredConnection struct {
 	ExpiredAt      time.Time `json:"expiredAt"`
 }
 
-// AccessPolicyFailure names why the Connection's policy or provider rules
-// cannot be enforced, or is empty when they can.
+// AccessPolicyFailure names why this client cannot use the Connection as the
+// Console sent it (its environment bindings, policy or provider rules), or is
+// empty when it can.
 func (c Connection) AccessPolicyFailure() string {
+	if c.EnvironmentBindingsUnsupported() {
+		return EnvironmentBindingsUnsupported
+	}
 	if c.Policy.Unsupported() {
 		return AccessPolicyUnsupported
 	}

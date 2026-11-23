@@ -379,6 +379,11 @@ func (s *ProxySession) environmentInputs() (processEnvironmentInputs, error) {
 		if connection.EnvironmentBindings == nil {
 			return processEnvironmentInputs{}, fmt.Errorf("Agent connection %s has no v1 environmentBindings", connection.ConnectionID)
 		}
+		// The proxy does not use a Connection whose bindings are newer than this
+		// client, so nothing it would export is set; its hosts still go through it.
+		if connection.EnvironmentBindingsUnsupported() {
+			continue
+		}
 		if err := agentapi.ValidateResolvedEnvironmentBindings(
 			connection.EnvironmentBindings,
 			connection.Identifiers,

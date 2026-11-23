@@ -155,8 +155,9 @@ func parseBindings(connections []agentapi.Connection) ([]*binding, error) {
 			}
 			seen[connection.ConnectionID] = true
 		}
+		// A binding newer than this client makes only its Connection unavailable.
 		for _, environmentBinding := range connection.EnvironmentBindings {
-			if err := environmentBinding.Validate(); err != nil {
+			if err := environmentBinding.Validate(); err != nil && !connection.EnvironmentBindingsUnsupported() {
 				return nil, fmt.Errorf("Agent binding %s: %w", connection.ConnectionID, err)
 			}
 		}
@@ -250,6 +251,11 @@ func (b *binding) authorizationDecision(now time.Time) connectionAuthorizationDe
 		return connectionAuthorizationDecision{
 			code: codeProviderRulesMissing, reason: failure, status: http.StatusForbidden,
 			message: "The Phase Console did not send the secret guard for this AWS Connection, so Phase does not use it. Update the Phase Console.",
+		}
+	} else if failure == agentapi.EnvironmentBindingsUnsupported {
+		return connectionAuthorizationDecision{
+			code: codeConnectionUnsupported, reason: failure, status: http.StatusForbidden,
+			message: "This Phase CLI cannot read how the Phase Console sets up this Connection's environment, so it does not use the Connection. Update the Phase CLI.",
 		}
 	} else if failure != "" {
 		return connectionAuthorizationDecision{
