@@ -1,13 +1,13 @@
 # Access rules: allowed, ask, blocked
 
-A member can set rules on this Workflow's access to a Connection. They sort each call into a class (`read`, `create`, `update`, `delete`, `admin`) and decide per class, method, or path whether the call is allowed, needs a member's approval, or is blocked. `GET http://phase.invalid/v1/connections` shows each Connection's `policy`. The proxy decides before it uses the credential and answers at once with HTTP 403; it never holds a call open.
+A member can set rules on this Workflow's access to a Connection. Each call is sorted into a class by its HTTP method alone (`GET`, `HEAD`, `OPTIONS` are `read`; `POST` is `create`; `PUT`, `PATCH` are `update`; `DELETE` is `delete`; any other method is `update`), on every Connection: an AWS action or a GraphQL query sent as a `POST` is a `create`. The rules decide per class, method, or path whether the call is allowed, needs a member's approval, or is blocked. `GET http://phase.invalid/v1/connections` shows each Connection's `policy`. The proxy decides before it uses the credential and answers at once with HTTP 403; it never holds a call open.
 
 These answers are decisions about this Workflow's access, not outages. Do not retry unchanged and do not switch credentials.
 
 ## When a call is refused
 
-- `agent_access_policy_ask`: the call needs approval. The answer's `details.request` is a complete request body. Send it unchanged to `POST http://phase.invalid/v1/requests`, show the human the `approvalUrl`, wait (see `phase ai guide connections`), then retry the call. Approval allows that call for a limited time only. For an AWS call whose action Phase can name, the request asks for that one action (`"allow": {"operation": "ec2:TerminateInstances"}`), not every call of its class; the matching `blockedCall` names the same `operation`. For other calls it asks for that method and exact path. AWS clients show the same JSON inside the error message, and `GET http://phase.invalid/v1/hints` lists it again if your client hid the answer.
-- `agent_access_policy_blocked`: the call is blocked. A blocked call cannot be requested, and approval of anything else does not lift it. Tell the human what the task needs; do not look for another route to the same effect.
+- `agent_access_policy_ask`: the call needs approval. The answer's `details.request` is a complete request body. Send it unchanged to `POST http://phase.invalid/v1/requests`, show the human the `approvalUrl`, wait (see `phase ai guide connections`), then retry the call. Approval allows that call for a limited time only. The request asks for the call's method and exact path (`"allow": {"match": {"methods": ["POST"], "path": "/"}}`), AWS calls included. AWS clients show the same JSON inside the error message, and `GET http://phase.invalid/v1/hints` lists it again if your client hid the answer.
+- `agent_access_policy_blocked`: the call is blocked. A blocked call cannot be requested, and approval of anything else does not lift it. The message names the rule that blocked it. Tell the human what the task needs: a member can change the Connection's access rules in the Phase Console. Do not look for another route to the same effect.
 - Do not rewrite the request to slip past a rule, for example with another method, another spelling of the path, or another credential. Ask, or stop.
 
 ## The secret guard

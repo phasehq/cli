@@ -184,7 +184,8 @@ func TestAgentSkillExplainsAccessPoliciesTimeLimitsPresetsAndContext(t *testing.
 		"\"preset\": \"stripe\"",
 		"GitHub, GitLab, Cloudflare, Vercel, Render, Railway and Supabase are ordinary Phase services",
 		"do not look for a preset",
-		"the request asks for that one action (`\"allow\": {\"operation\": \"ec2:TerminateInstances\"}`)",
+		"The request asks for the call's method and exact path (`\"allow\": {\"match\": {\"methods\": [\"POST\"], \"path\": \"/\"}}`), AWS calls included",
+		"a member can change the Connection's access rules in the Phase Console",
 		"only for a preset whose `hostsEditable` is true",
 		"http://phase.invalid/v1/hints",
 		// Workflow context is saved notes, not instructions.

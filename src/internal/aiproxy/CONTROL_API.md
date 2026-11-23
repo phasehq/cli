@@ -1518,7 +1518,7 @@ in Console and enters any secret there.
 | `agent_connection.remove` | `connection_removal` | ask to remove this Workflow's grant of a Connection |
 | `agent_connection.create` with `preset` | `setup` | request a new Connection from a preset: `preset` (an ID from `GET /v1/presets`) in place of `definition`; `hosts` only for a preset whose hosts are editable |
 | `agent_connection.app_access` | `setup` | request access to an app's secrets: `appId` or `appName`, `environments` (1 to 20 names or IDs), `access` (`read` or `read_write`) |
-| `agent_grant.allow` | `access_change` | ask to allow, for a limited time, a call the access policy asks about: `connectionId`, `allow` (exactly one of `class`, `classes`, `match` or `operation`), optional `blockedCall` |
+| `agent_grant.allow` | `access_change` | ask to allow, for a limited time, a call the access policy asks about: `connectionId`, `allow` (exactly one of `class`, `classes` or `match`), optional `blockedCall` |
 | `agent_grant.renew` | `access_change` | ask to renew time-limited access: `connectionId` |
 | `agent_workflow.context_update` | `context_update` | ask to replace the Workflow's saved context: `markdown`, the complete new text |
 
@@ -1529,8 +1529,7 @@ action carries no secret value (no `value` member on the action itself, and in
 `definition` that is not an object is refused). Four types have one more local
 check each: a `preset` is an ID and stands in place of `definition`, never
 beside it; `allow` has exactly one of `class`, `classes` (a list of different classes,
-as an app Connection's refusal asks for), `match` or `operation` (an AWS
-action such as `ec2:TerminateInstances`), and no class is ever
+as an app Connection's refusal asks for) or `match`, and no class is ever
 `credential_minting`; an app access request names one app (`appId` or
 `appName`), 1 to 20 different environments and `access` `read` or
 `read_write`; `markdown` of a context update is text of at most
@@ -1590,8 +1589,8 @@ An approved `access_change` also makes the proxy re-pull its configuration. A
 temporary allow and a later expiry are enforced by the proxy alone and never
 reach the Agent's environment, so they apply to the running session: `retry`,
 and the refused call goes through when repeated. The same holds for every
-change to a policy, to `operationClasses`, to a Connection's `secretGuard` or
-`actionClasses`, to `grantExpiresAt` and to the list of expired Connections,
+change to a policy, to a Connection's `secretGuard`, to `grantExpiresAt` and to
+the list of expired Connections,
 whoever made it: they apply at the next refresh, never
 recycle the session, and are not compared by the manifest or by discover.
 Only a renewal that creates a new grant for a Connection that exports
@@ -1790,8 +1789,8 @@ an older decoy are translated to the live credential of the same Connection.
 The Console discovery payload for this session: Connections with hosts,
 injection action, identifiers, decoys and bindings, never live material. A
 diagnostic view of what the proxy is configured to do. `policy`,
-`operationClasses`, `grantExpiresAt` and `expiredConnections` are forwarded as
-Console sent them and are not checked against the proxy's configuration.
+`grantExpiresAt` and `expiredConnections` are forwarded as Console sent them
+and are not checked against the proxy's configuration.
 
 ### POST /v1/refresh
 
@@ -1864,78 +1863,66 @@ this Workflow's grant) is evaluated for every request to an HTTP Connection befo
 its credential is swapped in or attached. A policy that only allows (the
 default) is not evaluated at all, and the Connection behaves as without one.
 
-1. The call is classified. For the `aws` service by action name, with the
-   tables the Console sends as the Connection's `actionClasses` (scheme
-   `aws_actions`, applied by `pkg/proxy/aws_classes.go`: a read verb is `read`; a write in IAM,
-   Organizations, an account service, or to a policy, permission or ACL is
-   `admin`, as are the listed calls that share a resource or open it to
-   others, such as `ec2:ModifySnapshotAttribute` or
-   `lambda:CreateFunctionUrlConfig`; then `create` and `delete` verbs; anything
-   else `update`), read from `X-Amz-Target`, the `Action` query parameter, the
-   `Action` field of a form body, and the path of a Smithy RPC v2 request
-   (`/service/<Service>/operation/<Name>`). Names are compared without regard
-   to letter case, except that only a read verb spelled as AWS spells it makes
-   a `read`. A query-protocol service (EC2, IAM, STS and the others listed
-   there) has its body read for `Action` whatever `Content-Type` the request
-   claims. A request that names no action (S3 and the other REST services) is
-   classified by method, with the sub-resources of the S3 family (`?delete`,
-   `?policy`, `?acl` and similar) and an ACL set in headers (`x-amz-acl`,
-   `x-amz-grant-*`, `admin`) called out; `POST ?select&select-type=…` is a
-   `read` only when those are its whole query. An action selector decides on
-   its own only on a query-protocol or JSON-target service. On any other
-   service the method and sub-resource class is a further candidate, so an
-   `X-Amz-Target` or `Action` added to a REST call hides nothing.
-   `operationClasses` is ignored on the `aws` service. For any other HTTP
-   Connection, packaged or custom: the Connection's `operationClasses` (a
-   custom definition's, or a packaged service's own, for example its single
-   GraphQL endpoint as `update`), first match wins, then the method (`GET`,
-   `HEAD`, `OPTIONS` read; `POST` create; `PUT`, `PATCH` update; `DELETE`
-   delete; anything else update).
+1. The call is classified by its HTTP method alone, on every HTTP Connection,
+   AWS, GraphQL and RPC-style APIs included: `GET`, `HEAD`, `OPTIONS` read;
+   `POST` create; `PUT`, `PATCH` update; `DELETE` delete; anything else
+   update. Neither the path nor the body changes the class, so an AWS action
+   sent as a `POST` (most of them) and a GraphQL query are creates. Which AWS
+   actions an Agent may run is for the provider to limit (IAM), not Phase.
 
    On every HTTP Connection two things add a further candidate. A method
-   override (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, or
-   a `_method` query parameter) adds the class of the method it names, and
+   override (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, a
+   `_method` query parameter, or, except on the `aws` service, a `_method`
+   field of a `POST` form body) adds the class of the method it names, and
    rules by method are matched against that method too; a name that is no HTTP
    method counts as `update`. A protocol upgrade (a WebSocket handshake) adds
-   `update`, because the proxy does not see what travels afterwards, unless an
-   `operationClasses` entry classifies that request.
+   `update`, because the proxy does not see what travels afterwards.
 2. The secret guard runs first (below).
-3. A rule or temporary allow is one of a `class`, a `match` or an `operation`.
-   An `operation` (`{"operation": "ec2:TerminateInstances"}`) matches an `aws`
-   call whose classified action equals it, compared without regard to case; it
-   never matches a call on another service, and a policy with an `operation`
-   rule on a non-`aws` Connection is unsupported (below). Every matching rule is collected and the strongest effect wins: `block`,
-   then `ask`, then `allow`. No matching rule: the policy's `default`.
+3. A rule or temporary allow is one of a `class` or a `match` (`methods`, a
+   `path` glob, or both). Every matching rule is collected and the strongest
+   effect wins: `block`, then `ask`, then `allow`. No matching rule: the
+   policy's `default`.
 4. An `ask` becomes an `allow` when a temporary allow matches the call and its
    `expiresAt` has not passed. That is read from the clock on every request. A
    temporary allow never changes a `block`.
 
-A request that could belong to several classes (an AWS request naming two
-actions, a method override, an upgrade, a path the proxy cannot bring into
-canonical form) is judged by the most restricted one. Such a path matches every
-`ask` or `block` path rule and no `allow` path rule.
+A request that could belong to several classes (a method override, an
+upgrade, a path the proxy cannot bring into canonical form) is judged by the
+most restricted one. Such a path matches every `ask` or `block` path rule and
+no `allow` path rule.
 
-Path globs are compared in two ways, on purpose. An `ask` or `block` rule and
-an `operationClasses` entry also match a path that differs only in letter case,
-one trailing slash, or a `;params` tail on its last segment (`/v1/admin`,
-`/V1/Admin/` and `/v1/admin;x` are one path to many servers); an entry of
-`operationClasses` that matches only this way adds its class as a further
-candidate. An `allow` rule and a temporary allow match the path exactly as it
-was sent, so a respelled path never borrows an allow written for another one.
+Path globs are compared in two ways, on purpose. An `ask` or `block` rule also
+matches a path that differs only in letter case, one trailing slash, or a
+`;params` tail on its last segment (`/v1/admin`, `/V1/Admin/` and `/v1/admin;x`
+are one path to many servers). An `allow` rule and a temporary allow match the
+path exactly as it was sent, so a respelled path never borrows an allow
+written for another one.
 
-An AWS query-protocol body that is too large to read (256 KiB), or that names
-no action at all (in an encoding the proxy does not read, for one), is
-refused with `agent_access_policy_uninspectable`. A policy this CLI cannot read
-in full (an unknown version, effect, class or rule member) is never enforced in
-part: the Connection is `unavailable` with `stateReason`
-`access_policy_unsupported` and its calls answer 403
-`agent_access_policy_unsupported`. The same holds for a `secretGuard` this CLI
-cannot read, and for `actionClasses` in a scheme or version it does not know
-on an `aws` Connection (whose secret guard reads them too) or under a policy
-that can stop calls. An AWS Connection (the `aws` service, or one signed with
-SigV4) that arrives without its `secretGuard` or `actionClasses` is never
-used: it is `unavailable` with `stateReason` `provider_rules_missing`, and its
-calls answer 403 `agent_provider_rules_missing` (the Console must be updated).
+A `POST` form body read for `_method` that is too large to read (256 KiB) or
+cannot be parsed is refused with `agent_access_policy_uninspectable`.
+
+#### Versioning
+
+The policy carries `version`, `1` today. This CLI enforces a policy only when
+it can enforce all of it, and fails closed otherwise: a Connection whose
+policy has a higher `version` than this CLI supports, or holds a class, an
+effect (`default` included) or a rule kind it does not know (a rule with a
+member it does not know, such as a condition or a rule by AWS action), is
+never enforced in part. The Connection is `unavailable` with `stateReason`
+`access_policy_unsupported`, and its calls answer 403
+`agent_access_policy_unsupported` with a message to update the Phase CLI. A
+temporary allow this CLI cannot read is left out, so the call it covered keeps
+asking. Keys this CLI does not know anywhere else are ignored: beside a
+policy's own members, on a Connection, and in the rest of the session payload.
+The exception is `secretGuard` (below): one this CLI cannot read in full makes
+the Connection unavailable in the same way. The Console raises `version`
+whenever it adds anything an older CLI has to enforce, so an older CLI refuses
+that Connection instead of enforcing less than a member set.
+
+An AWS Connection (the `aws` service, or one signed with SigV4) that arrives
+without its `secretGuard` is never used: it is `unavailable` with
+`stateReason` `provider_rules_missing`, and its calls answer 403
+`agent_provider_rules_missing` (the Console must be updated).
 
 The answer when the policy stops a call is 403, at once; the proxy never holds
 a call open waiting for approval:
@@ -1970,27 +1957,33 @@ a call open waiting for approval:
 }
 ```
 
-`rule` is the rule that decided, `"default"`, or `"secret_guard"`. `operation`
-is added when an AWS request names its action (`"ec2:TerminateInstances"`).
-`method` is the request's own method, or `UNKNOWN` when that is not a short
-token or holds a live value.
+`rule` is the rule that decided, `"default"`, or `"secret_guard"`. `method` is
+the request's own method, or `UNKNOWN` when that is not a short token or holds
+a live value.
 `agent_access_policy_blocked` has the same details without `request`: a blocked
-call cannot be requested.
+call cannot be requested yet. Its message names the Connection, the call's
+method and path, and what blocked it, in the words the Phase Console uses for
+the Connection's access rules, and says a member can change them there:
 
-`request` names the narrowest thing that covers the call. For an AWS call
-whose action the proxy can name it is that one action,
-`"allow": {"operation": "ec2:TerminateInstances"}`, and `blockedCall` carries
-the same `operation`: an action carried in a header or a body shares `POST /`
-with every other action of the service, so a path would cover them all. For any
-other call it is the method and the exact path (glob characters escaped), as
-for an AWS request that names no action (S3 object paths); when a method
-override decided, the method is the one it names, and the message says so
-("this POST, which asks to be run as DELETE"). It names the call's
-class instead when the path cannot be used or the action name is not one an
-allow may carry: a path that
-is not canonical, is longer than 1024 characters, or holds a decoy or
-something shaped like a credential is never repeated (`blockedCall.path` is
-then `/redacted`). No `durationSeconds` is set. An AWS client shows only an
+```text
+Phase blocked DELETE /v1/items/42 on Example API: it is a delete call, and this Connection's Delete row is set to Block. A blocked call cannot be requested yet. If the task needs it, tell the human: a member can change this Connection's access rules in the Phase Console.
+```
+
+What blocked it is the row of the call's class (as above), the Default that
+row follows ("this Connection's Create row follows its Default, which is set
+to Block"), or an HTTP rule ("it matches this Connection's HTTP rule
+"POST /v1/charges/*", which is set to Block").
+
+`request` names the narrowest thing that covers the call: its method and exact
+path (glob characters escaped), on every Connection, AWS included. An AWS
+action carried in a header or a body shares `POST /` with every other action
+of its service, so an approved allow for one covers them all until it ends.
+When a method override decided, the method is the one it names, and the
+message says so ("this POST, which asks to be run as DELETE"). It names the
+call's class instead when the path cannot be used: a path that is not
+canonical, is longer than 1024 characters, or holds a decoy or something
+shaped like a credential is never repeated (`blockedCall.path` is then
+`/redacted`). No `durationSeconds` is set. An AWS client shows only an
 error code and message, so for `aws_sigv4` Connections the message ends with
 the same request as `JSON: {…}`; `GET /v1/hints` lists it too.
 
@@ -2003,11 +1996,20 @@ the Connection's `secretGuard`, which the Console sends from the service's
 manifest; `pkg/proxy/minting.go` applies it) are blocked on every Connection,
 with or without a policy. No rule, temporary allow or Connection setting turns the
 guard off. The answer is 403 `agent_access_policy_blocked` with
-`"class": "credential_minting"` and `"rule": "secret_guard"`
-(`PhaseCredentialMintingBlocked` in the AWS envelope); a request the proxy
-cannot inspect for it keeps `credential_minting_uninspectable`. The guard's
-path rules are compared like `ask` and `block` rules, and with repeated
-slashes and dot segments removed, so a respelled path is still the same call.
+`"class": "credential_minting"`, `"rule": "secret_guard"` and `operation`
+naming the call (`"sts:AssumeRole"`) (`PhaseCredentialMintingBlocked` in the
+AWS envelope); a request the proxy cannot inspect for it keeps
+`credential_minting_uninspectable`. The guard's path rules are compared like
+`ask` and `block` rules, and with repeated slashes and dot segments removed,
+so a respelled path is still the same call. It reads an AWS action from
+`X-Amz-Target`, the `Action` query parameter, the `Action` field of a form
+body and the path of a Smithy RPC v2 request (`/service/<Service>/operation/<Name>`),
+and refuses the call if any of them names a guarded operation. A query-protocol
+service (EC2, IAM, STS and the others `pkg/proxy/minting.go` lists: facts about
+AWS protocols, not rules) has its body read for `Action` whatever
+`Content-Type` the request claims; such a body that is too large to read
+(256 KiB) or names no action at all (in an encoding the proxy does not read,
+for one) cannot be inspected.
 
 As a backstop, responses on `aws_sigv4` Connections are scanned for credential
 material in the shape STS uses: a `SecretAccessKey` (or `SecretKey`) value with
@@ -2053,7 +2055,8 @@ An asked call is recorded with `proxyDecision: "ask"` and reason
 `agent_access_policy_ask`; a blocked one, the secret guard included, with
 `"block"` and `agent_access_policy_blocked`. `detail` carries `connectionId`,
 `connectionName`, `class`, `method`, `path`, `rule` (`"default"`,
-`"secret_guard"` or the one rule object) and `operation` when known. The
+`"secret_guard"` or the one rule object) and, for a call the secret guard
+stopped, `operation`. The
 ready-to-send request is never part of an event. A scrubbed response is an
 event of its own: `proxyDecision: "allow"`, `outcome: "scrubbed"`, reason
 `credential_response_scrubbed`, `detail.rule: "secret_guard"` and
