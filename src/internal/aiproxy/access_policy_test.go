@@ -303,6 +303,8 @@ func TestAskRequestNamesTheNarrowestAllow(t *testing.T) {
 			map[string]any{"class": "read"}, "/redacted", "Allow read calls on Example API"},
 		"a method an allow cannot name": {"PROPFIND", "https://api.example.test/v1/items",
 			map[string]any{"class": "update"}, "/v1/items", "Allow update calls on Example API"},
+		"a decoded path that reads as a percent escape": {"GET", "https://api.example.test/v1/files/100%25ab",
+			map[string]any{"class": "read"}, "/v1/files/100%25ab", "Allow read calls on Example API"},
 	}
 	for name, test := range tests {
 		request, _ := http.NewRequest(test.method, test.target, nil)

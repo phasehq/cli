@@ -1989,10 +1989,11 @@ action carried in a header or a body shares `POST /` with every other action
 of its service, so an approved allow for one covers them all until it ends.
 When a method override decided, the method is the one it names, and the
 message says so ("this POST, which asks to be run as DELETE"). It names the
-call's class instead when the path cannot be used: a path that is not
-canonical, is longer than 1024 characters, or holds a decoy or something
-shaped like a credential is never repeated (`blockedCall.path` is then
-`/redacted`). No `durationSeconds` is set. An AWS client shows only an
+call's class instead when the path cannot be used: one that is not canonical,
+is longer than 1024 characters, or still reads as a percent escape once
+decoded (`/v1/files/100%25ab`, which the Console would refuse). A path that
+holds a decoy or something shaped like a credential is never repeated
+(`blockedCall.path` is then `/redacted`). No `durationSeconds` is set. An AWS client shows only an
 error code and message, so for `aws_sigv4` Connections the message ends with
 the same request as `JSON: {…}`; `GET /v1/hints` lists it too.
 

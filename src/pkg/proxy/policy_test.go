@@ -232,6 +232,9 @@ func TestExactPathGlobMatchesOnlyTheRequestPath(t *testing.T) {
 		"doubled slash":            {"/repos//acme", "", false},
 		"control character":        {"/repos/acme%0Ax", "", false},
 		"too long":                 {"/" + strings.Repeat("a", 1024), "", false},
+		// The Console reads such a path as still escaped and refuses it.
+		"a decoded percent escape": {"/v1/files/100%25ab", "", false},
+		"a lone percent sign":      {"/v1/files/100%25", "/v1/files/100%", true},
 	}
 	for name, test := range tests {
 		request := policyRequest(t, http.MethodDelete, "https://api.example.test"+test.path)

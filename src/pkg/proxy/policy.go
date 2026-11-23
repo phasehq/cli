@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,6 +36,8 @@ import (
 //
 // A Connection without a policy, or with one that only allows, is not
 // evaluated at all and behaves exactly as it did before policies existed.
+
+var percentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
 
 // ErrCallUninspectable is returned when a call cannot be classified, for
 // example a form body too large to read for its _method. Callers fail closed.
@@ -358,7 +361,8 @@ func policyPath(req *http.Request) (string, bool) {
 // is longer than a glob may be, or holds a control character.
 func ExactPathGlob(req *http.Request) (string, bool) {
 	path, comparable := policyPath(req)
-	if !comparable {
+	// The Console refuses a decoded path that still reads as a percent escape.
+	if !comparable || percentEscape.MatchString(path) {
 		return "", false
 	}
 	var escaped strings.Builder
