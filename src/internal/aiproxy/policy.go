@@ -114,8 +114,9 @@ func (p *httpProxy) enforceAccessPolicy(req, upstream *http.Request, binding *bi
 		}, now)
 	} else {
 		failure.code, failure.reason = codeAccessPolicyBlocked, codeAccessPolicyBlocked
-		failure.message = "Phase blocked this call: " + what + " on " + name + " is blocked by this Workflow's access policy. " +
-			"A blocked call cannot be requested; tell the human if the task needs it."
+		failure.message = "Phase blocked " + blockedCallText(failure.details["method"].(string), failure.details["path"].(string), decision) +
+			" on " + name + ": " + blockedBecause(decision) + " A blocked call cannot be requested yet. " +
+			"If the task needs it, tell the human: a member can change this Connection's access rules in the Phase Console."
 	}
 	event := makeEvent(binding, req, failure.decision, "denied", failure.reason, failure.status, time.Since(started), action)
 	event.Detail = policyEventDetail(failure.details, connection)
@@ -191,6 +192,36 @@ func describeCall(method string, decision phaseproxy.PolicyDecision) string {
 		return "this " + method + ", which asks to be run as " + decision.Method + " (a " + decision.Class + " call)"
 	}
 	return "this " + method + " (a " + decision.Class + " call)"
+}
+
+// blockedCallText is the stopped call as a block names it: its method and
+// path, and the method an override asks it to be run as.
+func blockedCallText(method, path string, decision phaseproxy.PolicyDecision) string {
+	if policyMethod(decision.Method) && decision.Method != strings.ToUpper(method) {
+		return method + " " + path + ", which asks to be run as " + decision.Method + ","
+	}
+	return method + " " + path
+}
+
+// blockedBecause names, in the Phase Console's words, what blocked the call:
+// an HTTP rule, the row of the call's class, or the Default that row follows.
+func blockedBecause(decision phaseproxy.PolicyDecision) string {
+	if decision.Rule != nil && decision.Rule.Match != nil {
+		match := plainTitleText(strings.TrimSpace(strings.Join(decision.Rule.Match.Methods, ", ") + " " + decision.Rule.Match.Path))
+		return "it matches this Connection's HTTP rule \"" + match + "\", which is set to Block."
+	}
+	call := "a " + decision.Class + " call"
+	if decision.Class == agentapi.ClassUpdate {
+		call = "an update call"
+	}
+	row := decision.Class
+	if row != "" {
+		row = strings.ToUpper(row[:1]) + row[1:]
+	}
+	if decision.Rule == nil {
+		return "it is " + call + ", and this Connection's " + row + " row follows its Default, which is set to Block."
+	}
+	return "it is " + call + ", and this Connection's " + row + " row is set to Block."
 }
 
 // askRequest builds the body an Agent sends unchanged to POST /v1/requests to

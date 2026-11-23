@@ -95,6 +95,18 @@ func TestMethodOverrideIsAskedAboutAsTheMethodItNames(t *testing.T) {
 	}
 }
 
+// A block of a POST that asks to be run as a DELETE names both methods.
+func TestBlockedMethodOverrideNamesTheMethodItAsksFor(t *testing.T) {
+	_, proxy, upstream := policyProxy(t, customPolicyConnection(policyDocument("allow", []any{classRule("delete", "block")})))
+	overridden, _ := http.NewRequest(http.MethodPost, "https://api.example.test/v1/items/42", nil)
+	overridden.Header.Set("X-HTTP-Method-Override", "DELETE")
+	result := processThrough(proxy, overridden)
+	if result.failure == nil || result.failure.code != codeAccessPolicyBlocked || upstream.calls.Load() != 0 ||
+		!strings.HasPrefix(result.failure.message, "Phase blocked POST /v1/items/42, which asks to be run as DELETE, on Example API: it is a delete call, and this Connection's Delete row is set to Block.") {
+		t.Fatalf("failure = %+v", result.failure)
+	}
+}
+
 // A WebSocket handshake inside a tunnel is a GET whose traffic the proxy does
 // not see afterwards, so a policy that stops updates stops it too.
 func TestWebSocketUpgradeIsJudgedAsAnUpdate(t *testing.T) {

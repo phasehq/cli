@@ -216,8 +216,9 @@ func TestCustomConnectionPolicyAnswers(t *testing.T) {
 		!reflect.DeepEqual(details["rule"], map[string]any{"match": map[string]any{"methods": []any{"POST"}, "path": "/v1/charges/*"}, "effect": "block"}) {
 		t.Fatalf("block answer: status=%d envelope=%v", status, envelope)
 	}
-	if _, offered := details["request"]; offered || !strings.Contains(envelope["message"].(string), "A blocked call cannot be requested") {
-		t.Fatalf("a blocked call was offered a request: %v", envelope)
+	if _, offered := details["request"]; offered || envelope["message"] != `Phase blocked POST /v1/charges/ch_1 on Example API: it matches this Connection's HTTP rule "POST /v1/charges/*", which is set to Block. `+
+		"A blocked call cannot be requested yet. If the task needs it, tell the human: a member can change this Connection's access rules in the Phase Console." {
+		t.Fatalf("a blocked call was offered a request, or the message changed: %v", envelope)
 	}
 	if blocked.event.Reason != "agent_access_policy_blocked" || blocked.event.ProxyDecision != "block" ||
 		!sameJSON(t, mustJSON(t, safeEventDetail(blocked.event.Detail, state.eventSecrets())),
@@ -229,7 +230,8 @@ func TestCustomConnectionPolicyAnswers(t *testing.T) {
 	patch, _ := http.NewRequest(http.MethodPatch, "https://api.example.test/v1/items/42", strings.NewReader(`{}`))
 	_, _, envelope = failureEnvelope(t, processThrough(proxy, patch).failure)
 	if details, _ := envelope["details"].(map[string]any); envelope["code"] != "agent_access_policy_blocked" ||
-		!reflect.DeepEqual(details["rule"], map[string]any{"class": "update", "effect": "block"}) || details["class"] != "update" {
+		!reflect.DeepEqual(details["rule"], map[string]any{"class": "update", "effect": "block"}) || details["class"] != "update" ||
+		!strings.HasPrefix(envelope["message"].(string), "Phase blocked PATCH /v1/items/42 on Example API: it is an update call, and this Connection's Update row is set to Block. A blocked call cannot be requested yet.") {
 		t.Fatalf("class block answer = %v", envelope)
 	}
 	if upstream.calls.Load() != 1 {
@@ -270,6 +272,10 @@ func TestPolicyDefaultAnswersNameTheDefault(t *testing.T) {
 		}
 		if _, carried := result.event.Detail["request"]; carried {
 			t.Fatalf("default %s event carries the request: %v", effect, result.event.Detail)
+		}
+		if message, _ := envelope["message"].(string); effect == "block" && !strings.HasPrefix(message,
+			"Phase blocked POST /v1/items on Example API: it is a create call, and this Connection's Create row follows its Default, which is set to Block.") {
+			t.Fatalf("default block message = %q", message)
 		}
 	}
 }
@@ -449,8 +455,8 @@ func TestAWSConnectionPolicyAnswers(t *testing.T) {
 		t.Fatal("an S3 delete was not blocked")
 	}
 	code, message = awsErrorBody(t, blocked.failure)
-	if code != "PhaseAccessPolicyBlocked" || !strings.Contains(message, "this DELETE (a delete call) on Staging AWS is blocked") ||
-		!strings.Contains(message, "A blocked call cannot be requested") || strings.Contains(message, "JSON:") {
+	if code != "PhaseAccessPolicyBlocked" || !strings.HasPrefix(message, "Phase blocked DELETE /reports/2026.csv on Staging AWS: it is a delete call, and this Connection's Delete row is set to Block.") ||
+		!strings.Contains(message, "a member can change this Connection's access rules in the Phase Console") || strings.Contains(message, "JSON:") {
 		t.Fatalf("AWS block answer: code=%s message=%s", code, message)
 	}
 
