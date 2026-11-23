@@ -161,16 +161,13 @@ func parseBindings(connections []agentapi.Connection) ([]*binding, error) {
 				return nil, fmt.Errorf("Agent binding %s: %w", connection.ConnectionID, err)
 			}
 		}
+		// A whenAbsent newer than this client is not refused here: it makes only
+		// its Connection unavailable (see AccessPolicyFailure).
 		for _, injection := range connection.EffectiveInjections() {
 			for _, role := range []string{"username", "password", "accessKeyId", "secretAccessKey", "sessionToken"} {
 				if _, status := agentapi.ResolveMaterial(injection.ValueFrom.Fields, role); status == agentapi.MaterialAmbiguous {
 					return nil, fmt.Errorf("Agent binding %s has an ambiguous credential role mapping", connection.ConnectionID)
 				}
-			}
-			switch injection.WhenAbsent {
-			case "", agentapi.WhenAbsentBlock, agentapi.WhenAbsentAttach:
-			default:
-				return nil, fmt.Errorf("Agent binding %s uses unsupported whenAbsent %q", connection.ConnectionID, injection.WhenAbsent)
 			}
 		}
 		listed := len(connection.Injections) > 0
@@ -256,6 +253,11 @@ func (b *binding) authorizationDecision(now time.Time) connectionAuthorizationDe
 		return connectionAuthorizationDecision{
 			code: codeConnectionUnsupported, reason: failure, status: http.StatusForbidden,
 			message: "This Phase CLI cannot apply this Connection's secret guard, so it does not use the Connection. Update the Phase CLI.",
+		}
+	} else if failure == agentapi.WhenAbsentUnsupported {
+		return connectionAuthorizationDecision{
+			code: codeConnectionUnsupported, reason: failure, status: http.StatusForbidden,
+			message: "This Phase CLI does not know how this Connection asks it to treat a request that carries no credential, so it does not use the Connection. Update the Phase CLI.",
 		}
 	} else if failure == agentapi.EnvironmentBindingsUnsupported {
 		return connectionAuthorizationDecision{

@@ -418,6 +418,19 @@ func (b EnvironmentBinding) Unsupported() bool {
 	return true
 }
 
+// WhenAbsentUnsupported reports whether one of the Connection's injections
+// names a whenAbsent this client does not know.
+func (c Connection) WhenAbsentUnsupported() bool {
+	for _, injection := range c.EffectiveInjections() {
+		switch injection.WhenAbsent {
+		case "", WhenAbsentBlock, WhenAbsentAttach:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // EnvironmentBindingsUnsupported reports whether one of the Connection's
 // environment bindings is one this client cannot apply in full.
 func (c Connection) EnvironmentBindingsUnsupported() bool {

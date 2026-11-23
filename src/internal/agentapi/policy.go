@@ -39,6 +39,9 @@ const (
 	// EnvironmentBindingsUnsupported is the reason a Connection is unavailable
 	// when one of its environment bindings is newer than this client.
 	EnvironmentBindingsUnsupported = "environment_bindings_unsupported"
+	// WhenAbsentUnsupported is the reason a Connection is unavailable when one
+	// of its injections names a whenAbsent newer than this client.
+	WhenAbsentUnsupported = "when_absent_unsupported"
 	// AccessExpired is the reason a Connection whose time limit passed is
 	// unavailable.
 	AccessExpired = "access_expired"
@@ -178,11 +181,14 @@ type ExpiredConnection struct {
 }
 
 // AccessPolicyFailure names why this client cannot use the Connection as the
-// Console sent it (its environment bindings, policy or provider rules), or is
-// empty when it can.
+// Console sent it (its environment bindings, whenAbsent, policy or provider
+// rules), or is empty when it can.
 func (c Connection) AccessPolicyFailure() string {
 	if c.EnvironmentBindingsUnsupported() {
 		return EnvironmentBindingsUnsupported
+	}
+	if c.WhenAbsentUnsupported() {
+		return WhenAbsentUnsupported
 	}
 	if c.Policy.Unsupported() {
 		return AccessPolicyUnsupported

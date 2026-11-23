@@ -698,6 +698,64 @@ func TestNewerEnvironmentBindingMakesOnlyThatConnectionUnavailable(t *testing.T)
 	}
 }
 
+// A whenAbsent newer than this CLI makes only its Connection unavailable,
+// whether the session opens with it or a refresh brings it. A refresh that
+// stops that Connection's exports recycles the session, as any change to the
+// Agent's environment does; it is never rejected.
+func TestNewerWhenAbsentMakesOnlyThatConnectionUnavailable(t *testing.T) {
+	newer := func(whenAbsent string) map[string]any {
+		connection := customConnectionPayload(customDecoyToken, customLiveToken)
+		injection := bearerAttachInjection()
+		injection["whenAbsent"] = whenAbsent
+		connection["injections"] = []any{injection}
+		return connection
+	}
+	other := customConnectionPayload("sk-phx-decoy-other-0123456789abcdef", "sk-live-other-0123456789abcdefgh")
+	other["grantId"], other["connectionId"], other["credentialId"], other["connectionName"] = "grant-other", "connection-other", "connection-other", "Other API"
+	other["hosts"] = []any{map[string]any{"match": "exact", "value": "other.example.test", "port": 443}}
+	other["agentEnv"] = map[string]string{"OTHER_API_KEY": "ph:keyword_secret:6"}
+	other["environmentBindings"] = []any{map[string]any{"name": "OTHER_API_KEY", "action": "set", "source": "decoy", "sourceField": "token", "sensitive": true, "systemManaged": false}}
+	check := func(when string, state *runtimeState, proxy *httpProxy, upstream *recordingUpstream) {
+		t.Helper()
+		before := upstream.calls.Load()
+		request, _ := http.NewRequest(http.MethodGet, "https://api.example.test/v1/items", nil)
+		result := processThrough(proxy, request)
+		if result.failure == nil || result.failure.code != "agent_connection_unsupported" || !strings.HasSuffix(result.failure.message, " Update the Phase CLI.") ||
+			result.event.Reason != "when_absent_unsupported" || upstream.calls.Load() != before {
+			t.Fatalf("%s: a Connection with a newer whenAbsent was used: %+v", when, result.failure)
+		}
+		working, _ := http.NewRequest(http.MethodGet, "https://other.example.test/v1/items", nil)
+		if result := processThrough(proxy, working); result.failure != nil || upstream.calls.Load() != before+1 {
+			t.Fatalf("%s: another Connection stopped working: %+v", when, result.failure)
+		}
+		details := state.connectionDetails(time.Now(), "connection-example")
+		if len(details) != 1 || details[0].State != "unavailable" || details[0].StateReason != "when_absent_unsupported" || state.availability() != nil {
+			t.Fatalf("%s: connection detail = %+v availability=%v", when, details, state.availability())
+		}
+	}
+
+	state, proxy, upstream := policyProxy(t, newer("retry"), other)
+	check("at open", state, proxy, upstream)
+
+	for _, holds := range []bool{false, true} {
+		refreshed, refreshedProxy, refreshedUpstream := policyProxy(t, newer("attach"), other)
+		refreshed.decoys = newDecoyHistory()
+		refreshed.setEnvironmentCheck(func(*agentapi.SessionConfig) bool { return holds })
+		fresh := decodeTestSession(t, customSessionPayload("", 2, newer("retry"), other))
+		err := refreshed.replaceConfig(&fresh.SessionConfig)
+		if !holds {
+			if !errors.Is(err, airuntime.ErrSessionReprovisionRequired) {
+				t.Fatalf("a refresh that stopped exports: err = %v, want a recycle", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("a refresh that brought a newer whenAbsent failed: %v", err)
+		}
+		check("after a refresh", refreshed, refreshedProxy, refreshedUpstream)
+	}
+}
+
 func TestGrantExpiryIsEnforcedAtRequestTimeAndListedWithARenewRequest(t *testing.T) {
 	// The proxy's clock is moved by the test; the expiry lies ahead of the
 	// real one, which open streams are checked against.

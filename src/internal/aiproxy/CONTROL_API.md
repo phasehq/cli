@@ -137,9 +137,9 @@ Host: phase.invalid
 ```
 
 `state` is `ready`, `expired` (the credential expiry or the time limit on this
-Workflow's access passed) or `unavailable` (not authorized, an access policy
-or environment binding this CLI cannot apply, or a sealed value the proxy
-could not open).
+Workflow's access passed) or `unavailable` (not authorized, an access policy,
+secret guard, environment binding or `whenAbsent` this CLI cannot apply, or a
+sealed value the proxy could not open).
 `stateReason` names the cause when the proxy knows it, for example
 `access_expired`. `grantExpiresAt` is present when access to the Connection is
 time-limited; `expiresAt` is the credential's own expiry. A custom HTTP
@@ -1843,7 +1843,8 @@ envelope from §3 for most services and an AWS-style XML error
 (`<Error><Code>PhaseProxyError|PhaseAccessDenied|PhaseCredentialMintingBlocked|PhaseAccessPolicyAsk|PhaseAccessPolicyBlocked|PhaseAccessExpired</Code>…`)
 for `aws_sigv4` Connections. Codes worth knowing: `agent_connection_denied`
 (403, Connection not authorized), `agent_connection_unsupported` (403, a
-secret guard or environment binding this CLI cannot apply; update it), `agent_access_policy_ask` and
+secret guard, environment binding or `whenAbsent` this CLI cannot apply; update
+it), `agent_access_policy_ask` and
 `agent_access_policy_blocked` (403, below), `agent_access_expired` (403,
 time-limited access ended), `agent_credential_injection_failed` (403, e.g. the
 request was not signed with the decoy), `agent_binding_unavailable` (503, session
@@ -1916,16 +1917,21 @@ never enforced in part. The Connection is `unavailable` with `stateReason`
 temporary allow this CLI cannot read is left out, so the call it covered keeps
 asking. Keys this CLI does not know anywhere else are ignored: beside a
 policy's own members, on a Connection, and in the rest of the session payload.
-Two other parts of a Connection are read in full, and refuse only that
+Other parts of a Connection are read in full too, and refuse only that
 Connection when they cannot be, with 403 `agent_connection_unsupported`
 (`PhaseAccessDenied` in the AWS envelope) and a message that also ends "Update
 the Phase CLI.": a `secretGuard` (below) with a member this CLI does not know
 (`stateReason` `secret_guard_unsupported`), and an entry of
 `environmentBindings` with a member, an `action` or a `source` this CLI does
-not know (`environment_bindings_unsupported`). For the latter nothing that
-Connection would export is set; its credential names stay reserved and its
-hosts still go through the proxy, which refuses its calls. The session and its
-other Connections work as usual. The Console raises `version`
+not know (`environment_bindings_unsupported`). An injection's `whenAbsent`
+value this CLI does not know does the same (`when_absent_unsupported`). For a
+binding or a `whenAbsent`, nothing that Connection would export is set; its
+credential names stay reserved and its hosts still go through the proxy, which
+refuses its calls. The session and its other Connections work as usual; a
+refresh that brings one recycles the session, as any change to what the
+Agent's processes were given does. Protocols and injection actions need none
+of this: the CLI lists the ones it supports when it opens a session, and the
+Console sends no Connection that needs another. The Console raises `version`
 whenever it adds anything an older CLI has to enforce, so an older CLI refuses
 that Connection instead of enforcing less than a member set.
 

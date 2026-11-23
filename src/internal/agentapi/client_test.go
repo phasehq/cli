@@ -597,6 +597,27 @@ func TestNewerEnvironmentBindingMakesOnlyItsConnectionUnavailable(t *testing.T) 
 	}
 }
 
+// A whenAbsent newer than this client, in an injection list or the single
+// injection, costs only its own Connection.
+func TestNewerWhenAbsentMakesOnlyItsConnectionUnavailable(t *testing.T) {
+	injection := func(whenAbsent string) string {
+		return `{"action":"set_header","name":"Authorization","valueFormat":"Bearer {value}","valueFrom":{"source":"credential","field":"token"},"whenAbsent":"` + whenAbsent + `"}`
+	}
+	payload := `{"schemaVersion":1,"sessionUid":"session-1","configGeneration":1,"configEnv":{},"connections":[` +
+		`{"connectionId":"listed","serviceType":"http","protocol":"http","injections":[` + injection("attach") + `,` + injection("retry") + `]},` +
+		`{"connectionId":"single","serviceType":"github","protocol":"http","injection":` + injection("defer") + `},` +
+		`{"connectionId":"current","serviceType":"http","protocol":"http","injections":[` + injection("attach") + `,` + injection("block") + `,` + injection("") + `]}]}`
+	var config SessionConfig
+	if err := json.Unmarshal([]byte(payload), &config); err != nil {
+		t.Fatalf("the session payload was refused outright: %v", err)
+	}
+	for index, want := range []string{WhenAbsentUnsupported, WhenAbsentUnsupported, ""} {
+		if failure := config.Connections[index].AccessPolicyFailure(); failure != want {
+			t.Errorf("%s: failure = %q, want %q", config.Connections[index].ConnectionID, failure, want)
+		}
+	}
+}
+
 func TestResolvedEnvironmentBindingProvenanceIsFailClosed(t *testing.T) {
 	bindings := []EnvironmentBinding{
 		{Name: "AWS_ACCESS_KEY_ID", Action: EnvironmentBindingSet, Source: EnvironmentSourceIdentifier, SourceField: "access_key_id", SystemManaged: true},

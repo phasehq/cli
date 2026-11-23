@@ -473,6 +473,47 @@ func TestNewerEnvironmentBindingExportsNothingForItsConnection(t *testing.T) {
 	}
 }
 
+// A Connection whose injection names a whenAbsent newer than this CLI exports
+// nothing either, and the session's environment still compiles.
+func TestNewerWhenAbsentExportsNothingForItsConnection(t *testing.T) {
+	payload, err := os.ReadFile("../agentapi/testdata/open_session_response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["connections"].([]any)[0].(map[string]any)["injection"].(map[string]any)["whenAbsent"] = "retry"
+	newer, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response agentapi.OpenSessionResponse
+	if err := json.Unmarshal(newer, &response); err != nil {
+		t.Fatal(err)
+	}
+	if failure := response.Connections[0].AccessPolicyFailure(); failure != agentapi.WhenAbsentUnsupported {
+		t.Fatalf("failure = %q", failure)
+	}
+	session := &ProxySession{Config: &response, CAPaths: proxy.CAPaths{Bundle: "/phase/runtime-ca-bundle.pem"}}
+	plan, err := session.CompileProcessEnvironment("http://phase:capability@127.0.0.1:9543", nil, nil)
+	if err != nil {
+		t.Fatalf("the session environment did not compile: %v", err)
+	}
+	for _, key := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+		if _, set := plan.Set[key]; set {
+			t.Errorf("%s was exported for a Connection that is not used", key)
+		}
+	}
+	reserved := proxy.SplitReservedEnvironment(plan.Set[proxy.ReservedEnvironmentKey])
+	for _, name := range response.Connections[0].CredentialEnvironment {
+		if !containsEnvironment(reserved, name) {
+			t.Errorf("%s is no longer reserved", name)
+		}
+	}
+}
+
 // The launch environment exports the session's provider credential names for
 // phase run, and the AWS SDKs' trust variable for the SigV4 Connection.
 func TestCanonicalOpenFixtureExportsReservedNamesAndScopedTrust(t *testing.T) {
