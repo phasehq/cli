@@ -21,6 +21,39 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// webAuthPayload is the request payload the Console webauth page parses. It is sent
+// as base64(JSON) in the webauth URL. Lifetime is the requested token lifetime in
+// seconds; when 0 it is omitted and the token never expires.
+type webAuthPayload struct {
+	Port      int    `json:"port"`
+	PublicKey string `json:"publicKey"`
+	Name      string `json:"name"`
+	Lifetime  int64  `json:"lifetime,omitempty"`
+}
+
+// resolveTokenName returns the requested token name: the trimmed flag value when
+// set, otherwise the default username@hostname.
+func resolveTokenName(flagValue, username, hostname string) string {
+	if name := strings.TrimSpace(flagValue); name != "" {
+		return name
+	}
+	return fmt.Sprintf("%s@%s", username, hostname)
+}
+
+// encodeWebAuthPayload serializes the webauth request payload as base64(JSON).
+func encodeWebAuthPayload(port int, pubKeyHex, name string, lifetimeSeconds int64) (string, error) {
+	rawData, err := json.Marshal(webAuthPayload{
+		Port:      port,
+		PublicKey: pubKeyHex,
+		Name:      name,
+		Lifetime:  lifetimeSeconds,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to encode webauth payload: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(rawData), nil
+}
+
 func runWebAuth(cmd *cobra.Command, host string) error {
 	// Pick random port
 	port := 8002 + rand.Intn(12001)
@@ -34,17 +67,27 @@ func runWebAuth(cmd *cobra.Command, host string) error {
 	pubKeyHex := hex.EncodeToString(kp.PublicKey[:])
 	privKeyHex := hex.EncodeToString(kp.SecretKey[:])
 
-	// Build PAT name
+	// Build PAT name (default username@hostname, overridable via --token-name)
 	username := "unknown"
 	if u, err := user.Current(); err == nil {
 		username = u.Username
 	}
 	hostname, _ := os.Hostname()
-	patName := fmt.Sprintf("%s@%s", username, hostname)
+	tokenNameFlag, _ := cmd.Flags().GetString("token-name")
+	patName := resolveTokenName(tokenNameFlag, username, hostname)
 
-	// Encode payload
-	rawData := fmt.Sprintf("%d-%s-%s", port, pubKeyHex, patName)
-	encoded := base64.StdEncoding.EncodeToString([]byte(rawData))
+	// Parse the requested token lifetime (default: never expires)
+	lifetimeStr, _ := cmd.Flags().GetString("token-lifetime")
+	lifetimeSeconds, err := util.ParseTokenLifetime(lifetimeStr)
+	if err != nil {
+		return err
+	}
+
+	// Encode payload as base64(JSON): { port, publicKey, name, lifetime? }
+	encoded, err := encodeWebAuthPayload(port, pubKeyHex, patName, lifetimeSeconds)
+	if err != nil {
+		return err
+	}
 
 	// Channel to receive auth data
 	type authData struct {
